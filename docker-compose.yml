@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: local-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ikiot_db
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ikiot_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Refresh tokens and OTP codes. Both are short-lived and expire on their own, so this
+  # runs without a volume on purpose - losing the container logs everyone out and voids
+  # any OTP in flight, which is the correct blast radius for a dev restart.
+  redis:
+    image: redis:7-alpine
+    container_name: local-redis
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

@@ -1,0 +1,1475 @@
+// Prisma schema for iKiotMS, converted from the Mongoose models in iKiotMS-BE/src/models.
+// See CLAUDE.md and the migration plan for the conventions applied throughout:
+//   - uuid primary keys (@default(uuid()))
+//   - snake_case table/column names via @@map / @map
+//   - enum-like fields kept as String, not native Prisma enum (several enums are long-lived
+//     and grow often - e.g. Notification.type - CHECK constraints can be layered on top via
+//     a follow-up custom migration; not generated here)
+//   - fixed-shape embedded subdocuments flattened into prefixed columns
+//   - arrays of subdocuments become child tables with a parent foreign key
+//   - genuine many-to-many arrays (e.g. ProductItem.suppliers) become join tables
+//   - polymorphic references (Inventory/StockMovementRequest location) become paired
+//     nullable foreign keys; "exactly one is set" (Inventory) and "at most one is set"
+//     (StockMovementRequest's two pairs) are CHECK constraints written by hand in
+//     20260903010000_inventory_exactly_one_location, since the DSL cannot express them
+//   - RefreshToken is intentionally NOT modeled here - it is moving to Redis
+//   - Tenant.workingPolicy is dropped (confirmed unused anywhere in the codebase)
+//   - Brand and Category gained tenant_id (permissions.json grants TENANT_OWNER and
+//     WAREHOUSE_MANAGER full CRUD on both, so they were never meant to be global)
+//   - The Paysheet/"PaySheet" ref casing bug is resolved by using "Paysheet" everywhere
+//   - RBAC redesign (2026-08-14): the old fixed 6-role enum (SUPER_ADMIN/TENANT_OWNER/
+//     BRANCH_MANAGER/WAREHOUSE_MANAGER/STAFF/CUSTOMER) + static permissions.json is
+//     replaced by User.systemRole (coarse account kind: ADMIN | TENANT_OWNER | CUSTOMER |
+//     STAFF) plus a tenant-owned, tenant-editable Role/RolePermission system for STAFF
+//     accounts. ADMIN (platform) and TENANT_OWNER are fixed, always-full-access, and are
+//     NOT rows in the Role table. Branch/warehouse scope stays an independent field on
+//     User (unrelated to which Role a STAFF account holds). RolePermission entries are
+//     constrained to a fixed PermissionCatalog (resource, action) seeded from the old
+//     permissions.json's module/action universe - tenants pick from this catalog, they
+//     cannot invent new resources/actions (that would break every @Permissions() guard
+//     already wired to a specific resource/action string in code).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// A. Foundation & platform
+// ─────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id            String  @id @default(uuid())
+  name          String
+  tenantOwnerId String? @map("tenant_owner_id")
+  status        String  @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED
+  phoneNumber   String? @map("phone_number")
+  mainAddress   String? @map("main_address")
+  taxNumber     String? @map("tax_number")
+
+  // banking.* (flattened fixed subdocument)
+  bankingAccountNumber      String? @map("banking_account_number")
+  bankingBankName           String? @map("banking_bank_name")
+  bankingAccountName        String? @map("banking_account_name")
+  bankingSepayWebhookApiKey String? @map("banking_sepay_webhook_api_key") // secret - exclude from default select in the repository layer
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users                   User[]                     @relation("TenantUsers")
+  roles                   Role[]
+  subscriptions           Subscription[]
+  subscriptionInvoices    SubscriptionInvoice[]
+  branches                Branch[]
+  warehouses              Warehouse[]
+  brands                  Brand[]
+  categories              Category[]
+  suppliers               Supplier[]
+  customers               Customer[]
+  products                Product[]
+  productItems            ProductItem[]
+  inventories             Inventory[]
+  stockMovementRequests   StockMovementRequest[]
+  shiftTemplates          ShiftTemplate[]
+  workingSchedules        WorkingSchedule[]
+  attendances             Attendance[]
+  leaveRequests           LeaveRequest[]
+  holidays                Holiday[]
+  payrollSettings         PayrollSetting[]
+  payrollPeriods          PayrollPeriod[]
+  paysheets               Paysheet[]
+  payslips                Payslip[]
+  orders                  Order[]
+  promotions              Promotion[]
+  promotionLogs           PromotionLog[]
+  cashDrawerSessions      CashDrawerSession[]
+  cashFlows               CashFlow[]
+  notifications           Notification[]
+  targetedByNotifications NotificationTargetTenant[]
+  tickets                 Ticket[]
+  aiChatHistories         AIChatHistory[]
+  auditLogs               AuditLog[]
+
+  @@map("tenants")
+}
+
+model User {
+  id             String     @id @default(uuid())
+  tenantId       String?    @map("tenant_id") // null = platform-level account (systemRole = ADMIN)
+  tenant         Tenant?    @relation("TenantUsers", fields: [tenantId], references: [id])
+  email          String?
+  password       String? // required at the app layer when status is ACTIVE/SUSPENDED (was a conditional Mongoose validator)
+  phoneNumber    String     @map("phone_number")
+  systemRole     String     @default("STAFF") @map("system_role") // ADMIN | TENANT_OWNER | CUSTOMER | STAFF
+  roleId         String?    @map("role_id") // tenant-defined custom role; only meaningful when systemRole = STAFF
+  role           Role?      @relation(fields: [roleId], references: [id])
+  status         String     @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED | DELETED
+  createdById    String?    @map("created_by")
+  createdBy      User?      @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers   User[]     @relation("UserCreatedBy")
+  deletedById    String?    @map("deleted_by")
+  deletedBy      User?      @relation("UserDeletedBy", fields: [deletedById], references: [id])
+  deletedUsers   User[]     @relation("UserDeletedBy")
+  deletedAt      DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  deletionReason String?    @map("deletion_reason")
+  lastLogin      DateTime?  @map("last_login") @db.Timestamptz(6)
+  hireDate       DateTime?  @map("hire_date") @db.Timestamptz(6)
+  paysheetId     String?    @map("paysheet_id")
+  paysheet       Paysheet?  @relation("UserPaysheet", fields: [paysheetId], references: [id])
+  warehouseId    String?    @map("warehouse_id")
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
+  branchId       String?    @map("branch_id")
+  branch         Branch?    @relation(fields: [branchId], references: [id])
+  accountNote    String?    @map("account_note")
+
+  // profile.* (flattened fixed subdocument)
+  profileFirstName        String?   @map("profile_first_name")
+  profileLastName         String?   @map("profile_last_name")
+  profileAvatarUrl        String?   @map("profile_avatar_url")
+  profileDob              DateTime? @map("profile_dob") @db.Timestamptz(6)
+  profileTaxNumber        String?   @map("profile_tax_number")
+  profileIdentificationId String?   @map("profile_identification_id")
+  profileAddress          String?   @map("profile_address")
+  profileGender           String?   @map("profile_gender") // MALE | FEMALE | OTHER
+
+  // leaveBalance.* (flattened fixed subdocument)
+  leaveBalanceAnnualDays    Int @default(12) @map("leave_balance_annual_days")
+  leaveBalanceRemainingDays Int @default(12) @map("leave_balance_remaining_days")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  fcmTokens                   UserFcmToken[]
+  managedWarehouses           Warehouse[]               @relation("WarehouseManager")
+  managedBranches             Branch[]                  @relation("BranchManager")
+  managedWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleManagedBy")
+  createdWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleCreatedBy")
+  scheduleAssignments         WorkingScheduleUser[]
+  attendances                 Attendance[]              @relation("AttendanceUser")
+  attendanceManualEdits       Attendance[]              @relation("AttendanceManuallyEditedBy")
+  attendanceManualCreations   Attendance[]              @relation("AttendanceManuallyCreatedBy")
+  leaveRequests               LeaveRequest[]            @relation("LeaveRequestUser")
+  leaveRequestApprovals       LeaveRequest[]            @relation("LeaveRequestApprovedBy")
+  leaveRequestHandovers       LeaveRequest[]            @relation("LeaveRequestHandoverTo")
+  payslips                    Payslip[]                 @relation("PayslipUser")
+  managedPayslips             Payslip[]                 @relation("PayslipManagedBy")
+  payslipManualAdjustments    PayslipManualAdjustment[]
+  ordersAsStaff               Order[]
+  cashDrawerSessionsOpened    CashDrawerSession[]       @relation("CashDrawerOpenedBy")
+  cashDrawerSessionsCurrent   CashDrawerSession[]       @relation("CashDrawerCurrentStaff")
+  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]      @relation("ShiftLogStaff")
+  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]      @relation("ShiftLogNextStaff")
+  cashDrawerFinalizedSessions CashDrawerSession[]       @relation("CashDrawerFinalLogManager")
+  cashFlowsCreated            CashFlow[]
+  promotionLogsCreated        PromotionLog[]
+  notificationsReceived       Notification[]            @relation("NotificationRecipient")
+  notificationsCreated        Notification[]            @relation("NotificationCreatedBy")
+  ticketsCreated              Ticket[]
+  ticketMessages              TicketMessage[]
+  aiChatHistories             AIChatHistory[]
+  payrollPeriodsGenerated     PayrollPeriod[]           @relation("PayrollPeriodGeneratedBy")
+  payrollPeriodsSubmitted     PayrollPeriod[]           @relation("PayrollPeriodSubmittedBy")
+  payrollPeriodsReturned      PayrollPeriod[]           @relation("PayrollPeriodReturnedBy")
+  payrollPeriodsCancelled     PayrollPeriod[]           @relation("PayrollPeriodCancelledBy")
+  payrollPeriodsApproved      PayrollPeriod[]           @relation("PayrollPeriodApprovedBy")
+  payrollPeriodsPaid          PayrollPeriod[]           @relation("PayrollPeriodPaidBy")
+  paysheetsCreated            Paysheet[]
+  auditLogs                   AuditLog[]
+  stockMovementRequests       StockMovementRequest[]
+
+  // `email` and `profileIdentificationId` are unique per tenant among non-DELETED rows.
+  // Not declarable here - the DSL has no WHERE clause and deleting a staff member
+  // anonymises them, so their old address must not block a rehire. See the follow-up
+  // migration 20260828010000_user_unique_contact_details, which is SQL-only for that
+  // reason. `phoneNumber` is deliberately *not* in there: it is the platform-wide login
+  // handle, checked across every tenant in UserService.create.
+  @@map("users")
+}
+
+/// Tenant-defined custom role for STAFF accounts. TENANT_OWNER/ADMIN are NOT rows here -
+/// they're fixed, always-full-access account kinds (see User.systemRole).
+model Role {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  users       User[]
+
+  @@unique([tenantId, name])
+  @@map("roles")
+}
+
+/// A single (resource, action) grant on a Role. Both columns are constrained to exist in
+/// PermissionCatalog - a tenant can only toggle permissions that the app actually enforces
+/// somewhere via @Permissions(resource, action), never invent new ones.
+model RolePermission {
+  roleId   String            @map("role_id")
+  role     Role              @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  resource String
+  action   String
+  catalog  PermissionCatalog @relation(fields: [resource, action], references: [resource, action])
+
+  @@id([roleId, resource, action])
+  @@map("role_permissions")
+}
+
+/// Fixed, code-owned catalog of every (resource, action) pair a tenant can grant to a
+/// custom Role. Seeded once (see prisma/seed-permission-catalog.ts) from the same
+/// resource/action taxonomy the old iKiotMS-BE permissions.json used - every module's
+/// @Permissions() decorator must reference a pair that exists here.
+model PermissionCatalog {
+  resource String
+  action   String
+  label    String? // human-readable Vietnamese label for the role-management UI
+
+  rolePermissions RolePermission[]
+
+  @@id([resource, action])
+  @@map("permission_catalog")
+}
+
+model UserFcmToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([token])
+  @@map("user_fcm_tokens")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  userEmail  String?  @map("user_email")
+  userName   String?  @map("user_name")
+  userRole   String?  @map("user_role")
+  action     String
+  resource   String?
+  details    String?
+  tenantId   String?  @map("tenant_id")
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id])
+  tenantName String?  @map("tenant_name")
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// B. Access & billing
+// ─────────────────────────────────────────────────────────────────────────
+
+model Plan {
+  id              String   @id @default(uuid())
+  planName        String   @map("plan_name")
+  planCode        String   @unique @map("plan_code")
+  price           Decimal  @db.Decimal(12, 2)
+  billingCycle    String   @default("NONE") @map("billing_cycle") // MONTHLY | YEARLY | NONE
+  maxBranches     Int      @map("max_branches") // -1 = unlimited
+  maxWarehouses   Int      @map("max_warehouses") // -1 = unlimited; added 2026-08-19
+  maxUsers        Int      @map("max_users") // -1 = unlimited
+  maxProducts     Int      @map("max_products") // -1 = unlimited
+  trialDays       Int      @map("trial_days")
+  features        String[] @default([])
+  description     String   @default("")
+  displayFeatures String[] @default([]) @map("display_features")
+  isPopular       Boolean  @default(false) @map("is_popular")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  subscriptions        Subscription[]
+  subscriptionInvoices SubscriptionInvoice[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  planId       String    @map("plan_id")
+  plan         Plan      @relation(fields: [planId], references: [id])
+  status       String    @default("TRIAL") // TRIAL | ACTIVE | EXPIRED | PAST_DUE | CANCELLED
+  startDate    DateTime  @map("start_date") @db.Timestamptz(6)
+  endDate      DateTime  @map("end_date") @db.Timestamptz(6)
+  trialEndDate DateTime? @map("trial_end_date") @db.Timestamptz(6)
+  autoRenew    Boolean   @default(true) @map("auto_renew")
+  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason String?   @map("cancel_reason")
+
+  // currentQuotaSnapshot.* (flattened fixed subdocument)
+  quotaSnapshotMaxBranches   Int? @map("quota_snapshot_max_branches")
+  quotaSnapshotMaxWarehouses Int? @map("quota_snapshot_max_warehouses")
+  quotaSnapshotMaxUsers      Int? @map("quota_snapshot_max_users")
+  quotaSnapshotMaxProducts   Int? @map("quota_snapshot_max_products")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  invoices    SubscriptionInvoice[]
+  historyLogs SubscriptionHistoryLog[]
+
+  @@map("subscriptions")
+}
+
+model SubscriptionHistoryLog {
+  id             String       @id @default(uuid())
+  subscriptionId String       @map("subscription_id")
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  event          String? // CREATED | UPGRADED | RENEWED | CANCELLED
+  fromPlanId     String?      @map("from_plan_id")
+  toPlanId       String?      @map("to_plan_id")
+  changedAt      DateTime?    @map("changed_at") @db.Timestamptz(6)
+  changedById    String?      @map("changed_by")
+  note           String?
+
+  @@map("subscription_history_logs")
+}
+
+model SubscriptionInvoice {
+  id                 String       @id @default(uuid())
+  subscriptionId     String       @map("subscription_id")
+  subscription       Subscription @relation(fields: [subscriptionId], references: [id])
+  tenantId           String       @map("tenant_id")
+  tenant             Tenant       @relation(fields: [tenantId], references: [id])
+  planId             String       @map("plan_id")
+  plan               Plan         @relation(fields: [planId], references: [id])
+  amount             Decimal      @db.Decimal(12, 2)
+  currency           String       @default("VND") // VND | USD
+  status             String       @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
+  billingPeriodStart DateTime     @map("billing_period_start") @db.Timestamptz(6)
+  billingPeriodEnd   DateTime     @map("billing_period_end") @db.Timestamptz(6)
+  paidAt             DateTime?    @map("paid_at") @db.Timestamptz(6)
+  paymentReference   String?      @unique @map("payment_reference")
+  paymentMethod      String?      @map("payment_method") // BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  transactionRef     String?      @map("transaction_ref")
+  invoiceUrl         String?      @map("invoice_url")
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("subscription_invoices")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// C. Org & location reference data
+// ─────────────────────────────────────────────────────────────────────────
+
+model Branch {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+  address     String?
+  phoneNumber String[] @map("phone_number") // requires at least one element, enforced at the app layer
+  email       String?
+  managerId   String?  @map("manager_id")
+  manager     User?    @relation("BranchManager", fields: [managerId], references: [id])
+
+  // attendanceTakingLocation.* (flattened fixed subdocument)
+  attendanceLatitude            Float? @map("attendance_latitude")
+  attendanceLongitude           Float? @map("attendance_longitude")
+  attendanceAllowedRadiusMeters Int?   @default(100) @map("attendance_allowed_radius_meters")
+  attendanceMaxAccuracyMeters   Int?   @default(100) @map("attendance_max_accuracy_meters")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users               User[]
+  holidays            Holiday[]
+  inventoriesAsBranch Inventory[]            @relation("InventoryBranch")
+  stockMovementsFrom  StockMovementRequest[] @relation("StockMovementFromBranch")
+  stockMovementsTo    StockMovementRequest[] @relation("StockMovementToBranch")
+  orders              Order[]
+  promotions          PromotionBranch[]
+  promotionLogs       PromotionLog[]
+  cashDrawerSessions  CashDrawerSession[]
+  cashFlows           CashFlow[]
+
+  @@map("branches")
+}
+
+model Warehouse {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+  address     String?
+  // phoneNumber/email did not exist on the Mongoose Warehouse model - added 2026-08-19 so a
+  // warehouse carries the same contact details as a Branch (a tenant now runs several).
+  phoneNumber String[] @map("phone_number") // requires at least one element, enforced at the app layer
+  email       String?
+  managerId   String?  @map("manager_id")
+  manager     User?    @relation("WarehouseManager", fields: [managerId], references: [id])
+
+  // attendanceTakingLocation.* (flattened fixed subdocument)
+  attendanceLatitude            Float? @map("attendance_latitude")
+  attendanceLongitude           Float? @map("attendance_longitude")
+  attendanceAllowedRadiusMeters Int?   @default(100) @map("attendance_allowed_radius_meters")
+  attendanceMaxAccuracyMeters   Int?   @default(100) @map("attendance_max_accuracy_meters")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users                  User[]
+  inventoriesAsWarehouse Inventory[]            @relation("InventoryWarehouse")
+  stockMovementsFrom     StockMovementRequest[] @relation("StockMovementFromWarehouse")
+  stockMovementsTo       StockMovementRequest[] @relation("StockMovementToWarehouse")
+  cashFlows              CashFlow[]
+
+  @@map("warehouses")
+}
+
+model Brand {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id") // added during the Postgres migration - see schema header
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  description String?
+  logo        String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  products Product[]
+
+  @@map("brands")
+}
+
+model Category {
+  id          String     @id @default(uuid())
+  tenantId    String     @map("tenant_id") // added during the Postgres migration - see schema header
+  tenant      Tenant     @relation(fields: [tenantId], references: [id])
+  name        String
+  parentId    String?    @map("parent_id")
+  parent      Category?  @relation("CategoryParent", fields: [parentId], references: [id], onDelete: Restrict)
+  children    Category[] @relation("CategoryParent")
+  description String?
+  imageUrl    String?    @map("image_url")
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  products            Product[]
+  promotionCategories PromotionCategory[]
+
+  @@map("categories")
+}
+
+model Supplier {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  supplierName    String   @map("supplier_name")
+  contactName     String?  @map("contact_name")
+  phoneNumber     String?  @map("phone_number")
+  email           String?
+  address         String?
+  creditLimit     Decimal  @default(0) @map("credit_limit") @db.Decimal(12, 2)
+  outstandingDebt Decimal  @default(0) @map("outstanding_debt") @db.Decimal(12, 2)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  productItems          ProductItemSupplier[]
+  stockMovementRequests StockMovementRequest[]
+  cashFlows             CashFlow[]
+
+  @@map("suppliers")
+}
+
+model Customer {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  customerCode String?   @map("customer_code")
+  name         String
+  phone        String?
+  gender       String? // MALE | FEMALE | OTHER
+  address      String?
+  dob          DateTime? @db.Timestamptz(6)
+  isDeleted    Boolean   @default(false) @map("is_deleted")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  orders        Order[]
+  promotionLogs PromotionLog[]
+
+  // Nullable, so Postgres only constrains rows that actually carry a code - which is
+  // exactly the rule: any number of customers with no code, never two sharing one. Also
+  // what lets the walk-in customer be resolved with an upsert instead of find-then-create.
+  @@unique([tenantId, customerCode])
+  @@map("customers")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// D. Catalog & inventory
+// ─────────────────────────────────────────────────────────────────────────
+
+model Product {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  brandId      String?   @map("brand_id")
+  brand        Brand?    @relation(fields: [brandId], references: [id])
+  categoryId   String?   @map("category_id")
+  category     Category? @relation(fields: [categoryId], references: [id])
+  name         String
+  status       String    @default("ACTIVE") // ACTIVE | INACTIVE | DISCONTINUED
+  categoryName String?   @map("category_name") // denormalized copy, kept as-is
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  images       ProductImage[]
+  productItems ProductItem[]
+
+  @@map("products")
+}
+
+model ProductImage {
+  id          String  @id @default(uuid())
+  productId   String  @map("product_id")
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url         String
+  isThumbnail Boolean @default(false) @map("is_thumbnail")
+  position    Int     @default(0)
+
+  @@map("product_images")
+}
+
+model ProductItem {
+  id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  productId      String   @map("product_id")
+  product        Product  @relation(fields: [productId], references: [id])
+  productName    String   @map("product_name") // denormalized
+  productCode    String   @map("product_code")
+  sku            String?
+  barcode        String?
+  description    String?
+  retailPrice    Decimal  @map("retail_price") @db.Decimal(12, 2)
+  costPrice      Decimal  @map("cost_price") @db.Decimal(12, 2)
+  productSlug    String?  @map("product_slug")
+  warrantyPeriod String?  @map("warranty_period")
+  vat            Decimal? @db.Decimal(5, 2)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  suppliers             ProductItemSupplier[]
+  details               ProductItemDetail[]
+  images                ProductItemImage[]
+  inventories           Inventory[]
+  stockMovementItems    StockMovementRequestItem[]
+  orderItems            OrderItem[]
+  promotionProductItems PromotionProductItem[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, productCode])
+  @@index([tenantId, barcode])
+  @@map("product_items")
+}
+
+model ProductItemSupplier {
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
+  supplierId    String      @map("supplier_id")
+  supplier      Supplier    @relation(fields: [supplierId], references: [id])
+
+  @@id([productItemId, supplierId])
+  @@map("product_item_suppliers")
+}
+
+model ProductItemDetail {
+  id            String      @id @default(uuid())
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
+  name          String?
+  value         String?
+  position      Int         @default(0)
+
+  @@map("product_item_details")
+}
+
+model ProductItemImage {
+  id            String      @id @default(uuid())
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
+  url           String
+  isThumbnail   Boolean     @default(false) @map("is_thumbnail")
+  position      Int         @default(0)
+
+  @@map("product_item_images")
+}
+
+model Inventory {
+  id            String      @id @default(uuid())
+  tenantId      String      @map("tenant_id")
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  // Polymorphic location, was locationId/locationType in Mongo - see schema header.
+  // "Exactly one of these is set" is enforced by the CHECK constraint
+  // inventories_exactly_one_location, added in migration
+  // 20260903010000_inventory_exactly_one_location (the DSL has no CHECK).
+  branchId      String?     @map("branch_id")
+  branch        Branch?     @relation("InventoryBranch", fields: [branchId], references: [id])
+  warehouseId   String?     @map("warehouse_id")
+  warehouse     Warehouse?  @relation("InventoryWarehouse", fields: [warehouseId], references: [id])
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id])
+  stock         Int         @default(0)
+  minStock      Int         @default(0) @map("min_stock") // 0 = low-stock alerts disabled for this row
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, branchId, productItemId])
+  @@unique([tenantId, warehouseId, productItemId])
+  @@index([tenantId, branchId, minStock])
+  @@index([tenantId, warehouseId, minStock])
+  @@map("inventories")
+}
+
+model StockMovementRequest {
+  id              String     @id @default(uuid())
+  tenantId        String     @map("tenant_id")
+  tenant          Tenant     @relation(fields: [tenantId], references: [id])
+  movementType    String     @map("movement_type") // EXPORT | RETURN | ADJUST | IMPORT
+  status          String     @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | CANCELLED | COMPLETED
+  fromSupplierId  String?    @map("from_supplier_id")
+  fromSupplier    Supplier?  @relation(fields: [fromSupplierId], references: [id])
+  // Polymorphic from/to location. Each pair is held to "at most one set" by a CHECK
+  // constraint in migration 20260903010000_inventory_exactly_one_location; which side may
+  // be null depends on movementType, and that part stays in assertEndpointsValid.
+  fromBranchId    String?    @map("from_branch_id")
+  fromBranch      Branch?    @relation("StockMovementFromBranch", fields: [fromBranchId], references: [id])
+  fromWarehouseId String?    @map("from_warehouse_id")
+  fromWarehouse   Warehouse? @relation("StockMovementFromWarehouse", fields: [fromWarehouseId], references: [id])
+  toBranchId      String?    @map("to_branch_id")
+  toBranch        Branch?    @relation("StockMovementToBranch", fields: [toBranchId], references: [id])
+  toWarehouseId   String?    @map("to_warehouse_id")
+  toWarehouse     Warehouse? @relation("StockMovementToWarehouse", fields: [toWarehouseId], references: [id])
+  createdById     String     @map("created_by")
+  createdBy       User       @relation(fields: [createdById], references: [id])
+  totalPrice      Decimal    @default(0) @map("total_price") @db.Decimal(14, 2)
+  note            String?
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  details StockMovementRequestItem[]
+
+  @@map("stock_movement_requests")
+}
+
+model StockMovementRequestItem {
+  id               String               @id @default(uuid())
+  requestId        String               @map("request_id")
+  request          StockMovementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  productItemId    String               @map("product_item_id")
+  productItem      ProductItem          @relation(fields: [productItemId], references: [id])
+  quantity         Decimal              @db.Decimal(12, 2)
+  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2)
+  receivedQuantity Decimal?             @map("received_quantity") @db.Decimal(12, 2)
+  note             String?
+
+  @@map("stock_movement_request_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// E. HR, scheduling & payroll
+// ─────────────────────────────────────────────────────────────────────────
+
+model ShiftTemplate {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  name      String?
+  startTime DateTime? @map("start_time") @db.Time // upgraded from a plain string ("08:00") to native time
+  endTime   DateTime? @map("end_time") @db.Time
+  status    String    @default("ACTIVE") // ACTIVE | DELETED
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  workingSchedules WorkingSchedule[]
+
+  @@map("shift_templates")
+}
+
+model WorkingSchedule {
+  id              String         @id @default(uuid())
+  tenantId        String         @map("tenant_id")
+  tenant          Tenant         @relation(fields: [tenantId], references: [id])
+  managedById     String?        @map("managed_by")
+  managedBy       User?          @relation("WorkingScheduleManagedBy", fields: [managedById], references: [id])
+  scheduleType    String         @default("NORMAL") @map("schedule_type") // NORMAL | OVERTIME
+  shiftTemplateId String?        @map("shift_template_id")
+  shiftTemplate   ShiftTemplate? @relation(fields: [shiftTemplateId], references: [id])
+  createdById     String?        @map("created_by")
+  createdBy       User?          @relation("WorkingScheduleCreatedBy", fields: [createdById], references: [id])
+  workDate        DateTime?      @map("work_date") @db.Date
+  startAt         DateTime?      @map("start_at") @db.Timestamptz(6)
+  endAt           DateTime?      @map("end_at") @db.Timestamptz(6)
+  status          String         @default("SCHEDULED") // SCHEDULED | COMPLETED | CANCELLED | DELETED
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // userId was an array in Mongo (one schedule assignable to many users) - modeled as a
+  // real many-to-many join table here instead.
+  assignedUsers         WorkingScheduleUser[]
+  attendances           Attendance[]
+  handoverLeaveRequests LeaveRequestHandoverSchedule[]
+
+  @@map("working_schedules")
+}
+
+model WorkingScheduleUser {
+  scheduleId String          @map("schedule_id")
+  schedule   WorkingSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  userId     String          @map("user_id")
+  user       User            @relation(fields: [userId], references: [id])
+
+  @@id([scheduleId, userId])
+  @@map("working_schedule_users")
+}
+
+model Attendance {
+  id               String          @id @default(uuid())
+  tenantId         String          @map("tenant_id")
+  tenant           Tenant          @relation(fields: [tenantId], references: [id])
+  userId           String          @map("user_id")
+  user             User            @relation("AttendanceUser", fields: [userId], references: [id])
+  scheduleId       String          @map("schedule_id")
+  schedule         WorkingSchedule @relation(fields: [scheduleId], references: [id])
+  workDate         DateTime        @map("work_date") @db.Date
+  actualCheckinAt  DateTime?       @map("actual_checkin_at") @db.Timestamptz(6)
+  actualCheckoutAt DateTime?       @map("actual_checkout_at") @db.Timestamptz(6)
+  workedMinutes    Int?            @map("worked_minutes")
+  overtimeMinute   Int?            @map("overtime_minute")
+  lateMinutes      Int?            @map("late_minutes")
+  status           String? // CHECKED_IN | CHECKED_OUT | ABSENT
+
+  // checkInLocation.* (flattened fixed subdocument)
+  checkInLatitude           Float?  @map("check_in_latitude")
+  checkInLongitude          Float?  @map("check_in_longitude")
+  checkInAccuracy           Float?  @map("check_in_accuracy")
+  checkInDistance           Float?  @map("check_in_distance")
+  checkInVerificationStatus String? @default("VERIFIED") @map("check_in_verification_status") // VERIFIED | LOW_ACCURACY | OUT_OF_RANGE | NO_LOCATION
+
+  // checkOutLocation.* (flattened fixed subdocument)
+  checkOutLatitude           Float?  @map("check_out_latitude")
+  checkOutLongitude          Float?  @map("check_out_longitude")
+  checkOutAccuracy           Float?  @map("check_out_accuracy")
+  checkOutDistance           Float?  @map("check_out_distance")
+  checkOutVerificationStatus String? @default("VERIFIED") @map("check_out_verification_status")
+
+  manuallyEditedById   String?   @map("manually_edited_by")
+  manuallyEditedBy     User?     @relation("AttendanceManuallyEditedBy", fields: [manuallyEditedById], references: [id])
+  manuallyEditedAt     DateTime? @map("manually_edited_at") @db.Timestamptz(6)
+  manualEditReason     String?   @map("manual_edit_reason")
+  manuallyCreatedById  String?   @map("manually_created_by")
+  manuallyCreatedBy    User?     @relation("AttendanceManuallyCreatedBy", fields: [manuallyCreatedById], references: [id])
+  manuallyCreatedAt    DateTime? @map("manually_created_at") @db.Timestamptz(6)
+  manualCreationReason String?   @map("manual_creation_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([userId, scheduleId])
+  @@index([tenantId, userId, workDate])
+  @@index([tenantId, userId, status])
+  @@map("attendances")
+}
+
+model LeaveRequest {
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  userId           String    @map("user_id")
+  user             User      @relation("LeaveRequestUser", fields: [userId], references: [id])
+  approvedById     String?   @map("approved_by")
+  approvedBy       User?     @relation("LeaveRequestApprovedBy", fields: [approvedById], references: [id])
+  paidLeaveDays    Decimal   @default(0) @map("paid_leave_days") @db.Decimal(5, 2)
+  unpaidLeaveDays  Decimal   @default(0) @map("unpaid_leave_days") @db.Decimal(5, 2)
+  startDate        DateTime? @map("start_date") @db.Date
+  endDate          DateTime? @map("end_date") @db.Date
+  status           String? // PENDING | APPROVED | REJECTED | CANCELLED | EXPIRED | DELETED
+  reason           String?
+  reviewNote       String?   @map("review_note")
+  handoverToUserId String?   @map("handover_to_user_id")
+  handoverToUser   User?     @relation("LeaveRequestHandoverTo", fields: [handoverToUserId], references: [id])
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  handoverSchedules LeaveRequestHandoverSchedule[]
+  payslipLeaveLines PayslipLeaveLine[]
+
+  @@map("leave_requests")
+}
+
+model LeaveRequestHandoverSchedule {
+  leaveRequestId String          @map("leave_request_id")
+  leaveRequest   LeaveRequest    @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+  scheduleId     String          @map("schedule_id")
+  schedule       WorkingSchedule @relation(fields: [scheduleId], references: [id])
+
+  @@id([leaveRequestId, scheduleId])
+  @@map("leave_request_handover_schedules")
+}
+
+model Holiday {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  date             DateTime @db.Date
+  name             String
+  type             String   @default("PUBLIC_HOLIDAY") // PUBLIC_HOLIDAY | COMPANY_HOLIDAY
+  branchId         String?  @map("branch_id")
+  branch           Branch?  @relation(fields: [branchId], references: [id])
+  isActive         Boolean  @default(true) @map("is_active")
+  source           String   @default("MANUAL") // GOOGLE_CALENDAR | MANUAL
+  isManuallyEdited Boolean  @default(false) @map("is_manually_edited")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Covers the branch-scoped COMPANY_HOLIDAY rows only: branch_id is NULL on every
+  // PUBLIC_HOLIDAY, and a NULL in a Postgres unique index constrains nothing. "One public
+  // holiday per tenant per date" is a partial index instead - see the follow-up migration
+  // 20260827020000_holiday_unique_public_per_date, which is SQL-only because the DSL has
+  // no WHERE clause.
+  @@unique([tenantId, date, branchId, type])
+  @@map("holidays")
+}
+
+model PayrollSetting {
+  id                         String   @id @default(uuid())
+  tenantId                   String   @map("tenant_id")
+  tenant                     Tenant   @relation(fields: [tenantId], references: [id])
+  cycle                      String   @default("MONTHLY") // currently only "MONTHLY" is a valid value
+  periodStartDay             Int      @default(1) @map("period_start_day")
+  approveAfterPeriodEndDays  Int      @default(1) @map("approve_after_period_end_days")
+  payAfterPeriodEndDays      Int      @default(1) @map("pay_after_period_end_days")
+  autoGenerate               Boolean  @default(false) @map("auto_generate")
+  standardWorkingDays        Int      @default(26) @map("standard_working_days")
+  standardWorkingHoursPerDay Int      @default(8) @map("standard_working_hours_per_day")
+  weekendDays                Int[]    @default([0]) @map("weekend_days")
+  lateGraceMinutes           Int      @default(15) @map("late_grace_minutes")
+  status                     String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("payroll_settings")
+}
+
+model PayrollPeriod {
+  id                String    @id @default(uuid())
+  tenantId          String    @map("tenant_id")
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+  name              String
+  periodStart       DateTime  @map("period_start") @db.Date
+  periodEnd         DateTime  @map("period_end") @db.Date
+  status            String    @default("DRAFT") // DRAFT | REVIEW | APPROVED | PAID | CANCELLED
+  generatedById     String?   @map("generated_by")
+  generatedBy       User?     @relation("PayrollPeriodGeneratedBy", fields: [generatedById], references: [id])
+  submittedById     String?   @map("submitted_by")
+  submittedBy       User?     @relation("PayrollPeriodSubmittedBy", fields: [submittedById], references: [id])
+  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz(6)
+  returnedById      String?   @map("returned_by")
+  returnedBy        User?     @relation("PayrollPeriodReturnedBy", fields: [returnedById], references: [id])
+  returnedAt        DateTime? @map("returned_at") @db.Timestamptz(6)
+  returnReason      String?   @map("return_reason")
+  cancelledById     String?   @map("cancelled_by")
+  cancelledBy       User?     @relation("PayrollPeriodCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt       DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason      String?   @map("cancel_reason")
+  approvedById      String?   @map("approved_by")
+  approvedBy        User?     @relation("PayrollPeriodApprovedBy", fields: [approvedById], references: [id])
+  approvedAt        DateTime? @map("approved_at") @db.Timestamptz(6)
+  paidById          String?   @map("paid_by")
+  paidBy            User?     @relation("PayrollPeriodPaidBy", fields: [paidById], references: [id])
+  paidAt            DateTime? @map("paid_at") @db.Timestamptz(6)
+  paymentMethod     String?   @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  paymentReference  String?   @map("payment_reference")
+  paymentNote       String?   @map("payment_note")
+  cashFlowId        String?   @unique @map("cash_flow_id")
+  cashFlow          CashFlow? @relation("PayrollPeriodCashFlow", fields: [cashFlowId], references: [id])
+  cashFlowReference String?   @map("cash_flow_reference")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  payslips      Payslip[]
+  // back-relation for CashFlow.payrollPeriodId (the ledger row's own pointer to the period it pays for)
+  cashFlowEntry CashFlow? @relation("CashFlowPayrollPeriod")
+
+  @@unique([tenantId, periodStart, periodEnd, status])
+  @@map("payroll_periods")
+}
+
+model Paysheet {
+  id          String  @id @default(uuid())
+  tenantId    String  @map("tenant_id")
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  createdById String? @map("created_by")
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+  name        String
+  status      String  @default("ACTIVE") // ACTIVE | DELETED
+
+  // basicPay.* (flattened fixed subdocument)
+  basicPayType                     String?  @map("basic_pay_type") // PAY_BY_SHIFT | STANDARD_WORKING_DAY | FIXED
+  basicPayAmountPerShift           Decimal? @map("basic_pay_amount_per_shift") @db.Decimal(12, 2)
+  basicPaySalaryPerPeriod          Decimal? @map("basic_pay_salary_per_period") @db.Decimal(12, 2)
+  basicPayStandardWorkingDaySalary Decimal? @map("basic_pay_standard_working_day_salary") @db.Decimal(12, 2)
+  basicPayRateWeekend              Decimal  @default(2) @map("basic_pay_rate_weekend") @db.Decimal(4, 2)
+  basicPayRatePublicHoliday        Decimal  @default(3) @map("basic_pay_rate_public_holiday") @db.Decimal(4, 2)
+
+  // overtime.* (flattened fixed subdocument)
+  overtimeNormalDay     Decimal @default(1.5) @map("overtime_normal_day") @db.Decimal(4, 2)
+  overtimeWeekend       Decimal @default(2) @map("overtime_weekend") @db.Decimal(4, 2)
+  overtimePublicHoliday Decimal @default(3) @map("overtime_public_holiday") @db.Decimal(4, 2)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  bonuses    PaysheetBonus[]
+  allowances PaysheetAllowance[]
+  deductions PaysheetDeduction[]
+  users      User[]              @relation("UserPaysheet")
+  payslips   Payslip[]
+
+  @@map("paysheets")
+}
+
+model PaysheetBonus {
+  id              String   @id @default(uuid())
+  paysheetId      String   @map("paysheet_id")
+  paysheet        Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
+  bonusType       String   @map("bonus_type") // EMPLOYEE_REVENUE | MINIMUM_AVENUE_INCOME | BRANCH_REVENUE
+  calculationType String   @map("calculation_type") // GROSS_REVENUE | NET_REVENUE | COLLECTED_REVENUE
+  enable          Boolean  @default(false)
+
+  tiers PaysheetBonusTier[]
+
+  @@map("paysheet_bonuses")
+}
+
+model PaysheetBonusTier {
+  id          String        @id @default(uuid())
+  bonusId     String        @map("bonus_id")
+  bonus       PaysheetBonus @relation(fields: [bonusId], references: [id], onDelete: Cascade)
+  name        String?
+  fromValue   Decimal?      @map("from_value") @db.Decimal(14, 2)
+  rewardType  String?       @map("reward_type") // FIXED_AMOUNT | PERCENTAGE
+  rewardValue Decimal?      @map("reward_value") @db.Decimal(14, 2)
+  position    Int           @default(0)
+
+  @@map("paysheet_bonus_tiers")
+}
+
+model PaysheetAllowance {
+  id          String   @id @default(uuid())
+  paysheetId  String   @map("paysheet_id")
+  paysheet    Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
+  name        String?
+  enable      Boolean  @default(false)
+  amountType  String?  @map("amount_type") // FIXED_AMOUNT | PERCENTAGE
+  amountValue Decimal? @map("amount_value") @db.Decimal(12, 2)
+
+  @@map("paysheet_allowances")
+}
+
+model PaysheetDeduction {
+  id             String   @id @default(uuid())
+  paysheetId     String   @map("paysheet_id")
+  paysheet       Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
+  name           String
+  enable         Boolean  @default(false)
+  deductionType  String   @map("deduction_type") // LATE | EARLY_LEAVE | FIXED
+  conditionType  String?  @map("condition_type") // BY_OCCURRENCE | BY_BLOCK
+  blockMinutes   Int?     @map("block_minutes")
+  deductionValue Decimal  @map("deduction_value") @db.Decimal(12, 2)
+
+  @@map("paysheet_deductions")
+}
+
+model Payslip {
+  id                   String         @id @default(uuid())
+  tenantId             String         @map("tenant_id")
+  tenant               Tenant         @relation(fields: [tenantId], references: [id])
+  userId               String         @map("user_id")
+  user                 User           @relation("PayslipUser", fields: [userId], references: [id])
+  payrollPeriodId      String?        @map("payroll_period_id")
+  payrollPeriod        PayrollPeriod? @relation(fields: [payrollPeriodId], references: [id])
+  manageById           String?        @map("manage_by")
+  manageBy             User?          @relation("PayslipManagedBy", fields: [manageById], references: [id])
+  paysheetId           String         @map("paysheet_id")
+  paysheet             Paysheet       @relation(fields: [paysheetId], references: [id])
+  status               String         @default("DRAFT") // DRAFT | REVIEW | APPROVED | PAID | CANCELLED
+  periodStart          DateTime?      @map("period_start") @db.Date
+  periodEnd            DateTime?      @map("period_end") @db.Date
+  totalWorkedDays      Decimal?       @map("total_worked_days") @db.Decimal(6, 2)
+  totalWorkedHours     Decimal?       @map("total_worked_hours") @db.Decimal(8, 2)
+  basePay              Decimal        @default(0) @map("base_pay") @db.Decimal(14, 2)
+  overtimePay          Decimal        @default(0) @map("overtime_pay") @db.Decimal(14, 2)
+  paidLeaveDays        Decimal        @default(0) @map("paid_leave_days") @db.Decimal(5, 2)
+  unpaidLeaveDays      Decimal        @default(0) @map("unpaid_leave_days") @db.Decimal(5, 2)
+  paidLeavePay         Decimal        @default(0) @map("paid_leave_pay") @db.Decimal(14, 2)
+  unpaidLeaveDeduction Decimal        @default(0) @map("unpaid_leave_deduction") @db.Decimal(14, 2)
+  bonus                Decimal        @default(0) @db.Decimal(14, 2)
+  allowance            Decimal        @default(0) @db.Decimal(14, 2)
+  grossSalary          Decimal?       @map("gross_salary") @db.Decimal(14, 2)
+  deduction            Decimal        @default(0) @db.Decimal(14, 2)
+  netSalary            Decimal?       @map("net_salary") @db.Decimal(14, 2)
+  note                 String?
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  leaveLines        PayslipLeaveLine[]
+  allowanceLines    PayslipAllowanceLine[]
+  bonusLines        PayslipBonusLine[]
+  deductionLines    PayslipDeductionLine[]
+  manualAdjustments PayslipManualAdjustment[]
+
+  @@map("payslips")
+}
+
+model PayslipLeaveLine {
+  id             String       @id @default(uuid())
+  payslipId      String       @map("payslip_id")
+  payslip        Payslip      @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  leaveRequestId String       @map("leave_request_id")
+  leaveRequest   LeaveRequest @relation(fields: [leaveRequestId], references: [id])
+  paidDays       Decimal      @default(0) @map("paid_days") @db.Decimal(5, 2)
+  unpaidDays     Decimal      @default(0) @map("unpaid_days") @db.Decimal(5, 2)
+  paidAmount     Decimal      @default(0) @map("paid_amount") @db.Decimal(14, 2)
+  deductedAmount Decimal      @default(0) @map("deducted_amount") @db.Decimal(14, 2)
+
+  dates PayslipLeaveLineDate[]
+
+  @@map("payslip_leave_lines")
+}
+
+model PayslipLeaveLineDate {
+  id                     String           @id @default(uuid())
+  leaveLineId            String           @map("leave_line_id")
+  leaveLine              PayslipLeaveLine @relation(fields: [leaveLineId], references: [id], onDelete: Cascade)
+  date                   DateTime         @db.Date
+  leaveType              String           @map("leave_type") // PAID | UNPAID
+  dayFraction            Decimal          @map("day_fraction") @db.Decimal(3, 2)
+  amount                 Decimal          @default(0) @db.Decimal(14, 2)
+  ignoredBecauseAttended Boolean          @default(false) @map("ignored_because_attended")
+
+  @@map("payslip_leave_line_dates")
+}
+
+model PayslipAllowanceLine {
+  id          String  @id @default(uuid())
+  payslipId   String  @map("payslip_id")
+  payslip     Payslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  name        String
+  amountType  String  @map("amount_type") // FIXED_AMOUNT | PERCENTAGE
+  amountValue Decimal @map("amount_value") @db.Decimal(12, 2)
+  amount      Decimal @db.Decimal(14, 2)
+
+  @@map("payslip_allowance_lines")
+}
+
+/// Why the bonus on a payslip is the number it is.
+///
+/// Same role as PayslipAllowanceLine: `Payslip.bonus` is one figure, and an employee asking
+/// "why 980k?" needs the revenue it was measured on, which tier that landed in, and what the
+/// tier paid. The tier is snapshotted rather than referenced - a paysheet's tiers are edited
+/// freely and a payslip must still explain itself a year later.
+model PayslipBonusLine {
+  id              String   @id @default(uuid())
+  payslipId       String   @map("payslip_id")
+  payslip         Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  bonusType       String   @map("bonus_type") // EMPLOYEE_REVENUE | MINIMUM_AVENUE_INCOME | BRANCH_REVENUE
+  calculationType String   @map("calculation_type") // GROSS_REVENUE | NET_REVENUE | COLLECTED_REVENUE
+  /// The revenue figure this rule was measured against, in the period.
+  revenue         Decimal  @db.Decimal(14, 2)
+  /// Null when no tier was reached - the line is still written, so "you earned nothing
+  /// because you did not reach 5 triệu" is visible rather than absent.
+  tierName        String?  @map("tier_name")
+  fromValue       Decimal? @map("from_value") @db.Decimal(14, 2)
+  rewardType      String?  @map("reward_type") // FIXED_AMOUNT | PERCENTAGE
+  rewardValue     Decimal? @map("reward_value") @db.Decimal(14, 2)
+  amount          Decimal  @db.Decimal(14, 2)
+
+  @@map("payslip_bonus_lines")
+}
+
+model PayslipDeductionLine {
+  id               String  @id @default(uuid())
+  payslipId        String  @map("payslip_id")
+  payslip          Payslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  name             String
+  deductionType    String  @map("deduction_type") // LATE | EARLY_LEAVE | FIXED
+  conditionType    String? @map("condition_type") // BY_OCCURRENCE | BY_BLOCK
+  blockMinutes     Int?    @map("block_minutes")
+  deductionValue   Decimal @map("deduction_value") @db.Decimal(12, 2)
+  violationMinutes Int     @default(0) @map("violation_minutes")
+  units            Decimal @default(0) @db.Decimal(8, 2)
+  amount           Decimal @db.Decimal(14, 2)
+
+  @@map("payslip_deduction_lines")
+}
+
+model PayslipManualAdjustment {
+  id          String   @id @default(uuid())
+  payslipId   String   @map("payslip_id")
+  payslip     Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  category    String   @default("OTHER") // SALARY_ADVANCE | TET_BONUS | OTHER
+  name        String
+  amount      Decimal  @db.Decimal(14, 2)
+  note        String?
+  createdById String   @map("created_by")
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("payslip_manual_adjustments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// F. Transactional & sales
+// ─────────────────────────────────────────────────────────────────────────
+
+model Order {
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+  branchId           String   @map("branch_id")
+  branch             Branch   @relation(fields: [branchId], references: [id])
+  customerId         String   @map("customer_id")
+  customer           Customer @relation(fields: [customerId], references: [id])
+  status             String   @default("PENDING") // PENDING | COMPLETED | CANCELLED | RETURNED
+  userId             String   @map("user_id")
+  user               User     @relation(fields: [userId], references: [id])
+  paymentMethod      String   @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  paymentReference   String?  @unique @map("payment_reference")
+  // SePay's own id for the bank transfer that settled this order - the only key linking a
+  // row here to a line on the bank statement. String, not the old model's Number: the
+  // webhook payload is untyped JSON and an id is an identifier, not a quantity. Matches
+  // SubscriptionInvoice.transactionRef.
+  sepayTransactionId String?  @map("sepay_transaction_id")
+  grandTotal         Decimal  @map("grand_total") @db.Decimal(14, 2)
+  customerPay        Decimal? @map("customer_pay") @db.Decimal(14, 2)
+  change             Decimal? @db.Decimal(14, 2)
+  note               String?
+  discountType       String?  @map("discount_type") // ORDER | PROMOTION
+  discountValue      Decimal  @default(0) @map("discount_value") @db.Decimal(14, 2)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items             OrderItem[]
+  appliedPromotions OrderAppliedPromotion[]
+  cashFlows         CashFlow[]
+  promotionLogs     PromotionLog[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String      @id @default(uuid())
+  orderId        String      @map("order_id")
+  order          Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productItemId  String      @map("product_item_id")
+  productItem    ProductItem @relation(fields: [productItemId], references: [id])
+  productName    String?     @map("product_name")
+  quantity       Decimal     @db.Decimal(12, 2)
+  unitPrice      Decimal     @map("unit_price") @db.Decimal(12, 2)
+  discountAmount Decimal     @default(0) @map("discount_amount") @db.Decimal(12, 2)
+
+  @@map("order_items")
+}
+
+model OrderAppliedPromotion {
+  id             String     @id @default(uuid())
+  orderId        String     @map("order_id")
+  order          Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  promotionId    String?    @map("promotion_id")
+  promotion      Promotion? @relation(fields: [promotionId], references: [id])
+  promoName      String?    @map("promo_name")
+  discountAmount Decimal?   @map("discount_amount") @db.Decimal(12, 2)
+
+  @@map("order_applied_promotions")
+}
+
+model Promotion {
+  id                String   @id @default(uuid())
+  tenantId          String   @map("tenant_id")
+  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+  promoName         String   @map("promo_name")
+  description       String?
+  discountType      String   @map("discount_type") // PERCENT | FIXED_AMOUNT
+  discountValue     Decimal  @map("discount_value") @db.Decimal(12, 2)
+  maxDiscountAmount Decimal? @map("max_discount_amount") @db.Decimal(12, 2)
+  minOrderValue     Decimal  @default(0) @map("min_order_value") @db.Decimal(12, 2)
+
+  // applicableRule.type + applicableRule.categoryIds/productItemIds (via join tables below)
+  applicableRuleType String @map("applicable_rule_type") // all | category | product
+
+  startDate             DateTime @map("start_date") @db.Timestamptz(6)
+  endDate               DateTime @map("end_date") @db.Timestamptz(6)
+  stackable             Boolean  @default(false)
+  usageLimit            Int?     @map("usage_limit")
+  usageLimitPerCustomer Int?     @map("usage_limit_per_customer")
+  usedCount             Int      @default(0) @map("used_count")
+  status                String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branches          PromotionBranch[]
+  ruleCategories    PromotionCategory[]
+  ruleProductItems  PromotionProductItem[]
+  orderApplications OrderAppliedPromotion[]
+  logs              PromotionLog[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, startDate, endDate])
+  @@map("promotions")
+}
+
+model PromotionBranch {
+  promotionId String    @map("promotion_id")
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  branchId    String    @map("branch_id")
+  branch      Branch    @relation(fields: [branchId], references: [id])
+
+  @@id([promotionId, branchId])
+  @@map("promotion_branches")
+}
+
+model PromotionCategory {
+  promotionId String    @map("promotion_id")
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  categoryId  String    @map("category_id")
+  category    Category  @relation(fields: [categoryId], references: [id])
+
+  @@id([promotionId, categoryId])
+  @@map("promotion_categories")
+}
+
+model PromotionProductItem {
+  promotionId   String      @map("promotion_id")
+  promotion     Promotion   @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id])
+
+  @@id([promotionId, productItemId])
+  @@map("promotion_product_items")
+}
+
+model PromotionLog {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  promotionId    String    @map("promotion_id")
+  promotion      Promotion @relation(fields: [promotionId], references: [id])
+  orderId        String?   @map("order_id")
+  order          Order?    @relation(fields: [orderId], references: [id])
+  branchId       String?   @map("branch_id")
+  branch         Branch?   @relation(fields: [branchId], references: [id])
+  customerId     String?   @map("customer_id")
+  customer       Customer? @relation(fields: [customerId], references: [id])
+  discountAmount Decimal   @map("discount_amount") @db.Decimal(12, 2)
+  createdById    String?   @map("created_by")
+  createdBy      User?     @relation(fields: [createdById], references: [id])
+  description    String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([orderId, promotionId])
+  @@index([tenantId, promotionId, createdAt])
+  @@map("promotion_logs")
+}
+
+model CashDrawerSession {
+  id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  branchId       String   @map("branch_id")
+  branch         Branch   @relation(fields: [branchId], references: [id])
+  businessDate   DateTime @map("business_date") @db.Date // upgraded from a regex-validated string to native date
+  status         String   @default("OPEN") // OPEN | CLOSED
+  openingAmount  Decimal  @map("opening_amount") @db.Decimal(14, 2)
+  openedById     String   @map("opened_by")
+  openedBy       User     @relation("CashDrawerOpenedBy", fields: [openedById], references: [id])
+  currentStaffId String   @map("current_staff_id")
+  currentStaff   User     @relation("CashDrawerCurrentStaff", fields: [currentStaffId], references: [id])
+
+  // finalLog.* (single fixed subdocument, flattened)
+  finalLogAmount    Decimal? @map("final_log_amount") @db.Decimal(14, 2)
+  finalLogManagerId String?  @map("final_log_manager_id")
+  finalLogManager   User?    @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
+  finalLogNote      String?  @map("final_log_note")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shiftLogs CashDrawerShiftLog[]
+
+  @@unique([tenantId, branchId, businessDate])
+  // "One OPEN drawer per branch" is a PARTIAL unique index and lives in SQL only -
+  // 20260826060000_cash_drawer_single_open_session. It cannot be written here: Prisma's
+  // DSL has no WHERE clause, and the plain @@unique it used to carry applied to CLOSED
+  // rows too, which capped a branch at one closed session for all time.
+  // A future `prisma migrate dev` will not know about it and will propose dropping it -
+  // edit the generated migration rather than letting that through.
+  @@map("cash_drawer_sessions")
+}
+
+model CashDrawerShiftLog {
+  id          String            @id @default(uuid())
+  sessionId   String            @map("session_id")
+  session     CashDrawerSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type        String            @default("END") // START | END
+  staffId     String            @map("staff_id")
+  staff       User              @relation("ShiftLogStaff", fields: [staffId], references: [id])
+  amount      Decimal           @db.Decimal(14, 2)
+  nextStaffId String?           @map("next_staff_id")
+  nextStaff   User?             @relation("ShiftLogNextStaff", fields: [nextStaffId], references: [id])
+  note        String?
+  loggedAt    DateTime          @default(now()) @map("logged_at") @db.Timestamptz(6)
+
+  @@map("cash_drawer_shift_logs")
+}
+
+model CashFlow {
+  id                 String         @id @default(uuid())
+  tenantId           String         @map("tenant_id")
+  tenant             Tenant         @relation(fields: [tenantId], references: [id])
+  flowType           String         @map("flow_type") // INCOME | EXPENSE
+  amount             Decimal        @db.Decimal(14, 2)
+  paymentMethod      String?        @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  branchId           String?        @map("branch_id")
+  branch             Branch?        @relation(fields: [branchId], references: [id])
+  warehouseId        String?        @map("warehouse_id")
+  warehouse          Warehouse?     @relation(fields: [warehouseId], references: [id])
+  orderId            String?        @map("order_id")
+  order              Order?         @relation(fields: [orderId], references: [id])
+  supplierId         String?        @map("supplier_id")
+  supplier           Supplier?      @relation(fields: [supplierId], references: [id])
+  payrollPeriodId    String?        @unique @map("payroll_period_id")
+  payrollPeriod      PayrollPeriod? @relation("CashFlowPayrollPeriod", fields: [payrollPeriodId], references: [id])
+  createdById        String?        @map("created_by")
+  createdBy          User?          @relation(fields: [createdById], references: [id])
+  paymentReference   String?        @map("payment_reference")
+  // Carried on the money row too, not just the order: reconciliation reads CashFlow.
+  sepayTransactionId String?        @map("sepay_transaction_id")
+  description        String?
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // back-relation for PayrollPeriod.cashFlowId (a period's canonical payment row points here)
+  payrollPeriodOwner PayrollPeriod? @relation("PayrollPeriodCashFlow")
+
+  @@unique([orderId, flowType])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, warehouseId, createdAt])
+  @@map("cash_flows")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// G. Comms & misc
+// ─────────────────────────────────────────────────────────────────────────
+
+model Notification {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  type        String // large, still-growing enum - kept as text, see schema header
+  tenantId    String?  @map("tenant_id") // null = system notification for SUPER_ADMIN
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  recipientId String?  @map("recipient_id") // null + tenantId set = broadcast to whole tenant
+  recipient   User?    @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  link        String?
+  category    String? // Maintenance | New feature | Promotion | Security - required when type = ANNOUNCEMENT
+  targetType  String?  @map("target_type") // ALL | SELECTION - required when type = ANNOUNCEMENT
+  createdById String?  @map("created_by")
+  createdBy   User?    @relation("NotificationCreatedBy", fields: [createdById], references: [id])
+  referenceId String?  @map("reference_id")
+  isRead      Boolean  @default(false) @map("is_read")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  targetTenants NotificationTargetTenant[]
+
+  @@index([recipientId, createdAt])
+  @@index([recipientId, isRead])
+  @@index([tenantId, createdAt])
+  @@map("notifications")
+}
+
+model NotificationTargetTenant {
+  notificationId String       @map("notification_id")
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  tenantId       String       @map("tenant_id")
+  tenant         Tenant       @relation(fields: [tenantId], references: [id])
+
+  @@id([notificationId, tenantId])
+  @@map("notification_target_tenants")
+}
+
+model Ticket {
+  id                String    @id @default(uuid())
+  ticketId          String    @unique @map("ticket_id") // human-readable code, distinct from the uuid pk
+  tenantId          String    @map("tenant_id")
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+  tenantName        String    @map("tenant_name") // denormalized
+  userId            String    @map("user_id")
+  user              User      @relation(fields: [userId], references: [id])
+  title             String
+  description       String
+  priority          String    @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  status            String    @default("OPEN") // OPEN | IN_PROGRESS | RESOLVED | CLOSED
+  isDeletedByTenant Boolean   @default(false) @map("is_deleted_by_tenant")
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  messages TicketMessage[]
+
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id         String   @id @default(uuid())
+  ticketId   String   @map("ticket_id")
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderId   String   @map("sender_id")
+  sender     User     @relation(fields: [senderId], references: [id])
+  senderName String   @map("sender_name")
+  senderRole String   @map("sender_role")
+  message    String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("ticket_messages")
+}
+
+model AIChatHistory {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  title     String   @default("Cuộc hội thoại mới")
+  // Kept as jsonb rather than fully normalized: transcripts are read/written whole and
+  // never queried per-message or per-part. Shape: [{ role, parts: [{ text }], createdAt }]
+  messages  Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ai_chat_histories")
+}

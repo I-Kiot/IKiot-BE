@@ -1,0 +1,10 @@
+allowBuilds:
+  '@firebase/util': true
+  '@google/genai': true
+  '@parcel/watcher': false
+  '@prisma/engines': true
+  '@scarf/scarf': true
+  esbuild: true
+  prisma: true
+  protobufjs: true
+  unrs-resolver: true
