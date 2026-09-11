@@ -46,5 +46,5 @@ jobs:
             cd ~/app
             docker compose -f docker-compose.dev.yml --env-file .env.dev pull nestjs
             docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --no-deps nestjs
-            sleep 5
+            sleep 15
             curl -f https://api-dev.ikiot.io.vn/health || exit 1
