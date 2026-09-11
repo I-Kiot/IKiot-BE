@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/ikiot-be
+  IMAGE: ghcr.io/i-kiot/ikiot-be
 
 jobs:
   build-and-push:
