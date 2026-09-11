@@ -1,14 +1,9 @@
-import {
-  ArgumentsHost,
-  Catch,
-  ExceptionFilter,
-  HttpException,
-  HttpStatus,
-  Logger,
-} from '@nestjs/common';
+import { Catch, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../errors/error-codes';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
 
 /** The one place an unhandled error becomes an HTTP response: Prisma and other non-HttpExceptions get real status codes, and the `{ success: false, code?, message, errors? }` half of the envelope is built here. */
 const ERROR_LABELS: Record<number, string> = {
@@ -36,6 +31,7 @@ interface ErrorEnvelope {
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
+  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();

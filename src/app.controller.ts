@@ -24,4 +24,11 @@ export class AppController {
   health() {
     return this.appService.health();
   }
+
+  /** Sentry's own smoke test: throws on purpose so the `@SentryExceptionCaptured()` path in `AllExceptionsFilter` can be verified end-to-end. Public so it's reachable with a bare curl. */
+  @Public()
+  @Get('debug-sentry')
+  getError() {
+    throw new Error('My first Sentry error!');
+  }
 }

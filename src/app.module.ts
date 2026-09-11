@@ -17,7 +17,6 @@ import { ResponseEnvelopeInterceptor } from './common/interceptors/response-enve
 import { RealtimeModule } from './common/realtime/realtime.module';
 import { RedisModule } from './common/redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { AIChatHistoryModule } from './modules/ai-chat-histories/ai-chat-histories.module';
@@ -53,6 +52,7 @@ import { UploadModule } from './modules/uploads/uploads.module';
 import { UserModule } from './modules/users/users.module';
 import { WarehouseModule } from './modules/warehouses/warehouses.module';
 import { WorkingScheduleModule } from './modules/working-schedules/working-schedules.module';
+import { SentryModule } from '@sentry/nestjs/setup';
 
 @Module({
   imports: [
@@ -98,6 +98,7 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
     UserModule,
     WarehouseModule,
     WorkingScheduleModule,
+    SentryModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [
