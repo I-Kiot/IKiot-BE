@@ -8,3 +8,13 @@ allowBuilds:
   prisma: true
   protobufjs: true
   unrs-resolver: true
+onlyBuiltDependencies:
+  - '@firebase/util'
+  - '@google/genai'
+  - '@parcel/watcher'
+  - '@prisma/engines'
+  - '@scarf/scarf'
+  - esbuild
+  - prisma
+  - protobufjs
+  - unrs-resolver
