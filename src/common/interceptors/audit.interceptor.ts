@@ -144,8 +144,8 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       tenantId: user.tenantId,
       systemRole: user.systemRole,
       email: user.email,
-      name: user.profileFirstName
-        ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
+      name: user.profile.firstName
+        ? `${user.profile.firstName} ${user.profile.lastName ?? ''}`.trim()
         : (user.email ?? user.phoneNumber ?? 'Unknown'),
     };
   }

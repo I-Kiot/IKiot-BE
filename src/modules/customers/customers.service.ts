@@ -13,6 +13,14 @@ import {
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
+const CODE_PREFIX = 'KH';
+
+/** Digits only, so `090 123 4567` and `0901234567` are the same customer; empty becomes `undefined`. */
+function normalizePhone(phone?: string | null): string | undefined {
+  const digits = phone?.replace(/\D/g, '') ?? '';
+  return digits.length > 0 ? digits : undefined;
+}
+
 /** Real port of CustomerService. Delete is soft (`isDeleted`) because orders and promotion logs point at the row and a sale must stay attributable; every read filters it out. */
 @Injectable()
 export class CustomerService {
@@ -22,12 +30,16 @@ export class CustomerService {
     if (dto.customerCode) {
       await this.assertCodeIsFree(tenantId, dto.customerCode);
     }
+    const phone = normalizePhone(dto.phone);
+    if (phone) await this.assertPhoneIsFree(tenantId, phone);
+    const customerCode =
+      dto.customerCode?.trim() || (await this.nextCustomerCode(tenantId));
     return this.prisma.customer.create({
       data: {
         tenantId,
         name: dto.name,
-        customerCode: dto.customerCode,
-        phone: dto.phone,
+        customerCode,
+        phone,
         gender: dto.gender,
         address: dto.address,
         dob: dto.dob ? new Date(dto.dob) : undefined,
@@ -113,13 +125,17 @@ export class CustomerService {
     if (dto.customerCode) {
       await this.assertCodeIsFree(tenantId, dto.customerCode, id);
     }
+    // `undefined` leaves the number alone; an emptied field clears it.
+    const phone =
+      dto.phone === undefined ? undefined : (normalizePhone(dto.phone) ?? null);
+    if (phone) await this.assertPhoneIsFree(tenantId, phone, id);
 
     return this.prisma.customer.update({
       where: { id },
       data: {
         name: dto.name,
         customerCode: dto.customerCode,
-        phone: dto.phone,
+        phone,
         gender: dto.gender,
         address: dto.address,
         dob: dto.dob ? new Date(dto.dob) : undefined,
@@ -155,6 +171,54 @@ export class CustomerService {
         message: 'Customer not found',
       });
     return customer;
+  }
+
+  /** One phone number, one customer: the POS looks people up by phone, so two rows sharing one would make the lookup ambiguous. Soft-deleted rows don't count. */
+  private async assertPhoneIsFree(
+    tenantId: string,
+    phone: string,
+    exceptId?: string,
+  ) {
+    const taken = await this.prisma.customer.findFirst({
+      where: {
+        tenantId,
+        phone,
+        isDeleted: false,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.CUSTOMER_PHONE_TAKEN,
+        message: `A customer with phone ${phone} already exists`,
+      });
+    }
+  }
+
+  /** `KH000001`, `KH000002`, ... - the next number after the highest generated code in the tenant. Hand-typed codes with other shapes are ignored, and a clash with one of them (or a concurrent insert) is caught by the unique index and retried once more. */
+  private async nextCustomerCode(tenantId: string): Promise<string> {
+    const rows = await this.prisma.customer.findMany({
+      where: { tenantId, customerCode: { startsWith: CODE_PREFIX } },
+      select: { customerCode: true },
+    });
+    let max = 0;
+    for (const { customerCode } of rows) {
+      const digits = customerCode?.slice(CODE_PREFIX.length) ?? '';
+      if (/^\d+$/.test(digits)) max = Math.max(max, Number(digits));
+    }
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const candidate = `${CODE_PREFIX}${String(max + attempt).padStart(6, '0')}`;
+      const taken = await this.prisma.customer.findFirst({
+        where: { tenantId, customerCode: candidate },
+        select: { id: true },
+      });
+      if (!taken) return candidate;
+    }
+    throw new ConflictException({
+      code: ErrorCode.CUSTOMER_CODE_TAKEN,
+      message: 'Could not allocate a customer code; please enter one',
+    });
   }
 
   /** A customer code is what staff type to pull someone up, so `@@unique([tenantId, customerCode])` enforces it (nullable, so any number may carry none); this check only runs first to name the offending code. */
