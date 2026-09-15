@@ -43,6 +43,9 @@ const SELECT_SAFE = {
   status: true,
   branchId: true,
   warehouseId: true,
+  // Names alongside the ids: the staff list has a "Chi nhánh" column and an id there is unreadable.
+  branch: { select: { id: true, name: true } },
+  warehouse: { select: { id: true, name: true } },
   profileFirstName: true,
   profileLastName: true,
   profileAvatarUrl: true,

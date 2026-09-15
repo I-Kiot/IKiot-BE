@@ -8,7 +8,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SystemRole } from '../../common/constants/system-role';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
-import { ApplicableRuleType, PromotionStatus } from './promotion.constants';
+import {
+  ApplicableRuleType,
+  DiscountType,
+  PromotionStatus,
+} from './promotion.constants';
 import {
   buildCandidateList,
   resolveSelectedPromotions,
@@ -134,11 +138,15 @@ export class PromotionService {
 
     // The conditional rules read sibling fields, so they are re-checked against the merged result rather than the request on its own.
     const discountType = dto.discountType ?? existing.discountType;
-    const maxDiscountAmount =
-      dto.maxDiscountAmount ??
-      (existing.maxDiscountAmount === null
-        ? undefined
-        : Number(existing.maxDiscountAmount));
+    // Switching to a fixed amount drops the cap rather than tripping over the one still stored.
+    const clearsCap =
+      discountType !== DiscountType.PERCENT && dto.maxDiscountAmount == null;
+    const maxDiscountAmount = clearsCap
+      ? undefined
+      : (dto.maxDiscountAmount ??
+        (existing.maxDiscountAmount === null
+          ? undefined
+          : Number(existing.maxDiscountAmount)));
     this.assertCapOnlyForPercent(discountType, maxDiscountAmount);
     this.assertDateOrder(
       dto.startDate ?? existing.startDate,
@@ -184,7 +192,7 @@ export class PromotionService {
           description: dto.description,
           discountType: dto.discountType,
           discountValue: dto.discountValue,
-          maxDiscountAmount: dto.maxDiscountAmount,
+          maxDiscountAmount: clearsCap ? null : dto.maxDiscountAmount,
           minOrderValue: dto.minOrderValue,
           applicableRuleType: dto.applicableRule?.type,
           startDate: dto.startDate ? new Date(dto.startDate) : undefined,
@@ -554,8 +562,12 @@ export class PromotionService {
   }
 
   /** A ceiling on a fixed amount is just a smaller fixed amount - reject the confusion. */
-  private assertCapOnlyForPercent(discountType: string, cap?: number): void {
-    if (cap !== undefined && discountType !== 'PERCENT') {
+  private assertCapOnlyForPercent(
+    discountType: string,
+    cap?: number | null,
+  ): void {
+    // `null` is "no cap" as much as `undefined` is: the form sends null when the field is empty.
+    if (cap != null && discountType !== 'PERCENT') {
       throw new BadRequestException({
         code: ErrorCode.PROMOTION_MAX_DISCOUNT_INVALID,
         message: 'maxDiscountAmount is only valid for a percentage discount',

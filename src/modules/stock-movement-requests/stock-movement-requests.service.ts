@@ -35,6 +35,7 @@ import {
 } from './dto/stock-movement.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { withNestedProfile } from '../../common/utils/user-profile';
 
 /** The pair of nullable FKs naming one end of a movement. */
 interface LocationColumns {
@@ -1197,11 +1198,14 @@ export class StockMovementService {
       toWarehouse,
       totalPrice,
       details,
+      createdBy,
       ...rest
     } = request;
 
     return {
       ...rest,
+      // Nested like every other user payload, so the screens read `createdBy.profile.firstName`.
+      createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
       totalPrice: Number(totalPrice),
       fromLocation: sourceRef({ fromBranchId, fromWarehouseId }),
       fromLocationName: (fromBranch ?? fromWarehouse)?.name ?? null,

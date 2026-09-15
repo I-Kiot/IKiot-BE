@@ -40,6 +40,10 @@ import { PaymentMethod } from '../../common/constants/payment-method';
 import { FlowType } from '../stats/stats.constants';
 import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  withNestedProfile,
+  type FlatUserProfile,
+} from '../../common/utils/user-profile';
 
 const STAFF_SELECT = {
   id: true,
@@ -749,11 +753,18 @@ export class CashDrawerSessionService {
       finalLogNote,
       finalLogManager,
       shiftLogs,
+      openedBy,
+      currentStaff,
       ...rest
     } = session;
+    // People come back with a nested `profile`, like every other user payload, so the screen can print a name instead of a generic label.
+    const person = <T extends FlatUserProfile | null>(row: T) =>
+      row ? withNestedProfile(row) : row;
 
     return {
       ...rest,
+      openedBy: person(openedBy),
+      currentStaff: person(currentStaff),
       openingAmount: Number(openingAmount),
       // Re-nested: the columns are flat but the API kept iKiotMS-BE's `finalLog` object.
       finalLog:
@@ -762,11 +773,13 @@ export class CashDrawerSessionService {
           : {
               amount: Number(finalLogAmount),
               managerId: finalLogManagerId,
-              manager: finalLogManager,
+              manager: person(finalLogManager),
               note: finalLogNote,
             },
-      shiftLogs: shiftLogs.map((log) => ({
+      shiftLogs: shiftLogs.map(({ staff, nextStaff, ...log }) => ({
         ...log,
+        staff: person(staff),
+        nextStaff: person(nextStaff),
         amount: Number(log.amount),
       })),
     };
