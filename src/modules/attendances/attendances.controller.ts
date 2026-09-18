@@ -22,7 +22,6 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Seven routes at the old paths and permissions; `me` is declared above `:id` so it isn't matched as an id, and `check-out` is `attendances:update` because it edits the row check-in opened. */
 @ApiTags('attendances')
 @ApiBearerAuth('bearer')
 @Controller('attendances')
@@ -53,7 +52,7 @@ export class AttendanceController {
     return this.service.checkIn(user, dto);
   }
 
-  @Permissions('attendances', 'update')
+  @Permissions('attendances', 'checkout_own')
   @HttpCode(HttpStatus.OK)
   @Post('check-out')
   checkOut(@CurrentUser() user: AuthUser, @Body() dto: CheckOutDto) {

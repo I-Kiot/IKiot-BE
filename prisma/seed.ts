@@ -256,8 +256,7 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
   attendances: {
-    // 'delete' added for the NestJS port.
-    actions: ['create', 'read', 'update', 'delete', 'read_own'],
+    actions: ['create', 'read', 'update', 'delete', 'read_own', 'checkout_own'],
     label: 'Chấm công',
   },
   leaveRequests: {

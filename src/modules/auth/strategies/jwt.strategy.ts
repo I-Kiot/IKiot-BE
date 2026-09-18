@@ -3,7 +3,10 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { AuthUser } from '../../../common/types/auth-user.type';
-import { SystemRole } from '../../../common/constants/system-role';
+import {
+  STAFF_BASE_PERMISSIONS,
+  SystemRole,
+} from '../../../common/constants/system-role';
 import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor.service';
 import { accessTokenSecret } from '../../../common/config/env';
@@ -62,6 +65,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       branchId: user.branchId,
       warehouseId: user.warehouseId,
       permissions: new Set([
+        ...(user.systemRole === SystemRole.STAFF ? STAFF_BASE_PERMISSIONS : []),
         ...(user.role?.permissions.map((p) => `${p.resource}:${p.action}`) ??
           []),
         ...ShiftSupervisorService.keysFor(supervision),

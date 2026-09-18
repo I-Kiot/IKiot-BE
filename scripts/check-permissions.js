@@ -87,6 +87,22 @@ function walk(dir) {
 }
 walk(path.join(ROOT, 'src'));
 
+const roleSrc = fs.readFileSync(
+  path.join(ROOT, 'src', 'common', 'constants', 'system-role.ts'),
+  'utf8',
+);
+const baseBlock = roleSrc.match(
+  /STAFF_BASE_PERMISSIONS[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/,
+);
+if (!baseBlock) {
+  console.error('Could not find STAFF_BASE_PERMISSIONS in system-role.ts');
+  process.exit(1);
+}
+for (const m of baseBlock[1].matchAll(/'([^']+)'/g)) {
+  if (!used.has(m[1])) used.set(m[1], []);
+  used.get(m[1]).push('src/common/constants/system-role.ts (STAFF_BASE_PERMISSIONS)');
+}
+
 const missing = [...used.keys()].filter((k) => !catalog.has(k)).sort();
 const unused = [...catalog].filter((k) => !used.has(k)).sort();
 

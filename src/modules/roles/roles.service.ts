@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client';
+import { STAFF_BASE_PERMISSIONS } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
@@ -42,10 +43,21 @@ export class RolesService {
     return role;
   }
 
-  permissionCatalog() {
-    return this.prisma.permissionCatalog.findMany({
+  async permissionCatalog() {
+    const rows = await this.prisma.permissionCatalog.findMany({
       orderBy: [{ resource: 'asc' }, { action: 'asc' }],
     });
+    return rows.filter(
+      (row) => !STAFF_BASE_PERMISSIONS.has(`${row.resource}:${row.action}`),
+    );
+  }
+
+  private grantable(
+    permissions: { resource: string; action: string }[],
+  ): { resource: string; action: string }[] {
+    return permissions
+      .filter((p) => !STAFF_BASE_PERMISSIONS.has(`${p.resource}:${p.action}`))
+      .map((p) => ({ resource: p.resource, action: p.action }));
   }
 
   async create(tenantId: string, dto: CreateRoleDto) {
@@ -55,12 +67,7 @@ export class RolesService {
           tenantId,
           name: dto.name,
           description: dto.description,
-          permissions: {
-            create: dto.permissions.map((p) => ({
-              resource: p.resource,
-              action: p.action,
-            })),
-          },
+          permissions: { create: this.grantable(dto.permissions) },
         },
         include: { permissions: { select: { resource: true, action: true } } },
       });
@@ -77,10 +84,9 @@ export class RolesService {
         if (dto.permissions) {
           await tx.rolePermission.deleteMany({ where: { roleId: id } });
           await tx.rolePermission.createMany({
-            data: dto.permissions.map((p) => ({
+            data: this.grantable(dto.permissions).map((p) => ({
               roleId: id,
-              resource: p.resource,
-              action: p.action,
+              ...p,
             })),
           });
         }
