@@ -8,10 +8,13 @@
 //   - fixed-shape embedded subdocuments flattened into prefixed columns
 //   - arrays of subdocuments become child tables with a parent foreign key
 //   - genuine many-to-many arrays (e.g. ProductItem.suppliers) become join tables
-//   - polymorphic references (Inventory/StockMovementRequest location) become paired
-//     nullable foreign keys; "exactly one is set" (Inventory) and "at most one is set"
-//     (StockMovementRequest's two pairs) are CHECK constraints written by hand in
-//     20260903010000_inventory_exactly_one_location, since the DSL cannot express them
+//   - Location is the generic tenant-owned physical/operational location abstraction.
+//     Branch and Warehouse are 1:1 specializations of Location.
+//   - Inventory and StockMovementRequest reference Location directly, so new location
+//     types (e.g. FULFILLMENT_CENTER / EXTERNAL_WAREHOUSE) do not require new nullable
+//     foreign-key columns on every inventory/movement table.
+//   - Location.type and the 1:1 Branch/Warehouse specialization must be kept consistent
+//     at the application layer (or with follow-up SQL CHECK/trigger constraints).
 //   - RefreshToken is intentionally NOT modeled here - it is moving to Redis
 //   - Tenant.workingPolicy is dropped (confirmed unused anywhere in the codebase)
 //   - Brand and Category gained tenant_id (permissions.json grants TENANT_OWNER and
@@ -65,6 +68,7 @@ model Tenant {
   roles                   Role[]
   subscriptions           Subscription[]
   subscriptionInvoices    SubscriptionInvoice[]
+  locations               Location[]
   branches                Branch[]
   warehouses              Warehouse[]
   brands                  Brand[]
@@ -121,10 +125,10 @@ model User {
   hireDate       DateTime?  @map("hire_date") @db.Timestamptz(6)
   paysheetId     String?    @map("paysheet_id")
   paysheet       Paysheet?  @relation("UserPaysheet", fields: [paysheetId], references: [id])
-  warehouseId    String?    @map("warehouse_id")
-  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
-  branchId       String?    @map("branch_id")
-  branch         Branch?    @relation(fields: [branchId], references: [id])
+  /// Optional operational scope. A staff user can be assigned to any Location,
+  /// whether that location is a Branch, Warehouse, Fulfillment Center, etc.
+  locationId     String?    @map("location_id")
+  location       Location?  @relation(fields: [locationId], references: [id])
   accountNote    String?    @map("account_note")
 
   // profile.* (flattened fixed subdocument)
@@ -145,8 +149,7 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   fcmTokens                   UserFcmToken[]
-  managedWarehouses           Warehouse[]               @relation("WarehouseManager")
-  managedBranches             Branch[]                  @relation("BranchManager")
+  managedLocations            Location[]                @relation("LocationManager")
   managedWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleManagedBy")
   createdWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleCreatedBy")
   scheduleAssignments         WorkingScheduleUser[]
@@ -370,19 +373,34 @@ model SubscriptionInvoice {
 // C. Org & location reference data
 // ─────────────────────────────────────────────────────────────────────────
 
-model Branch {
+/// Generic physical/operational location inside a tenant.
+///
+/// A Location is the common identity used by inventory, stock movements,
+/// employee scope and location-level cash flows. Branch and Warehouse are
+/// specialized business/storage concepts attached 1:1 to a Location.
+///
+/// Examples:
+/// - STORE + Branch
+/// - WAREHOUSE + Warehouse
+/// - FULFILLMENT_CENTER
+/// - EXTERNAL_WAREHOUSE
+model Location {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  name        String
-  status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
-  address     String?
-  phoneNumber String[] @map("phone_number") // requires at least one element, enforced at the app layer
-  email       String?
-  managerId   String?  @map("manager_id")
-  manager     User?    @relation("BranchManager", fields: [managerId], references: [id])
 
-  // attendanceTakingLocation.* (flattened fixed subdocument)
+  name        String
+  type        String   @map("location_type") // STORE | WAREHOUSE | FULFILLMENT_CENTER | EXTERNAL_WAREHOUSE
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+
+  address     String?
+  phoneNumber String[] @map("phone_number")
+  email       String?
+
+  managerId   String?  @map("manager_id")
+  manager     User?    @relation("LocationManager", fields: [managerId], references: [id])
+
+  // attendanceTakingLocation.*
   attendanceLatitude            Float? @map("attendance_latitude")
   attendanceLongitude           Float? @map("attendance_longitude")
   attendanceAllowedRadiusMeters Int?   @default(100) @map("attendance_allowed_radius_meters")
@@ -391,48 +409,47 @@ model Branch {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  users               User[]
-  holidays            Holiday[]
-  inventoriesAsBranch Inventory[]            @relation("InventoryBranch")
-  stockMovementsFrom  StockMovementRequest[] @relation("StockMovementFromBranch")
-  stockMovementsTo    StockMovementRequest[] @relation("StockMovementToBranch")
-  orders              Order[]
-  promotions          PromotionBranch[]
-  promotionLogs       PromotionLog[]
-  cashDrawerSessions  CashDrawerSession[]
-  cashFlows           CashFlow[]
+  // 1:1 specializations
+  branch    Branch?
+  warehouse Warehouse?
+
+  // Generic location consumers
+  users                 User[]
+  inventories           Inventory[]
+  stockMovementsFrom    StockMovementRequest[] @relation("StockMovementFromLocation")
+  stockMovementsTo      StockMovementRequest[] @relation("StockMovementToLocation")
+  cashFlows             CashFlow[]
+
+  @@index([tenantId, type])
+  @@map("locations")
+}
+
+model Branch {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  /// 1:1 specialization of Location.
+  locationId String   @unique @map("location_id")
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  holidays           Holiday[]
+  orders             Order[]
+  promotions         PromotionBranch[]
+  promotionLogs      PromotionLog[]
+  cashDrawerSessions CashDrawerSession[]
 
   @@map("branches")
 }
 
 model Warehouse {
-  id          String   @id @default(uuid())
-  tenantId    String   @map("tenant_id")
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  name        String
-  status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
-  address     String?
-  // phoneNumber/email did not exist on the Mongoose Warehouse model - added 2026-08-19 so a
-  // warehouse carries the same contact details as a Branch (a tenant now runs several).
-  phoneNumber String[] @map("phone_number") // requires at least one element, enforced at the app layer
-  email       String?
-  managerId   String?  @map("manager_id")
-  manager     User?    @relation("WarehouseManager", fields: [managerId], references: [id])
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
 
-  // attendanceTakingLocation.* (flattened fixed subdocument)
-  attendanceLatitude            Float? @map("attendance_latitude")
-  attendanceLongitude           Float? @map("attendance_longitude")
-  attendanceAllowedRadiusMeters Int?   @default(100) @map("attendance_allowed_radius_meters")
-  attendanceMaxAccuracyMeters   Int?   @default(100) @map("attendance_max_accuracy_meters")
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  users                  User[]
-  inventoriesAsWarehouse Inventory[]            @relation("InventoryWarehouse")
-  stockMovementsFrom     StockMovementRequest[] @relation("StockMovementFromWarehouse")
-  stockMovementsTo       StockMovementRequest[] @relation("StockMovementToWarehouse")
-  cashFlows              CashFlow[]
+  /// 1:1 specialization of Location.
+  locationId String   @unique @map("location_id")
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
   @@map("warehouses")
 }
@@ -620,56 +637,54 @@ model Inventory {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
   tenant        Tenant      @relation(fields: [tenantId], references: [id])
-  // Polymorphic location, was locationId/locationType in Mongo - see schema header.
-  // "Exactly one of these is set" is enforced by the CHECK constraint
-  // inventories_exactly_one_location, added in migration
-  // 20260903010000_inventory_exactly_one_location (the DSL has no CHECK).
-  branchId      String?     @map("branch_id")
-  branch        Branch?     @relation("InventoryBranch", fields: [branchId], references: [id])
-  warehouseId   String?     @map("warehouse_id")
-  warehouse     Warehouse?  @relation("InventoryWarehouse", fields: [warehouseId], references: [id])
+
+  locationId    String      @map("location_id")
+  location      Location    @relation(fields: [locationId], references: [id])
+
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
+
   stock         Int         @default(0)
   minStock      Int         @default(0) @map("min_stock") // 0 = low-stock alerts disabled for this row
   createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([tenantId, branchId, productItemId])
-  @@unique([tenantId, warehouseId, productItemId])
-  @@index([tenantId, branchId, minStock])
-  @@index([tenantId, warehouseId, minStock])
+  @@unique([tenantId, locationId, productItemId])
+  @@index([tenantId, locationId, minStock])
   @@map("inventories")
 }
 
 model StockMovementRequest {
-  id              String     @id @default(uuid())
-  tenantId        String     @map("tenant_id")
-  tenant          Tenant     @relation(fields: [tenantId], references: [id])
-  movementType    String     @map("movement_type") // EXPORT | RETURN | ADJUST | IMPORT
-  status          String     @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | CANCELLED | COMPLETED
-  fromSupplierId  String?    @map("from_supplier_id")
-  fromSupplier    Supplier?  @relation(fields: [fromSupplierId], references: [id])
-  // Polymorphic from/to location. Each pair is held to "at most one set" by a CHECK
-  // constraint in migration 20260903010000_inventory_exactly_one_location; which side may
-  // be null depends on movementType, and that part stays in assertEndpointsValid.
-  fromBranchId    String?    @map("from_branch_id")
-  fromBranch      Branch?    @relation("StockMovementFromBranch", fields: [fromBranchId], references: [id])
-  fromWarehouseId String?    @map("from_warehouse_id")
-  fromWarehouse   Warehouse? @relation("StockMovementFromWarehouse", fields: [fromWarehouseId], references: [id])
-  toBranchId      String?    @map("to_branch_id")
-  toBranch        Branch?    @relation("StockMovementToBranch", fields: [toBranchId], references: [id])
-  toWarehouseId   String?    @map("to_warehouse_id")
-  toWarehouse     Warehouse? @relation("StockMovementToWarehouse", fields: [toWarehouseId], references: [id])
-  createdById     String     @map("created_by")
-  createdBy       User       @relation(fields: [createdById], references: [id])
-  totalPrice      Decimal    @default(0) @map("total_price") @db.Decimal(14, 2)
-  note            String?
-  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+
+  movementType String   @map("movement_type") // EXPORT | RETURN | ADJUST | IMPORT
+  status       String   @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | CANCELLED | COMPLETED
+
+  fromSupplierId String?   @map("from_supplier_id")
+  fromSupplier   Supplier? @relation(fields: [fromSupplierId], references: [id])
+
+  /// Generic source/destination. Business rules validate allowed combinations
+  /// for each movementType (e.g. supplier -> location, location -> location).
+  fromLocationId String?   @map("from_location_id")
+  fromLocation   Location? @relation("StockMovementFromLocation", fields: [fromLocationId], references: [id])
+
+  toLocationId String?   @map("to_location_id")
+  toLocation   Location? @relation("StockMovementToLocation", fields: [toLocationId], references: [id])
+
+  createdById String @map("created_by")
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  totalPrice Decimal @default(0) @map("total_price") @db.Decimal(14, 2)
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   details StockMovementRequestItem[]
 
+  @@index([tenantId, fromLocationId])
+  @@index([tenantId, toLocationId])
   @@map("stock_movement_requests")
 }
 
@@ -1352,10 +1367,8 @@ model CashFlow {
   flowType           String         @map("flow_type") // INCOME | EXPENSE
   amount             Decimal        @db.Decimal(14, 2)
   paymentMethod      String?        @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
-  branchId           String?        @map("branch_id")
-  branch             Branch?        @relation(fields: [branchId], references: [id])
-  warehouseId        String?        @map("warehouse_id")
-  warehouse          Warehouse?     @relation(fields: [warehouseId], references: [id])
+  locationId         String?        @map("location_id")
+  location           Location?      @relation(fields: [locationId], references: [id])
   orderId            String?        @map("order_id")
   order              Order?         @relation(fields: [orderId], references: [id])
   supplierId         String?        @map("supplier_id")
@@ -1376,8 +1389,7 @@ model CashFlow {
 
   @@unique([orderId, flowType])
   @@index([tenantId, createdAt])
-  @@index([tenantId, branchId, createdAt])
-  @@index([tenantId, warehouseId, createdAt])
+  @@index([tenantId, locationId, createdAt])
   @@map("cash_flows")
 }
 
