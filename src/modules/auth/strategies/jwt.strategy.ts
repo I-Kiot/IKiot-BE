@@ -12,7 +12,7 @@ import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor
 import { accessTokenSecret } from '../../../common/config/env';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import {
-  LOCATION_KIND_SELECT,
+  LOCATION_TYPE_SELECT,
   columnsOfLocation,
 } from '../../../common/dto/location-ref.dto';
 
@@ -39,7 +39,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       where: { id: payload.sub },
       include: {
         role: { include: { permissions: true } },
-        location: LOCATION_KIND_SELECT,
+        location: LOCATION_TYPE_SELECT,
       },
     });
 

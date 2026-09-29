@@ -29,7 +29,7 @@ import type {
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
 import {
-  LOCATION_KIND_SELECT,
+  LOCATION_TYPE_SELECT,
   columnsOfLocation,
   locationRefOf,
   postingWhere,
@@ -412,7 +412,7 @@ export class StatsService {
         take: LOW_STOCK_LIST_LIMIT,
         select: {
           productItemId: true,
-          location: LOCATION_KIND_SELECT,
+          location: LOCATION_TYPE_SELECT,
           stock: true,
           productItem: { select: { productName: true, sku: true } },
         },
@@ -435,7 +435,7 @@ export class StatsService {
           // Kept as the branch/warehouse pair the dashboard reads, derived from the row's Location.
           branchId,
           warehouseId,
-          locationType: branchId ? 'branch' : 'warehouse',
+          locationType: row.location.type, // BRANCH | WAREHOUSE, as stored (the one spelling, plan 2026-09-29)
           stock: row.stock,
         };
       }),

@@ -3,11 +3,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { LocationService } from '../locations/location.service';
 import type { LocationConfig } from '../locations/location.types';
-import { LocationKind } from '../../common/constants/location-type';
+import { LocationType } from '../../common/constants/location-type';
 
 /** Everything that makes a branch a branch rather than a warehouse. */
 const BRANCH_CONFIG: LocationConfig = {
-  kind: LocationKind.BRANCH,
+  kind: LocationType.BRANCH,
   specialization: 'branch',
   quotaField: 'quotaSnapshotMaxBranches',
   messages: {

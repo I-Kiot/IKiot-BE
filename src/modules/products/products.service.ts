@@ -7,12 +7,13 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import {
-  LOCATION_KIND_SELECT,
-  columnsOfLocation,
+  LOCATION_SELECT,
   locationMatcher,
-  toLocationRef,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
+import type {
+  LocationRef,
+  LocationRefQueryDto,
+} from '../../common/dto/location-ref.dto';
 import {
   ProductStatus,
   QUOTA_COUNTED_PRODUCT_STATUSES,
@@ -30,7 +31,7 @@ import {
 import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movement.constants';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
-import { LocationKind } from '../../common/constants/location-type';
+import { LocationType } from '../../common/constants/location-type';
 
 /** Prefix of auto-allocated product codes (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
@@ -68,12 +69,11 @@ const ITEM_INCLUDE = {
 
 type ItemRow = Prisma.ProductItemGetPayload<{ include: typeof ITEM_INCLUDE }>;
 
-/** One location's share of a variant's stock, as the old API shaped it. */
+/** One location's share of a variant's stock. */
 export interface StockDetail {
   inventoryId: string;
-  locationId: string;
-  locationType: string;
   stock: number;
+  location: LocationRef;
 }
 
 /**
@@ -298,7 +298,7 @@ export class ProductService {
         tenantId,
         // Branch ids are Location ids; the kind filter keeps a warehouse id from counting as a branch.
         locationId: { in: query.branchIds },
-        location: { type: LocationKind.BRANCH },
+        location: { type: LocationType.BRANCH },
         productItemId: { in: items.map((item) => item.id) },
       },
       _sum: { stock: true },
@@ -780,21 +780,23 @@ export class ProductService {
         id: true,
         productItemId: true,
         stock: true,
-        location: LOCATION_KIND_SELECT,
+        locationId: true,
+        location: LOCATION_SELECT,
       },
     });
 
     for (const row of rows) {
-      const at = columnsOfLocation(row.location);
-      const ref = toLocationRef(at);
-      if (!ref) continue; // a location kind with no branch/warehouse side is not one this API can name
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
         allLocations: 0,
       };
       entry.allLocations += row.stock;
-      if (here(at)) {
-        entry.details.push({ inventoryId: row.id, stock: row.stock, ...ref });
+      if (here(row)) {
+        entry.details.push({
+          inventoryId: row.id,
+          stock: row.stock,
+          location: row.location,
+        });
       }
       byItem.set(row.productItemId, entry);
     }
@@ -815,7 +817,9 @@ export class ProductService {
       where: { tenantId, productItem: { productId: { in: productIds } } },
       select: {
         stock: true,
-        location: LOCATION_KIND_SELECT,
+        // Only what the matcher reads (id + kind) - nothing about the location is returned here.
+        locationId: true,
+        location: { select: { type: true } },
         productItem: { select: { productId: true } },
       },
     });
@@ -824,7 +828,7 @@ export class ProductService {
       const productId = row.productItem.productId;
       const entry = totals.get(productId) ?? { here: 0, allLocations: 0 };
       entry.allLocations += row.stock;
-      if (here(columnsOfLocation(row.location))) entry.here += row.stock;
+      if (here(row)) entry.here += row.stock;
       totals.set(productId, entry);
     }
     return totals;

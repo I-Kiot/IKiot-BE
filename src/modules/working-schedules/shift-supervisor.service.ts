@@ -5,7 +5,7 @@ import { UserStatus } from '../../common/constants/user-status';
 import { ScheduleStatus } from './working-schedule.constants';
 import type { ShiftSupervisorAccess } from '../../common/types/auth-user.type';
 import {
-  LOCATION_KIND_SELECT,
+  LOCATION_TYPE_SELECT,
   columnsOfLocation,
 } from '../../common/dto/location-ref.dto';
 
@@ -71,7 +71,7 @@ export class ShiftSupervisorService {
         startAt: true,
         endAt: true,
         assignedUsers: {
-          select: { user: { select: { location: LOCATION_KIND_SELECT } } },
+          select: { user: { select: { location: LOCATION_TYPE_SELECT } } },
         },
       },
     });

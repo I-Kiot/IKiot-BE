@@ -9,13 +9,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { InventoryNotificationTemplates } from '../notifications/templates/inventory.templates';
 import {
-  LOCATION_KIND_SELECT,
-  locationIdOf,
-  locationRefOf,
+  LOCATION_SELECT,
   locationWhere,
-  toLocationColumns,
+  resolveLocations,
 } from '../../common/dto/location-ref.dto';
-import type { LocationColumns } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { crossedLowStock } from './low-stock';
 import { QueryInventoryDto } from './dto/query-inventory.dto';
@@ -35,8 +32,8 @@ const PRODUCT_ITEM_SELECT = {
 
 const INVENTORY_INCLUDE = {
   productItem: { select: PRODUCT_ITEM_SELECT },
-  location: LOCATION_KIND_SELECT,
-} as const;
+  location: LOCATION_SELECT,
+} as const satisfies Prisma.InventoryInclude;
 
 type InventoryRow = Prisma.InventoryGetPayload<{
   include: typeof INVENTORY_INCLUDE;
@@ -52,9 +49,10 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
+  /** `location` is already the shared `{ id, type, name }` (LOCATION_SELECT); `locationId` is dropped so the response names the place once. */
   private toResponse(row: InventoryRow) {
-    // `location` answers in the API's `{ locationId, locationType }` shape, as it always has.
-    return { ...row, location: locationRefOf(row.location) };
+    const { locationId, ...rest } = row;
+    return rest;
   }
 
   async findAll(tenantId: string, query: QueryInventoryDto) {
@@ -130,8 +128,7 @@ export class InventoryService {
    * setting a `minStock` threshold on something that is on order.
    */
   async addProductToLocation(tenantId: string, dto: AddProductToLocationDto) {
-    const columns = toLocationColumns(dto);
-    await this.assertLocationsExist(tenantId, [columns]);
+    await resolveLocations(this.prisma, tenantId, [dto.locationId]);
 
     const productItem = await this.prisma.productItem.findFirst({
       where: { id: dto.productItemId, tenantId },
@@ -144,7 +141,7 @@ export class InventoryService {
       });
     }
 
-    const locationId = locationIdOf(columns)!;
+    const { locationId } = dto;
     const existing = await this.prisma.inventory.findFirst({
       where: { tenantId, productItemId: dto.productItemId, locationId },
       select: { id: true },
@@ -192,37 +189,30 @@ export class InventoryService {
     args: {
       tenantId: string;
       productItemId: string;
-      branchId: string | null;
-      warehouseId: string | null;
+      /** A Location id - the same id as the Branch or Warehouse it specializes. */
+      locationId: string;
       delta: number;
     },
   ): Promise<Inventory | null> {
     if (!args.delta) return null;
 
-    const locationId = locationIdOf(args);
-    if (!locationId) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_REQUIRED,
-        message: 'A stock adjustment must name a branch or a warehouse',
-      });
-    }
-
+    const { tenantId, productItemId, locationId, delta } = args;
     return tx.inventory.upsert({
       where: {
         tenantId_locationId_productItemId: {
-          tenantId: args.tenantId,
+          tenantId,
           locationId,
-          productItemId: args.productItemId,
+          productItemId,
         },
       },
       create: {
-        tenantId: args.tenantId,
-        productItemId: args.productItemId,
+        tenantId,
+        productItemId,
         locationId,
-        stock: args.delta,
+        stock: delta,
         minStock: 0,
       },
-      update: { stock: { increment: args.delta } },
+      update: { stock: { increment: delta } },
     });
   }
 
@@ -232,8 +222,8 @@ export class InventoryService {
     args: {
       tenantId: string;
       productItemId: string;
-      branchId: string | null;
-      warehouseId: string | null;
+      /** A Location id - the same id as the Branch or Warehouse it specializes. */
+      locationId: string;
       quantity: number;
       /** Shown in the error - an id tells the cashier nothing. */
       label: string;
@@ -246,17 +236,10 @@ export class InventoryService {
       });
     }
 
-    const locationId = locationIdOf(args);
-    if (!locationId) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_REQUIRED,
-        message: 'Stock can only be taken out at a branch or a warehouse',
-      });
-    }
     const where = {
       tenantId: args.tenantId,
       productItemId: args.productItemId,
-      locationId,
+      locationId: args.locationId,
     };
 
     const taken = await tx.inventory.updateMany({
@@ -316,47 +299,6 @@ export class InventoryService {
         'Failed to send low-stock warnings',
         error instanceof Error ? error.stack : error,
       );
-    }
-  }
-
-  /** Every location a request names has to exist inside the caller's tenant: the FK would catch a made-up id but knows nothing about tenants, and a single product create can name a location per variant. */
-  async assertLocationsExist(
-    tenantId: string,
-    refs: LocationColumns[],
-  ): Promise<void> {
-    const branchIds = [
-      ...new Set(refs.map((ref) => ref.branchId).filter((id) => id !== null)),
-    ];
-    const warehouseIds = [
-      ...new Set(
-        refs.map((ref) => ref.warehouseId).filter((id) => id !== null),
-      ),
-    ];
-
-    const [branches, warehouses] = await Promise.all([
-      branchIds.length
-        ? this.prisma.branch.count({
-            where: { tenantId, id: { in: branchIds } },
-          })
-        : 0,
-      warehouseIds.length
-        ? this.prisma.warehouse.count({
-            where: { tenantId, id: { in: warehouseIds } },
-          })
-        : 0,
-    ]);
-
-    if (branches !== branchIds.length) {
-      throw new NotFoundException({
-        code: ErrorCode.BRANCH_NOT_FOUND,
-        message: 'Branch not found',
-      });
-    }
-    if (warehouses !== warehouseIds.length) {
-      throw new NotFoundException({
-        code: ErrorCode.WAREHOUSE_NOT_FOUND,
-        message: 'Warehouse not found',
-      });
     }
   }
 }

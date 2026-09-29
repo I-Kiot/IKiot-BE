@@ -163,8 +163,7 @@ export class OrderService {
         const after = await this.inventory.deductStock(tx, {
           tenantId,
           productItemId: line.productItemId,
-          branchId: dto.branchId,
-          warehouseId: null,
+          locationId: dto.branchId, // a Branch's id is its Location's id
           quantity: line.quantity,
           label: line.sku ?? line.productItemId,
         });
@@ -299,8 +298,7 @@ export class OrderService {
           await this.inventory.adjustStock(tx, {
             tenantId,
             productItemId: line.productItemId,
-            branchId: order.branchId,
-            warehouseId: null,
+            locationId: order.branchId, // a Branch's id is its Location's id
             delta: Number(line.quantity),
           });
         }
