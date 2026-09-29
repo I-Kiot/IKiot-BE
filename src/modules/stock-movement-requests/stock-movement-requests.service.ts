@@ -12,11 +12,16 @@ import { StockMovementNotificationTemplates } from '../notifications/templates/s
 import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
 import { SystemRole } from '../../common/constants/system-role';
 import {
-  destinationRef,
-  sourceRef,
+  columnsOfLocation,
+  locationIdOf,
+  locationRefOf,
+  requireLocationId,
   toLocationColumns,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefDto } from '../../common/dto/location-ref.dto';
+import type {
+  LocationColumns,
+  LocationRefDto,
+} from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
@@ -37,12 +42,6 @@ import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { withNestedProfile } from '../../common/utils/user-profile';
 
-/** The pair of nullable FKs naming one end of a movement. */
-interface LocationColumns {
-  branchId: string | null;
-  warehouseId: string | null;
-}
-
 const DETAIL_INCLUDE = {
   details: {
     select: {
@@ -58,10 +57,8 @@ const DETAIL_INCLUDE = {
     },
   },
   fromSupplier: { select: { id: true, supplierName: true } },
-  fromBranch: { select: { id: true, name: true } },
-  fromWarehouse: { select: { id: true, name: true } },
-  toBranch: { select: { id: true, name: true } },
-  toWarehouse: { select: { id: true, name: true } },
+  fromLocation: { select: { id: true, type: true, name: true } },
+  toLocation: { select: { id: true, type: true, name: true } },
   createdBy: {
     select: {
       id: true,
@@ -97,14 +94,12 @@ export class StockMovementService {
     // A staff account sees the movements that touch their own location, from either end.
     const own = this.postingOf(user);
     if (own) {
-      if (!own.branchId && !own.warehouseId) {
-        // Posted nowhere: there is no location whose movements they could be looking at, and matching the columns directly would quietly match rows where both are null.
+      const ownId = locationIdOf(own);
+      if (!ownId) {
+        // Posted nowhere: there is no location whose movements they could be looking at, and matching the column directly would quietly match rows where it is null.
         return paginate([], 0, query.page, query.limit);
       }
-      where.OR = [
-        { fromBranchId: own.branchId, fromWarehouseId: own.warehouseId },
-        { toBranchId: own.branchId, toWarehouseId: own.warehouseId },
-      ];
+      where.OR = [{ fromLocationId: ownId }, { toLocationId: ownId }];
     }
 
     const [rows, total] = await Promise.all([
@@ -199,10 +194,8 @@ export class StockMovementService {
         createdById: user.userId,
         totalPrice,
         fromSupplierId: dto.fromSupplierId,
-        fromBranchId: from?.branchId ?? null,
-        fromWarehouseId: from?.warehouseId ?? null,
-        toBranchId: to?.branchId ?? null,
-        toWarehouseId: to?.warehouseId ?? null,
+        fromLocationId: from ? locationIdOf(from) : null,
+        toLocationId: to ? locationIdOf(to) : null,
         details: { create: details },
       },
       include: DETAIL_INCLUDE,
@@ -543,8 +536,7 @@ export class StockMovementService {
               where: {
                 tenantId,
                 productItemId: change.productItemId,
-                branchId: from.branchId,
-                warehouseId: from.warehouseId,
+                locationId: requireLocationId(from),
               },
               select: { stock: true },
             });
@@ -712,8 +704,7 @@ export class StockMovementService {
     const stock = await this.prisma.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: requireLocationId(from),
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -898,8 +889,7 @@ export class StockMovementService {
     const rows = await client.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: requireLocationId(from),
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -1098,17 +1088,11 @@ export class StockMovementService {
   }
 
   private source(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.fromBranchId,
-      warehouseId: request.fromWarehouseId,
-    };
+    return columnsOfLocation(request.fromLocation);
   }
 
   private destination(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.toBranchId,
-      warehouseId: request.toWarehouseId,
-    };
+    return columnsOfLocation(request.toLocation);
   }
 
   // ─── Plumbing ──────────────────────────────────────────────────────────────
@@ -1164,7 +1148,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.source(request),
+          locationId: request.fromLocationId,
         })),
       );
     }
@@ -1172,7 +1156,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.destination(request),
+          locationId: request.toLocationId,
         })),
       );
     }
@@ -1188,14 +1172,11 @@ export class StockMovementService {
   /** Decimals become numbers, and the two location pairs become the API's ref objects. */
   private toResponse(request: MovementRow) {
     const {
-      fromBranchId,
-      fromWarehouseId,
-      toBranchId,
-      toWarehouseId,
-      fromBranch,
-      fromWarehouse,
-      toBranch,
-      toWarehouse,
+      // The raw FKs are answered as the `fromLocation`/`toLocation` refs below instead.
+      fromLocationId: _fromLocationId,
+      toLocationId: _toLocationId,
+      fromLocation,
+      toLocation,
       totalPrice,
       details,
       createdBy,
@@ -1207,10 +1188,10 @@ export class StockMovementService {
       // Nested like every other user payload, so the screens read `createdBy.profile.firstName`.
       createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
       totalPrice: Number(totalPrice),
-      fromLocation: sourceRef({ fromBranchId, fromWarehouseId }),
-      fromLocationName: (fromBranch ?? fromWarehouse)?.name ?? null,
-      toLocation: destinationRef({ toBranchId, toWarehouseId }),
-      toLocationName: (toBranch ?? toWarehouse)?.name ?? null,
+      fromLocation: locationRefOf(fromLocation),
+      fromLocationName: fromLocation?.name ?? null,
+      toLocation: locationRefOf(toLocation),
+      toLocationName: toLocation?.name ?? null,
       details: details.map((line) => ({
         ...line,
         quantity: Number(line.quantity),

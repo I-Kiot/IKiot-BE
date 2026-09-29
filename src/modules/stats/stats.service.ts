@@ -28,6 +28,13 @@ import type {
   StatsQueryDto,
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
+import {
+  LOCATION_KIND_SELECT,
+  columnsOfLocation,
+  locationRefOf,
+  postingWhere,
+  withNamedPosting,
+} from '../../common/dto/location-ref.dto';
 
 /** `COUNT(*)` is `bigint` in Postgres; every count below is cast `::int` at the source. */
 interface SummaryRow {
@@ -307,8 +314,7 @@ export class StatsService {
         skip: skipFor(page, limit),
         take: limit,
         include: {
-          branch: { select: { name: true } },
-          warehouse: { select: { name: true } },
+          location: { select: { id: true, type: true, name: true } },
           supplier: { select: { supplierName: true } },
           createdBy: {
             select: { profileFirstName: true, profileLastName: true },
@@ -318,27 +324,26 @@ export class StatsService {
       this.prisma.cashFlow.count({ where }),
     ]);
 
-    const data = rows.map((row) => ({
-      id: row.id,
-      flowType: row.flowType,
-      amount: Number(row.amount),
-      paymentMethod: row.paymentMethod,
-      description: row.description,
-      paymentReference: row.paymentReference,
-      branchName: row.branch?.name ?? null,
-      warehouseName: row.warehouse?.name ?? null,
-      // Flattened for the table, which has one "location" column and doesn't care which kind it is - `locationType` is kept so a row can still be traced back.
-      locationName: row.branch?.name ?? row.warehouse?.name ?? null,
-      locationType: row.branchId
-        ? 'branch'
-        : row.warehouseId
-          ? 'warehouse'
-          : null,
-      supplierName: row.supplier?.supplierName ?? null,
-      createdByName: fullName(row.createdBy),
-      orderId: row.orderId,
-      createdAt: row.createdAt,
-    }));
+    const data = rows.map((row) => {
+      const at = withNamedPosting(row);
+      return {
+        id: row.id,
+        flowType: row.flowType,
+        amount: Number(row.amount),
+        paymentMethod: row.paymentMethod,
+        description: row.description,
+        paymentReference: row.paymentReference,
+        branchName: at.branch?.name ?? null,
+        warehouseName: at.warehouse?.name ?? null,
+        // Flattened for the table, which has one "location" column and doesn't care which kind it is - `locationType` is kept so a row can still be traced back.
+        locationName: (at.branch ?? at.warehouse)?.name ?? null,
+        locationType: locationRefOf(row.location)?.locationType ?? null,
+        supplierName: row.supplier?.supplierName ?? null,
+        createdByName: fullName(row.createdBy),
+        orderId: row.orderId,
+        createdAt: row.createdAt,
+      };
+    });
 
     return paginate(data, total, page, limit);
   }
@@ -353,7 +358,7 @@ export class StatsService {
 
     return {
       tenantId: user.tenantId ?? undefined,
-      ...scope,
+      ...postingWhere(scope),
       createdAt: { gte: fromDate, lte: toDate },
       ...(query.flowType ? { flowType: query.flowType } : {}),
       ...(paymentMethod ? { paymentMethod } : {}),
@@ -377,11 +382,10 @@ export class StatsService {
     const threshold = query.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;
     const tenantId = user.tenantId ?? undefined;
 
-    const branchFilter = scope.branchId
-      ? Prisma.sql`AND i.branch_id = ${scope.branchId}`
-      : Prisma.empty;
-    const warehouseFilter = scope.warehouseId
-      ? Prisma.sql`AND i.warehouse_id = ${scope.warehouseId}`
+    // Branch and warehouse ids are Location ids, so either narrows the one `location_id` column.
+    const locationId = scope.branchId ?? scope.warehouseId;
+    const locationFilter = locationId
+      ? Prisma.sql`AND i.location_id = ${locationId}`
       : Prisma.empty;
 
     const [totalRows, lowStock] = await Promise.all([
@@ -400,17 +404,15 @@ export class StatsService {
         FROM inventories i
         JOIN product_items pi ON pi.id = i.product_item_id
         WHERE i.tenant_id = ${tenantId}
-          ${branchFilter}
-          ${warehouseFilter}
+          ${locationFilter}
       `,
       this.prisma.inventory.findMany({
-        where: { tenantId, ...scope, stock: { lte: threshold } },
+        where: { tenantId, ...postingWhere(scope), stock: { lte: threshold } },
         orderBy: { stock: 'asc' },
         take: LOW_STOCK_LIST_LIMIT,
         select: {
           productItemId: true,
-          branchId: true,
-          warehouseId: true,
+          location: LOCATION_KIND_SELECT,
           stock: true,
           productItem: { select: { productName: true, sku: true } },
         },
@@ -424,16 +426,19 @@ export class StatsService {
       skuCount: totals?.skuCount ?? 0,
       outOfStock: totals?.outOfStock ?? 0,
       lowStockThreshold: threshold,
-      lowStock: lowStock.map((row) => ({
-        productItemId: row.productItemId,
-        productName: row.productItem.productName,
-        sku: row.productItem.sku,
-        // Was one polymorphic `locationId`/`locationType` pair in Mongo; two nullable columns here, so the response says which one is set rather than making the client guess.
-        branchId: row.branchId,
-        warehouseId: row.warehouseId,
-        locationType: row.branchId ? 'branch' : 'warehouse',
-        stock: row.stock,
-      })),
+      lowStock: lowStock.map((row) => {
+        const { branchId, warehouseId } = columnsOfLocation(row.location);
+        return {
+          productItemId: row.productItemId,
+          productName: row.productItem.productName,
+          sku: row.productItem.sku,
+          // Kept as the branch/warehouse pair the dashboard reads, derived from the row's Location.
+          branchId,
+          warehouseId,
+          locationType: branchId ? 'branch' : 'warehouse',
+          stock: row.stock,
+        };
+      }),
     };
   }
 }

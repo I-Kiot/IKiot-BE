@@ -11,6 +11,8 @@ import { NotificationService } from '../notifications/notifications.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { RefreshTokenService } from '../auth/refresh-token.service';
 import { withNestedProfile } from '../../common/utils/user-profile';
+import type { FlatUserProfile } from '../../common/utils/user-profile';
+import { withNamedPosting } from '../../common/dto/location-ref.dto';
 import { StaffNotificationTemplates } from '../notifications/templates/staff.templates';
 import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
@@ -41,11 +43,8 @@ const SELECT_SAFE = {
   roleId: true,
   role: { select: { id: true, name: true } },
   status: true,
-  branchId: true,
-  warehouseId: true,
-  // Names alongside the ids: the staff list has a "Chi nhánh" column and an id there is unreadable.
-  branch: { select: { id: true, name: true } },
-  warehouse: { select: { id: true, name: true } },
+  // Answered as `branchId`/`warehouseId` + `branch`/`warehouse` by `toUserResponse` - see there.
+  location: { select: { id: true, type: true, name: true } },
   profileFirstName: true,
   profileLastName: true,
   profileAvatarUrl: true,
@@ -64,6 +63,15 @@ const SELECT_SAFE = {
   leaveBalanceAnnualDays: true,
   leaveBalanceRemainingDays: true,
 } as const;
+
+/** Rebuilds the posting the API has always answered with from the single `location` relation: `branchId`/`warehouseId`, plus names alongside the ids, since the staff list has a "Chi nhánh" column and an id there is unreadable. */
+function toUserResponse<
+  T extends FlatUserProfile & {
+    location: { id: string; type: string; name: string } | null;
+  },
+>(row: T) {
+  return withNestedProfile(withNamedPosting(row));
+}
 
 /** A leave request still "in force": it hasn't been rejected and hasn't finished yet. */
 const LIVE_LEAVE_STATUSES = ['PENDING', 'APPROVED'];
@@ -88,8 +96,13 @@ export class UserService {
     };
 
     if (query.roleId) where.roleId = query.roleId;
-    if (query.branchId) where.branchId = query.branchId;
-    if (query.warehouseId) where.warehouseId = query.warehouseId;
+    // One `location_id` column now; asking for both a branch and a warehouse still matches nobody, as the old AND of two columns did.
+    const postings = [query.branchId, query.warehouseId].filter(
+      (id): id is string => Boolean(id),
+    );
+    if (postings.length > 0) {
+      where.AND = postings.map((locationId) => ({ locationId }));
+    }
 
     if (query.search) {
       const match = { contains: query.search, mode: 'insensitive' } as const;
@@ -113,7 +126,7 @@ export class UserService {
     ]);
 
     return paginate(
-      data.map((row) => withNestedProfile(row)),
+      data.map((row) => toUserResponse(row)),
       total,
       query.page,
       query.limit,
@@ -130,7 +143,7 @@ export class UserService {
         code: ErrorCode.USER_NOT_FOUND,
         message: 'User not found',
       });
-    return withNestedProfile(user);
+    return toUserResponse(user);
   }
 
   /** Hire someone, INACTIVE and without a password - giving them a login is `POST /users/:id/account`, a separate call. See `CreateUserDto`. */
@@ -138,6 +151,7 @@ export class UserService {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
     // The same subset rule `update` applies: without it, someone could hire a colleague straight into the shop's most privileged role and then switch the login on.
     await this.assertRoleIsWithinGrant(actor, tenantId, dto.roleId);
+    const posting = this.resolvePosting(dto);
     await this.assertWorkplaceBelongsToTenant(
       tenantId,
       dto.branchId,
@@ -197,8 +211,7 @@ export class UserService {
         password: null,
         systemRole: SystemRole.STAFF,
         roleId: dto.roleId,
-        branchId: dto.branchId,
-        warehouseId: dto.warehouseId,
+        ...posting,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
         paysheetId: dto.paysheetId,
         // Flat wins over nested when both are sent - the old `StaffDTO` spelled the name flat and the form still does, while everything else about a person is nested.
@@ -214,7 +227,7 @@ export class UserService {
       },
       select: SELECT_SAFE,
     });
-    return withNestedProfile(user);
+    return toUserResponse(user);
   }
 
   /** Edit a staff record, ported from `updateStaff` - the first NestJS pass had cut it to four fields, leaving the profile, hire date, pay scheme and account note with no way in. Account lifecycle stays out of here; see UpdateUserDto. */
@@ -234,8 +247,8 @@ export class UserService {
     const posting = this.resolvePosting(dto);
     await this.assertWorkplaceBelongsToTenant(
       tenantId,
-      posting.branchId ?? undefined,
-      posting.warehouseId ?? undefined,
+      dto.branchId ?? undefined,
+      dto.warehouseId ?? undefined,
     );
     if (dto.paysheetId) {
       await this.assertPaysheetIsUsable(tenantId, dto.paysheetId);
@@ -271,26 +284,22 @@ export class UserService {
       },
       select: SELECT_SAFE,
     });
-    return withNestedProfile(updated);
+    return toUserResponse(updated);
   }
 
-  /** A staff member is posted at exactly one location, so naming one clears the other: without this, sending only `branchId` leaves a stale `warehouseId` and the row claims two workplaces, which the next edit then rejects, blaming whoever touched it last. */
-  private resolvePosting(dto: UpdateUserDto): {
+  /** A staff member is posted at exactly one location - the single `location_id` column says so by construction, so naming a branch replaces any warehouse posting and vice versa. Naming both is still refused rather than silently picking one. */
+  private resolvePosting(dto: {
     branchId?: string | null;
     warehouseId?: string | null;
-  } {
+  }): { locationId?: string | null } {
     if (dto.branchId !== undefined && dto.warehouseId !== undefined) {
       throw new BadRequestException({
         code: ErrorCode.STAFF_SINGLE_LOCATION_REQUIRED,
         message: 'An employee belongs to exactly one branch or one warehouse',
       });
     }
-    if (dto.branchId !== undefined) {
-      return { branchId: dto.branchId, warehouseId: null };
-    }
-    if (dto.warehouseId !== undefined) {
-      return { warehouseId: dto.warehouseId, branchId: null };
-    }
+    if (dto.branchId !== undefined) return { locationId: dto.branchId };
+    if (dto.warehouseId !== undefined) return { locationId: dto.warehouseId };
     return {};
   }
 
@@ -460,7 +469,7 @@ export class UserService {
       ...StaffNotificationTemplates.accountActivated(),
     });
 
-    return withNestedProfile(user);
+    return toUserResponse(user);
   }
 
   async updateAccountPassword(
@@ -492,7 +501,7 @@ export class UserService {
     });
     // Same rule `AuthService.resetPassword` follows: a password someone else had to reset may have leaked, so every session it could still reach ends.
     await this.refreshTokens.revokeAllFor(id);
-    return withNestedProfile(updated);
+    return toUserResponse(updated);
   }
 
   /** Turn the login off without deleting the person: the password is cleared as well as the status, so any token already in the wild is rejected on the next request and reactivation has to set a fresh one. The old `replacementManagerId` swap is gone - managing a location is `Branch.managerId` now, so this points at `PATCH /branches/:id/manager` instead. */
@@ -516,7 +525,7 @@ export class UserService {
     });
     // INACTIVE is enough for HTTP, since JwtStrategy re-reads the account every request, but a socket is authenticated once at connect - without this a dismissed employee kept the shop's live feed until they closed the tab.
     await this.refreshTokens.revokeAllFor(id);
-    return withNestedProfile(updated);
+    return toUserResponse(updated);
   }
 
   // ─── Leave balance ─────────────────────────────────────────────────────────
@@ -749,11 +758,10 @@ export class UserService {
 
   /** A location must never be left pointing at a disabled manager; the replacement goes through PATCH /branches/:id/manager, which is the one place that knows the appointment rules. */
   private async assertNotAppointedManager(tenantId: string, id: string) {
-    const [branches, warehouses] = await Promise.all([
-      this.prisma.branch.count({ where: { tenantId, managerId: id } }),
-      this.prisma.warehouse.count({ where: { tenantId, managerId: id } }),
-    ]);
-    if (branches + warehouses > 0) {
+    const managed = await this.prisma.location.count({
+      where: { tenantId, managerId: id },
+    });
+    if (managed > 0) {
       throw new ConflictException({
         code: ErrorCode.STAFF_IS_LOCATION_MANAGER,
         message:

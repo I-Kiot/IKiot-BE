@@ -9,9 +9,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { InventoryNotificationTemplates } from '../notifications/templates/inventory.templates';
 import {
+  LOCATION_KIND_SELECT,
+  locationIdOf,
+  locationRefOf,
   locationWhere,
   toLocationColumns,
-  toLocationRef,
 } from '../../common/dto/location-ref.dto';
 import type { LocationColumns } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -31,8 +33,13 @@ const PRODUCT_ITEM_SELECT = {
   details: { select: { name: true, value: true, position: true } },
 } as const;
 
+const INVENTORY_INCLUDE = {
+  productItem: { select: PRODUCT_ITEM_SELECT },
+  location: LOCATION_KIND_SELECT,
+} as const;
+
 type InventoryRow = Prisma.InventoryGetPayload<{
-  include: { productItem: { select: typeof PRODUCT_ITEM_SELECT } };
+  include: typeof INVENTORY_INCLUDE;
 }>;
 
 /** Ported from InventoryService, serving two audiences: the four `/inventory` routes, and the stock primitives Order and StockMovement call - those live here because "what happens to stock, and when do we warn" is one rule. */
@@ -46,8 +53,8 @@ export class InventoryService {
   ) {}
 
   private toResponse(row: InventoryRow) {
-    const { branchId, warehouseId, ...rest } = row;
-    return { ...rest, location: toLocationRef({ branchId, warehouseId }) };
+    // `location` answers in the API's `{ locationId, locationType }` shape, as it always has.
+    return { ...row, location: locationRefOf(row.location) };
   }
 
   async findAll(tenantId: string, query: QueryInventoryDto) {
@@ -74,7 +81,7 @@ export class InventoryService {
     const [rows, total] = await Promise.all([
       this.prisma.inventory.findMany({
         where,
-        include: { productItem: { select: PRODUCT_ITEM_SELECT } },
+        include: INVENTORY_INCLUDE,
         orderBy: { updatedAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -94,7 +101,7 @@ export class InventoryService {
   private async findRow(tenantId: string, id: string): Promise<InventoryRow> {
     const row = await this.prisma.inventory.findFirst({
       where: { id, tenantId },
-      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
+      include: INVENTORY_INCLUDE,
     });
     if (!row)
       throw new NotFoundException({
@@ -110,7 +117,7 @@ export class InventoryService {
     const row = await this.prisma.inventory.update({
       where: { id },
       data: { minStock },
-      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
+      include: INVENTORY_INCLUDE,
     });
     return this.toResponse(row);
   }
@@ -137,8 +144,9 @@ export class InventoryService {
       });
     }
 
+    const locationId = locationIdOf(columns)!;
     const existing = await this.prisma.inventory.findFirst({
-      where: { tenantId, productItemId: dto.productItemId, ...columns },
+      where: { tenantId, productItemId: dto.productItemId, locationId },
       select: { id: true },
     });
     if (existing) {
@@ -152,11 +160,11 @@ export class InventoryService {
       data: {
         tenantId,
         productItemId: dto.productItemId,
-        ...columns,
+        locationId,
         stock: 0,
         minStock: 0,
       },
-      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
+      include: INVENTORY_INCLUDE,
     });
     return this.toResponse(row);
   }
@@ -178,7 +186,7 @@ export class InventoryService {
 
   // ─── Stock primitives, for Order / StockMovement ────────────────────────────
 
-  /** Add to (or subtract from) one line's stock, creating the line if the location doesn't stock the item yet. Pass the caller's transactional client, or a rolled-back sale still moves stock. One upserting statement on purpose: a read-then-create lets two receipts both insert and one die on the unique index - and which unique index applies depends on which end is set, since a NULL in a Postgres unique index constrains nothing. */
+  /** Add to (or subtract from) one line's stock, creating the line if the location doesn't stock the item yet. Pass the caller's transactional client, or a rolled-back sale still moves stock. One upserting statement on purpose: a read-then-create lets two receipts both insert and one die on the `(tenant, location, item)` unique index. */
   async adjustStock(
     tx: Prisma.TransactionClient,
     args: {
@@ -191,31 +199,8 @@ export class InventoryService {
   ): Promise<Inventory | null> {
     if (!args.delta) return null;
 
-    const create = {
-      tenantId: args.tenantId,
-      productItemId: args.productItemId,
-      branchId: args.branchId,
-      warehouseId: args.warehouseId,
-      stock: args.delta,
-      minStock: 0,
-    };
-    const update = { stock: { increment: args.delta } };
-
-    if (args.branchId) {
-      return tx.inventory.upsert({
-        where: {
-          tenantId_branchId_productItemId: {
-            tenantId: args.tenantId,
-            branchId: args.branchId,
-            productItemId: args.productItemId,
-          },
-        },
-        create,
-        update,
-      });
-    }
-
-    if (!args.warehouseId) {
+    const locationId = locationIdOf(args);
+    if (!locationId) {
       throw new BadRequestException({
         code: ErrorCode.LOCATION_REQUIRED,
         message: 'A stock adjustment must name a branch or a warehouse',
@@ -224,14 +209,20 @@ export class InventoryService {
 
     return tx.inventory.upsert({
       where: {
-        tenantId_warehouseId_productItemId: {
+        tenantId_locationId_productItemId: {
           tenantId: args.tenantId,
-          warehouseId: args.warehouseId,
+          locationId,
           productItemId: args.productItemId,
         },
       },
-      create,
-      update,
+      create: {
+        tenantId: args.tenantId,
+        productItemId: args.productItemId,
+        locationId,
+        stock: args.delta,
+        minStock: 0,
+      },
+      update: { stock: { increment: args.delta } },
     });
   }
 
@@ -255,11 +246,17 @@ export class InventoryService {
       });
     }
 
+    const locationId = locationIdOf(args);
+    if (!locationId) {
+      throw new BadRequestException({
+        code: ErrorCode.LOCATION_REQUIRED,
+        message: 'Stock can only be taken out at a branch or a warehouse',
+      });
+    }
     const where = {
       tenantId: args.tenantId,
       productItemId: args.productItemId,
-      branchId: args.branchId,
-      warehouseId: args.warehouseId,
+      locationId,
     };
 
     const taken = await tx.inventory.updateMany({
@@ -295,8 +292,7 @@ export class InventoryService {
         const [recipients, item] = await Promise.all([
           this.notifications.managersOfLocation({
             tenantId: inventory.tenantId,
-            branchId: inventory.branchId,
-            warehouseId: inventory.warehouseId,
+            locationId: inventory.locationId,
           }),
           this.prisma.productItem.findUnique({
             where: { id: inventory.productItemId },

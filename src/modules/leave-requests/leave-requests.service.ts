@@ -38,6 +38,13 @@ import {
 } from './dto/leave-request.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  USER_POSTING_SELECT,
+  columnsOfLocation,
+  postingWhere,
+  withNamedPosting,
+  withPosting,
+} from '../../common/dto/location-ref.dto';
 
 const REQUESTER_SELECT = {
   id: true,
@@ -45,10 +52,8 @@ const REQUESTER_SELECT = {
   phoneNumber: true,
   profileFirstName: true,
   profileLastName: true,
-  branchId: true,
-  warehouseId: true,
-  branch: { select: { id: true, name: true } },
-  warehouse: { select: { id: true, name: true } },
+  // Answered as branchId/warehouseId + branch/warehouse by withNamedPosting.
+  location: { select: { id: true, type: true, name: true } },
 } as const;
 
 const REQUEST_INCLUDE = {
@@ -174,7 +179,7 @@ export class LeaveRequestService {
         message: 'Leave request not found',
       });
     }
-    this.assertCanRead(user, request.user);
+    this.assertCanRead(user, withPosting(request.user));
     return this.toResponse(request);
   }
 
@@ -248,7 +253,7 @@ export class LeaveRequestService {
     const tenantId = this.tenantOf(user);
     const target = await this.prisma.user.findFirst({
       where: { id: dto.userId, tenantId, status: { not: UserStatus.DELETED } },
-      select: { id: true, branchId: true, warehouseId: true },
+      select: { id: true, ...USER_POSTING_SELECT },
     });
     if (!target)
       throw new NotFoundException({
@@ -259,7 +264,7 @@ export class LeaveRequestService {
     if (
       user.systemRole !== SystemRole.TENANT_OWNER &&
       user.systemRole !== SystemRole.ADMIN &&
-      !this.sameWorkplace(user, target)
+      !this.sameWorkplace(user, withPosting(target))
     ) {
       throw new ForbiddenException({
         code: ErrorCode.LEAVE_EMERGENCY_LOCATION_DENIED,
@@ -359,7 +364,7 @@ export class LeaveRequestService {
       const current = await tx.leaveRequest.findFirst({
         where: { id, tenantId },
         include: {
-          user: { select: { id: true, branchId: true, warehouseId: true } },
+          user: { select: { id: true, ...USER_POSTING_SELECT } },
           handoverSchedules: { select: { scheduleId: true } },
         },
       });
@@ -377,7 +382,7 @@ export class LeaveRequestService {
           message: 'You cannot approve or reject your own leave request',
         });
       }
-      this.assertCanRead(user, current.user);
+      this.assertCanRead(user, withPosting(current.user));
 
       if (current.status !== LeaveRequestStatus.PENDING) {
         throw new ConflictException({
@@ -641,11 +646,11 @@ export class LeaveRequestService {
     const [requester, target] = await Promise.all([
       this.prisma.user.findFirst({
         where: { id: requesterId, tenantId },
-        select: { branchId: true, warehouseId: true },
+        select: { locationId: true },
       }),
       this.prisma.user.findFirst({
         where: { id: handoverToUserId, tenantId },
-        select: { id: true, status: true, branchId: true, warehouseId: true },
+        select: { id: true, status: true, locationId: true },
       }),
     ]);
     if (!target || INACTIVE_USER_STATUSES.has(target.status)) {
@@ -655,11 +660,7 @@ export class LeaveRequestService {
           'The handover recipient was not found, or the account is not active',
       });
     }
-    if (
-      requester &&
-      (requester.branchId !== target.branchId ||
-        requester.warehouseId !== target.warehouseId)
-    ) {
+    if (requester && requester.locationId !== target.locationId) {
       throw new BadRequestException({
         code: ErrorCode.LEAVE_HANDOVER_TARGET_LOCATION,
         message: 'The handover recipient must work at the same location',
@@ -719,14 +720,14 @@ export class LeaveRequestService {
   ) {
     const requester = await this.prisma.user.findUnique({
       where: { id: requesterId },
-      select: { branchId: true, warehouseId: true },
+      select: USER_POSTING_SELECT,
     });
+    const posting = columnsOfLocation(requester?.location);
     const [approvers, name] = await Promise.all([
       this.notifications.approversOf({
         userId: requesterId,
         tenantId,
-        branchId: requester?.branchId ?? null,
-        warehouseId: requester?.warehouseId ?? null,
+        ...posting,
       }),
       this.notifications.displayName(requesterId),
     ]);
@@ -798,10 +799,7 @@ export class LeaveRequestService {
     });
     if (scoped.userId) where.userId = scoped.userId;
     if (scoped.branchId || scoped.warehouseId) {
-      where.user = {
-        ...(scoped.branchId ? { branchId: scoped.branchId } : {}),
-        ...(scoped.warehouseId ? { warehouseId: scoped.warehouseId } : {}),
-      };
+      where.user = postingWhere(scoped);
     }
     if (query.status) where.status = query.status;
 
@@ -829,6 +827,7 @@ export class LeaveRequestService {
     const { paidLeaveDays, unpaidLeaveDays, handoverSchedules, ...rest } = row;
     return {
       ...rest,
+      user: withNamedPosting(rest.user),
       paidLeaveDays: Number(paidLeaveDays),
       unpaidLeaveDays: Number(unpaidLeaveDays),
       handoverScheduleIds: handoverSchedules.map((h) => h.scheduleId),

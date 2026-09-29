@@ -129,21 +129,16 @@ export class NotificationService {
   /** Who to tell about something that happened at one branch or warehouse. The old BRANCH_MANAGER/WAREHOUSE_MANAGER roles are gone, so this reads the location's `managerId`, falling back to the tenant's owners - where the old version returned an empty list and sent a low-stock warning to nobody. */
   async managersOfLocation(args: {
     tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
+    /** A Location id - which is also the id of the Branch or Warehouse it specializes. */
+    locationId: string | null;
   }): Promise<string[]> {
     try {
-      const location = args.branchId
-        ? await this.prisma.branch.findFirst({
-            where: { id: args.branchId, tenantId: args.tenantId },
+      const location = args.locationId
+        ? await this.prisma.location.findFirst({
+            where: { id: args.locationId, tenantId: args.tenantId },
             select: { managerId: true },
           })
-        : args.warehouseId
-          ? await this.prisma.warehouse.findFirst({
-              where: { id: args.warehouseId, tenantId: args.tenantId },
-              select: { managerId: true },
-            })
-          : null;
+        : null;
 
       if (!location?.managerId) return this.tenantOwners(args.tenantId);
 
@@ -171,8 +166,7 @@ export class NotificationService {
   }): Promise<string[]> {
     const managers = await this.managersOfLocation({
       tenantId: user.tenantId,
-      branchId: user.branchId,
-      warehouseId: user.warehouseId,
+      locationId: user.branchId ?? user.warehouseId,
     });
     const others = managers.filter((id) => id !== user.userId);
     if (others.length > 0) return others;

@@ -11,6 +11,10 @@ import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor.service';
 import { accessTokenSecret } from '../../../common/config/env';
 import { ErrorCode } from '../../../common/errors/error-codes';
+import {
+  LOCATION_KIND_SELECT,
+  columnsOfLocation,
+} from '../../../common/dto/location-ref.dto';
 
 interface JwtPayload {
   sub: string;
@@ -33,7 +37,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload): Promise<AuthUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: { role: { include: { permissions: true } } },
+      include: {
+        role: { include: { permissions: true } },
+        location: LOCATION_KIND_SELECT,
+      },
     });
 
     if (!user)
@@ -47,13 +54,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         message: 'Account is not active',
       });
 
+    // AuthUser keeps the branch/warehouse split every scope check is written against; the row stores one `location_id` and the Location's type says which side it is.
+    const { branchId, warehouseId } = columnsOfLocation(user.location);
+
     // Whoever is running a shift right now holds a fixed extra set of permissions for as long as it runs - resolved per request so a shift that ended two minutes ago grants nothing.
     const supervision = await this.shiftSupervisor.resolve({
       userId: user.id,
       tenantId: user.tenantId,
       systemRole: user.systemRole,
-      branchId: user.branchId,
-      warehouseId: user.warehouseId,
+      branchId,
+      warehouseId,
       status: user.status,
     });
 
@@ -62,8 +72,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       tenantId: user.tenantId,
       systemRole: user.systemRole as SystemRole,
       roleId: user.roleId,
-      branchId: user.branchId,
-      warehouseId: user.warehouseId,
+      branchId,
+      warehouseId,
       permissions: new Set([
         ...(user.systemRole === SystemRole.STAFF ? STAFF_BASE_PERMISSIONS : []),
         ...(user.role?.permissions.map((p) => `${p.resource}:${p.action}`) ??

@@ -10,9 +10,9 @@
 //   - genuine many-to-many arrays (e.g. ProductItem.suppliers) become join tables
 //   - Location is the generic tenant-owned physical/operational location abstraction.
 //     Branch and Warehouse are 1:1 specializations of Location.
-//   - Inventory and StockMovementRequest reference Location directly, so new location
-//     types (e.g. FULFILLMENT_CENTER / EXTERNAL_WAREHOUSE) do not require new nullable
-//     foreign-key columns on every inventory/movement table.
+//   - Inventory and StockMovementRequest reference Location directly, so a new kind of
+//     location would not require new nullable foreign-key columns on every
+//     inventory/movement table. Only BRANCH and WAREHOUSE exist today.
 //   - Location.type and the 1:1 Branch/Warehouse specialization must be kept consistent
 //     at the application layer (or with follow-up SQL CHECK/trigger constraints).
 //   - RefreshToken is intentionally NOT modeled here - it is moving to Redis
@@ -379,18 +379,16 @@ model SubscriptionInvoice {
 /// employee scope and location-level cash flows. Branch and Warehouse are
 /// specialized business/storage concepts attached 1:1 to a Location.
 ///
-/// Examples:
-/// - STORE + Branch
+/// Types:
+/// - BRANCH + Branch
 /// - WAREHOUSE + Warehouse
-/// - FULFILLMENT_CENTER
-/// - EXTERNAL_WAREHOUSE
 model Location {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
 
   name        String
-  type        String   @map("location_type") // STORE | WAREHOUSE | FULFILLMENT_CENTER | EXTERNAL_WAREHOUSE
+  type        String   @map("location_type") // BRANCH | WAREHOUSE - held to these two by CHECK locations_type_known
   status      String   @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
 
   address     String?

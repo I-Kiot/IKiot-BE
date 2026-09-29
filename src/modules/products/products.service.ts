@@ -7,6 +7,8 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import {
+  LOCATION_KIND_SELECT,
+  columnsOfLocation,
   locationMatcher,
   toLocationRef,
 } from '../../common/dto/location-ref.dto';
@@ -28,6 +30,7 @@ import {
 import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movement.constants';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { LocationKind } from '../../common/constants/location-type';
 
 /** Prefix of auto-allocated product codes (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
@@ -293,7 +296,9 @@ export class ProductService {
       by: ['productItemId'],
       where: {
         tenantId,
-        branchId: { in: query.branchIds },
+        // Branch ids are Location ids; the kind filter keeps a warehouse id from counting as a branch.
+        locationId: { in: query.branchIds },
+        location: { type: LocationKind.BRANCH },
         productItemId: { in: items.map((item) => item.id) },
       },
       _sum: { stock: true },
@@ -775,20 +780,20 @@ export class ProductService {
         id: true,
         productItemId: true,
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        location: LOCATION_KIND_SELECT,
       },
     });
 
     for (const row of rows) {
-      const ref = toLocationRef(row);
-      if (!ref) continue; // a row naming neither location is broken data, not a location
+      const at = columnsOfLocation(row.location);
+      const ref = toLocationRef(at);
+      if (!ref) continue; // a location kind with no branch/warehouse side is not one this API can name
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
         allLocations: 0,
       };
       entry.allLocations += row.stock;
-      if (here(row)) {
+      if (here(at)) {
         entry.details.push({ inventoryId: row.id, stock: row.stock, ...ref });
       }
       byItem.set(row.productItemId, entry);
@@ -810,8 +815,7 @@ export class ProductService {
       where: { tenantId, productItem: { productId: { in: productIds } } },
       select: {
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        location: LOCATION_KIND_SELECT,
         productItem: { select: { productId: true } },
       },
     });
@@ -820,7 +824,7 @@ export class ProductService {
       const productId = row.productItem.productId;
       const entry = totals.get(productId) ?? { here: 0, allLocations: 0 };
       entry.allLocations += row.stock;
-      if (here(row)) entry.here += row.stock;
+      if (here(columnsOfLocation(row.location))) entry.here += row.stock;
       totals.set(productId, entry);
     }
     return totals;
