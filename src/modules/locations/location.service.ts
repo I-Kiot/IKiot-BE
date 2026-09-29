@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
@@ -10,13 +11,9 @@ import {
 import type { AttendanceLocationDto } from '../../common/dto/attendance-location.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { LOCATION_INCLUDE } from './location.types';
-import type {
-  LocationConfig,
-  LocationDelegate,
-  LocationRow,
-  LocationWhere,
-} from './location.types';
+import type { LocationConfig, LocationRow } from './location.types';
 import { ErrorCode } from '../../common/errors/error-codes';
+import type { Prisma } from '../../../generated/prisma/client';
 
 /** What both list endpoints accept - the DTOs extend PaginationQueryDto, so page/limit always arrive defaulted. */
 export interface LocationQuery {
@@ -36,23 +33,28 @@ export interface LocationInput {
   attendanceTakingLocation?: AttendanceLocationDto;
 }
 
-/** Everything a branch and a warehouse do identically. They used to be two ~220-line services that were 90% the same text, and that symmetry had already broken once: BranchService refused to move a staff member out of their current location and WarehouseService silently did it. What actually differs is passed in as a `LocationConfig`. */
-export abstract class LocationService<TRow extends LocationRow> {
+/** Everything a branch and a warehouse do identically. They used to be two ~220-line services that were 90% the same text, and that symmetry had already broken once: BranchService refused to move a staff member out of their current location and WarehouseService silently did it. What actually differs is passed in as a `LocationConfig`.
+ *
+ * Both now live in the generic `locations` table, told apart by `type`; the `branches` /
+ * `warehouses` rows are 1:1 specializations that share the Location's id, so the id the API
+ * hands out is the same whichever of the two tables you look it up in. */
+export abstract class LocationService {
   protected constructor(
     protected readonly prisma: PrismaService,
     protected readonly subscriptions: SubscriptionService,
-    private readonly delegate: LocationDelegate<TRow>,
     private readonly config: LocationConfig,
   ) {}
 
-  /** Re-nests the flattened geofence columns into the `attendanceTakingLocation` object the old API returned. */
-  protected toResponse(row: TRow) {
-    return withNestedAttendanceLocation(row);
+  /** Re-nests the flattened geofence columns into the `attendanceTakingLocation` object the old API returned; `type` is dropped because the route already says which kind it is. */
+  protected toResponse(row: LocationRow) {
+    const { type, ...rest } = row;
+    return withNestedAttendanceLocation(rest);
   }
 
   async findAll(tenantId: string, query: LocationQuery) {
-    const where: LocationWhere = {
+    const where: Prisma.LocationWhereInput = {
       tenantId,
+      type: this.config.kind,
       // Without an explicit filter the recycle bin stays hidden.
       status: query.status ?? { not: LocationStatus.DELETED },
     };
@@ -61,14 +63,14 @@ export abstract class LocationService<TRow extends LocationRow> {
     }
 
     const [rows, total] = await Promise.all([
-      this.delegate.findMany({
+      this.prisma.location.findMany({
         where,
         include: LOCATION_INCLUDE,
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
       }),
-      this.delegate.count({ where }),
+      this.prisma.location.count({ where }),
     ]);
 
     return paginate(
@@ -80,9 +82,9 @@ export abstract class LocationService<TRow extends LocationRow> {
   }
 
   /** Always scoped by tenant, and a miss is a 404 rather than a 403: another tenant's location must be indistinguishable from one that does not exist. */
-  protected async findRow(tenantId: string, id: string): Promise<TRow> {
-    const row = await this.delegate.findFirst({
-      where: { id, tenantId },
+  protected async findRow(tenantId: string, id: string): Promise<LocationRow> {
+    const row = await this.prisma.location.findFirst({
+      where: { id, tenantId, type: this.config.kind },
       include: LOCATION_INCLUDE,
     });
     if (!row)
@@ -103,15 +105,28 @@ export abstract class LocationService<TRow extends LocationRow> {
       tenantId,
       this.config.quotaField,
       () =>
-        this.delegate.count({
-          where: { tenantId, status: { not: LocationStatus.DELETED } },
+        this.prisma.location.count({
+          where: {
+            tenantId,
+            type: this.config.kind,
+            status: { not: LocationStatus.DELETED },
+          },
         }),
       this.config.messages.quotaLabel,
     );
 
-    const row = await this.delegate.create({
+    // The specialization row takes the Location's own id, which is what lets every API
+    // reference (`branchId`, `locationId`, ...) name either table interchangeably.
+    const id = randomUUID();
+    const specialization = { create: { id, tenantId } };
+    const row = await this.prisma.location.create({
       data: {
+        id,
         tenantId,
+        type: this.config.kind,
+        ...(this.config.specialization === 'branch'
+          ? { branch: specialization }
+          : { warehouse: specialization }),
         name: dto.name,
         phoneNumber: dto.phoneNumber ?? [],
         address: dto.address,
@@ -131,7 +146,7 @@ export abstract class LocationService<TRow extends LocationRow> {
     // Prisma's update({ where: { id } }) can't take a non-unique tenant filter, so scope has to be re-checked first or any tenant could write any row by id.
     await this.findRow(tenantId, id);
 
-    const row = await this.delegate.update({
+    const row = await this.prisma.location.update({
       where: { id },
       data: {
         name: dto.name,
@@ -160,7 +175,7 @@ export abstract class LocationService<TRow extends LocationRow> {
     const staffCount = await this.prisma.user.count({
       where: {
         tenantId,
-        ...this.postedAt(id),
+        locationId: id,
         status: { not: UserStatus.DELETED },
       },
     });
@@ -171,7 +186,7 @@ export abstract class LocationService<TRow extends LocationRow> {
       });
     }
 
-    const row = await this.delegate.update({
+    const row = await this.prisma.location.update({
       where: { id },
       data: { status: LocationStatus.DELETED, managerId: null },
       include: LOCATION_INCLUDE,
@@ -185,10 +200,11 @@ export abstract class LocationService<TRow extends LocationRow> {
     locationId: string,
     staffId: string,
   ) {
-    const location = await this.delegate.findFirst({
+    const location = await this.prisma.location.findFirst({
       where: {
         id: locationId,
         tenantId,
+        type: this.config.kind,
         status: { not: LocationStatus.DELETED },
       },
       include: LOCATION_INCLUDE,
@@ -210,12 +226,7 @@ export abstract class LocationService<TRow extends LocationRow> {
     }
 
     // Appointing someone must not quietly relocate them, so a posting at another location is cleared first rather than silently overwritten.
-    const currentPosting = staff[this.config.postingField];
-    const otherPosting = staff[this.config.otherPostingField];
-    if (
-      (currentPosting !== null && currentPosting !== locationId) ||
-      otherPosting !== null
-    ) {
+    if (staff.locationId !== null && staff.locationId !== locationId) {
       throw new BadRequestException({
         code: ErrorCode.LOCATION_STAFF_POSTED_ELSEWHERE,
         message: this.config.messages.staffPostedElsewhere,
@@ -223,12 +234,12 @@ export abstract class LocationService<TRow extends LocationRow> {
     }
 
     const [, updated] = await this.prisma.$transaction([
-      // A user works at exactly one location, so taking this one releases the other.
+      // A user works at exactly one location - one `location_id` column says so by construction.
       this.prisma.user.update({
         where: { id: staffId },
-        data: this.postedAt(locationId, { exclusively: true }),
+        data: { locationId },
       }),
-      this.delegate.update({
+      this.prisma.location.update({
         where: { id: locationId },
         data: { managerId: staffId },
         include: LOCATION_INCLUDE,
@@ -236,13 +247,5 @@ export abstract class LocationService<TRow extends LocationRow> {
     ]);
 
     return updated.manager;
-  }
-
-  /** `{ branchId: id }` or `{ warehouseId: id }`, written out per case rather than with a computed key so Prisma still type-checks the column name. */
-  private postedAt(locationId: string, options?: { exclusively: boolean }) {
-    const clearOther = options?.exclusively === true;
-    return this.config.postingField === 'branchId'
-      ? { branchId: locationId, ...(clearOther ? { warehouseId: null } : {}) }
-      : { warehouseId: locationId, ...(clearOther ? { branchId: null } : {}) };
   }
 }

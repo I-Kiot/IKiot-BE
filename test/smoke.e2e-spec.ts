@@ -196,11 +196,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     await prisma.subscriptionInvoice.deleteMany({ where: { tenantId: t } });
     await prisma.subscription.deleteMany({ where: { tenantId: t } });
-    await prisma.branch.updateMany({
-      where: { tenantId: t },
-      data: { managerId: null },
-    });
-    await prisma.warehouse.updateMany({
+    await prisma.location.updateMany({
       where: { tenantId: t },
       data: { managerId: null },
     });
@@ -210,12 +206,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.userFcmToken.deleteMany({ where: { user: { tenantId: t } } });
     await prisma.user.updateMany({
       where: { tenantId: t },
-      data: { roleId: null, branchId: null, warehouseId: null },
+      data: { roleId: null, locationId: null },
     });
     await prisma.role.deleteMany({ where: { tenantId: t } });
     await prisma.user.deleteMany({ where: { tenantId: t } });
-    await prisma.branch.deleteMany({ where: { tenantId: t } });
-    await prisma.warehouse.deleteMany({ where: { tenantId: t } });
+    // Branch/Warehouse rows cascade from their Location.
+    await prisma.location.deleteMany({ where: { tenantId: t } });
     await prisma.tenant.deleteMany({ where: { id: t } });
     // Lives outside the tenant (tenantId null), so the sweep above never reaches it.
     await prisma.notification.deleteMany({
@@ -664,7 +660,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http().patch(`/stock-movements/${id}/ship`).set(auth()).expect(200);
 
     const afterShip = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemAId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(afterShip?.stock).toBe(30);
@@ -678,7 +674,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const atBranch = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(atBranch?.stock).toBe(26);
@@ -704,7 +700,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http().patch(`/stock-movements/${id}/cancel`).set(auth()).expect(200);
 
     const back = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemAId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(back?.stock).toBe(30);
@@ -784,7 +780,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const stocked = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemBId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemBId },
       select: { stock: true },
     });
     expect(stocked?.stock).toBe(60);
@@ -908,7 +904,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after?.stock).toBe(24);
@@ -948,7 +944,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('rings up a cash sale, computing the total server-side', async () => {
     const before = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
@@ -974,7 +970,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after!.stock).toBe(before!.stock - 2);
@@ -1006,7 +1002,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // `unitPrice` straight through, so a basket could be rung up for nothing while stock
     // left the shelf and the ledger recorded an honest-looking sale.
     await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       data: { stock: { increment: 2 } },
     });
 
@@ -1028,7 +1024,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // The manual whole-order discount is capped at what the order is worth. `Math.max(0,…)`
     // alone only stopped the total going negative - any basket could still be settled at 0.
     await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       data: { stock: { increment: 1 } },
     });
     const capped = await http()
@@ -1054,7 +1050,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // 10% promotion split across ten identical lines discounted 100% and the order was
     // written at 0đ - while ten units left the shelf.
     await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       data: { stock: { increment: 10 } },
     });
 
@@ -1131,7 +1127,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('returns a completed sale, putting stock and money back', async () => {
     const before = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
@@ -1149,7 +1145,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after!.stock).toBe(before!.stock + 2);
@@ -1808,7 +1804,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Reuse the second branch an earlier test created - the TRIAL plan caps a shop at two,
     // so creating a third here would be refused by the quota, not by the scope rule.
     const otherBranch = await prisma.branch.findFirstOrThrow({
-      where: { tenantId, id: { not: branchId }, status: 'ACTIVE' },
+      where: {
+        tenantId,
+        id: { not: branchId },
+        location: { status: 'ACTIVE' },
+      },
       select: { id: true },
     });
 
@@ -1852,7 +1852,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('refuses to sell more than the shelf holds, from inside the write', async () => {
     const line = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
@@ -1872,7 +1872,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(400);
 
     const unchanged = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(unchanged!.stock).toBe(line!.stock);
@@ -2087,7 +2087,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const flows = await prisma.cashFlow.findMany({
       where: {
         tenantId,
-        branchId,
+        locationId: branchId,
         paymentMethod: 'CASH',
         createdAt: { gte: dayStart, lt: dayEnd },
       },
@@ -2148,7 +2148,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Stock is topped up by exactly what the sale consumes, so inventory nets to zero and
     // later tests see what they expected.
     await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       data: { stock: { increment: 1 } },
     });
     await http()
@@ -2363,7 +2363,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Take their posting away.
     await prisma.user.update({
       where: { id: drifter.body.data.id },
-      data: { branchId: null },
+      data: { locationId: null },
     });
 
     const login = await http()
@@ -3148,7 +3148,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       await prisma.cashFlow.create({
         data: {
           tenantId,
-          branchId,
+          locationId: branchId,
           orderId: order.id,
           flowType: 'INCOME',
           amount: grandTotal,

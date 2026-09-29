@@ -34,6 +34,11 @@ import {
   UpdateWorkingScheduleDto,
 } from './dto/working-schedule.dto';
 import { withNestedProfile } from '../../common/utils/user-profile';
+import {
+  USER_POSTING_SELECT,
+  postingWhere,
+  withPosting,
+} from '../../common/dto/location-ref.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
@@ -42,8 +47,8 @@ const STAFF_SELECT = {
   phoneNumber: true,
   profileFirstName: true,
   profileLastName: true,
-  branchId: true,
-  warehouseId: true,
+  // Answered as branchId/warehouseId again by withPosting.
+  ...USER_POSTING_SELECT,
 } as const;
 
 const SCHEDULE_INCLUDE = {
@@ -551,8 +556,7 @@ export class WorkingScheduleService {
       assigned.user = {
         tenantId,
         status: { not: UserStatus.DELETED },
-        ...(query.branchId ? { branchId: query.branchId } : {}),
-        ...(query.warehouseId ? { warehouseId: query.warehouseId } : {}),
+        ...postingWhere(query),
       };
     }
     if (Object.keys(assigned).length > 0) {
@@ -616,7 +620,7 @@ export class WorkingScheduleService {
         },
         // Same nesting the `/users` responses use - a staff member's name is under `profile` on the wire wherever it appears.
         assignedUsers: row.assignedUsers.map((assigned) => ({
-          ...withNestedProfile(assigned.user),
+          ...withNestedProfile(withPosting(assigned.user)),
           attendance: this.attendanceSummary(
             attendances.get(`${row.id}:${assigned.userId}`) ?? null,
             row,
@@ -747,7 +751,9 @@ export class WorkingScheduleService {
             endTime: fromShiftTime(shiftTemplate.endTime),
           }
         : null,
-      assignedUsers: assignedUsers.map((assigned) => assigned.user),
+      assignedUsers: assignedUsers.map((assigned) =>
+        withPosting(assigned.user),
+      ),
     };
   }
 }
