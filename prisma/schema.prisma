@@ -1,6 +1,9 @@
 // iKiotMS schema. uuid PKs, snake_case via @map; enum-like columns are String (values in comments).
 // Core rules: available = stock - reserved; every stock change writes one InventoryTransaction;
-// stock is reserved on confirmation and deducted at hand-over. Payroll/Attendance are DEPRECATED.
+// stock is added as soon as an import is received, reserved on confirmation and deducted when packed.
+// Stock is held in InventoryLot rows that keep their source (supplier / workshop) and unit cost, so the
+// cost of every unit sold - and the margin per source - is known: Σ lot.remaining = inventories.stock.
+// Payroll/Attendance are DEPRECATED.
 // Location.type is BRANCH | WAREHOUSE; a Branch/Warehouse shares its Location's id.
 
 // SQL-only constraints (keep them when editing a generated migration):
@@ -15,6 +18,10 @@
 //   - stock_reservations, production_request_items, order_return_items: CHECK (quantity > 0)
 //   - production_request_items: CHECK (received_quantity >= 0)
 //   - stock_movement_request_items: CHECK (defect_quantity BETWEEN 0 AND COALESCE(received_quantity, 0))
+//   - stock_movement_requests: CHECK ((movement_type = 'IMPORT') = (import_source IS NOT NULL))
+//   - stock_movement_requests: CHECK (import_source IS DISTINCT FROM 'WORKSHOP' OR production_request_id IS NOT NULL)
+//   - inventory_lots: CHECK (received_quantity > 0 AND remaining_quantity BETWEEN 0 AND received_quantity)
+//   - inventory_lot_usages: CHECK (quantity > 0)
 //   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
 //   - payments: CHECK (amount > 0)
 //   - invoices: one live SALE invoice per order (partial, type = 'SALE' AND status <> 'CANCELLED')
@@ -67,6 +74,8 @@ model Tenant {
   productItems            ProductItem[]
   inventories             Inventory[]
   inventoryTransactions   InventoryTransaction[]
+  inventoryLots           InventoryLot[]
+  inventoryLotUsages      InventoryLotUsage[]
   stockMovementRequests   StockMovementRequest[]
   shiftTemplates          ShiftTemplate[]
   workingSchedules        WorkingSchedule[]
@@ -421,6 +430,7 @@ model Location {
   users                 User[]
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
+  inventoryLots         InventoryLot[]
   stockMovementsFrom    StockMovementRequest[] @relation("StockMovementFromLocation")
   stockMovementsTo      StockMovementRequest[] @relation("StockMovementToLocation")
   cashFlows             CashFlow[]
@@ -507,7 +517,7 @@ model Supplier {
   tenantId        String   @map("tenant_id")
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   supplierName    String   @map("supplier_name")
-  type            String   @default("GOODS") // GOODS | WORKSHOP (makes goods to order; receives production requests)
+  type            String   @default("GOODS") // GOODS (sells finished goods; SUPPLIER imports) | WORKSHOP (makes goods to order; production requests + WORKSHOP imports)
   contactName     String?  @map("contact_name")
   phoneNumber     String?  @map("phone_number")
   email           String?
@@ -521,6 +531,7 @@ model Supplier {
   stockMovementRequests StockMovementRequest[]
   cashFlows             CashFlow[]
   productionRequests    ProductionRequest[]
+  inventoryLots         InventoryLot[]
 
   @@map("suppliers")
 }
@@ -628,6 +639,7 @@ model ProductItem {
   images                ProductItemImage[]
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
+  inventoryLots         InventoryLot[]
   stockMovementItems    StockMovementRequestItem[]
   orderItems            OrderItem[]
   promotionProductItems PromotionProductItem[]
@@ -753,9 +765,82 @@ model InventoryTransaction {
   createdBy   User?    @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  lotCreated InventoryLot? // the lot an inbound (+) row opened
+  lotUsages  InventoryLotUsage[] // the lots an outbound (-) row drew from
+
   @@index([tenantId, locationId, productItemId, createdAt])
   @@index([referenceType, referenceId])
   @@map("inventory_transactions")
+}
+
+/// A batch of one SKU at one location, keeping where it came from and what it cost.
+/// Opened by every inbound stock row; outbound rows draw from lots (FIFO by receivedAt,
+/// a custom piece only from the lot made for its order line) and record it in InventoryLotUsage.
+model InventoryLot {
+  id            String      @id @default(uuid())
+  tenantId      String      @map("tenant_id")
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  locationId    String      @map("location_id")
+  location      Location    @relation(fields: [locationId], references: [id])
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id])
+
+  // Origin of the goods, carried unchanged when a lot is moved or returned:
+  // SUPPLIER | WORKSHOP | ADJUSTMENT (stocktake surplus) | OPENING (stock that predates lots)
+  sourceType String    @map("source_type")
+  supplierId String?   @map("supplier_id") // the supplier or the workshop (SUPPLIER / WORKSHOP)
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  importItemId            String?                   @map("import_item_id") // the IMPORT line that brought it in
+  importItem              StockMovementRequestItem? @relation(fields: [importItemId], references: [id])
+  productionRequestItemId String?                   @map("production_request_item_id") // WORKSHOP
+  productionRequestItem   ProductionRequestItem?    @relation(fields: [productionRequestItemId], references: [id])
+  orderItemId             String?                   @map("order_item_id") // custom piece: only this line may consume it
+  orderItem               OrderItem?                @relation("InventoryLotCustomFor", fields: [orderItemId], references: [id])
+
+  // Split off another lot by a transfer, a customer return or a defect put-away
+  parentLotId String?        @map("parent_lot_id")
+  parentLot   InventoryLot?  @relation("InventoryLotParent", fields: [parentLotId], references: [id])
+  childLots   InventoryLot[] @relation("InventoryLotParent")
+
+  inboundTransactionId String               @unique @map("inbound_transaction_id")
+  inboundTransaction   InventoryTransaction @relation(fields: [inboundTransactionId], references: [id])
+
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(12, 2) // import price; workshop price for WORKSHOP
+  receivedQuantity  Int      @map("received_quantity")
+  remainingQuantity Int      @map("remaining_quantity")
+  receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // FIFO key; kept from the parent lot
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  usages InventoryLotUsage[]
+
+  @@index([tenantId, locationId, productItemId, receivedAt])
+  @@index([tenantId, sourceType, supplierId])
+  @@index([orderItemId])
+  @@map("inventory_lots")
+}
+
+/// How much of which lot an outbound stock row took. For a SALE (written when the
+/// fulfillment line is packed) this is the cost of goods sold, split by source.
+model InventoryLotUsage {
+  id                     String               @id @default(uuid())
+  tenantId               String               @map("tenant_id")
+  tenant                 Tenant               @relation(fields: [tenantId], references: [id])
+  lotId                  String               @map("lot_id")
+  lot                    InventoryLot         @relation(fields: [lotId], references: [id])
+  inventoryTransactionId String               @map("inventory_transaction_id")
+  inventoryTransaction   InventoryTransaction @relation(fields: [inventoryTransactionId], references: [id])
+  orderItemId            String?              @map("order_item_id") // SALE only
+  orderItem              OrderItem?           @relation(fields: [orderItemId], references: [id])
+  quantity               Int
+  unitCost               Decimal              @map("unit_cost") @db.Decimal(12, 2) // copied from the lot
+  createdAt              DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([lotId])
+  @@index([inventoryTransactionId])
+  @@index([tenantId, orderItemId])
+  @@map("inventory_lot_usages")
 }
 
 model StorageNode {
@@ -818,8 +903,16 @@ model StockMovementRequest {
   movementType String @map("movement_type") // IMPORT | EXPORT | RETURN | ADJUST
   status       String @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | COMPLETED | CANCELLED
 
-  fromSupplierId String?   @map("from_supplier_id")
+  // IMPORT only - the two receiving flows, never mixed on one document:
+  //   SUPPLIER = buying finished goods from a GOODS supplier
+  //   WORKSHOP = goods a WORKSHOP made against productionRequestId
+  importSource String? @map("import_source")
+
+  fromSupplierId String?   @map("from_supplier_id") // the supplier or the workshop; its type must match importSource
   fromSupplier   Supplier? @relation(fields: [fromSupplierId], references: [id])
+
+  productionRequestId String?            @map("production_request_id") // WORKSHOP imports
+  productionRequest   ProductionRequest? @relation(fields: [productionRequestId], references: [id])
 
   fromLocationId String?   @map("from_location_id")
   fromLocation   Location? @relation("StockMovementFromLocation", fields: [fromLocationId], references: [id])
@@ -850,6 +943,8 @@ model StockMovementRequest {
   @@index([tenantId, fromLocationId])
   @@index([tenantId, toLocationId])
   @@index([tenantId, status])
+  @@index([tenantId, movementType, importSource, fromSupplierId])
+  @@index([productionRequestId])
   @@map("stock_movement_requests")
 }
 
@@ -860,13 +955,15 @@ model StockMovementRequestItem {
   productItemId    String               @map("product_item_id")
   productItem      ProductItem          @relation(fields: [productItemId], references: [id])
   quantity         Int
-  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2)
+  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2) // IMPORT: becomes the lot's unit cost
   receivedQuantity Int?                 @map("received_quantity")
   defectQuantity   Int                  @default(0) @map("defect_quantity") // goes to a non-sellable location
   note             String?
 
-  productionRequestItemId String?                @map("production_request_item_id")
+  productionRequestItemId String?                @map("production_request_item_id") // required on a WORKSHOP import
   productionRequestItem   ProductionRequestItem? @relation(fields: [productionRequestItemId], references: [id])
+
+  lots InventoryLot[]
 
   @@index([requestId])
   @@index([productionRequestItemId])
@@ -1472,7 +1569,7 @@ model OrderItem {
   sku           String?
   variantLabel  String?  @map("variant_label") // e.g. "Gỗ sồi / 1m8"
   listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // SKU retail price at sale time
-  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2)
+  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // actual average cost of the units packed (Σ lot usages / quantity); null until packed
   vatRate       Decimal? @map("vat_rate") @db.Decimal(5, 2)
 
   quantity         Int
@@ -1489,6 +1586,8 @@ model OrderItem {
   fulfillmentItems       FulfillmentItem[]
   returnItems            OrderReturnItem[]
   invoiceLines           InvoiceLine[]
+  customLots             InventoryLot[]          @relation("InventoryLotCustomFor")
+  lotUsages              InventoryLotUsage[]
 
   @@index([orderId])
   @@index([productItemId])
@@ -1505,7 +1604,7 @@ model StockReservation {
   locationId  String    @map("location_id")
   location    Location  @relation(fields: [locationId], references: [id])
   quantity    Int
-  status      String    @default("ACTIVE") // ACTIVE | CONSUMED | RELEASED
+  status      String    @default("ACTIVE") // ACTIVE | CONSUMED (line packed, stock deducted) | RELEASED
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1540,7 +1639,8 @@ model ProductionRequest {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  items ProductionRequestItem[]
+  items    ProductionRequestItem[]
+  receipts StockMovementRequest[] // the WORKSHOP imports that brought the goods in
 
   @@unique([tenantId, code])
   @@index([tenantId, status, expectedReadyDate])
@@ -1562,6 +1662,7 @@ model ProductionRequestItem {
   note                String?
 
   importLines StockMovementRequestItem[]
+  lots        InventoryLot[]
 
   @@index([productionRequestId])
   @@index([productItemId])
@@ -1877,7 +1978,8 @@ model Payment {
 // F2. Fulfillment & delivery
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Packs READY lines; HANDED_OVER consumes their reservations and deducts stock.
+/// Packs READY lines. Packing a line consumes its reservation and deducts the stock (from lots);
+/// HANDED_OVER only records the hand-over to the carrier.
 model Fulfillment {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1924,7 +2026,7 @@ model FulfillmentItem {
   orderItem     OrderItem    @relation(fields: [orderItemId], references: [id])
   quantity      Int
   qtyPicked     Int          @default(0) @map("qty_picked")
-  qtyPacked     Int          @default(0) @map("qty_packed")
+  qtyPacked     Int          @default(0) @map("qty_packed") // stock is deducted as units are packed
   pickedFromId  String?      @map("picked_from_id")
   pickedFrom    StorageNode? @relation(fields: [pickedFromId], references: [id])
 
