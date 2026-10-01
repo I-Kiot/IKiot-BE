@@ -46,6 +46,7 @@ const ALL_PLAN_FEATURES = [
   'sales',
   'reports',
   'hr_management',
+  'payroll',
 ];
 
 const PLANS = [
@@ -254,6 +255,28 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Thông báo',
   },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
+  attendances: {
+    // 'delete' added for the NestJS port.
+    actions: ['create', 'read', 'update', 'delete', 'read_own'],
+    label: 'Chấm công',
+  },
+  leaveRequests: {
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'read_all',
+      'read_mine',
+      'readBR',
+      'readWH',
+      'approve',
+      'reject',
+      'cancel',
+      'create_emergency',
+    ],
+    label: 'Đơn nghỉ phép',
+  },
   cash_drawers: {
     // 'create'/'update'/'delete' added for the NestJS port - the old system only ever
     // opened and finalised a session, never edited one directly.
@@ -268,6 +291,10 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'read_own',
     ],
     label: 'Ca thu ngân',
+  },
+  paysheets: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Bảng lương mẫu',
   },
   schedules: {
     actions: [
@@ -295,6 +322,21 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     ],
     label: 'Xuất/nhập kho',
   },
+  payrollSettings: {
+    // 'delete' added for the NestJS port.
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Cấu hình lương',
+  },
+  payroll: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Kỳ lương',
+  },
+  payslips: {
+    // Only 'read_own' existed before - an employee reading their own payslip. The generated
+    // payslips module is full CRUD (HR issuing/correcting them), hence the rest.
+    actions: ['create', 'read', 'update', 'delete', 'read_own'],
+    label: 'Phiếu lương',
+  },
   holidays: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Ngày lễ',
@@ -315,7 +357,7 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   cash_flows: {
     // Distinct from cash_drawers: a drawer is one cashier's shift, cash_flows is every
-    // movement of tenant money (supplier payments, ...). The old system
+    // movement of tenant money (payroll payouts, supplier payments, ...). The old system
     // only ever exposed it read-only under reports ('/stats/cashflow').
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Dòng tiền',

@@ -5,7 +5,7 @@ const MALE_1995 = '079095001234';
 const FEMALE_1995 = '079195001234';
 const MALE_2001 = '079201001234';
 
-// The point is catching a typo at data-entry time: the CCCD, birth date and sex are only worth storing if they agree.
+// The point is catching a typo at data-entry time: the CCCD, birth date and sex all end up in payroll and social-insurance exports, where a mismatch is somebody else's problem.
 describe('validateVietnamIdentificationId', () => {
   it('accepts a well-formed number with no profile to cross-check', () => {
     expect(validateVietnamIdentificationId(MALE_1995)).toBe(MALE_1995);

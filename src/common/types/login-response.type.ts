@@ -9,6 +9,7 @@ export interface AuditableLoginResponse {
     phoneNumber: string;
     systemRole: string;
     tenantId: string | null;
-    profile: { firstName: string | null; lastName: string | null };
+    profileFirstName: string | null;
+    profileLastName: string | null;
   };
 }

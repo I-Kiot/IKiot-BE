@@ -73,6 +73,11 @@ export class UpdateUserDto {
   @IsDateString()
   hireDate?: string;
 
+  /** Which pay scheme this person is on. Must be an ACTIVE paysheet in the tenant. */
+  @IsOptional()
+  @IsUUID()
+  paysheetId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(1000)

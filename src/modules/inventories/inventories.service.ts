@@ -9,10 +9,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { InventoryNotificationTemplates } from '../notifications/templates/inventory.templates';
 import {
-  LOCATION_SELECT,
   locationWhere,
-  resolveLocations,
+  toLocationColumns,
+  toLocationRef,
 } from '../../common/dto/location-ref.dto';
+import type { LocationColumns } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { crossedLowStock } from './low-stock';
 import { QueryInventoryDto } from './dto/query-inventory.dto';
@@ -30,13 +31,8 @@ const PRODUCT_ITEM_SELECT = {
   details: { select: { name: true, value: true, position: true } },
 } as const;
 
-const INVENTORY_INCLUDE = {
-  productItem: { select: PRODUCT_ITEM_SELECT },
-  location: LOCATION_SELECT,
-} as const satisfies Prisma.InventoryInclude;
-
 type InventoryRow = Prisma.InventoryGetPayload<{
-  include: typeof INVENTORY_INCLUDE;
+  include: { productItem: { select: typeof PRODUCT_ITEM_SELECT } };
 }>;
 
 /** Ported from InventoryService, serving two audiences: the four `/inventory` routes, and the stock primitives Order and StockMovement call - those live here because "what happens to stock, and when do we warn" is one rule. */
@@ -49,10 +45,9 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** `location` is already the shared `{ id, type, name }` (LOCATION_SELECT); `locationId` is dropped so the response names the place once. */
   private toResponse(row: InventoryRow) {
-    const { locationId, ...rest } = row;
-    return rest;
+    const { branchId, warehouseId, ...rest } = row;
+    return { ...rest, location: toLocationRef({ branchId, warehouseId }) };
   }
 
   async findAll(tenantId: string, query: QueryInventoryDto) {
@@ -79,7 +74,7 @@ export class InventoryService {
     const [rows, total] = await Promise.all([
       this.prisma.inventory.findMany({
         where,
-        include: INVENTORY_INCLUDE,
+        include: { productItem: { select: PRODUCT_ITEM_SELECT } },
         orderBy: { updatedAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -99,7 +94,7 @@ export class InventoryService {
   private async findRow(tenantId: string, id: string): Promise<InventoryRow> {
     const row = await this.prisma.inventory.findFirst({
       where: { id, tenantId },
-      include: INVENTORY_INCLUDE,
+      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
     });
     if (!row)
       throw new NotFoundException({
@@ -115,7 +110,7 @@ export class InventoryService {
     const row = await this.prisma.inventory.update({
       where: { id },
       data: { minStock },
-      include: INVENTORY_INCLUDE,
+      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
     });
     return this.toResponse(row);
   }
@@ -128,7 +123,8 @@ export class InventoryService {
    * setting a `minStock` threshold on something that is on order.
    */
   async addProductToLocation(tenantId: string, dto: AddProductToLocationDto) {
-    await resolveLocations(this.prisma, tenantId, [dto.locationId]);
+    const columns = toLocationColumns(dto);
+    await this.assertLocationsExist(tenantId, [columns]);
 
     const productItem = await this.prisma.productItem.findFirst({
       where: { id: dto.productItemId, tenantId },
@@ -141,9 +137,8 @@ export class InventoryService {
       });
     }
 
-    const { locationId } = dto;
     const existing = await this.prisma.inventory.findFirst({
-      where: { tenantId, productItemId: dto.productItemId, locationId },
+      where: { tenantId, productItemId: dto.productItemId, ...columns },
       select: { id: true },
     });
     if (existing) {
@@ -157,11 +152,11 @@ export class InventoryService {
       data: {
         tenantId,
         productItemId: dto.productItemId,
-        locationId,
+        ...columns,
         stock: 0,
         minStock: 0,
       },
-      include: INVENTORY_INCLUDE,
+      include: { productItem: { select: PRODUCT_ITEM_SELECT } },
     });
     return this.toResponse(row);
   }
@@ -183,36 +178,60 @@ export class InventoryService {
 
   // ─── Stock primitives, for Order / StockMovement ────────────────────────────
 
-  /** Add to (or subtract from) one line's stock, creating the line if the location doesn't stock the item yet. Pass the caller's transactional client, or a rolled-back sale still moves stock. One upserting statement on purpose: a read-then-create lets two receipts both insert and one die on the `(tenant, location, item)` unique index. */
+  /** Add to (or subtract from) one line's stock, creating the line if the location doesn't stock the item yet. Pass the caller's transactional client, or a rolled-back sale still moves stock. One upserting statement on purpose: a read-then-create lets two receipts both insert and one die on the unique index - and which unique index applies depends on which end is set, since a NULL in a Postgres unique index constrains nothing. */
   async adjustStock(
     tx: Prisma.TransactionClient,
     args: {
       tenantId: string;
       productItemId: string;
-      /** A Location id - the same id as the Branch or Warehouse it specializes. */
-      locationId: string;
+      branchId: string | null;
+      warehouseId: string | null;
       delta: number;
     },
   ): Promise<Inventory | null> {
     if (!args.delta) return null;
 
-    const { tenantId, productItemId, locationId, delta } = args;
+    const create = {
+      tenantId: args.tenantId,
+      productItemId: args.productItemId,
+      branchId: args.branchId,
+      warehouseId: args.warehouseId,
+      stock: args.delta,
+      minStock: 0,
+    };
+    const update = { stock: { increment: args.delta } };
+
+    if (args.branchId) {
+      return tx.inventory.upsert({
+        where: {
+          tenantId_branchId_productItemId: {
+            tenantId: args.tenantId,
+            branchId: args.branchId,
+            productItemId: args.productItemId,
+          },
+        },
+        create,
+        update,
+      });
+    }
+
+    if (!args.warehouseId) {
+      throw new BadRequestException({
+        code: ErrorCode.LOCATION_REQUIRED,
+        message: 'A stock adjustment must name a branch or a warehouse',
+      });
+    }
+
     return tx.inventory.upsert({
       where: {
-        tenantId_locationId_productItemId: {
-          tenantId,
-          locationId,
-          productItemId,
+        tenantId_warehouseId_productItemId: {
+          tenantId: args.tenantId,
+          warehouseId: args.warehouseId,
+          productItemId: args.productItemId,
         },
       },
-      create: {
-        tenantId,
-        productItemId,
-        locationId,
-        stock: delta,
-        minStock: 0,
-      },
-      update: { stock: { increment: delta } },
+      create,
+      update,
     });
   }
 
@@ -222,8 +241,8 @@ export class InventoryService {
     args: {
       tenantId: string;
       productItemId: string;
-      /** A Location id - the same id as the Branch or Warehouse it specializes. */
-      locationId: string;
+      branchId: string | null;
+      warehouseId: string | null;
       quantity: number;
       /** Shown in the error - an id tells the cashier nothing. */
       label: string;
@@ -239,7 +258,8 @@ export class InventoryService {
     const where = {
       tenantId: args.tenantId,
       productItemId: args.productItemId,
-      locationId: args.locationId,
+      branchId: args.branchId,
+      warehouseId: args.warehouseId,
     };
 
     const taken = await tx.inventory.updateMany({
@@ -275,7 +295,8 @@ export class InventoryService {
         const [recipients, item] = await Promise.all([
           this.notifications.managersOfLocation({
             tenantId: inventory.tenantId,
-            locationId: inventory.locationId,
+            branchId: inventory.branchId,
+            warehouseId: inventory.warehouseId,
           }),
           this.prisma.productItem.findUnique({
             where: { id: inventory.productItemId },
@@ -299,6 +320,47 @@ export class InventoryService {
         'Failed to send low-stock warnings',
         error instanceof Error ? error.stack : error,
       );
+    }
+  }
+
+  /** Every location a request names has to exist inside the caller's tenant: the FK would catch a made-up id but knows nothing about tenants, and a single product create can name a location per variant. */
+  async assertLocationsExist(
+    tenantId: string,
+    refs: LocationColumns[],
+  ): Promise<void> {
+    const branchIds = [
+      ...new Set(refs.map((ref) => ref.branchId).filter((id) => id !== null)),
+    ];
+    const warehouseIds = [
+      ...new Set(
+        refs.map((ref) => ref.warehouseId).filter((id) => id !== null),
+      ),
+    ];
+
+    const [branches, warehouses] = await Promise.all([
+      branchIds.length
+        ? this.prisma.branch.count({
+            where: { tenantId, id: { in: branchIds } },
+          })
+        : 0,
+      warehouseIds.length
+        ? this.prisma.warehouse.count({
+            where: { tenantId, id: { in: warehouseIds } },
+          })
+        : 0,
+    ]);
+
+    if (branches !== branchIds.length) {
+      throw new NotFoundException({
+        code: ErrorCode.BRANCH_NOT_FOUND,
+        message: 'Branch not found',
+      });
+    }
+    if (warehouses !== warehouseIds.length) {
+      throw new NotFoundException({
+        code: ErrorCode.WAREHOUSE_NOT_FOUND,
+        message: 'Warehouse not found',
+      });
     }
   }
 }

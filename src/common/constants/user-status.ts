@@ -1,4 +1,4 @@
-/** User account lifecycle. DELETED is a soft delete (`User.deletedAt` set alongside), since orders, stock movements and audit logs hold FKs. */
+/** User account lifecycle. DELETED is a soft delete (`User.deletedAt` set alongside), since orders, attendances, audit logs and payslips hold FKs. */
 export const UserStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',

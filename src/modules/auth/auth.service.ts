@@ -31,10 +31,6 @@ import { OtpService } from './otp.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { FirebaseService } from '../../common/firebase/firebase.service';
 import { ErrorCode } from '../../common/errors/error-codes';
-import {
-  withNestedProfile,
-  type FlatUserProfile,
-} from '../../common/utils/user-profile';
 
 const BCRYPT_COST = 10;
 
@@ -435,11 +431,11 @@ export class AuthService {
     return this.jwt.sign({ sub: userId });
   }
 
-  /** Strips the password hash and nests the flat `profile_*` columns the way `/users` answers them, so the dashboard reads `user.profile.firstName` from `/auth/me` and `/auth/login` alike (until 2026-09-12 these two were the only user payloads still flat, which left the sidebar and account settings without a name). */
-  private toPublicUser<
-    T extends { password?: string | null } & FlatUserProfile,
-  >(user: T) {
+  /** Strips the password hash and keeps every other field with its type intact; the old `Record<string, unknown>` signature erased the shape and forced callers to cast fields back. */
+  private toPublicUser<T extends { password?: string | null }>(
+    user: T,
+  ): Omit<T, 'password'> {
     const { password, ...rest } = user;
-    return withNestedProfile(rest);
+    return rest;
   }
 }

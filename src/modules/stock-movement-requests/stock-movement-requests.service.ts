@@ -12,12 +12,11 @@ import { StockMovementNotificationTemplates } from '../notifications/templates/s
 import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
 import { SystemRole } from '../../common/constants/system-role';
 import {
-  LOCATION_SELECT,
-  columnsOfLocation,
-  resolveLocations,
+  destinationRef,
+  sourceRef,
+  toLocationColumns,
 } from '../../common/dto/location-ref.dto';
-import type { LocationEnd } from '../../common/dto/location-ref.dto';
-import { isReturnDirection } from '../../common/constants/location-type';
+import type { LocationRefDto } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
@@ -36,7 +35,12 @@ import {
 } from './dto/stock-movement.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
-import { withNestedProfile } from '../../common/utils/user-profile';
+
+/** The pair of nullable FKs naming one end of a movement. */
+interface LocationColumns {
+  branchId: string | null;
+  warehouseId: string | null;
+}
 
 const DETAIL_INCLUDE = {
   details: {
@@ -53,8 +57,10 @@ const DETAIL_INCLUDE = {
     },
   },
   fromSupplier: { select: { id: true, supplierName: true } },
-  fromLocation: LOCATION_SELECT,
-  toLocation: LOCATION_SELECT,
+  fromBranch: { select: { id: true, name: true } },
+  fromWarehouse: { select: { id: true, name: true } },
+  toBranch: { select: { id: true, name: true } },
+  toWarehouse: { select: { id: true, name: true } },
   createdBy: {
     select: {
       id: true,
@@ -90,13 +96,13 @@ export class StockMovementService {
     // A staff account sees the movements that touch their own location, from either end.
     const own = this.postingOf(user);
     if (own) {
-      if (!own.locationId) {
-        // Posted nowhere: there is no location whose movements they could be looking at, and matching the column directly would quietly match rows where it is null.
+      if (!own.branchId && !own.warehouseId) {
+        // Posted nowhere: there is no location whose movements they could be looking at, and matching the columns directly would quietly match rows where both are null.
         return paginate([], 0, query.page, query.limit);
       }
       where.OR = [
-        { fromLocationId: own.locationId },
-        { toLocationId: own.locationId },
+        { fromBranchId: own.branchId, fromWarehouseId: own.warehouseId },
+        { toBranchId: own.branchId, toWarehouseId: own.warehouseId },
       ];
     }
 
@@ -140,17 +146,9 @@ export class StockMovementService {
     const tenantId = this.tenantOf(user);
     this.assertNoDuplicateItems(dto.details);
 
-    // Both ends in one query: existence, tenant and kind (the kind drives the RETURN rule).
-    // This runs before the access checks, so a location in another tenant answers 404
-    // rather than 403 - coding rule 5.
-    const fromId = this.resolveSourceId(user, dto);
-    const ends = await resolveLocations(this.prisma, tenantId, [
-      fromId,
-      dto.toLocationId,
-    ]);
-    const from = fromId ? ends.get(fromId)! : null;
-    const to = dto.toLocationId ? ends.get(dto.toLocationId)! : null;
-    // An IMPORT has no source, so it is scoped by its destination - left unchecked, a staff account could file goods in against any warehouse.
+    const from = this.resolveSource(user, dto);
+    const to = dto.toLocation ? this.columnsOf(dto.toLocation) : null;
+    // An IMPORT has no source, so `resolveSource` checks nothing - which left the movement unscoped and let a staff account file goods in against any warehouse.
     if (dto.movementType === MovementType.IMPORT) {
       if (to) this.assertCanActAt(user, to);
     } else if (this.isTransferType(dto.movementType)) {
@@ -168,7 +166,7 @@ export class StockMovementService {
       // ADJUST counts stock at one location, so it is only ever filed there.
       this.assertCanActAt(user, from);
     }
-    this.assertEndpointsValid(dto.movementType, from, to);
+    await this.assertEndpointsValid(tenantId, dto.movementType, from, to);
 
     const details = await this.prepareLines(
       tenantId,
@@ -200,8 +198,10 @@ export class StockMovementService {
         createdById: user.userId,
         totalPrice,
         fromSupplierId: dto.fromSupplierId,
-        fromLocationId: from?.id ?? null,
-        toLocationId: to?.id ?? null,
+        fromBranchId: from?.branchId ?? null,
+        fromWarehouseId: from?.warehouseId ?? null,
+        toBranchId: to?.branchId ?? null,
+        toWarehouseId: to?.warehouseId ?? null,
         details: { create: details },
       },
       include: DETAIL_INCLUDE,
@@ -337,14 +337,15 @@ export class StockMovementService {
         const lowStock: (Inventory | null)[] = [];
 
         if (isTransfer) {
-          const from = this.source(request)!;
+          const from = this.source(request);
           for (const line of request.details) {
             const quantity = Number(line.quantity);
             // `deductStock` is the check as well as the write: the `assertSourceStock` calls elsewhere are advisory, and this is what stops two shipments emptying the same shelf twice.
             const after = await this.inventory.deductStock(tx, {
               tenantId,
               productItemId: line.productItemId,
-              locationId: from.id,
+              branchId: from.branchId,
+              warehouseId: from.warehouseId,
               quantity,
               label: line.productItem.sku ?? line.productItemId,
             });
@@ -422,7 +423,7 @@ export class StockMovementService {
       });
     }
 
-    const to = this.destination(request)!;
+    const to = this.destination(request);
     const { received, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
         let importCost = 0;
@@ -441,7 +442,8 @@ export class StockMovementService {
           await this.inventory.adjustStock(tx, {
             tenantId,
             productItemId: line.productItemId,
-            locationId: to.id,
+            branchId: to.branchId,
+            warehouseId: to.warehouseId,
             delta: quantity,
           });
         }
@@ -505,7 +507,7 @@ export class StockMovementService {
     }
     this.assertStatus(request, [MovementStatus.PENDING]);
 
-    const from = this.source(request)!;
+    const from = this.source(request);
     const changes = request.details.map((line) => {
       if (line.receivedQuantity === null) {
         throw new BadRequestException({
@@ -540,7 +542,8 @@ export class StockMovementService {
               where: {
                 tenantId,
                 productItemId: change.productItemId,
-                locationId: from.id,
+                branchId: from.branchId,
+                warehouseId: from.warehouseId,
               },
               select: { stock: true },
             });
@@ -556,7 +559,8 @@ export class StockMovementService {
           const after = await this.inventory.adjustStock(tx, {
             tenantId,
             productItemId: change.productItemId,
-            locationId: from.id,
+            branchId: from.branchId,
+            warehouseId: from.warehouseId,
             delta: change.delta,
           });
           lowStock.push(this.inventory.lowStockCrossing(after, change.delta));
@@ -605,12 +609,13 @@ export class StockMovementService {
 
     const cancelled = await this.prisma.$transaction(async (tx) => {
       if (shouldReturnStock) {
-        const from = this.source(request)!;
+        const from = this.source(request);
         for (const line of request.details) {
           await this.inventory.adjustStock(tx, {
             tenantId,
             productItemId: line.productItemId,
-            locationId: from.id,
+            branchId: from.branchId,
+            warehouseId: from.warehouseId,
             delta: Number(line.quantity),
           });
         }
@@ -671,7 +676,7 @@ export class StockMovementService {
   /** EXPORT/RETURN lines: price defaults to cost, and the source must hold the stock. */
   private async prepareTransferLines(
     tenantId: string,
-    from: LocationEnd,
+    from: LocationColumns,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
@@ -699,14 +704,15 @@ export class StockMovementService {
   /** ADJUST lines: `receivedQuantity` is the counted figure and is required, while `quantity` is what the system thinks and is filled from inventory when absent, so the difference is against the number at count time. */
   private async prepareAdjustLines(
     tenantId: string,
-    from: LocationEnd,
+    from: LocationColumns,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
     const stock = await this.prisma.inventory.findMany({
       where: {
         tenantId,
-        locationId: from.id,
+        branchId: from.branchId,
+        warehouseId: from.warehouseId,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -768,12 +774,13 @@ export class StockMovementService {
     }
   }
 
-  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. That both ends exist in the tenant was settled by `resolveLocations` before this runs. */
-  private assertEndpointsValid(
+  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. */
+  private async assertEndpointsValid(
+    tenantId: string,
     movementType: string,
-    from: LocationEnd | null,
-    to: LocationEnd | null,
-  ): void {
+    from: LocationColumns | null,
+    to: LocationColumns | null,
+  ): Promise<void> {
     if (movementType === MovementType.IMPORT) {
       if (!to)
         throw new BadRequestException({
@@ -803,13 +810,20 @@ export class StockMovementService {
         this.assertTransferMakesSense(movementType, from, to);
       }
     }
+
+    await this.inventory.assertLocationsExist(
+      tenantId,
+      [from, to].filter(
+        (columns): columns is LocationColumns => columns !== null,
+      ),
+    );
   }
 
   /** Builds the lines for whichever movement type this is; `from` is only ever null for an IMPORT, the one type whose lines don't depend on a source location. */
   private async prepareLines(
     tenantId: string,
     movementType: string,
-    from: LocationEnd | null,
+    from: LocationColumns | null,
     lines: MovementItemDto[],
   ) {
     if (movementType === MovementType.IMPORT) {
@@ -825,13 +839,13 @@ export class StockMovementService {
       : this.prepareTransferLines(tenantId, from, lines);
   }
 
-  /** A transfer must actually go somewhere else, and one in a return direction must be filed as a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. Which directions count lives in `isReturnDirection` (plan 2026-09-29, QĐ-1). */
+  /** A transfer must actually go somewhere else, and stock moving from a branch back to a warehouse is a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. */
   private assertTransferMakesSense(
     movementType: string,
-    from: LocationEnd,
-    to: LocationEnd,
+    from: LocationColumns,
+    to: LocationColumns,
   ): void {
-    if (from.id === to.id) {
+    if (from.branchId === to.branchId && from.warehouseId === to.warehouseId) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SAME_LOCATION,
         message: 'The source and destination locations must be different',
@@ -839,7 +853,8 @@ export class StockMovementService {
     }
     if (
       movementType === MovementType.EXPORT &&
-      isReturnDirection(from.type, to.type)
+      from.branchId &&
+      to.warehouseId
     ) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SHOULD_BE_RETURN,
@@ -863,7 +878,7 @@ export class StockMovementService {
     await this.assertStockCovers(
       client,
       request.tenantId,
-      this.source(request)!, // every EXPORT/RETURN has a source - assertEndpointsValid required it
+      this.source(request),
       request.details.map((line) => ({
         productItemId: line.productItemId,
         quantity: Number(line.quantity),
@@ -874,7 +889,7 @@ export class StockMovementService {
   private async assertStockCovers(
     client: Prisma.TransactionClient | PrismaService,
     tenantId: string,
-    from: LocationEnd,
+    from: LocationColumns,
     lines: { productItemId: string; quantity: number }[],
   ): Promise<void> {
     if (lines.length === 0) return;
@@ -882,7 +897,8 @@ export class StockMovementService {
     const rows = await client.inventory.findMany({
       where: {
         tenantId,
-        locationId: from.id,
+        branchId: from.branchId,
+        warehouseId: from.warehouseId,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -1005,29 +1021,26 @@ export class StockMovementService {
     return user.tenantId;
   }
 
-  /** Where a staff account is posted - `{ locationId: null }` if nowhere - or `null` for an account that may act anywhere in the tenant. `AuthUser` still carries the branch/warehouse pair, but a Branch or Warehouse shares its id with its Location, so whichever is set *is* the Location id. */
-  private postingOf(user: AuthUser): { locationId: string | null } | null {
+  /** The one location a staff account may act at, or `null` for an account that may act anywhere in the tenant. */
+  private postingOf(user: AuthUser): LocationColumns | null {
     if (
       user.systemRole === SystemRole.TENANT_OWNER ||
       user.systemRole === SystemRole.ADMIN
     ) {
       return null;
     }
-    return { locationId: user.branchId ?? user.warehouseId };
+    return { branchId: user.branchId, warehouseId: user.warehouseId };
   }
 
   /** A TENANT_OWNER acts anywhere in the tenant, a STAFF account where it is posted - or where the shift it is currently supervising reaches. That clause only ever widens to a location the supervisor is already posted at, so it is about when they may act, not where. */
-  private canActAt(user: AuthUser, location: LocationEnd | null): boolean {
+  private canActAt(user: AuthUser, location: LocationColumns | null): boolean {
     const own = this.postingOf(user);
     if (!own) return true;
     if (!location) return false;
-    // `supervisesLocation` still speaks the branch/warehouse pair (shift supervision is not this flow's).
-    if (
-      supervisesLocation(user.shiftSupervision, columnsOfLocation(location))
-    ) {
-      return true;
-    }
-    return own.locationId === location.id;
+    if (supervisesLocation(user.shiftSupervision, location)) return true;
+    if (location.branchId) return own.branchId === location.branchId;
+    if (location.warehouseId) return own.warehouseId === location.warehouseId;
+    return false;
   }
 
   /** A movement between two of our own locations - the only kind with a source *and* a destination that both belong to us, and so the only kind either end may raise. */
@@ -1039,14 +1052,18 @@ export class StockMovementService {
   }
 
   /** Whether this is literally where the actor works. `canActAt` is about permission and answers true everywhere for an owner, which cannot tell us which end of a transfer raised it. */
-  private isPostedAt(user: AuthUser, location: LocationEnd | null): boolean {
+  private isPostedAt(
+    user: AuthUser,
+    location: LocationColumns | null,
+  ): boolean {
     const own = this.postingOf(user);
     if (!own || !location) return false;
-    return own.locationId === location.id;
+    if (location.branchId) return own.branchId === location.branchId;
+    if (location.warehouseId) return own.warehouseId === location.warehouseId;
+    return false;
   }
 
-  /** Takes a missing end too: a staff account can never act at "no location", so it is refused like any other place that isn't theirs. */
-  private assertCanActAt(user: AuthUser, location: LocationEnd | null): void {
+  private assertCanActAt(user: AuthUser, location: LocationColumns): void {
     if (!this.canActAt(user, location)) {
       throw new ForbiddenException({
         code: ErrorCode.STOCK_MOVEMENT_LOCATION_DENIED,
@@ -1056,31 +1073,41 @@ export class StockMovementService {
   }
 
   /** Where the movement takes stock from: a staff account that omitted it gets their own posting, and a TENANT_OWNER has to name one. Access is not checked here - a transfer may be raised from either end, so `create()` decides which endpoint has to match. */
-  private resolveSourceId(
+  private resolveSource(
     user: AuthUser,
     dto: CreateStockMovementDto,
-  ): string | null {
+  ): LocationColumns | null {
     if (dto.movementType === MovementType.IMPORT) return null;
-    if (dto.fromLocationId) return dto.fromLocationId;
+    if (dto.fromLocation) {
+      return this.columnsOf(dto.fromLocation);
+    }
 
     const own = this.postingOf(user);
-    if (!own?.locationId) {
+    if (!own || (!own.branchId && !own.warehouseId)) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SOURCE_REQUIRED,
-        message: 'This movement must have a source location (fromLocationId)',
+        message: 'This movement must have a source location (fromLocation)',
       });
     }
-    return own.locationId;
+    return own;
   }
 
-  /** The movement's source, or null for an IMPORT (its goods come from a supplier). Callers that act only on transfers or stocktakes assert it with `!`: `assertEndpointsValid` refused those without one at create. */
-  private source(request: MovementRow): LocationEnd | null {
-    return request.fromLocation;
+  private columnsOf(ref: LocationRefDto): LocationColumns {
+    return toLocationColumns(ref);
   }
 
-  /** The movement's destination, or null for an ADJUST (a stocktake happens in one place). */
-  private destination(request: MovementRow): LocationEnd | null {
-    return request.toLocation;
+  private source(request: MovementRow): LocationColumns {
+    return {
+      branchId: request.fromBranchId,
+      warehouseId: request.fromWarehouseId,
+    };
+  }
+
+  private destination(request: MovementRow): LocationColumns {
+    return {
+      branchId: request.toBranchId,
+      warehouseId: request.toWarehouseId,
+    };
   }
 
   // ─── Plumbing ──────────────────────────────────────────────────────────────
@@ -1136,7 +1163,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          locationId: request.fromLocationId,
+          ...this.source(request),
         })),
       );
     }
@@ -1144,7 +1171,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          locationId: request.toLocationId,
+          ...this.destination(request),
         })),
       );
     }
@@ -1157,22 +1184,29 @@ export class StockMovementService {
     });
   }
 
-  /** Decimals become numbers; each end of the movement is the shared `{ id, type, name }` (LOCATION_SELECT) or null, and the raw FK columns are dropped so each place is named once. */
+  /** Decimals become numbers, and the two location pairs become the API's ref objects. */
   private toResponse(request: MovementRow) {
     const {
-      fromLocationId,
-      toLocationId,
+      fromBranchId,
+      fromWarehouseId,
+      toBranchId,
+      toWarehouseId,
+      fromBranch,
+      fromWarehouse,
+      toBranch,
+      toWarehouse,
       totalPrice,
       details,
-      createdBy,
       ...rest
     } = request;
 
     return {
       ...rest,
-      // Nested like every other user payload, so the screens read `createdBy.profile.firstName`.
-      createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
       totalPrice: Number(totalPrice),
+      fromLocation: sourceRef({ fromBranchId, fromWarehouseId }),
+      fromLocationName: (fromBranch ?? fromWarehouse)?.name ?? null,
+      toLocation: destinationRef({ toBranchId, toWarehouseId }),
+      toLocationName: (toBranch ?? toWarehouse)?.name ?? null,
       details: details.map((line) => ({
         ...line,
         quantity: Number(line.quantity),
