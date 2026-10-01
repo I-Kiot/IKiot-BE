@@ -63,7 +63,7 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getBranchList: ['branches', 'read'],
   getWarehouseList: ['warehouses', 'read'],
   getSupplierList: ['suppliers', 'read'],
-  getStaffList: ['staff', 'read'],
+  getStaffList: ['users', 'read'],
   getStaffWorkingSchedule: ['schedules', 'read'],
   getActivePromotions: ['promotions', 'read'],
   getTenantSubscriptionInfo: ['subscriptions', 'read'],

@@ -191,18 +191,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     ],
     label: 'Tài khoản',
   },
-  staff: {
-    actions: [
-      'create',
-      'read',
-      'update',
-      'delete',
-      'assign_role',
-      'suspend',
-      'inactive',
-    ],
-    label: 'Nhân viên',
-  },
   tenants: {
     actions: ['create', 'read', 'update', 'delete', 'suspend'],
     label: 'Doanh nghiệp',
@@ -248,10 +236,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   promotions: {
     actions: ['create', 'read', 'update', 'delete', 'calculate', 'apply'],
     label: 'Khuyến mãi',
-  },
-  notifications: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Thông báo',
   },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
   cash_drawers: {
