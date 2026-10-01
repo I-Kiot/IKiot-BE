@@ -190,7 +190,7 @@ export function postingWhere(scope: {
     : {};
 }
 
-/** Like {@link withPosting}, but for responses that also embed the workplace itself as `branch` / `warehouse` (id, name, ...) - the shape the staff, leave and attendance screens have always read. Select `location: { select: { id, type, ...whatever to embed } }`. */
+/** Like {@link withPosting}, but for responses that also embed the workplace itself as `branch` / `warehouse` (id, name, ...) - the shape the staff screens have always read. Select `location: { select: { id, type, ...whatever to embed } }`. */
 export function withNamedPosting<
   T extends { location: LocationTypeRow | null },
 >(

@@ -23,7 +23,6 @@ import { QueryUserDto } from './dto/query-user.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import {
   DeleteStaffDto,
-  LeaveBalanceDto,
   StaffAccountPasswordDto,
 } from './dto/staff-account.dto';
 // `grants()` is static - this is a plain type/constant reference, not an injected dependency.
@@ -54,14 +53,9 @@ const SELECT_SAFE = {
   profileAddress: true,
   profileGender: true,
   hireDate: true,
-  paysheetId: true,
-  // The name as well as the id: the staff list shows which pay scheme somebody is on, and an id alone means fetching every paysheet to render one column.
-  paysheet: { select: { id: true, name: true } },
   accountNote: true,
   lastLogin: true,
   createdAt: true,
-  leaveBalanceAnnualDays: true,
-  leaveBalanceRemainingDays: true,
 } as const;
 
 /** Rebuilds the posting the API has always answered with from the single `location` relation: `branchId`/`warehouseId`, plus names alongside the ids, since the staff list has a "Chi nhánh" column and an id there is unreadable. */
@@ -72,9 +66,6 @@ function toUserResponse<
 >(row: T) {
   return withNestedProfile(withNamedPosting(row));
 }
-
-/** A leave request still "in force": it hasn't been rejected and hasn't finished yet. */
-const LIVE_LEAVE_STATUSES = ['PENDING', 'APPROVED'];
 
 /** Staff accounts, covering iKiotMS-BE's whole `/staff` module. A large part of the old service was role-hierarchy plumbing - who may edit whom given BRANCH_MANAGER vs WAREHOUSE_MANAGER vs STAFF - and none of it survives: "who may edit staff" is now one permission, `users:update`. */
 @Injectable()
@@ -185,10 +176,6 @@ export class UserService {
       });
     }
 
-    if (dto.paysheetId) {
-      await this.assertPaysheetIsUsable(tenantId, dto.paysheetId);
-    }
-
     // Same trio rule `update` enforces: the citizen ID encodes a century, birth year and sex, and on a create there is no existing row to merge against.
     const identificationId = dto.profile?.identificationId
       ? validateVietnamIdentificationId(dto.profile.identificationId, {
@@ -213,7 +200,6 @@ export class UserService {
         roleId: dto.roleId,
         ...posting,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
-        paysheetId: dto.paysheetId,
         // Flat wins over nested when both are sent - the old `StaffDTO` spelled the name flat and the form still does, while everything else about a person is nested.
         profileFirstName: dto.firstName ?? dto.profile?.firstName,
         profileLastName: dto.lastName ?? dto.profile?.lastName,
@@ -250,9 +236,6 @@ export class UserService {
       dto.branchId ?? undefined,
       dto.warehouseId ?? undefined,
     );
-    if (dto.paysheetId) {
-      await this.assertPaysheetIsUsable(tenantId, dto.paysheetId);
-    }
 
     const identificationId = this.resolveIdentificationId(current, dto);
     await this.assertContactDetailsAreFree(tenantId, id, {
@@ -269,7 +252,6 @@ export class UserService {
         roleId: dto.roleId,
         ...posting,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
-        paysheetId: dto.paysheetId,
         accountNote: dto.accountNote,
         profileFirstName: dto.profile?.firstName,
         profileLastName: dto.profile?.lastName,
@@ -329,20 +311,6 @@ export class UserService {
     });
   }
 
-  /** A pay scheme has to exist, be in this tenant, and not be deleted. */
-  private async assertPaysheetIsUsable(tenantId: string, paysheetId: string) {
-    const paysheet = await this.prisma.paysheet.findFirst({
-      where: { id: paysheetId, tenantId, status: 'ACTIVE' },
-      select: { id: true },
-    });
-    if (!paysheet) {
-      throw new BadRequestException({
-        code: ErrorCode.PAYSHEET_NOT_FOUND,
-        message: 'The paysheet does not exist or has been deleted',
-      });
-    }
-  }
-
   /** Email and citizen ID may not collide with another staff member's, both scoped to the tenant - the old check left `identificationId` global, which let one shop discover that another employs a particular person. */
   private async assertContactDetailsAreFree(
     tenantId: string,
@@ -388,7 +356,7 @@ export class UserService {
     }
   }
 
-  /** Soft delete, and an anonymising one: the row has to stay because orders, attendances, payslips and audit logs hold a foreign key, but the personal data does not, and the phone number is replaced with a unique placeholder so the person can be re-hired under the same number. */
+  /** Soft delete, and an anonymising one: the row has to stay because orders, stock movements and audit logs hold a foreign key, but the personal data does not, and the phone number is replaced with a unique placeholder so the person can be re-hired under the same number. */
   async remove(
     actor: AuthUser,
     tenantId: string,
@@ -398,7 +366,6 @@ export class UserService {
   ) {
     const target = await this.requireStaff(tenantId, id);
     await this.assertCanActOnStaff(actor, tenantId, target, 'delete');
-    await this.assertNotHoldingHandover(tenantId, id);
     await this.assertNotAppointedManager(tenantId, id);
 
     await this.prisma.$transaction(async (tx) => {
@@ -515,7 +482,6 @@ export class UserService {
       });
     }
 
-    await this.assertNotHoldingHandover(tenantId, id);
     await this.assertNotAppointedManager(tenantId, id);
 
     const updated = await this.prisma.user.update({
@@ -526,104 +492,6 @@ export class UserService {
     // INACTIVE is enough for HTTP, since JwtStrategy re-reads the account every request, but a socket is authenticated once at connect - without this a dismissed employee kept the shop's live feed until they closed the tab.
     await this.refreshTokens.revokeAllFor(id);
     return toUserResponse(updated);
-  }
-
-  // ─── Leave balance ─────────────────────────────────────────────────────────
-
-  /** Change the yearly allowance, keeping days already taken: `remainingDays` is recomputed as `new allowance - days used` rather than overwritten, so the new allowance can't be lower than what they have used. */
-  async updateLeaveBalance(tenantId: string, id: string, dto: LeaveBalanceDto) {
-    const staff = await this.requireStaff(tenantId, id);
-    const usedDays =
-      staff.leaveBalanceAnnualDays - staff.leaveBalanceRemainingDays;
-
-    if (usedDays < 0) {
-      throw new ConflictException({
-        code: ErrorCode.LEAVE_BALANCE_INCONSISTENT,
-        message:
-          'The current leave balance is inconsistent: remaining days exceed the annual allowance',
-      });
-    }
-    if (dto.annualLeaveDays < usedDays) {
-      throw new BadRequestException({
-        code: ErrorCode.LEAVE_BALANCE_BELOW_USED,
-        message: `The annual leave allowance cannot be lower than the ${usedDays} day(s) already used`,
-      });
-    }
-
-    return this.writeLeaveBalance(
-      tenantId,
-      id,
-      staff,
-      {
-        annualLeaveDays: dto.annualLeaveDays,
-        remainingDays: dto.annualLeaveDays - usedDays,
-        usedDays,
-      },
-      'Cập nhật số ngày nghỉ phép năm thành công',
-    );
-  }
-
-  /** Set the opening balance, allowance and remaining together - valid only while nothing has been taken, since otherwise it would erase the history of days already used. */
-  async createLeaveBalance(tenantId: string, id: string, dto: LeaveBalanceDto) {
-    const staff = await this.requireStaff(tenantId, id);
-    const usedDays =
-      staff.leaveBalanceAnnualDays - staff.leaveBalanceRemainingDays;
-
-    if (usedDays !== 0) {
-      throw new ConflictException({
-        code: ErrorCode.LEAVE_BALANCE_ALREADY_USED,
-        message:
-          'This employee has already taken leave; use PATCH to change the allowance without losing the history',
-      });
-    }
-
-    return this.writeLeaveBalance(
-      tenantId,
-      id,
-      staff,
-      {
-        annualLeaveDays: dto.annualLeaveDays,
-        remainingDays: dto.annualLeaveDays,
-        usedDays: 0,
-      },
-      'Khởi tạo số dư ngày nghỉ phép thành công',
-    );
-  }
-
-  /** Writes the new balance only if it still matches what we just read: the numbers are computed from the current values, so two managers editing at once (or an edit racing an approved request) would produce a wrong result rather than a lost one. */
-  private async writeLeaveBalance(
-    tenantId: string,
-    id: string,
-    seen: { leaveBalanceAnnualDays: number; leaveBalanceRemainingDays: number },
-    next: { annualLeaveDays: number; remainingDays: number; usedDays: number },
-    message: string,
-  ) {
-    const written = await this.prisma.user.updateMany({
-      where: {
-        id,
-        leaveBalanceAnnualDays: seen.leaveBalanceAnnualDays,
-        leaveBalanceRemainingDays: seen.leaveBalanceRemainingDays,
-      },
-      data: {
-        leaveBalanceAnnualDays: next.annualLeaveDays,
-        leaveBalanceRemainingDays: next.remainingDays,
-      },
-    });
-
-    if (written.count === 0) {
-      throw new ConflictException({
-        code: ErrorCode.LEAVE_BALANCE_CONFLICT,
-        message:
-          'The leave balance has just changed; please reload and try again',
-      });
-    }
-
-    // `{ message, data, leaveBalance }` is the shape iKiotMS-BE answered with.
-    return {
-      message,
-      data: await this.findOne(tenantId, id),
-      leaveBalance: next,
-    };
   }
 
   // ─── Shared guards ─────────────────────────────────────────────────────────
@@ -730,28 +598,6 @@ export class UserService {
       throw new BadRequestException({
         code: ErrorCode.PASSWORD_CONFIRMATION_MISMATCH,
         message: 'The password confirmation does not match',
-      });
-    }
-  }
-
-  /** Someone named as the handover contact on an unfinished leave request is holding a colleague's work - switching their account off would leave it with nobody. */
-  private async assertNotHoldingHandover(tenantId: string, id: string) {
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-
-    const holding = await this.prisma.leaveRequest.count({
-      where: {
-        tenantId,
-        handoverToUserId: id,
-        status: { in: LIVE_LEAVE_STATUSES },
-        endDate: { gte: today },
-      },
-    });
-    if (holding > 0) {
-      throw new ConflictException({
-        code: ErrorCode.STAFF_HOLDS_LEAVE_HANDOVER,
-        message:
-          'An employee named as the handover recipient on a live leave request cannot be deactivated or deleted',
       });
     }
   }

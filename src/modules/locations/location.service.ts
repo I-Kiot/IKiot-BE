@@ -4,11 +4,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { LocationStatus } from '../../common/constants/location-status';
 import { UserStatus } from '../../common/constants/user-status';
-import {
-  toAttendanceColumns,
-  withNestedAttendanceLocation,
-} from '../../common/dto/attendance-location.dto';
-import type { AttendanceLocationDto } from '../../common/dto/attendance-location.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { LOCATION_INCLUDE } from './location.types';
 import type { LocationConfig, LocationRow } from './location.types';
@@ -30,7 +25,6 @@ export interface LocationInput {
   address?: string;
   email?: string;
   status?: string;
-  attendanceTakingLocation?: AttendanceLocationDto;
 }
 
 /** Everything a branch and a warehouse do identically. They used to be two ~220-line services that were 90% the same text, and that symmetry had already broken once: BranchService refused to move a staff member out of their current location and WarehouseService silently did it. What actually differs is passed in as a `LocationConfig`.
@@ -45,10 +39,10 @@ export abstract class LocationService {
     private readonly config: LocationConfig,
   ) {}
 
-  /** Re-nests the flattened geofence columns into the `attendanceTakingLocation` object the old API returned; `type` is dropped because the route already says which kind it is. */
+  /** `type` is dropped because the route already says which kind it is. */
   protected toResponse(row: LocationRow) {
     const { type, ...rest } = row;
-    return withNestedAttendanceLocation(rest);
+    return rest;
   }
 
   async findAll(tenantId: string, query: LocationQuery) {
@@ -131,7 +125,6 @@ export abstract class LocationService {
         phoneNumber: dto.phoneNumber ?? [],
         address: dto.address,
         email: dto.email,
-        ...toAttendanceColumns(dto.attendanceTakingLocation),
       },
       include: LOCATION_INCLUDE,
     });
@@ -154,7 +147,6 @@ export abstract class LocationService {
         address: dto.address,
         email: dto.email,
         status: dto.status,
-        ...toAttendanceColumns(dto.attendanceTakingLocation),
       },
       include: LOCATION_INCLUDE,
     });

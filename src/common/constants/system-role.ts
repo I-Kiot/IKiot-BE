@@ -19,11 +19,5 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   'categories:read',
   'brands:read',
   'schedules:read_own',
-  'attendances:read_own',
-  'attendances:create',
-  'attendances:checkout_own',
-  'leaveRequests:read_mine',
-  'leaveRequests:cancel',
-  'payslips:read_own',
   'cash_drawers:read_own',
 ]);
