@@ -42,7 +42,6 @@ export const PLAN_FEATURES = {
   SALES: 'sales',
   REPORTS: 'reports',
   HR_MANAGEMENT: 'hr_management',
-  PAYROLL: 'payroll',
 } as const;
 
 export const VALID_PLAN_FEATURES: string[] = Object.values(PLAN_FEATURES);

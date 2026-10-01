@@ -1,6 +1,8 @@
 // iKiotMS schema. uuid PKs, snake_case via @map; enum-like columns are String (values in comments).
 // Core rules: available = stock - reserved; every stock change writes one InventoryTransaction;
-// stock is reserved on confirmation and deducted at hand-over. Payroll/Attendance are DEPRECATED.
+// stock is added as soon as an import is received, reserved on confirmation and deducted when packed.
+// Stock is held in InventoryLot rows that keep their source (supplier / workshop) and unit cost, so the
+// cost of every unit sold - and the margin per source - is known: Σ lot.remaining = inventories.stock.
 // Location.type is BRANCH | WAREHOUSE; a Branch/Warehouse shares its Location's id.
 
 // SQL-only constraints (keep them when editing a generated migration):
@@ -15,6 +17,10 @@
 //   - stock_reservations, production_request_items, order_return_items: CHECK (quantity > 0)
 //   - production_request_items: CHECK (received_quantity >= 0)
 //   - stock_movement_request_items: CHECK (defect_quantity BETWEEN 0 AND COALESCE(received_quantity, 0))
+//   - stock_movement_requests: CHECK ((movement_type = 'IMPORT') = (import_source IS NOT NULL))
+//   - stock_movement_requests: CHECK (import_source IS DISTINCT FROM 'WORKSHOP' OR production_request_id IS NOT NULL)
+//   - inventory_lots: CHECK (received_quantity > 0 AND remaining_quantity BETWEEN 0 AND received_quantity)
+//   - inventory_lot_usages: CHECK (quantity > 0)
 //   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
 //   - payments: CHECK (amount > 0)
 //   - invoices: one live SALE invoice per order (partial, type = 'SALE' AND status <> 'CANCELLED')
@@ -67,16 +73,12 @@ model Tenant {
   productItems            ProductItem[]
   inventories             Inventory[]
   inventoryTransactions   InventoryTransaction[]
+  inventoryLots           InventoryLot[]
+  inventoryLotUsages      InventoryLotUsage[]
   stockMovementRequests   StockMovementRequest[]
   shiftTemplates          ShiftTemplate[]
   workingSchedules        WorkingSchedule[]
-  attendances             Attendance[]
-  leaveRequests           LeaveRequest[]
   holidays                Holiday[]
-  payrollSettings         PayrollSetting[]
-  payrollPeriods          PayrollPeriod[]
-  paysheets               Paysheet[]
-  payslips                Payslip[]
   salesChannels           SalesChannel[]
   channelProductMappings  ChannelProductMapping[]
   orders                  Order[]
@@ -133,8 +135,6 @@ model User {
   deletionReason String?   @map("deletion_reason")
   lastLogin      DateTime? @map("last_login") @db.Timestamptz(6)
   hireDate       DateTime? @map("hire_date") @db.Timestamptz(6)
-  paysheetId     String?   @map("paysheet_id") // DEPRECATED
-  paysheet       Paysheet? @relation("UserPaysheet", fields: [paysheetId], references: [id])
   locationId     String?   @map("location_id")
   location       Location? @relation(fields: [locationId], references: [id])
   accountNote    String?   @map("account_note")
@@ -148,66 +148,47 @@ model User {
   profileAddress          String?   @map("profile_address")
   profileGender           String?   @map("profile_gender") // MALE | FEMALE | OTHER
 
-  leaveBalanceAnnualDays    Int @default(12) @map("leave_balance_annual_days")
-  leaveBalanceRemainingDays Int @default(12) @map("leave_balance_remaining_days")
-
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   fcmTokens                   UserFcmToken[]
-  managedLocations            Location[]                @relation("LocationManager")
-  managedWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleManagedBy")
-  createdWorkingSchedules     WorkingSchedule[]         @relation("WorkingScheduleCreatedBy")
+  managedLocations            Location[]             @relation("LocationManager")
+  managedWorkingSchedules     WorkingSchedule[]      @relation("WorkingScheduleManagedBy")
+  createdWorkingSchedules     WorkingSchedule[]      @relation("WorkingScheduleCreatedBy")
   scheduleAssignments         WorkingScheduleUser[]
-  attendances                 Attendance[]              @relation("AttendanceUser")
-  attendanceManualEdits       Attendance[]              @relation("AttendanceManuallyEditedBy")
-  attendanceManualCreations   Attendance[]              @relation("AttendanceManuallyCreatedBy")
-  leaveRequests               LeaveRequest[]            @relation("LeaveRequestUser")
-  leaveRequestApprovals       LeaveRequest[]            @relation("LeaveRequestApprovedBy")
-  leaveRequestHandovers       LeaveRequest[]            @relation("LeaveRequestHandoverTo")
-  payslips                    Payslip[]                 @relation("PayslipUser")
-  managedPayslips             Payslip[]                 @relation("PayslipManagedBy")
-  payslipManualAdjustments    PayslipManualAdjustment[]
-  ordersCreated               Order[]                   @relation("OrderCreatedBy")
-  ordersAssigned              Order[]                   @relation("OrderAssignee")
-  ordersConfirmed             Order[]                   @relation("OrderConfirmedBy")
-  productionRequestsCreated   ProductionRequest[]       @relation("ProductionRequestCreatedBy")
-  productionRequestsUpdated   ProductionRequest[]       @relation("ProductionRequestStatusUpdatedBy")
-  orderReturnsCreated         OrderReturn[]             @relation("OrderReturnCreatedBy")
-  orderReturnsInspected       OrderReturn[]             @relation("OrderReturnInspectedBy")
-  cashDrawerSessionsOpened    CashDrawerSession[]       @relation("CashDrawerOpenedBy")
-  cashDrawerSessionsCurrent   CashDrawerSession[]       @relation("CashDrawerCurrentStaff")
-  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]      @relation("ShiftLogStaff")
-  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]      @relation("ShiftLogNextStaff")
-  cashDrawerFinalizedSessions CashDrawerSession[]       @relation("CashDrawerFinalLogManager")
+  ordersCreated               Order[]                @relation("OrderCreatedBy")
+  ordersAssigned              Order[]                @relation("OrderAssignee")
+  ordersConfirmed             Order[]                @relation("OrderConfirmedBy")
+  productionRequestsCreated   ProductionRequest[]    @relation("ProductionRequestCreatedBy")
+  productionRequestsUpdated   ProductionRequest[]    @relation("ProductionRequestStatusUpdatedBy")
+  orderReturnsCreated         OrderReturn[]          @relation("OrderReturnCreatedBy")
+  orderReturnsInspected       OrderReturn[]          @relation("OrderReturnInspectedBy")
+  cashDrawerSessionsOpened    CashDrawerSession[]    @relation("CashDrawerOpenedBy")
+  cashDrawerSessionsCurrent   CashDrawerSession[]    @relation("CashDrawerCurrentStaff")
+  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]   @relation("ShiftLogStaff")
+  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]   @relation("ShiftLogNextStaff")
+  cashDrawerFinalizedSessions CashDrawerSession[]    @relation("CashDrawerFinalLogManager")
   cashFlowsCreated            CashFlow[]
   promotionLogsCreated        PromotionLog[]
-  notificationsReceived       Notification[]            @relation("NotificationRecipient")
-  notificationsCreated        Notification[]            @relation("NotificationCreatedBy")
+  notificationsReceived       Notification[]         @relation("NotificationRecipient")
+  notificationsCreated        Notification[]         @relation("NotificationCreatedBy")
   ticketsCreated              Ticket[]
   ticketMessages              TicketMessage[]
   aiChatHistories             AIChatHistory[]
-  payrollPeriodsGenerated     PayrollPeriod[]           @relation("PayrollPeriodGeneratedBy")
-  payrollPeriodsSubmitted     PayrollPeriod[]           @relation("PayrollPeriodSubmittedBy")
-  payrollPeriodsReturned      PayrollPeriod[]           @relation("PayrollPeriodReturnedBy")
-  payrollPeriodsCancelled     PayrollPeriod[]           @relation("PayrollPeriodCancelledBy")
-  payrollPeriodsApproved      PayrollPeriod[]           @relation("PayrollPeriodApprovedBy")
-  payrollPeriodsPaid          PayrollPeriod[]           @relation("PayrollPeriodPaidBy")
-  paysheetsCreated            Paysheet[]
   auditLogs                   AuditLog[]
   inventoryTransactions       InventoryTransaction[]
-  stockMovementsCreated       StockMovementRequest[]    @relation("StockMovementCreatedBy")
-  stockMovementsShipped       StockMovementRequest[]    @relation("StockMovementShippedBy")
-  stockMovementsReceived      StockMovementRequest[]    @relation("StockMovementReceivedBy")
-  stockMovementsApproved      StockMovementRequest[]    @relation("StockMovementApprovedBy")
-  fulfillmentsAssigned        Fulfillment[]             @relation("FulfillmentAssignee")
-  fulfillmentsVerified        Fulfillment[]             @relation("FulfillmentVerifiedBy")
+  stockMovementsCreated       StockMovementRequest[] @relation("StockMovementCreatedBy")
+  stockMovementsShipped       StockMovementRequest[] @relation("StockMovementShippedBy")
+  stockMovementsReceived      StockMovementRequest[] @relation("StockMovementReceivedBy")
+  stockMovementsApproved      StockMovementRequest[] @relation("StockMovementApprovedBy")
+  fulfillmentsAssigned        Fulfillment[]          @relation("FulfillmentAssignee")
+  fulfillmentsVerified        Fulfillment[]          @relation("FulfillmentVerifiedBy")
   packagesPacked              FulfillmentPackage[]
-  shipmentsDriven             Shipment[]                @relation("ShipmentDriver")
+  shipmentsDriven             Shipment[]             @relation("ShipmentDriver")
   shipmentEventsCreated       ShipmentEvent[]
   operationEvents             OperationEvent[]
-  paymentsCreated             Payment[]                 @relation("PaymentCreatedBy")
-  paymentsCollected           Payment[]                 @relation("PaymentCollectedBy")
+  paymentsCreated             Payment[]              @relation("PaymentCreatedBy")
+  paymentsCollected           Payment[]              @relation("PaymentCollectedBy")
   invoicesCreated             Invoice[]
   pointTransactions           PointTransaction[]
 
@@ -406,12 +387,6 @@ model Location {
   defaultFulfillmentLocation   Location?  @relation("LocationDefaultFulfillment", fields: [defaultFulfillmentLocationId], references: [id])
   servedLocations              Location[] @relation("LocationDefaultFulfillment")
 
-  // DEPRECATED: attendance geofence
-  attendanceLatitude            Float? @map("attendance_latitude")
-  attendanceLongitude           Float? @map("attendance_longitude")
-  attendanceAllowedRadiusMeters Int?   @default(100) @map("attendance_allowed_radius_meters")
-  attendanceMaxAccuracyMeters   Int?   @default(100) @map("attendance_max_accuracy_meters")
-
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -421,6 +396,7 @@ model Location {
   users                 User[]
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
+  inventoryLots         InventoryLot[]
   stockMovementsFrom    StockMovementRequest[] @relation("StockMovementFromLocation")
   stockMovementsTo      StockMovementRequest[] @relation("StockMovementToLocation")
   cashFlows             CashFlow[]
@@ -507,7 +483,7 @@ model Supplier {
   tenantId        String   @map("tenant_id")
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   supplierName    String   @map("supplier_name")
-  type            String   @default("GOODS") // GOODS | WORKSHOP (makes goods to order; receives production requests)
+  type            String   @default("GOODS") // GOODS (sells finished goods; SUPPLIER imports) | WORKSHOP (makes goods to order; production requests + WORKSHOP imports)
   contactName     String?  @map("contact_name")
   phoneNumber     String?  @map("phone_number")
   email           String?
@@ -521,6 +497,7 @@ model Supplier {
   stockMovementRequests StockMovementRequest[]
   cashFlows             CashFlow[]
   productionRequests    ProductionRequest[]
+  inventoryLots         InventoryLot[]
 
   @@map("suppliers")
 }
@@ -628,6 +605,7 @@ model ProductItem {
   images                ProductItemImage[]
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
+  inventoryLots         InventoryLot[]
   stockMovementItems    StockMovementRequestItem[]
   orderItems            OrderItem[]
   promotionProductItems PromotionProductItem[]
@@ -753,9 +731,82 @@ model InventoryTransaction {
   createdBy   User?    @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  lotCreated InventoryLot? // the lot an inbound (+) row opened
+  lotUsages  InventoryLotUsage[] // the lots an outbound (-) row drew from
+
   @@index([tenantId, locationId, productItemId, createdAt])
   @@index([referenceType, referenceId])
   @@map("inventory_transactions")
+}
+
+/// A batch of one SKU at one location, keeping where it came from and what it cost.
+/// Opened by every inbound stock row; outbound rows draw from lots (FIFO by receivedAt,
+/// a custom piece only from the lot made for its order line) and record it in InventoryLotUsage.
+model InventoryLot {
+  id            String      @id @default(uuid())
+  tenantId      String      @map("tenant_id")
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  locationId    String      @map("location_id")
+  location      Location    @relation(fields: [locationId], references: [id])
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id])
+
+  // Origin of the goods, carried unchanged when a lot is moved or returned:
+  // SUPPLIER | WORKSHOP | ADJUSTMENT (stocktake surplus) | OPENING (stock that predates lots)
+  sourceType String    @map("source_type")
+  supplierId String?   @map("supplier_id") // the supplier or the workshop (SUPPLIER / WORKSHOP)
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  importItemId            String?                   @map("import_item_id") // the IMPORT line that brought it in
+  importItem              StockMovementRequestItem? @relation(fields: [importItemId], references: [id])
+  productionRequestItemId String?                   @map("production_request_item_id") // WORKSHOP
+  productionRequestItem   ProductionRequestItem?    @relation(fields: [productionRequestItemId], references: [id])
+  orderItemId             String?                   @map("order_item_id") // custom piece: only this line may consume it
+  orderItem               OrderItem?                @relation("InventoryLotCustomFor", fields: [orderItemId], references: [id])
+
+  // Split off another lot by a transfer, a customer return or a defect put-away
+  parentLotId String?        @map("parent_lot_id")
+  parentLot   InventoryLot?  @relation("InventoryLotParent", fields: [parentLotId], references: [id])
+  childLots   InventoryLot[] @relation("InventoryLotParent")
+
+  inboundTransactionId String               @unique @map("inbound_transaction_id")
+  inboundTransaction   InventoryTransaction @relation(fields: [inboundTransactionId], references: [id])
+
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(12, 2) // import price; workshop price for WORKSHOP
+  receivedQuantity  Int      @map("received_quantity")
+  remainingQuantity Int      @map("remaining_quantity")
+  receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // FIFO key; kept from the parent lot
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  usages InventoryLotUsage[]
+
+  @@index([tenantId, locationId, productItemId, receivedAt])
+  @@index([tenantId, sourceType, supplierId])
+  @@index([orderItemId])
+  @@map("inventory_lots")
+}
+
+/// How much of which lot an outbound stock row took. For a SALE (written when the
+/// fulfillment line is packed) this is the cost of goods sold, split by source.
+model InventoryLotUsage {
+  id                     String               @id @default(uuid())
+  tenantId               String               @map("tenant_id")
+  tenant                 Tenant               @relation(fields: [tenantId], references: [id])
+  lotId                  String               @map("lot_id")
+  lot                    InventoryLot         @relation(fields: [lotId], references: [id])
+  inventoryTransactionId String               @map("inventory_transaction_id")
+  inventoryTransaction   InventoryTransaction @relation(fields: [inventoryTransactionId], references: [id])
+  orderItemId            String?              @map("order_item_id") // SALE only
+  orderItem              OrderItem?           @relation(fields: [orderItemId], references: [id])
+  quantity               Int
+  unitCost               Decimal              @map("unit_cost") @db.Decimal(12, 2) // copied from the lot
+  createdAt              DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([lotId])
+  @@index([inventoryTransactionId])
+  @@index([tenantId, orderItemId])
+  @@map("inventory_lot_usages")
 }
 
 model StorageNode {
@@ -818,8 +869,16 @@ model StockMovementRequest {
   movementType String @map("movement_type") // IMPORT | EXPORT | RETURN | ADJUST
   status       String @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | COMPLETED | CANCELLED
 
-  fromSupplierId String?   @map("from_supplier_id")
+  // IMPORT only - the two receiving flows, never mixed on one document:
+  //   SUPPLIER = buying finished goods from a GOODS supplier
+  //   WORKSHOP = goods a WORKSHOP made against productionRequestId
+  importSource String? @map("import_source")
+
+  fromSupplierId String?   @map("from_supplier_id") // the supplier or the workshop; its type must match importSource
   fromSupplier   Supplier? @relation(fields: [fromSupplierId], references: [id])
+
+  productionRequestId String?            @map("production_request_id") // WORKSHOP imports
+  productionRequest   ProductionRequest? @relation(fields: [productionRequestId], references: [id])
 
   fromLocationId String?   @map("from_location_id")
   fromLocation   Location? @relation("StockMovementFromLocation", fields: [fromLocationId], references: [id])
@@ -850,6 +909,8 @@ model StockMovementRequest {
   @@index([tenantId, fromLocationId])
   @@index([tenantId, toLocationId])
   @@index([tenantId, status])
+  @@index([tenantId, movementType, importSource, fromSupplierId])
+  @@index([productionRequestId])
   @@map("stock_movement_requests")
 }
 
@@ -860,13 +921,15 @@ model StockMovementRequestItem {
   productItemId    String               @map("product_item_id")
   productItem      ProductItem          @relation(fields: [productItemId], references: [id])
   quantity         Int
-  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2)
+  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2) // IMPORT: becomes the lot's unit cost
   receivedQuantity Int?                 @map("received_quantity")
   defectQuantity   Int                  @default(0) @map("defect_quantity") // goes to a non-sellable location
   note             String?
 
-  productionRequestItemId String?                @map("production_request_item_id")
+  productionRequestItemId String?                @map("production_request_item_id") // required on a WORKSHOP import
   productionRequestItem   ProductionRequestItem? @relation(fields: [productionRequestItemId], references: [id])
+
+  lots InventoryLot[]
 
   @@index([requestId])
   @@index([productionRequestItemId])
@@ -874,8 +937,7 @@ model StockMovementRequestItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// E. HR, scheduling & payroll
-//    DEPRECATED: Attendance and all payroll models. ShiftTemplate / WorkingSchedule stay in scope.
+// E. HR: shift templates, rostering & holidays (payroll, attendance and leave are out of scope)
 // ─────────────────────────────────────────────────────────────────────────
 
 model ShiftTemplate {
@@ -914,9 +976,7 @@ model WorkingSchedule {
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  assignedUsers         WorkingScheduleUser[]
-  attendances           Attendance[]
-  handoverLeaveRequests LeaveRequestHandoverSchedule[]
+  assignedUsers WorkingScheduleUser[]
 
   @@index([tenantId, locationId, workDate])
   @@map("working_schedules")
@@ -930,88 +990,6 @@ model WorkingScheduleUser {
 
   @@id([scheduleId, userId])
   @@map("working_schedule_users")
-}
-
-model Attendance {
-  id               String          @id @default(uuid())
-  tenantId         String          @map("tenant_id")
-  tenant           Tenant          @relation(fields: [tenantId], references: [id])
-  userId           String          @map("user_id")
-  user             User            @relation("AttendanceUser", fields: [userId], references: [id])
-  scheduleId       String          @map("schedule_id")
-  schedule         WorkingSchedule @relation(fields: [scheduleId], references: [id])
-  workDate         DateTime        @map("work_date") @db.Date
-  actualCheckinAt  DateTime?       @map("actual_checkin_at") @db.Timestamptz(6)
-  actualCheckoutAt DateTime?       @map("actual_checkout_at") @db.Timestamptz(6)
-  workedMinutes    Int?            @map("worked_minutes")
-  overtimeMinute   Int?            @map("overtime_minute")
-  lateMinutes      Int?            @map("late_minutes")
-  status           String? // CHECKED_IN | CHECKED_OUT | ABSENT
-
-  checkInLatitude           Float?  @map("check_in_latitude")
-  checkInLongitude          Float?  @map("check_in_longitude")
-  checkInAccuracy           Float?  @map("check_in_accuracy")
-  checkInDistance           Float?  @map("check_in_distance")
-  checkInVerificationStatus String? @default("VERIFIED") @map("check_in_verification_status") // VERIFIED | LOW_ACCURACY | OUT_OF_RANGE | NO_LOCATION
-
-  checkOutLatitude           Float?  @map("check_out_latitude")
-  checkOutLongitude          Float?  @map("check_out_longitude")
-  checkOutAccuracy           Float?  @map("check_out_accuracy")
-  checkOutDistance           Float?  @map("check_out_distance")
-  checkOutVerificationStatus String? @default("VERIFIED") @map("check_out_verification_status")
-
-  manuallyEditedById   String?   @map("manually_edited_by")
-  manuallyEditedBy     User?     @relation("AttendanceManuallyEditedBy", fields: [manuallyEditedById], references: [id])
-  manuallyEditedAt     DateTime? @map("manually_edited_at") @db.Timestamptz(6)
-  manualEditReason     String?   @map("manual_edit_reason")
-  manuallyCreatedById  String?   @map("manually_created_by")
-  manuallyCreatedBy    User?     @relation("AttendanceManuallyCreatedBy", fields: [manuallyCreatedById], references: [id])
-  manuallyCreatedAt    DateTime? @map("manually_created_at") @db.Timestamptz(6)
-  manualCreationReason String?   @map("manual_creation_reason")
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@unique([userId, scheduleId])
-  @@index([tenantId, userId, workDate])
-  @@index([tenantId, userId, status])
-  @@map("attendances")
-}
-
-model LeaveRequest {
-  id               String    @id @default(uuid())
-  tenantId         String    @map("tenant_id")
-  tenant           Tenant    @relation(fields: [tenantId], references: [id])
-  userId           String    @map("user_id")
-  user             User      @relation("LeaveRequestUser", fields: [userId], references: [id])
-  approvedById     String?   @map("approved_by")
-  approvedBy       User?     @relation("LeaveRequestApprovedBy", fields: [approvedById], references: [id])
-  paidLeaveDays    Decimal   @default(0) @map("paid_leave_days") @db.Decimal(5, 2)
-  unpaidLeaveDays  Decimal   @default(0) @map("unpaid_leave_days") @db.Decimal(5, 2)
-  startDate        DateTime? @map("start_date") @db.Date
-  endDate          DateTime? @map("end_date") @db.Date
-  status           String? // PENDING | APPROVED | REJECTED | CANCELLED | EXPIRED | DELETED
-  reason           String?
-  reviewNote       String?   @map("review_note")
-  handoverToUserId String?   @map("handover_to_user_id")
-  handoverToUser   User?     @relation("LeaveRequestHandoverTo", fields: [handoverToUserId], references: [id])
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  handoverSchedules LeaveRequestHandoverSchedule[]
-  payslipLeaveLines PayslipLeaveLine[]
-
-  @@map("leave_requests")
-}
-
-model LeaveRequestHandoverSchedule {
-  leaveRequestId String          @map("leave_request_id")
-  leaveRequest   LeaveRequest    @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
-  scheduleId     String          @map("schedule_id")
-  schedule       WorkingSchedule @relation(fields: [scheduleId], references: [id])
-
-  @@id([leaveRequestId, scheduleId])
-  @@map("leave_request_handover_schedules")
 }
 
 model Holiday {
@@ -1031,282 +1009,6 @@ model Holiday {
 
   @@unique([tenantId, date, branchId, type]) // branch rows only; public holidays use a partial index (see header)
   @@map("holidays")
-}
-
-model PayrollSetting {
-  id                         String   @id @default(uuid())
-  tenantId                   String   @map("tenant_id")
-  tenant                     Tenant   @relation(fields: [tenantId], references: [id])
-  cycle                      String   @default("MONTHLY")
-  periodStartDay             Int      @default(1) @map("period_start_day")
-  approveAfterPeriodEndDays  Int      @default(1) @map("approve_after_period_end_days")
-  payAfterPeriodEndDays      Int      @default(1) @map("pay_after_period_end_days")
-  autoGenerate               Boolean  @default(false) @map("auto_generate")
-  standardWorkingDays        Int      @default(26) @map("standard_working_days")
-  standardWorkingHoursPerDay Int      @default(8) @map("standard_working_hours_per_day")
-  weekendDays                Int[]    @default([0]) @map("weekend_days")
-  lateGraceMinutes           Int      @default(15) @map("late_grace_minutes")
-  status                     String   @default("ACTIVE") // ACTIVE | INACTIVE
-  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("payroll_settings")
-}
-
-model PayrollPeriod {
-  id                String    @id @default(uuid())
-  tenantId          String    @map("tenant_id")
-  tenant            Tenant    @relation(fields: [tenantId], references: [id])
-  name              String
-  periodStart       DateTime  @map("period_start") @db.Date
-  periodEnd         DateTime  @map("period_end") @db.Date
-  status            String    @default("DRAFT") // DRAFT | REVIEW | APPROVED | PAID | CANCELLED
-  generatedById     String?   @map("generated_by")
-  generatedBy       User?     @relation("PayrollPeriodGeneratedBy", fields: [generatedById], references: [id])
-  submittedById     String?   @map("submitted_by")
-  submittedBy       User?     @relation("PayrollPeriodSubmittedBy", fields: [submittedById], references: [id])
-  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz(6)
-  returnedById      String?   @map("returned_by")
-  returnedBy        User?     @relation("PayrollPeriodReturnedBy", fields: [returnedById], references: [id])
-  returnedAt        DateTime? @map("returned_at") @db.Timestamptz(6)
-  returnReason      String?   @map("return_reason")
-  cancelledById     String?   @map("cancelled_by")
-  cancelledBy       User?     @relation("PayrollPeriodCancelledBy", fields: [cancelledById], references: [id])
-  cancelledAt       DateTime? @map("cancelled_at") @db.Timestamptz(6)
-  cancelReason      String?   @map("cancel_reason")
-  approvedById      String?   @map("approved_by")
-  approvedBy        User?     @relation("PayrollPeriodApprovedBy", fields: [approvedById], references: [id])
-  approvedAt        DateTime? @map("approved_at") @db.Timestamptz(6)
-  paidById          String?   @map("paid_by")
-  paidBy            User?     @relation("PayrollPeriodPaidBy", fields: [paidById], references: [id])
-  paidAt            DateTime? @map("paid_at") @db.Timestamptz(6)
-  paymentMethod     String?   @map("payment_method")
-  paymentReference  String?   @map("payment_reference")
-  paymentNote       String?   @map("payment_note")
-  cashFlowId        String?   @unique @map("cash_flow_id")
-  cashFlow          CashFlow? @relation("PayrollPeriodCashFlow", fields: [cashFlowId], references: [id])
-  cashFlowReference String?   @map("cash_flow_reference")
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  payslips      Payslip[]
-  cashFlowEntry CashFlow? @relation("CashFlowPayrollPeriod")
-
-  @@unique([tenantId, periodStart, periodEnd, status])
-  @@map("payroll_periods")
-}
-
-model Paysheet {
-  id          String  @id @default(uuid())
-  tenantId    String  @map("tenant_id")
-  tenant      Tenant  @relation(fields: [tenantId], references: [id])
-  createdById String? @map("created_by")
-  createdBy   User?   @relation(fields: [createdById], references: [id])
-  name        String
-  status      String  @default("ACTIVE") // ACTIVE | DELETED
-
-  basicPayType                     String?  @map("basic_pay_type") // PAY_BY_SHIFT | STANDARD_WORKING_DAY | FIXED
-  basicPayAmountPerShift           Decimal? @map("basic_pay_amount_per_shift") @db.Decimal(12, 2)
-  basicPaySalaryPerPeriod          Decimal? @map("basic_pay_salary_per_period") @db.Decimal(12, 2)
-  basicPayStandardWorkingDaySalary Decimal? @map("basic_pay_standard_working_day_salary") @db.Decimal(12, 2)
-  basicPayRateWeekend              Decimal  @default(2) @map("basic_pay_rate_weekend") @db.Decimal(4, 2)
-  basicPayRatePublicHoliday        Decimal  @default(3) @map("basic_pay_rate_public_holiday") @db.Decimal(4, 2)
-
-  overtimeNormalDay     Decimal @default(1.5) @map("overtime_normal_day") @db.Decimal(4, 2)
-  overtimeWeekend       Decimal @default(2) @map("overtime_weekend") @db.Decimal(4, 2)
-  overtimePublicHoliday Decimal @default(3) @map("overtime_public_holiday") @db.Decimal(4, 2)
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  bonuses    PaysheetBonus[]
-  allowances PaysheetAllowance[]
-  deductions PaysheetDeduction[]
-  users      User[]              @relation("UserPaysheet")
-  payslips   Payslip[]
-
-  @@map("paysheets")
-}
-
-model PaysheetBonus {
-  id              String   @id @default(uuid())
-  paysheetId      String   @map("paysheet_id")
-  paysheet        Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
-  bonusType       String   @map("bonus_type") // EMPLOYEE_REVENUE | MINIMUM_AVENUE_INCOME | BRANCH_REVENUE
-  calculationType String   @map("calculation_type") // GROSS_REVENUE | NET_REVENUE | COLLECTED_REVENUE
-  enable          Boolean  @default(false)
-
-  tiers PaysheetBonusTier[]
-
-  @@map("paysheet_bonuses")
-}
-
-model PaysheetBonusTier {
-  id          String        @id @default(uuid())
-  bonusId     String        @map("bonus_id")
-  bonus       PaysheetBonus @relation(fields: [bonusId], references: [id], onDelete: Cascade)
-  name        String?
-  fromValue   Decimal?      @map("from_value") @db.Decimal(14, 2)
-  rewardType  String?       @map("reward_type") // FIXED_AMOUNT | PERCENTAGE
-  rewardValue Decimal?      @map("reward_value") @db.Decimal(14, 2)
-  position    Int           @default(0)
-
-  @@map("paysheet_bonus_tiers")
-}
-
-model PaysheetAllowance {
-  id          String   @id @default(uuid())
-  paysheetId  String   @map("paysheet_id")
-  paysheet    Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
-  name        String?
-  enable      Boolean  @default(false)
-  amountType  String?  @map("amount_type") // FIXED_AMOUNT | PERCENTAGE
-  amountValue Decimal? @map("amount_value") @db.Decimal(12, 2)
-
-  @@map("paysheet_allowances")
-}
-
-model PaysheetDeduction {
-  id             String   @id @default(uuid())
-  paysheetId     String   @map("paysheet_id")
-  paysheet       Paysheet @relation(fields: [paysheetId], references: [id], onDelete: Cascade)
-  name           String
-  enable         Boolean  @default(false)
-  deductionType  String   @map("deduction_type") // LATE | EARLY_LEAVE | FIXED
-  conditionType  String?  @map("condition_type") // BY_OCCURRENCE | BY_BLOCK
-  blockMinutes   Int?     @map("block_minutes")
-  deductionValue Decimal  @map("deduction_value") @db.Decimal(12, 2)
-
-  @@map("paysheet_deductions")
-}
-
-model Payslip {
-  id                   String         @id @default(uuid())
-  tenantId             String         @map("tenant_id")
-  tenant               Tenant         @relation(fields: [tenantId], references: [id])
-  userId               String         @map("user_id")
-  user                 User           @relation("PayslipUser", fields: [userId], references: [id])
-  payrollPeriodId      String?        @map("payroll_period_id")
-  payrollPeriod        PayrollPeriod? @relation(fields: [payrollPeriodId], references: [id])
-  manageById           String?        @map("manage_by")
-  manageBy             User?          @relation("PayslipManagedBy", fields: [manageById], references: [id])
-  paysheetId           String         @map("paysheet_id")
-  paysheet             Paysheet       @relation(fields: [paysheetId], references: [id])
-  status               String         @default("DRAFT") // DRAFT | REVIEW | APPROVED | PAID | CANCELLED
-  periodStart          DateTime?      @map("period_start") @db.Date
-  periodEnd            DateTime?      @map("period_end") @db.Date
-  totalWorkedDays      Decimal?       @map("total_worked_days") @db.Decimal(6, 2)
-  totalWorkedHours     Decimal?       @map("total_worked_hours") @db.Decimal(8, 2)
-  basePay              Decimal        @default(0) @map("base_pay") @db.Decimal(14, 2)
-  overtimePay          Decimal        @default(0) @map("overtime_pay") @db.Decimal(14, 2)
-  paidLeaveDays        Decimal        @default(0) @map("paid_leave_days") @db.Decimal(5, 2)
-  unpaidLeaveDays      Decimal        @default(0) @map("unpaid_leave_days") @db.Decimal(5, 2)
-  paidLeavePay         Decimal        @default(0) @map("paid_leave_pay") @db.Decimal(14, 2)
-  unpaidLeaveDeduction Decimal        @default(0) @map("unpaid_leave_deduction") @db.Decimal(14, 2)
-  bonus                Decimal        @default(0) @db.Decimal(14, 2)
-  allowance            Decimal        @default(0) @db.Decimal(14, 2)
-  grossSalary          Decimal?       @map("gross_salary") @db.Decimal(14, 2)
-  deduction            Decimal        @default(0) @db.Decimal(14, 2)
-  netSalary            Decimal?       @map("net_salary") @db.Decimal(14, 2)
-  note                 String?
-  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  leaveLines        PayslipLeaveLine[]
-  allowanceLines    PayslipAllowanceLine[]
-  bonusLines        PayslipBonusLine[]
-  deductionLines    PayslipDeductionLine[]
-  manualAdjustments PayslipManualAdjustment[]
-
-  @@map("payslips")
-}
-
-model PayslipLeaveLine {
-  id             String       @id @default(uuid())
-  payslipId      String       @map("payslip_id")
-  payslip        Payslip      @relation(fields: [payslipId], references: [id], onDelete: Cascade)
-  leaveRequestId String       @map("leave_request_id")
-  leaveRequest   LeaveRequest @relation(fields: [leaveRequestId], references: [id])
-  paidDays       Decimal      @default(0) @map("paid_days") @db.Decimal(5, 2)
-  unpaidDays     Decimal      @default(0) @map("unpaid_days") @db.Decimal(5, 2)
-  paidAmount     Decimal      @default(0) @map("paid_amount") @db.Decimal(14, 2)
-  deductedAmount Decimal      @default(0) @map("deducted_amount") @db.Decimal(14, 2)
-
-  dates PayslipLeaveLineDate[]
-
-  @@map("payslip_leave_lines")
-}
-
-model PayslipLeaveLineDate {
-  id                     String           @id @default(uuid())
-  leaveLineId            String           @map("leave_line_id")
-  leaveLine              PayslipLeaveLine @relation(fields: [leaveLineId], references: [id], onDelete: Cascade)
-  date                   DateTime         @db.Date
-  leaveType              String           @map("leave_type") // PAID | UNPAID
-  dayFraction            Decimal          @map("day_fraction") @db.Decimal(3, 2)
-  amount                 Decimal          @default(0) @db.Decimal(14, 2)
-  ignoredBecauseAttended Boolean          @default(false) @map("ignored_because_attended")
-
-  @@map("payslip_leave_line_dates")
-}
-
-model PayslipAllowanceLine {
-  id          String  @id @default(uuid())
-  payslipId   String  @map("payslip_id")
-  payslip     Payslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
-  name        String
-  amountType  String  @map("amount_type") // FIXED_AMOUNT | PERCENTAGE
-  amountValue Decimal @map("amount_value") @db.Decimal(12, 2)
-  amount      Decimal @db.Decimal(14, 2)
-
-  @@map("payslip_allowance_lines")
-}
-
-model PayslipBonusLine {
-  id              String   @id @default(uuid())
-  payslipId       String   @map("payslip_id")
-  payslip         Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
-  bonusType       String   @map("bonus_type") // EMPLOYEE_REVENUE | MINIMUM_AVENUE_INCOME | BRANCH_REVENUE
-  calculationType String   @map("calculation_type") // GROSS_REVENUE | NET_REVENUE | COLLECTED_REVENUE
-  revenue         Decimal  @db.Decimal(14, 2)
-  tierName        String?  @map("tier_name") // null = no tier reached
-  fromValue       Decimal? @map("from_value") @db.Decimal(14, 2)
-  rewardType      String?  @map("reward_type") // FIXED_AMOUNT | PERCENTAGE
-  rewardValue     Decimal? @map("reward_value") @db.Decimal(14, 2)
-  amount          Decimal  @db.Decimal(14, 2)
-
-  @@map("payslip_bonus_lines")
-}
-
-model PayslipDeductionLine {
-  id               String  @id @default(uuid())
-  payslipId        String  @map("payslip_id")
-  payslip          Payslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
-  name             String
-  deductionType    String  @map("deduction_type") // LATE | EARLY_LEAVE | FIXED
-  conditionType    String? @map("condition_type") // BY_OCCURRENCE | BY_BLOCK
-  blockMinutes     Int?    @map("block_minutes")
-  deductionValue   Decimal @map("deduction_value") @db.Decimal(12, 2)
-  violationMinutes Int     @default(0) @map("violation_minutes")
-  units            Decimal @default(0) @db.Decimal(8, 2)
-  amount           Decimal @db.Decimal(14, 2)
-
-  @@map("payslip_deduction_lines")
-}
-
-model PayslipManualAdjustment {
-  id          String   @id @default(uuid())
-  payslipId   String   @map("payslip_id")
-  payslip     Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
-  category    String   @default("OTHER") // SALARY_ADVANCE | TET_BONUS | OTHER
-  name        String
-  amount      Decimal  @db.Decimal(14, 2)
-  note        String?
-  createdById String   @map("created_by")
-  createdBy   User     @relation(fields: [createdById], references: [id])
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@map("payslip_manual_adjustments")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1472,7 +1174,7 @@ model OrderItem {
   sku           String?
   variantLabel  String?  @map("variant_label") // e.g. "Gỗ sồi / 1m8"
   listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // SKU retail price at sale time
-  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2)
+  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // actual average cost of the units packed (Σ lot usages / quantity); null until packed
   vatRate       Decimal? @map("vat_rate") @db.Decimal(5, 2)
 
   quantity         Int
@@ -1489,6 +1191,8 @@ model OrderItem {
   fulfillmentItems       FulfillmentItem[]
   returnItems            OrderReturnItem[]
   invoiceLines           InvoiceLine[]
+  customLots             InventoryLot[]          @relation("InventoryLotCustomFor")
+  lotUsages              InventoryLotUsage[]
 
   @@index([orderId])
   @@index([productItemId])
@@ -1505,7 +1209,7 @@ model StockReservation {
   locationId  String    @map("location_id")
   location    Location  @relation(fields: [locationId], references: [id])
   quantity    Int
-  status      String    @default("ACTIVE") // ACTIVE | CONSUMED | RELEASED
+  status      String    @default("ACTIVE") // ACTIVE | CONSUMED (line packed, stock deducted) | RELEASED
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1540,7 +1244,8 @@ model ProductionRequest {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  items ProductionRequestItem[]
+  items    ProductionRequestItem[]
+  receipts StockMovementRequest[] // the WORKSHOP imports that brought the goods in
 
   @@unique([tenantId, code])
   @@index([tenantId, status, expectedReadyDate])
@@ -1562,6 +1267,7 @@ model ProductionRequestItem {
   note                String?
 
   importLines StockMovementRequestItem[]
+  lots        InventoryLot[]
 
   @@index([productionRequestId])
   @@index([productItemId])
@@ -1802,31 +1508,27 @@ model CashDrawerShiftLog {
 
 /// Cash ledger, written only by money events, never through a route.
 model CashFlow {
-  id                 String         @id @default(uuid())
-  tenantId           String         @map("tenant_id")
-  tenant             Tenant         @relation(fields: [tenantId], references: [id])
-  flowType           String         @map("flow_type") // INCOME | EXPENSE
-  amount             Decimal        @db.Decimal(14, 2)
-  paymentMethod      String?        @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
-  locationId         String?        @map("location_id")
-  location           Location?      @relation(fields: [locationId], references: [id])
-  paymentId          String?        @unique @map("payment_id")
-  payment            Payment?       @relation(fields: [paymentId], references: [id])
-  orderId            String?        @map("order_id")
-  order              Order?         @relation(fields: [orderId], references: [id])
-  supplierId         String?        @map("supplier_id")
-  supplier           Supplier?      @relation(fields: [supplierId], references: [id])
-  payrollPeriodId    String?        @unique @map("payroll_period_id")
-  payrollPeriod      PayrollPeriod? @relation("CashFlowPayrollPeriod", fields: [payrollPeriodId], references: [id])
-  createdById        String?        @map("created_by")
-  createdBy          User?          @relation(fields: [createdById], references: [id])
-  paymentReference   String?        @map("payment_reference")
-  sepayTransactionId String?        @map("sepay_transaction_id")
+  id                 String    @id @default(uuid())
+  tenantId           String    @map("tenant_id")
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  flowType           String    @map("flow_type") // INCOME | EXPENSE
+  amount             Decimal   @db.Decimal(14, 2)
+  paymentMethod      String?   @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
+  locationId         String?   @map("location_id")
+  location           Location? @relation(fields: [locationId], references: [id])
+  paymentId          String?   @unique @map("payment_id")
+  payment            Payment?  @relation(fields: [paymentId], references: [id])
+  orderId            String?   @map("order_id")
+  order              Order?    @relation(fields: [orderId], references: [id])
+  supplierId         String?   @map("supplier_id")
+  supplier           Supplier? @relation(fields: [supplierId], references: [id])
+  createdById        String?   @map("created_by")
+  createdBy          User?     @relation(fields: [createdById], references: [id])
+  paymentReference   String?   @map("payment_reference")
+  sepayTransactionId String?   @map("sepay_transaction_id")
   description        String?
-  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  payrollPeriodOwner PayrollPeriod? @relation("PayrollPeriodCashFlow")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([tenantId, createdAt])
   @@index([tenantId, locationId, createdAt])
@@ -1877,7 +1579,8 @@ model Payment {
 // F2. Fulfillment & delivery
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Packs READY lines; HANDED_OVER consumes their reservations and deducts stock.
+/// Packs READY lines. Packing a line consumes its reservation and deducts the stock (from lots);
+/// HANDED_OVER only records the hand-over to the carrier.
 model Fulfillment {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1924,7 +1627,7 @@ model FulfillmentItem {
   orderItem     OrderItem    @relation(fields: [orderItemId], references: [id])
   quantity      Int
   qtyPicked     Int          @default(0) @map("qty_picked")
-  qtyPacked     Int          @default(0) @map("qty_packed")
+  qtyPacked     Int          @default(0) @map("qty_packed") // stock is deducted as units are packed
   pickedFromId  String?      @map("picked_from_id")
   pickedFrom    StorageNode? @relation(fields: [pickedFromId], references: [id])
 

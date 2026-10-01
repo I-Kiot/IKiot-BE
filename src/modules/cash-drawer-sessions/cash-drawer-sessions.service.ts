@@ -441,7 +441,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** Which cash rows belong to one branch's trading day. `branchId` is required, so branchless EXPENSE rows (a supplier paid in cash, a payroll period marked paid) are not counted - a shop paying a supplier from the drawer shows that day short, and rightly so. */
+  /** Which cash rows belong to one branch's trading day. `branchId` is required, so branchless EXPENSE rows (a supplier paid in cash) are not counted - a shop paying a supplier from the drawer shows that day short, and rightly so. */
   private dayFlowWhere(
     tenantId: string,
     branchId: string,

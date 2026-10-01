@@ -15,14 +15,11 @@ import { paginate, skipFor } from '../../common/utils/pagination';
 import {
   dayTypeOf,
   isSunday,
-  lateMinutesOf,
   localDateText,
-  overlapMinutes,
   shiftInterval,
   workDateOf,
 } from './schedule-time';
 import {
-  DEFAULT_LATE_GRACE_MINUTES,
   LIVE_SCHEDULE_STATUSES,
   ScheduleStatus,
   ScheduleType,
@@ -59,8 +56,6 @@ const SCHEDULE_INCLUDE = {
 type ScheduleRow = Prisma.WorkingScheduleGetPayload<{
   include: typeof SCHEDULE_INCLUDE;
 }>;
-
-type AttendanceRow = Prisma.AttendanceGetPayload<object>;
 
 /** One assignment, resolved to real instants and ready to be written. */
 interface ResolvedAssignment {
@@ -116,7 +111,7 @@ export class WorkingScheduleService {
     };
   }
 
-  /** Replaces one schedule's people, shift and day. Refused once anyone has clocked in against it: an attendance row points at a `startAt` that lateness was computed from, and moving the shift under it rewrites history. */
+  /** Replaces one schedule's people, shift and day. */
   async update(
     tenantId: string,
     actorId: string,
@@ -133,12 +128,6 @@ export class WorkingScheduleService {
         message: 'No editable working schedule found',
       });
     }
-    await this.assertNoAttendance(
-      tenantId,
-      id,
-      undefined,
-      'A shift with attendance recorded against it cannot be edited',
-    );
 
     const [assignment] = await this.resolveAssignments(tenantId, [dto]);
     await this.assertNoOverlap(tenantId, assignment, id);
@@ -188,7 +177,7 @@ export class WorkingScheduleService {
       this.prisma.workingSchedule.count({ where }),
     ]);
 
-    const decorated = await this.decorate(tenantId, rows, false);
+    const decorated = await this.decorate(tenantId, rows);
     return paginate(decorated, total, query.page, query.limit);
   }
 
@@ -232,7 +221,7 @@ export class WorkingScheduleService {
       };
     }
 
-    const [decorated] = await this.decorate(tenantId, [schedule], true);
+    const [decorated] = await this.decorate(tenantId, [schedule]);
     return { data: decorated, serverTime: now.toISOString() };
   }
 
@@ -266,11 +255,11 @@ export class WorkingScheduleService {
         message: 'Working schedule not found',
       });
 
-    const [decorated] = await this.decorate(tenantId, [schedule], true);
+    const [decorated] = await this.decorate(tenantId, [schedule]);
     return decorated;
   }
 
-  /** One person's slice of one schedule - their attendance, without the rest of the team. */
+  /** One person's slice of one schedule, without the rest of the team. */
   async findUserDetail(tenantId: string, id: string, userId: string) {
     const schedule = await this.findOne(tenantId, id);
     const user = schedule.assignedUsers.find(
@@ -305,12 +294,6 @@ export class WorkingScheduleService {
         message: 'A completed working schedule cannot be deleted',
       });
     }
-    await this.assertNoAttendance(
-      tenantId,
-      id,
-      undefined,
-      'A shift with attendance recorded against it cannot be deleted or replaced',
-    );
 
     await this.prisma.workingSchedule.update({
       where: { id },
@@ -336,12 +319,6 @@ export class WorkingScheduleService {
         message: 'Employee not found on this shift',
       });
     }
-    await this.assertNoAttendance(
-      tenantId,
-      id,
-      userId,
-      'An employee with attendance recorded on this shift cannot be removed from it',
-    );
 
     if (schedule.assignedUsers.length === 1) {
       return this.remove(tenantId, id);
@@ -520,23 +497,6 @@ export class WorkingScheduleService {
     }
   }
 
-  private async assertNoAttendance(
-    tenantId: string,
-    scheduleId: string,
-    userId: string | undefined,
-    message: string,
-  ) {
-    const found = await this.prisma.attendance.findFirst({
-      where: { tenantId, scheduleId, ...(userId ? { userId } : {}) },
-      select: { id: true },
-    });
-    if (found)
-      throw new ConflictException({
-        code: ErrorCode.SCHEDULE_HAS_ATTENDANCE,
-        message,
-      });
-  }
-
   // ─── Filters ───────────────────────────────────────────────────────────────
 
   private buildWhere(
@@ -590,19 +550,11 @@ export class WorkingScheduleService {
 
   // ─── Decoration ────────────────────────────────────────────────────────────
 
-  /** Adds the two things a schedule row can't answer on its own: what kind of day it falls on, and how each person actually turned up. */
-  private async decorate(
-    tenantId: string,
-    rows: ScheduleRow[],
-    detail: boolean,
-  ) {
+  /** Adds what a schedule row can't answer on its own: what kind of day it falls on. */
+  private async decorate(tenantId: string, rows: ScheduleRow[]) {
     if (rows.length === 0) return [];
 
-    const [holidayNames, attendances, graceMinutes] = await Promise.all([
-      this.holidaysIn(tenantId, rows),
-      this.attendancesFor(tenantId, rows),
-      this.lateGraceMinutes(tenantId),
-    ]);
+    const holidayNames = await this.holidaysIn(tenantId, rows);
 
     return rows.map((row) => {
       const dateText = row.workDate ? localDateText(row.workDate) : null;
@@ -619,15 +571,9 @@ export class WorkingScheduleService {
           holidayType: holiday?.type ?? null,
         },
         // Same nesting the `/users` responses use - a staff member's name is under `profile` on the wire wherever it appears.
-        assignedUsers: row.assignedUsers.map((assigned) => ({
-          ...withNestedProfile(withPosting(assigned.user)),
-          attendance: this.attendanceSummary(
-            attendances.get(`${row.id}:${assigned.userId}`) ?? null,
-            row,
-            graceMinutes,
-            detail,
-          ),
-        })),
+        assignedUsers: row.assignedUsers.map((assigned) =>
+          withNestedProfile(withPosting(assigned.user)),
+        ),
       };
     });
   }
@@ -658,85 +604,6 @@ export class WorkingScheduleService {
         { name: holiday.name, type: holiday.type },
       ]),
     );
-  }
-
-  private async attendancesFor(tenantId: string, rows: ScheduleRow[]) {
-    const attendances = await this.prisma.attendance.findMany({
-      where: { tenantId, scheduleId: { in: rows.map((row) => row.id) } },
-    });
-    return new Map(
-      attendances.map((row) => [`${row.scheduleId}:${row.userId}`, row]),
-    );
-  }
-
-  /** One tenant-wide setting; falls back to the old service's 15 when unset. */
-  private async lateGraceMinutes(tenantId: string): Promise<number> {
-    const setting = await this.prisma.payrollSetting.findFirst({
-      where: { tenantId, status: 'ACTIVE' },
-      select: { lateGraceMinutes: true },
-    });
-    return setting?.lateGraceMinutes ?? DEFAULT_LATE_GRACE_MINUTES;
-  }
-
-  /** How one person's attendance looks against this shift. `workedMinutesInThisSchedule` is the overlap between the clock-in window and the shift, not the raw worked total: clocking in early and out late does not work more of this shift than it is long. */
-  private attendanceSummary(
-    attendance: AttendanceRow | null,
-    schedule: ScheduleRow,
-    graceMinutes: number,
-    detail: boolean,
-  ) {
-    if (!attendance) {
-      return {
-        id: null,
-        status: 'NOT_CHECKED_IN',
-        actualCheckinAt: null,
-        actualCheckoutAt: null,
-        workedMinutesInThisSchedule: 0,
-        lateMinutes: null,
-      };
-    }
-
-    const base = {
-      id: attendance.id,
-      status: attendance.status ?? 'NOT_CHECKED_IN',
-      actualCheckinAt: attendance.actualCheckinAt,
-      actualCheckoutAt: attendance.actualCheckoutAt,
-      workedMinutesInThisSchedule: attendance.actualCheckoutAt
-        ? overlapMinutes(
-            attendance.actualCheckinAt,
-            attendance.actualCheckoutAt,
-            schedule.startAt,
-            schedule.endAt,
-          )
-        : 0,
-      lateMinutes: lateMinutesOf(
-        attendance.actualCheckinAt,
-        schedule.startAt,
-        schedule.scheduleType,
-        graceMinutes,
-      ),
-    };
-
-    if (!detail) return base;
-    return {
-      ...base,
-      workedMinutes: attendance.workedMinutes,
-      overtimeMinute: attendance.overtimeMinute,
-      checkInLocation: {
-        latitude: attendance.checkInLatitude,
-        longitude: attendance.checkInLongitude,
-        accuracy: attendance.checkInAccuracy,
-        distance: attendance.checkInDistance,
-        verificationStatus: attendance.checkInVerificationStatus,
-      },
-      checkOutLocation: {
-        latitude: attendance.checkOutLatitude,
-        longitude: attendance.checkOutLongitude,
-        accuracy: attendance.checkOutAccuracy,
-        distance: attendance.checkOutDistance,
-        verificationStatus: attendance.checkOutVerificationStatus,
-      },
-    };
   }
 
   /** Shift template times go out as `HH:mm`, and the join rows flatten to their users. */

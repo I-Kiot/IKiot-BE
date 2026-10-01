@@ -48,40 +48,10 @@ export function isSunday(workDate: Date | string): boolean {
   return workDateOf(workDate).getUTCDay() === 0;
 }
 
-/** What kind of day a shift falls on - drives the payroll multiplier later. */
+/** What kind of day a shift falls on - shown on the roster. */
 export function dayTypeOf(sunday: boolean, holiday: boolean): string {
   if (sunday && holiday) return 'SUNDAY_HOLIDAY';
   if (sunday) return 'SUNDAY';
   if (holiday) return 'HOLIDAY';
   return 'NORMAL';
-}
-
-/** Minutes where two intervals overlap; 0 when they don't, or when either is incomplete. */
-export function overlapMinutes(
-  startA: Date | null,
-  endA: Date | null,
-  startB: Date | null,
-  endB: Date | null,
-): number {
-  if (!startA || !endA || !startB || !endB) return 0;
-  const start = Math.max(startA.getTime(), startB.getTime());
-  const end = Math.min(endA.getTime(), endB.getTime());
-  return end <= start ? 0 : Math.floor((end - start) / 60_000);
-}
-
-/** How late a check-in was, or `null` when there is none. Grace is all-or-nothing: inside it counts as zero, and once exceeded the whole lateness counts, not the excess. It is a payroll rule, not an approximation. Overtime shifts are never late. */
-export function lateMinutesOf(
-  checkinAt: Date | null,
-  scheduleStartAt: Date | null,
-  scheduleType: string,
-  graceMinutes: number,
-): number | null {
-  if (scheduleType !== 'NORMAL') return 0;
-  if (!checkinAt || !scheduleStartAt) return null;
-
-  const raw = Math.max(
-    0,
-    Math.floor((checkinAt.getTime() - scheduleStartAt.getTime()) / 60_000),
-  );
-  return raw <= graceMinutes ? 0 : raw;
 }

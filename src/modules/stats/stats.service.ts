@@ -369,7 +369,7 @@ export class StatsService {
       createdAt: { gte: fromDate, lte: toDate },
       ...(query.flowType ? { flowType: query.flowType } : {}),
       ...(paymentMethod ? { paymentMethod } : {}),
-      // `flow` picks a money-flow by its reference-code prefix (ORD sales, SUP supplier payments, PAYR payroll); `startsWith` with an insensitive mode is the old anchored regex expressed so an index can still serve it.
+      // `flow` picks a money-flow by its reference-code prefix (ORD sales, SUP supplier payments); `startsWith` with an insensitive mode is the old anchored regex expressed so an index can still serve it.
       ...(query.flow
         ? {
             paymentReference: {
