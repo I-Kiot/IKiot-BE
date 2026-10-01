@@ -12,6 +12,10 @@ import {
 } from './dto/customer.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
 const CODE_PREFIX = 'KH';
 
@@ -75,7 +79,7 @@ export class CustomerService {
               paymentMethod: true,
               grandTotal: true,
               createdAt: true,
-              branch: { select: { id: true, name: true } },
+              branch: BRANCH_NAME_SELECT,
               user: {
                 select: {
                   id: true,
@@ -104,6 +108,7 @@ export class CustomerService {
       ...customer,
       orders: customer.orders.map((order) => ({
         ...order,
+        branch: namedBranch(order.branch),
         grandTotal: Number(order.grandTotal),
         items: order.items.map((item) => ({
           ...item,

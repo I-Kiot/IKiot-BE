@@ -37,6 +37,10 @@ import type {
   RevenueFigures,
   SchedulePeriod,
 } from './payroll-math';
+import {
+  USER_POSTING_SELECT,
+  columnsOfLocation,
+} from '../../common/dto/location-ref.dto';
 
 /** Everything one employee's payslip is computed from. */
 export interface PayrollContext {
@@ -143,7 +147,7 @@ export class PayslipBuilderService {
     periodStart: Date,
     periodEnd: Date,
   ): Promise<PayrollContext[]> {
-    const users = await this.prisma.user.findMany({
+    const rows = await this.prisma.user.findMany({
       where: {
         tenantId,
         status: UserStatus.ACTIVE,
@@ -157,9 +161,14 @@ export class PayslipBuilderService {
         profileFirstName: true,
         profileLastName: true,
         paysheetId: true,
-        branchId: true,
+        ...USER_POSTING_SELECT,
       },
     });
+    // Branch revenue bonuses key on the branch someone is posted at; a warehouse posting has none.
+    const users = rows.map(({ location, ...rest }) => ({
+      ...rest,
+      branchId: columnsOfLocation(location).branchId,
+    }));
     if (users.length === 0) return [];
 
     const targetIds = users.map((user) => user.id);

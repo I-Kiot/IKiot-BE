@@ -1,8 +1,11 @@
 // iKiotMS schema. uuid PKs, snake_case via @map; enum-like columns are String (values in comments).
 // Core rules: available = stock - reserved; every stock change writes one InventoryTransaction;
 // stock is reserved on confirmation and deducted at hand-over. Payroll/Attendance are DEPRECATED.
+// Location.type is BRANCH | WAREHOUSE; a Branch/Warehouse shares its Location's id.
 
 // SQL-only constraints (keep them when editing a generated migration):
+//   - locations: CHECK locations_type_known (location_type IN ('BRANCH', 'WAREHOUSE'))
+//   - branches / warehouses: CHECK (id = location_id)
 //   - users: email / identification id unique per tenant among non-DELETED rows
 //   - holidays: one PUBLIC_HOLIDAY per tenant per date (partial, branch_id IS NULL)
 //   - cash_drawer_sessions: one OPEN session per branch (partial)
@@ -386,9 +389,11 @@ model Location {
   tenantId String @map("tenant_id")
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  name   String
-  type   String @map("location_type") // STORE | WAREHOUSE | FULFILLMENT_CENTER | EXTERNAL_WAREHOUSE | DAMAGED (never sellable)
-  status String @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+  name       String
+  type       String  @map("location_type") // BRANCH | WAREHOUSE
+  status     String  @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+  /// false = damaged/returned-goods area (a WAREHOUSE): its stock is never available to sell.
+  isSellable Boolean @default(true) @map("is_sellable")
 
   address     String?
   phoneNumber String[] @map("phone_number")
@@ -857,7 +862,7 @@ model StockMovementRequestItem {
   quantity         Int
   importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2)
   receivedQuantity Int?                 @map("received_quantity")
-  defectQuantity   Int                  @default(0) @map("defect_quantity") // goes to a DAMAGED location
+  defectQuantity   Int                  @default(0) @map("defect_quantity") // goes to a non-sellable location
   note             String?
 
   productionRequestItemId String?                @map("production_request_item_id")
@@ -1632,7 +1637,7 @@ model OrderReturn {
   @@map("order_returns")
 }
 
-/// GOOD -> sellable location; DAMAGED (and any custom piece) -> DAMAGED location.
+/// GOOD -> sellable location; DAMAGED (and any custom piece) -> a location with isSellable = false.
 model OrderReturnItem {
   id          String      @id @default(uuid())
   returnId    String      @map("return_id")

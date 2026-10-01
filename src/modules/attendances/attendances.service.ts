@@ -38,6 +38,12 @@ import {
 } from './dto/attendance.dto';
 import type { Attendance, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  USER_POSTING_SELECT,
+  postingWhere,
+  withNamedPosting,
+  withPosting,
+} from '../../common/dto/location-ref.dto';
 
 const SCHEDULE_INCLUDE = {
   select: {
@@ -60,10 +66,8 @@ const USER_INCLUDE = {
     email: true,
     profileFirstName: true,
     profileLastName: true,
-    branchId: true,
-    warehouseId: true,
-    branch: { select: { id: true, name: true, address: true } },
-    warehouse: { select: { id: true, name: true, address: true } },
+    // Answered as branchId/warehouseId + branch/warehouse by withNamedPosting.
+    location: { select: { id: true, type: true, name: true, address: true } },
   },
 } as const;
 
@@ -282,8 +286,9 @@ export class AttendanceService {
         message: 'Attendance record not found',
       });
 
-    this.assertCanRead(user, attendance.user);
-    return this.toResponse(attendance);
+    const staff = withNamedPosting(attendance.user);
+    this.assertCanRead(user, staff);
+    return this.toResponse({ ...attendance, user: staff });
   }
 
   // ─── Manual correction ─────────────────────────────────────────────────────
@@ -294,7 +299,7 @@ export class AttendanceService {
     const attendance = await this.prisma.attendance.findFirst({
       where: { id, tenantId },
       include: {
-        user: { select: { id: true, branchId: true, warehouseId: true } },
+        user: { select: { id: true, ...USER_POSTING_SELECT } },
       },
     });
     if (!attendance)
@@ -303,7 +308,7 @@ export class AttendanceService {
         message: 'Attendance record not found',
       });
 
-    this.assertCanCorrect(user, attendance.user);
+    this.assertCanCorrect(user, withPosting(attendance.user));
 
     if (
       attendance.status !== AttendanceStatus.CHECKED_IN ||
@@ -372,7 +377,7 @@ export class AttendanceService {
       }),
       this.prisma.user.findFirst({
         where: { id: dto.userId, tenantId },
-        select: { id: true, branchId: true, warehouseId: true },
+        select: { id: true, ...USER_POSTING_SELECT },
       }),
     ]);
     if (!schedule || !target) {
@@ -382,7 +387,7 @@ export class AttendanceService {
       });
     }
 
-    this.assertCanCorrect(user, target);
+    this.assertCanCorrect(user, withPosting(target));
     await this.assertPayrollPeriodOpen(tenantId, schedule.workDate!);
 
     const now = new Date();
@@ -537,15 +542,8 @@ export class AttendanceService {
     const staff = await this.prisma.user.findFirst({
       where: { id: userId, tenantId },
       select: {
-        branch: {
-          select: {
-            attendanceLatitude: true,
-            attendanceLongitude: true,
-            attendanceAllowedRadiusMeters: true,
-            attendanceMaxAccuracyMeters: true,
-          },
-        },
-        warehouse: {
+        // The geofence lives on the Location, whichever kind it is.
+        location: {
           select: {
             attendanceLatitude: true,
             attendanceLongitude: true,
@@ -555,7 +553,7 @@ export class AttendanceService {
         },
       },
     });
-    const workplace = staff?.branch ?? staff?.warehouse;
+    const workplace = staff?.location;
     if (!workplace) {
       throw new BadRequestException({
         code: ErrorCode.ACCOUNT_HAS_NO_LOCATION,
@@ -679,10 +677,7 @@ export class AttendanceService {
     });
     if (scoped.userId) where.userId = scoped.userId;
     if (scoped.branchId || scoped.warehouseId) {
-      where.user = {
-        ...(scoped.branchId ? { branchId: scoped.branchId } : {}),
-        ...(scoped.warehouseId ? { warehouseId: scoped.warehouseId } : {}),
-      };
+      where.user = postingWhere(scoped);
     }
     if (query.scheduleId) where.scheduleId = query.scheduleId;
 
