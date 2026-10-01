@@ -157,51 +157,6 @@ export class NotificationService {
     }
   }
 
-  /** Who signs off on this person's requests: whoever is appointed manager of the location they work at, falling back to the owners. The requester is always removed, so a manager filing their own leave is never their own approver. */
-  async approversOf(user: {
-    userId: string;
-    tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
-  }): Promise<string[]> {
-    const managers = await this.managersOfLocation({
-      tenantId: user.tenantId,
-      locationId: user.branchId ?? user.warehouseId,
-    });
-    const others = managers.filter((id) => id !== user.userId);
-    if (others.length > 0) return others;
-
-    // They manage the place themselves (or it has no manager): escalate to the owners.
-    const owners = await this.tenantOwners(user.tenantId);
-    return owners.filter((id) => id !== user.userId);
-  }
-
-  /** A person's name for notification copy, falling back through email and phone to a generic word; never throws, since a vague name beats a failed transaction. */
-  async displayName(userId: string): Promise<string> {
-    try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          profileFirstName: true,
-          profileLastName: true,
-          email: true,
-          phoneNumber: true,
-        },
-      });
-      if (!user) return 'Nhân viên';
-
-      const full =
-        `${user.profileFirstName ?? ''} ${user.profileLastName ?? ''}`.trim();
-      return full || user.email || user.phoneNumber || 'Nhân viên';
-    } catch (error) {
-      this.logger.error(
-        'displayName lookup failed',
-        error instanceof Error ? error.stack : error,
-      );
-      return 'Nhân viên';
-    }
-  }
-
   // ─── Inbox (ported from iKiotMS-BE's NotificationController) ───────────────
 
   private inboxFilter(user: AuthUser) {

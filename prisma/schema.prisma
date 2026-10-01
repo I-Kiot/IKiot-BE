@@ -3,6 +3,10 @@
 // stock is added as soon as an import is received, reserved on confirmation and deducted when packed.
 // Stock is held in InventoryLot rows that keep their source (supplier / workshop) and unit cost, so the
 // cost of every unit sold - and the margin per source - is known: Σ lot.remaining = inventories.stock.
+// Every ledger row moves exactly one lot; an outbound move that spans two lots writes two rows.
+// Goods are checked by the person in charge whenever they move: an import / transfer is checked line
+// by line on receive (receivedQuantity / defectQuantity), a transfer when it is shipped (shippedBy),
+// and every sale - takeaway included - when its fulfillment is verified (verifiedBy).
 // Location.type is BRANCH | WAREHOUSE; a Branch/Warehouse shares its Location's id.
 
 // SQL-only constraints (keep them when editing a generated migration):
@@ -18,9 +22,8 @@
 //   - production_request_items: CHECK (received_quantity >= 0)
 //   - stock_movement_request_items: CHECK (defect_quantity BETWEEN 0 AND COALESCE(received_quantity, 0))
 //   - stock_movement_requests: CHECK ((movement_type = 'IMPORT') = (import_source IS NOT NULL))
-//   - stock_movement_requests: CHECK (import_source IS DISTINCT FROM 'WORKSHOP' OR production_request_id IS NOT NULL)
 //   - inventory_lots: CHECK (received_quantity > 0 AND remaining_quantity BETWEEN 0 AND received_quantity)
-//   - inventory_lot_usages: CHECK (quantity > 0)
+//   - orders: CHECK (status IN ('DRAFT', 'PENDING_CONFIRMATION') OR assignee_id IS NOT NULL)
 //   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
 //   - payments: CHECK (amount > 0)
 //   - invoices: one live SALE invoice per order (partial, type = 'SALE' AND status <> 'CANCELLED')
@@ -43,6 +46,7 @@ model Tenant {
   id            String  @id @default(uuid())
   name          String
   tenantOwnerId String? @map("tenant_owner_id")
+  tenantOwner   User?   @relation("TenantOwner", fields: [tenantOwnerId], references: [id])
   status        String  @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED
   phoneNumber   String? @map("phone_number")
   mainAddress   String? @map("main_address")
@@ -74,7 +78,6 @@ model Tenant {
   inventories             Inventory[]
   inventoryTransactions   InventoryTransaction[]
   inventoryLots           InventoryLot[]
-  inventoryLotUsages      InventoryLotUsage[]
   stockMovementRequests   StockMovementRequest[]
   shiftTemplates          ShiftTemplate[]
   workingSchedules        WorkingSchedule[]
@@ -102,11 +105,6 @@ model Tenant {
   fulfillmentPackages     FulfillmentPackage[]
   shipments               Shipment[]
   operationEvents         OperationEvent[]
-  customerAccounts        CustomerAccount[]
-  customerSegments        CustomerSegment[]
-  loyaltyProgram          LoyaltyProgram?
-  loyaltyAccounts         LoyaltyAccount[]
-  pointTransactions       PointTransaction[]
   vouchers                Voucher[]
   voucherCodes            VoucherCode[]
   invoices                Invoice[]
@@ -152,45 +150,46 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   fcmTokens                   UserFcmToken[]
-  managedLocations            Location[]             @relation("LocationManager")
-  managedWorkingSchedules     WorkingSchedule[]      @relation("WorkingScheduleManagedBy")
-  createdWorkingSchedules     WorkingSchedule[]      @relation("WorkingScheduleCreatedBy")
+  ownedTenants                Tenant[]                 @relation("TenantOwner")
+  subscriptionChanges         SubscriptionHistoryLog[] @relation("SubscriptionHistoryChangedBy")
+  managedLocations            Location[]               @relation("LocationManager")
+  managedWorkingSchedules     WorkingSchedule[]        @relation("WorkingScheduleManagedBy")
+  createdWorkingSchedules     WorkingSchedule[]        @relation("WorkingScheduleCreatedBy")
   scheduleAssignments         WorkingScheduleUser[]
-  ordersCreated               Order[]                @relation("OrderCreatedBy")
-  ordersAssigned              Order[]                @relation("OrderAssignee")
-  ordersConfirmed             Order[]                @relation("OrderConfirmedBy")
-  productionRequestsCreated   ProductionRequest[]    @relation("ProductionRequestCreatedBy")
-  productionRequestsUpdated   ProductionRequest[]    @relation("ProductionRequestStatusUpdatedBy")
-  orderReturnsCreated         OrderReturn[]          @relation("OrderReturnCreatedBy")
-  orderReturnsInspected       OrderReturn[]          @relation("OrderReturnInspectedBy")
-  cashDrawerSessionsOpened    CashDrawerSession[]    @relation("CashDrawerOpenedBy")
-  cashDrawerSessionsCurrent   CashDrawerSession[]    @relation("CashDrawerCurrentStaff")
-  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]   @relation("ShiftLogStaff")
-  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]   @relation("ShiftLogNextStaff")
-  cashDrawerFinalizedSessions CashDrawerSession[]    @relation("CashDrawerFinalLogManager")
+  ordersCreated               Order[]                  @relation("OrderCreatedBy")
+  ordersAssigned              Order[]                  @relation("OrderAssignee")
+  ordersConfirmed             Order[]                  @relation("OrderConfirmedBy")
+  productionRequestsCreated   ProductionRequest[]      @relation("ProductionRequestCreatedBy")
+  productionRequestsUpdated   ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
+  orderReturnsCreated         OrderReturn[]            @relation("OrderReturnCreatedBy")
+  orderReturnsInspected       OrderReturn[]            @relation("OrderReturnInspectedBy")
+  cashDrawerSessionsOpened    CashDrawerSession[]      @relation("CashDrawerOpenedBy")
+  cashDrawerSessionsCurrent   CashDrawerSession[]      @relation("CashDrawerCurrentStaff")
+  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]     @relation("ShiftLogStaff")
+  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]     @relation("ShiftLogNextStaff")
+  cashDrawerFinalizedSessions CashDrawerSession[]      @relation("CashDrawerFinalLogManager")
   cashFlowsCreated            CashFlow[]
   promotionLogsCreated        PromotionLog[]
-  notificationsReceived       Notification[]         @relation("NotificationRecipient")
-  notificationsCreated        Notification[]         @relation("NotificationCreatedBy")
+  notificationsReceived       Notification[]           @relation("NotificationRecipient")
+  notificationsCreated        Notification[]           @relation("NotificationCreatedBy")
   ticketsCreated              Ticket[]
   ticketMessages              TicketMessage[]
   aiChatHistories             AIChatHistory[]
   auditLogs                   AuditLog[]
   inventoryTransactions       InventoryTransaction[]
-  stockMovementsCreated       StockMovementRequest[] @relation("StockMovementCreatedBy")
-  stockMovementsShipped       StockMovementRequest[] @relation("StockMovementShippedBy")
-  stockMovementsReceived      StockMovementRequest[] @relation("StockMovementReceivedBy")
-  stockMovementsApproved      StockMovementRequest[] @relation("StockMovementApprovedBy")
-  fulfillmentsAssigned        Fulfillment[]          @relation("FulfillmentAssignee")
-  fulfillmentsVerified        Fulfillment[]          @relation("FulfillmentVerifiedBy")
+  stockMovementsCreated       StockMovementRequest[]   @relation("StockMovementCreatedBy")
+  stockMovementsShipped       StockMovementRequest[]   @relation("StockMovementShippedBy")
+  stockMovementsReceived      StockMovementRequest[]   @relation("StockMovementReceivedBy")
+  stockMovementsApproved      StockMovementRequest[]   @relation("StockMovementApprovedBy")
+  fulfillmentsAssigned        Fulfillment[]            @relation("FulfillmentAssignee")
+  fulfillmentsVerified        Fulfillment[]            @relation("FulfillmentVerifiedBy")
   packagesPacked              FulfillmentPackage[]
-  shipmentsDriven             Shipment[]             @relation("ShipmentDriver")
+  shipmentsDriven             Shipment[]               @relation("ShipmentDriver")
   shipmentEventsCreated       ShipmentEvent[]
   operationEvents             OperationEvent[]
-  paymentsCreated             Payment[]              @relation("PaymentCreatedBy")
-  paymentsCollected           Payment[]              @relation("PaymentCollectedBy")
+  paymentsCreated             Payment[]                @relation("PaymentCreatedBy")
+  paymentsCollected           Payment[]                @relation("PaymentCollectedBy")
   invoicesCreated             Invoice[]
-  pointTransactions           PointTransaction[]
 
   @@map("users")
 }
@@ -291,6 +290,8 @@ model Plan {
 
   subscriptions        Subscription[]
   subscriptionInvoices SubscriptionInvoice[]
+  historyFrom          SubscriptionHistoryLog[] @relation("SubscriptionHistoryFromPlan")
+  historyTo            SubscriptionHistoryLog[] @relation("SubscriptionHistoryToPlan")
 
   @@map("plans")
 }
@@ -329,9 +330,12 @@ model SubscriptionHistoryLog {
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   event          String? // CREATED | UPGRADED | RENEWED | CANCELLED
   fromPlanId     String?      @map("from_plan_id")
+  fromPlan       Plan?        @relation("SubscriptionHistoryFromPlan", fields: [fromPlanId], references: [id])
   toPlanId       String?      @map("to_plan_id")
+  toPlan         Plan?        @relation("SubscriptionHistoryToPlan", fields: [toPlanId], references: [id])
   changedAt      DateTime?    @map("changed_at") @db.Timestamptz(6)
   changedById    String?      @map("changed_by")
+  changedBy      User?        @relation("SubscriptionHistoryChangedBy", fields: [changedById], references: [id])
   note           String?
 
   @@map("subscription_history_logs")
@@ -387,6 +391,11 @@ model Location {
   defaultFulfillmentLocation   Location?  @relation("LocationDefaultFulfillment", fields: [defaultFulfillmentLocationId], references: [id])
   servedLocations              Location[] @relation("LocationDefaultFulfillment")
 
+  // Where this location's damaged / returned-broken goods go (a location with isSellable = false)
+  damagedLocationId String?    @map("damaged_location_id")
+  damagedLocation   Location?  @relation("LocationDamaged", fields: [damagedLocationId], references: [id])
+  damagedFor        Location[] @relation("LocationDamaged")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -397,8 +406,8 @@ model Location {
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
   inventoryLots         InventoryLot[]
-  stockMovementsFrom    StockMovementRequest[] @relation("StockMovementFromLocation")
-  stockMovementsTo      StockMovementRequest[] @relation("StockMovementToLocation")
+  stockMovementsFrom    StockMovementRequest[]     @relation("StockMovementFromLocation")
+  stockMovementsTo      StockMovementRequest[]     @relation("StockMovementToLocation")
   cashFlows             CashFlow[]
   payments              Payment[]
   workingSchedules      WorkingSchedule[]
@@ -407,8 +416,9 @@ model Location {
   operationEvents       OperationEvent[]
   stockReservations     StockReservation[]
   productionRequests    ProductionRequest[]
-  orderItemsSourced     OrderItem[]            @relation("OrderItemSourceLocation")
+  orderItemsSourced     OrderItem[]                @relation("OrderItemSourceLocation")
   orderReturnItems      OrderReturnItem[]
+  importDefects         StockMovementRequestItem[] @relation("ImportDefectLocation")
   salesChannels         SalesChannel[]
 
   @@index([tenantId, type])
@@ -523,11 +533,9 @@ model Customer {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  orders         Order[]
-  promotionLogs  PromotionLog[]
-  account        CustomerAccount?
-  loyaltyAccount LoyaltyAccount?
-  voucherCodes   VoucherCode[]
+  orders        Order[]
+  promotionLogs PromotionLog[]
+  voucherCodes  VoucherCode[]
 
   @@unique([tenantId, customerCode])
   @@index([tenantId, phone])
@@ -731,8 +739,13 @@ model InventoryTransaction {
   createdBy   User?    @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  lotCreated InventoryLot? // the lot an inbound (+) row opened
-  lotUsages  InventoryLotUsage[] // the lots an outbound (-) row drew from
+  // The one lot this row moved. An inbound row opens it; an outbound row draws from it.
+  lotId String       @map("lot_id")
+  lot   InventoryLot @relation(fields: [lotId], references: [id])
+
+  // SALE / RETURN_* rows: the order line, so cost of goods sold per line is Σ quantity × lot.unitCost
+  orderItemId String?    @map("order_item_id")
+  orderItem   OrderItem? @relation(fields: [orderItemId], references: [id])
 
   @@index([tenantId, locationId, productItemId, createdAt])
   @@index([referenceType, referenceId])
@@ -740,8 +753,8 @@ model InventoryTransaction {
 }
 
 /// A batch of one SKU at one location, keeping where it came from and what it cost.
-/// Opened by every inbound stock row; outbound rows draw from lots (FIFO by receivedAt,
-/// a custom piece only from the lot made for its order line) and record it in InventoryLotUsage.
+/// Opened by an inbound ledger row; outbound rows draw from lots (FIFO by receivedAt, a custom
+/// piece only from the lot made for its order line), one ledger row per lot touched.
 model InventoryLot {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -769,9 +782,6 @@ model InventoryLot {
   parentLot   InventoryLot?  @relation("InventoryLotParent", fields: [parentLotId], references: [id])
   childLots   InventoryLot[] @relation("InventoryLotParent")
 
-  inboundTransactionId String               @unique @map("inbound_transaction_id")
-  inboundTransaction   InventoryTransaction @relation(fields: [inboundTransactionId], references: [id])
-
   unitCost          Decimal  @map("unit_cost") @db.Decimal(12, 2) // import price; workshop price for WORKSHOP
   receivedQuantity  Int      @map("received_quantity")
   remainingQuantity Int      @map("remaining_quantity")
@@ -779,34 +789,12 @@ model InventoryLot {
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  usages InventoryLotUsage[]
+  transactions InventoryTransaction[]
 
   @@index([tenantId, locationId, productItemId, receivedAt])
   @@index([tenantId, sourceType, supplierId])
   @@index([orderItemId])
   @@map("inventory_lots")
-}
-
-/// How much of which lot an outbound stock row took. For a SALE (written when the
-/// fulfillment line is packed) this is the cost of goods sold, split by source.
-model InventoryLotUsage {
-  id                     String               @id @default(uuid())
-  tenantId               String               @map("tenant_id")
-  tenant                 Tenant               @relation(fields: [tenantId], references: [id])
-  lotId                  String               @map("lot_id")
-  lot                    InventoryLot         @relation(fields: [lotId], references: [id])
-  inventoryTransactionId String               @map("inventory_transaction_id")
-  inventoryTransaction   InventoryTransaction @relation(fields: [inventoryTransactionId], references: [id])
-  orderItemId            String?              @map("order_item_id") // SALE only
-  orderItem              OrderItem?           @relation(fields: [orderItemId], references: [id])
-  quantity               Int
-  unitCost               Decimal              @map("unit_cost") @db.Decimal(12, 2) // copied from the lot
-  createdAt              DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@index([lotId])
-  @@index([inventoryTransactionId])
-  @@index([tenantId, orderItemId])
-  @@map("inventory_lot_usages")
 }
 
 model StorageNode {
@@ -871,14 +859,11 @@ model StockMovementRequest {
 
   // IMPORT only - the two receiving flows, never mixed on one document:
   //   SUPPLIER = buying finished goods from a GOODS supplier
-  //   WORKSHOP = goods a WORKSHOP made against productionRequestId
+  //   WORKSHOP = goods a WORKSHOP made; every line points at its productionRequestItem
   importSource String? @map("import_source")
 
   fromSupplierId String?   @map("from_supplier_id") // the supplier or the workshop; its type must match importSource
   fromSupplier   Supplier? @relation(fields: [fromSupplierId], references: [id])
-
-  productionRequestId String?            @map("production_request_id") // WORKSHOP imports
-  productionRequest   ProductionRequest? @relation(fields: [productionRequestId], references: [id])
 
   fromLocationId String?   @map("from_location_id")
   fromLocation   Location? @relation("StockMovementFromLocation", fields: [fromLocationId], references: [id])
@@ -910,7 +895,6 @@ model StockMovementRequest {
   @@index([tenantId, toLocationId])
   @@index([tenantId, status])
   @@index([tenantId, movementType, importSource, fromSupplierId])
-  @@index([productionRequestId])
   @@map("stock_movement_requests")
 }
 
@@ -923,11 +907,15 @@ model StockMovementRequestItem {
   quantity         Int
   importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2) // IMPORT: becomes the lot's unit cost
   receivedQuantity Int?                 @map("received_quantity")
-  defectQuantity   Int                  @default(0) @map("defect_quantity") // goes to a non-sellable location
+  defectQuantity   Int                  @default(0) @map("defect_quantity") // put away at defectLocation
   note             String?
 
   productionRequestItemId String?                @map("production_request_item_id") // required on a WORKSHOP import
   productionRequestItem   ProductionRequestItem? @relation(fields: [productionRequestItemId], references: [id])
+
+  // Where the defective units of this line were put (defaults to the destination's damagedLocation)
+  defectLocationId String?   @map("defect_location_id")
+  defectLocation   Location? @relation("ImportDefectLocation", fields: [defectLocationId], references: [id])
 
   lots InventoryLot[]
 
@@ -1084,13 +1072,13 @@ model Order {
 
   userId        String?   @map("user_id") // creator; null when synced from a channel
   user          User?     @relation("OrderCreatedBy", fields: [userId], references: [id])
-  assigneeId    String?   @map("assignee_id") // person in charge; required once confirmed
+  assigneeId    String?   @map("assignee_id") // person in charge; required past DRAFT / PENDING_CONFIRMATION (SQL CHECK)
   assignee      User?     @relation("OrderAssignee", fields: [assigneeId], references: [id])
   confirmedById String?   @map("confirmed_by")
   confirmedBy   User?     @relation("OrderConfirmedBy", fields: [confirmedById], references: [id])
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
 
-  channel         String        @default("MANUAL") // MANUAL | POS | SHOPEE
+  channel         String        @default("MANUAL") // MANUAL (created by staff, at the counter or not) | SHOPEE
   channelId       String?       @map("channel_id")
   salesChannel    SalesChannel? @relation(fields: [channelId], references: [id])
   channelOrderRef String?       @map("channel_order_ref") // Shopee order_sn
@@ -1101,10 +1089,11 @@ model Order {
 
   fulfillmentType String @default("HOME_DELIVERY") @map("fulfillment_type") // TAKEAWAY | STORE_PICKUP | HOME_DELIVERY
 
-  // grandTotal = subtotal - discountTotal + shippingFee (prices VAT-inclusive)
+  // grandTotal = subtotal - (discountType = ORDER ? discountValue : 0) + shippingFee (prices VAT-inclusive);
+  // a PROMOTION discount is already inside the lines' discountAmount, discountValue only records it
   subtotal        Decimal  @default(0) @db.Decimal(14, 2)
-  discountTotal   Decimal  @default(0) @map("discount_total") @db.Decimal(14, 2)
   shippingFee     Decimal  @default(0) @map("shipping_fee") @db.Decimal(14, 2) // charged to the customer
+  channelFee      Decimal  @default(0) @map("channel_fee") @db.Decimal(14, 2) // kept by the marketplace (commission, payment fee...) - for margin reports
   vatTotal        Decimal  @default(0) @map("vat_total") @db.Decimal(14, 2)
   grandTotal      Decimal  @map("grand_total") @db.Decimal(14, 2)
   depositRequired Decimal? @map("deposit_required") @db.Decimal(14, 2)
@@ -1138,7 +1127,6 @@ model Order {
   shipments         Shipment[]
   invoices          Invoice[]
   returns           OrderReturn[]
-  pointTransactions PointTransaction[]
   voucherCodesUsed  VoucherCode[]
 
   @@unique([channelId, channelOrderRef])
@@ -1174,7 +1162,7 @@ model OrderItem {
   sku           String?
   variantLabel  String?  @map("variant_label") // e.g. "Gỗ sồi / 1m8"
   listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // SKU retail price at sale time
-  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // actual average cost of the units packed (Σ lot usages / quantity); null until packed
+  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // actual average cost of the units packed (Σ SALE ledger rows × lot.unitCost / quantity); null until packed
   vatRate       Decimal? @map("vat_rate") @db.Decimal(5, 2)
 
   quantity         Int
@@ -1192,7 +1180,7 @@ model OrderItem {
   returnItems            OrderReturnItem[]
   invoiceLines           InvoiceLine[]
   customLots             InventoryLot[]          @relation("InventoryLotCustomFor")
-  lotUsages              InventoryLotUsage[]
+  inventoryTransactions  InventoryTransaction[]
 
   @@index([orderId])
   @@index([productItemId])
@@ -1244,8 +1232,7 @@ model ProductionRequest {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  items    ProductionRequestItem[]
-  receipts StockMovementRequest[] // the WORKSHOP imports that brought the goods in
+  items ProductionRequestItem[]
 
   @@unique([tenantId, code])
   @@index([tenantId, status, expectedReadyDate])
@@ -1400,7 +1387,6 @@ model Promotion {
   ruleProductItems  PromotionProductItem[]
   orderApplications OrderAppliedPromotion[]
   logs              PromotionLog[]
-  segments          PromotionSegment[] // empty = every customer
   vouchers          Voucher[]
 
   @@index([tenantId, status])
@@ -1596,7 +1582,7 @@ model Fulfillment {
 
   assigneeId   String? @map("assignee_id")
   assignee     User?   @relation("FulfillmentAssignee", fields: [assigneeId], references: [id])
-  verifiedById String? @map("verified_by")
+  verifiedById String? @map("verified_by") // person in charge confirms the goods are intact before they leave
   verifiedBy   User?   @relation("FulfillmentVerifiedBy", fields: [verifiedById], references: [id])
 
   dueDate       DateTime? @map("due_date") @db.Date
@@ -1742,119 +1728,8 @@ model OperationEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// F3. Customers, loyalty, vouchers & invoices
+// F3. Vouchers & invoices (customers are reference data in section C)
 // ─────────────────────────────────────────────────────────────────────────
-
-model CustomerAccount {
-  id          String    @id @default(uuid())
-  tenantId    String    @map("tenant_id")
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  customerId  String    @unique @map("customer_id")
-  customer    Customer  @relation(fields: [customerId], references: [id])
-  phoneNumber String    @map("phone_number")
-  email       String?
-  password    String? // null = OTP-only
-  status      String    @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED
-  lastLogin   DateTime? @map("last_login") @db.Timestamptz(6)
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  deviceTokens  CustomerDeviceToken[]
-  notifications Notification[]
-
-  @@unique([tenantId, phoneNumber])
-  @@map("customer_accounts")
-}
-
-model CustomerDeviceToken {
-  id                String          @id @default(uuid())
-  customerAccountId String          @map("customer_account_id")
-  customerAccount   CustomerAccount @relation(fields: [customerAccountId], references: [id], onDelete: Cascade)
-  token             String          @unique
-  userAgent         String?         @map("user_agent")
-  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@map("customer_device_tokens")
-}
-
-model CustomerSegment {
-  id          String   @id @default(uuid())
-  tenantId    String   @map("tenant_id")
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  name        String
-  description String?
-  criteria    Json
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  promotions PromotionSegment[]
-
-  @@unique([tenantId, name])
-  @@map("customer_segments")
-}
-
-model PromotionSegment {
-  promotionId String          @map("promotion_id")
-  promotion   Promotion       @relation(fields: [promotionId], references: [id], onDelete: Cascade)
-  segmentId   String          @map("segment_id")
-  segment     CustomerSegment @relation(fields: [segmentId], references: [id])
-
-  @@id([promotionId, segmentId])
-  @@map("promotion_segments")
-}
-
-model LoyaltyProgram {
-  id                    String   @id @default(uuid())
-  tenantId              String   @unique @map("tenant_id")
-  tenant                Tenant   @relation(fields: [tenantId], references: [id])
-  isActive              Boolean  @default(false) @map("is_active")
-  amountPerPoint        Decimal  @map("amount_per_point") @db.Decimal(14, 2) // VND spent per point earned
-  pointValue            Decimal  @default(0) @map("point_value") @db.Decimal(14, 2) // VND off per point redeemed
-  pointsExpireAfterDays Int?     @map("points_expire_after_days")
-  tiers                 Json? // [{ name, minLifetimePoints }]
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("loyalty_programs")
-}
-
-model LoyaltyAccount {
-  id             String   @id @default(uuid())
-  tenantId       String   @map("tenant_id")
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
-  customerId     String   @unique @map("customer_id")
-  customer       Customer @relation(fields: [customerId], references: [id])
-  balance        Int      @default(0) // = Σ PointTransaction.points
-  lifetimeEarned Int      @default(0) @map("lifetime_earned")
-  tier           String?
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  transactions PointTransaction[]
-
-  @@index([tenantId, tier])
-  @@map("loyalty_accounts")
-}
-
-model PointTransaction {
-  id               String         @id @default(uuid())
-  tenantId         String         @map("tenant_id")
-  tenant           Tenant         @relation(fields: [tenantId], references: [id])
-  loyaltyAccountId String         @map("loyalty_account_id")
-  loyaltyAccount   LoyaltyAccount @relation(fields: [loyaltyAccountId], references: [id])
-  orderId          String?        @map("order_id")
-  order            Order?         @relation(fields: [orderId], references: [id])
-  type             String // EARN | REDEEM | ADJUST | REVERSE | EXPIRE
-  points           Int // signed
-  balanceAfter     Int            @map("balance_after")
-  reason           String?
-  createdById      String?        @map("created_by")
-  createdBy        User?          @relation(fields: [createdById], references: [id])
-  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@index([loyaltyAccountId, createdAt])
-  @@index([tenantId, orderId])
-  @@map("point_transactions")
-}
 
 model Voucher {
   id          String    @id @default(uuid())
@@ -1955,31 +1830,28 @@ model InvoiceLine {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Notification {
-  id                String           @id @default(uuid())
-  title             String
-  description       String
-  type              String
-  tenantId          String?          @map("tenant_id")
-  tenant            Tenant?          @relation(fields: [tenantId], references: [id])
-  recipientId       String?          @map("recipient_id")
-  recipient         User?            @relation("NotificationRecipient", fields: [recipientId], references: [id])
-  customerAccountId String?          @map("customer_account_id") // instead of recipientId for a customer
-  customerAccount   CustomerAccount? @relation(fields: [customerAccountId], references: [id])
-  link              String?
-  category          String? // ANNOUNCEMENT only
-  targetType        String?          @map("target_type") // ALL | SELECTION - ANNOUNCEMENT only
-  createdById       String?          @map("created_by")
-  createdBy         User?            @relation("NotificationCreatedBy", fields: [createdById], references: [id])
-  referenceId       String?          @map("reference_id")
-  isRead            Boolean          @default(false) @map("is_read")
-  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  type        String
+  tenantId    String?  @map("tenant_id")
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  recipientId String?  @map("recipient_id")
+  recipient   User?    @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  link        String?
+  category    String? // ANNOUNCEMENT only
+  targetType  String?  @map("target_type") // ALL | SELECTION - ANNOUNCEMENT only
+  createdById String?  @map("created_by")
+  createdBy   User?    @relation("NotificationCreatedBy", fields: [createdById], references: [id])
+  referenceId String?  @map("reference_id")
+  isRead      Boolean  @default(false) @map("is_read")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   targetTenants NotificationTargetTenant[]
 
   @@index([recipientId, createdAt])
   @@index([recipientId, isRead])
-  @@index([customerAccountId, createdAt])
   @@index([tenantId, createdAt])
   @@map("notifications")
 }
