@@ -18,7 +18,7 @@ function birthYearOf(centurySexCode: number, yearSuffix: string): number {
   return 1900 + Math.floor(centurySexCode / 2) * 100 + Number(yearSuffix);
 }
 
-/** Validates a 12-digit Vietnamese citizen ID and cross-checks it against the profile it is attached to: digits 1–3 are the province, digit 4 the century and sex, digits 5–6 the birth year - so a CCCD disagreeing with `dob` or `gender` means one of them was typed wrong, which is worth catching before payroll and social-insurance exports trust all three. Returns the trimmed, normalised number. */
+/** Validates a 12-digit Vietnamese citizen ID and cross-checks it against the profile it is attached to: digits 1–3 are the province, digit 4 the century and sex, digits 5–6 the birth year - so a CCCD disagreeing with `dob` or `gender` means one of them was typed wrong, which is worth catching before anything downstream trusts all three. Returns the trimmed, normalised number. */
 export function validateVietnamIdentificationId(
   identificationId: string,
   profile: { dob?: Date | string | null; gender?: string | null } = {},

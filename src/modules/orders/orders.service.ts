@@ -30,6 +30,10 @@ import {
 } from './dto/order.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
 /** The one customer every tenant gets for free, for sales with nobody attached. */
 const WALK_IN_CUSTOMER_CODE = 'KH_VANGLAI';
@@ -37,7 +41,7 @@ const WALK_IN_CUSTOMER_NAME = 'Khách vãng lai';
 
 const ORDER_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
-  branch: { select: { id: true, name: true } },
+  branch: BRANCH_NAME_SELECT,
   user: {
     select: {
       id: true,
@@ -143,9 +147,17 @@ export class OrderService {
             create: lines.map((line) => ({
               productItemId: line.productItemId,
               productName: line.productName,
+              sku: line.sku,
               quantity: line.quantity,
+              // A till sale is priced at the catalogue price, so the list price snapshot is the unit price.
+              listUnitPrice: line.unitPrice,
               unitPrice: line.unitPrice,
               discountAmount: line.discountAmount,
+              lineTotal: Math.max(
+                0,
+                Math.round(line.quantity * line.unitPrice) -
+                  line.discountAmount,
+              ),
             })),
           },
           appliedPromotions: { create: appliedPromotions },
@@ -159,8 +171,7 @@ export class OrderService {
         const after = await this.inventory.deductStock(tx, {
           tenantId,
           productItemId: line.productItemId,
-          branchId: dto.branchId,
-          warehouseId: null,
+          locationId: dto.branchId, // a Branch's id is its Location's id
           quantity: line.quantity,
           label: line.sku ?? line.productItemId,
         });
@@ -295,8 +306,7 @@ export class OrderService {
           await this.inventory.adjustStock(tx, {
             tenantId,
             productItemId: line.productItemId,
-            branchId: order.branchId,
-            warehouseId: null,
+            locationId: order.branchId, // a Branch's id is its Location's id
             delta: Number(line.quantity),
           });
         }
@@ -315,7 +325,8 @@ export class OrderService {
         await tx.cashFlow.create({
           data: {
             tenantId,
-            branchId: order.branchId,
+            // The order's branch id is its Location id - what the ledger books against.
+            locationId: order.branchId,
             orderId: order.id,
             createdById: order.userId,
             flowType: 'EXPENSE',
@@ -452,7 +463,7 @@ export class OrderService {
       await tx.cashFlow.create({
         data: {
           tenantId: settled.tenantId,
-          branchId: settled.branchId,
+          locationId: settled.branchId,
           orderId: settled.id,
           createdById: settled.userId,
           flowType: 'INCOME',
@@ -474,8 +485,7 @@ export class OrderService {
     // Worth a real notification, unlike the rest of the order flow: the confirmation arrives minutes later, when the cashier is no longer watching that screen.
     const managers = await this.notifications.managersOfLocation({
       tenantId: updated.tenantId,
-      branchId: updated.branchId,
-      warehouseId: null,
+      locationId: updated.branchId,
     });
     await this.notifications.notify({
       tenantId: updated.tenantId,
@@ -687,8 +697,9 @@ export class OrderService {
       change: Prisma.Decimal | null;
       paymentReference: string | null;
     },
-    paymentMethod: string,
-    createdById: string,
+    paymentMethod: string | null,
+    // Null for an order synced from a sales channel - nobody at the till created it.
+    createdById: string | null,
   ) {
     const change = Number(order.change ?? 0);
     const givesChange =
@@ -699,7 +710,7 @@ export class OrderService {
     await tx.cashFlow.create({
       data: {
         tenantId: order.tenantId,
-        branchId: order.branchId,
+        locationId: order.branchId,
         orderId: order.id,
         createdById,
         flowType: 'INCOME',
@@ -714,7 +725,7 @@ export class OrderService {
       await tx.cashFlow.create({
         data: {
           tenantId: order.tenantId,
-          branchId: order.branchId,
+          locationId: order.branchId,
           createdById,
           flowType: 'EXPENSE',
           amount: change,
@@ -772,6 +783,7 @@ export class OrderService {
       order;
     return {
       ...rest,
+      branch: namedBranch(rest.branch),
       grandTotal: Number(grandTotal),
       customerPay: customerPay === null ? null : Number(customerPay),
       change: change === null ? null : Number(change),

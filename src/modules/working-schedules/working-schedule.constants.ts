@@ -25,6 +25,3 @@ export const LIVE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,
 ];
-
-/** The fallback when a tenant has no PayrollSetting yet - the old service's default. */
-export const DEFAULT_LATE_GRACE_MINUTES = 15;

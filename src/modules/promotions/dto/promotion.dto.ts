@@ -83,7 +83,7 @@ export class CreatePromotionDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01, { message: 'maxDiscountAmount phải lớn hơn 0' })
-  maxDiscountAmount?: number;
+  maxDiscountAmount?: number | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -148,7 +148,7 @@ export class UpdatePromotionDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  maxDiscountAmount?: number;
+  maxDiscountAmount?: number | null;
 
   @IsOptional()
   @Type(() => Number)

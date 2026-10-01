@@ -20,7 +20,6 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { AIChatHistoryModule } from './modules/ai-chat-histories/ai-chat-histories.module';
-import { AttendanceModule } from './modules/attendances/attendances.module';
 import { AuditLogModule } from './modules/audit-logs/audit-logs.module';
 import { BranchModule } from './modules/branches/branches.module';
 import { BrandModule } from './modules/brands/brands.module';
@@ -30,13 +29,8 @@ import { CategoryModule } from './modules/categories/categories.module';
 import { CustomerModule } from './modules/customers/customers.module';
 import { HolidayModule } from './modules/holidays/holidays.module';
 import { InventoryModule } from './modules/inventories/inventories.module';
-import { LeaveRequestModule } from './modules/leave-requests/leave-requests.module';
 import { NotificationModule } from './modules/notifications/notifications.module';
 import { OrderModule } from './modules/orders/orders.module';
-import { PayrollPeriodModule } from './modules/payroll-periods/payroll-periods.module';
-import { PayrollSettingModule } from './modules/payroll-settings/payroll-settings.module';
-import { PaysheetModule } from './modules/paysheets/paysheets.module';
-import { PayslipModule } from './modules/payslips/payslips.module';
 import { PlanModule } from './modules/plans/plans.module';
 import { ProductModule } from './modules/products/products.module';
 import { PromotionModule } from './modules/promotions/promotions.module';
@@ -66,7 +60,6 @@ import { SentryModule } from '@sentry/nestjs/setup';
     AuthModule,
     RolesModule,
     AIChatHistoryModule,
-    AttendanceModule,
     AuditLogModule,
     BranchModule,
     BrandModule,
@@ -76,13 +69,8 @@ import { SentryModule } from '@sentry/nestjs/setup';
     CustomerModule,
     HolidayModule,
     InventoryModule,
-    LeaveRequestModule,
     NotificationModule,
     OrderModule,
-    PayrollPeriodModule,
-    PayrollSettingModule,
-    PaysheetModule,
-    PayslipModule,
     PlanModule,
     ProductModule,
     PromotionModule,

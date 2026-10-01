@@ -7,10 +7,13 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import {
+  LOCATION_SELECT,
   locationMatcher,
-  toLocationRef,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
+import type {
+  LocationRef,
+  LocationRefQueryDto,
+} from '../../common/dto/location-ref.dto';
 import {
   ProductStatus,
   QUOTA_COUNTED_PRODUCT_STATUSES,
@@ -28,12 +31,24 @@ import {
 import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movement.constants';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { LocationType } from '../../common/constants/location-type';
+
+/** Prefix of auto-allocated product codes (`SP000001`, ...). */
+const CODE_PREFIX = 'SP';
+
+/** A variant DTO once `allocateItemCodes` has filled in the two codes. */
+type ItemWithCodes = CreateProductItemDto & {
+  productCode: string;
+  sku: string;
+};
+
+const IMAGES_INCLUDE = {
+  select: { id: true, url: true, isThumbnail: true, position: true },
+  orderBy: { position: 'asc' },
+} as const;
 
 const ITEM_INCLUDE = {
-  images: {
-    select: { id: true, url: true, isThumbnail: true, position: true },
-    orderBy: { position: 'asc' },
-  },
+  images: IMAGES_INCLUDE,
   details: {
     select: { id: true, name: true, value: true, position: true },
     orderBy: { position: 'asc' },
@@ -54,12 +69,11 @@ const ITEM_INCLUDE = {
 
 type ItemRow = Prisma.ProductItemGetPayload<{ include: typeof ITEM_INCLUDE }>;
 
-/** One location's share of a variant's stock, as the old API shaped it. */
+/** One location's share of a variant's stock. */
 export interface StockDetail {
   inventoryId: string;
-  locationId: string;
-  locationType: string;
   stock: number;
+  location: LocationRef;
 }
 
 /**
@@ -99,10 +113,11 @@ export class ProductService {
       'products',
     );
 
-    this.assertNoDuplicateSkusInPayload(dto.items);
+    const items = await this.allocateItemCodes(tenantId, dto.items);
+    this.assertNoDuplicateSkusInPayload(items);
     await this.assertSkusAreFree(
       tenantId,
-      dto.items.map((item) => item.sku),
+      items.map((item) => item.sku),
     );
     const categoryName = await this.resolveCategoryName(
       tenantId,
@@ -125,7 +140,7 @@ export class ProductService {
         select: { id: true },
       });
 
-      for (const item of dto.items) {
+      for (const item of items) {
         await this.insertItem(tx, tenantId, product.id, item);
       }
 
@@ -144,7 +159,10 @@ export class ProductService {
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+          brand: { select: { id: true, name: true } },
+          images: IMAGES_INCLUDE,
+        },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -196,7 +214,10 @@ export class ProductService {
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+          brand: { select: { id: true, name: true } },
+          images: IMAGES_INCLUDE,
+        },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -275,7 +296,9 @@ export class ProductService {
       by: ['productItemId'],
       where: {
         tenantId,
-        branchId: { in: query.branchIds },
+        // Branch ids are Location ids; the kind filter keeps a warehouse id from counting as a branch.
+        locationId: { in: query.branchIds },
+        location: { type: LocationType.BRANCH },
         productItemId: { in: items.map((item) => item.id) },
       },
       _sum: { stock: true },
@@ -297,10 +320,7 @@ export class ProductService {
       include: {
         brand: { select: { id: true, name: true } },
         category: { select: { id: true, name: true } },
-        images: {
-          select: { id: true, url: true, isThumbnail: true, position: true },
-          orderBy: { position: 'asc' },
-        },
+        images: IMAGES_INCLUDE,
       },
     });
     if (!product)
@@ -484,11 +504,12 @@ export class ProductService {
         message: 'Product not found',
       });
 
-    await this.assertSkusAreFree(tenantId, [dto.sku]);
-    await this.assertItemReferencesExist(tenantId, [dto]);
+    const [item] = await this.allocateItemCodes(tenantId, [dto]);
+    await this.assertSkusAreFree(tenantId, [item.sku]);
+    await this.assertItemReferencesExist(tenantId, [item]);
 
     const itemId = await this.prisma.$transaction((tx) =>
-      this.insertItem(tx, tenantId, productId, dto),
+      this.insertItem(tx, tenantId, productId, item),
     );
 
     return this.findItem(tenantId, itemId);
@@ -666,7 +687,7 @@ export class ProductService {
     tx: Prisma.TransactionClient,
     tenantId: string,
     productId: string,
-    dto: CreateProductItemDto,
+    dto: ItemWithCodes,
   ): Promise<string> {
     const item = await tx.productItem.create({
       data: {
@@ -759,21 +780,23 @@ export class ProductService {
         id: true,
         productItemId: true,
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        locationId: true,
+        location: LOCATION_SELECT,
       },
     });
 
     for (const row of rows) {
-      const ref = toLocationRef(row);
-      if (!ref) continue; // a row naming neither location is broken data, not a location
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
         allLocations: 0,
       };
       entry.allLocations += row.stock;
       if (here(row)) {
-        entry.details.push({ inventoryId: row.id, stock: row.stock, ...ref });
+        entry.details.push({
+          inventoryId: row.id,
+          stock: row.stock,
+          location: row.location,
+        });
       }
       byItem.set(row.productItemId, entry);
     }
@@ -794,8 +817,9 @@ export class ProductService {
       where: { tenantId, productItem: { productId: { in: productIds } } },
       select: {
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        // Only what the matcher reads (id + kind) - nothing about the location is returned here.
+        locationId: true,
+        location: { select: { type: true } },
         productItem: { select: { productId: true } },
       },
     });
@@ -826,6 +850,64 @@ export class ProductService {
       // no caller has to tell "not stocked here" from "not loaded".
       stockAllLocations: stock?.allLocations ?? 0,
     };
+  }
+
+  /**
+   * Fills in the codes a client left blank. `productCode` becomes the next `SP000001`-style
+   * number in the tenant (hand-typed codes of other shapes are left alone and don't move the
+   * counter); `sku` defaults to the product code, made unique with a `-2`, `-3` suffix when
+   * that string is already a SKU here or earlier in the same request.
+   */
+  private async allocateItemCodes(
+    tenantId: string,
+    items: CreateProductItemDto[],
+  ): Promise<ItemWithCodes[]> {
+    const needsCode = items.some((item) => !item.productCode?.trim());
+    let counter = 0;
+    if (needsCode) {
+      const rows = await this.prisma.productItem.findMany({
+        where: { tenantId, productCode: { startsWith: CODE_PREFIX } },
+        select: { productCode: true },
+      });
+      for (const { productCode } of rows) {
+        const digits = productCode.slice(CODE_PREFIX.length);
+        if (/^\d+$/.test(digits)) counter = Math.max(counter, Number(digits));
+      }
+    }
+
+    const wantedSkus = items
+      .map((item) => item.sku?.trim())
+      .filter((sku): sku is string => Boolean(sku));
+    const candidates = items
+      .map((item) => item.productCode?.trim())
+      .filter((code): code is string => Boolean(code));
+    const existing = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { sku: { in: [...wantedSkus, ...candidates] } },
+          { sku: { startsWith: CODE_PREFIX } },
+        ],
+      },
+      select: { sku: true },
+    });
+    const usedSkus = new Set<string>(
+      existing.map((row) => row.sku).filter((sku): sku is string => !!sku),
+    );
+    for (const sku of wantedSkus) usedSkus.add(sku);
+
+    return items.map((item) => {
+      const productCode =
+        item.productCode?.trim() ||
+        `${CODE_PREFIX}${String(++counter).padStart(6, '0')}`;
+      let sku = item.sku?.trim();
+      if (!sku) {
+        sku = productCode;
+        for (let n = 2; usedSkus.has(sku); n++) sku = `${productCode}-${n}`;
+        usedSkus.add(sku);
+      }
+      return { ...item, productCode, sku };
+    });
   }
 
   private assertNoDuplicateSkusInPayload(items: { sku: string }[]): void {

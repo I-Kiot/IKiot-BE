@@ -5,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client';
+import { STAFF_BASE_PERMISSIONS } from '../../common/constants/system-role';
+import { UserStatus } from '../../common/constants/user-status';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
@@ -19,7 +21,10 @@ export class RolesService {
       where: { tenantId },
       include: {
         permissions: { select: { resource: true, action: true } },
-        _count: { select: { users: true } },
+        // Soft-deleted accounts keep their roleId; the "in use" figure must not count them.
+        _count: {
+          select: { users: { where: { status: { not: UserStatus.DELETED } } } },
+        },
       },
       orderBy: { name: 'asc' },
     });
@@ -38,10 +43,21 @@ export class RolesService {
     return role;
   }
 
-  permissionCatalog() {
-    return this.prisma.permissionCatalog.findMany({
+  async permissionCatalog() {
+    const rows = await this.prisma.permissionCatalog.findMany({
       orderBy: [{ resource: 'asc' }, { action: 'asc' }],
     });
+    return rows.filter(
+      (row) => !STAFF_BASE_PERMISSIONS.has(`${row.resource}:${row.action}`),
+    );
+  }
+
+  private grantable(
+    permissions: { resource: string; action: string }[],
+  ): { resource: string; action: string }[] {
+    return permissions
+      .filter((p) => !STAFF_BASE_PERMISSIONS.has(`${p.resource}:${p.action}`))
+      .map((p) => ({ resource: p.resource, action: p.action }));
   }
 
   async create(tenantId: string, dto: CreateRoleDto) {
@@ -51,12 +67,7 @@ export class RolesService {
           tenantId,
           name: dto.name,
           description: dto.description,
-          permissions: {
-            create: dto.permissions.map((p) => ({
-              resource: p.resource,
-              action: p.action,
-            })),
-          },
+          permissions: { create: this.grantable(dto.permissions) },
         },
         include: { permissions: { select: { resource: true, action: true } } },
       });
@@ -73,10 +84,9 @@ export class RolesService {
         if (dto.permissions) {
           await tx.rolePermission.deleteMany({ where: { roleId: id } });
           await tx.rolePermission.createMany({
-            data: dto.permissions.map((p) => ({
+            data: this.grantable(dto.permissions).map((p) => ({
               roleId: id,
-              resource: p.resource,
-              action: p.action,
+              ...p,
             })),
           });
         }
@@ -95,8 +105,9 @@ export class RolesService {
 
   async remove(tenantId: string, id: string) {
     const role = await this.findOne(tenantId, id);
+    // Only living accounts block the delete; a soft-deleted employee still carries the roleId (it's an FK), so those rows are detached below rather than counted.
     const assignedCount = await this.prisma.user.count({
-      where: { roleId: role.id },
+      where: { roleId: role.id, status: { not: UserStatus.DELETED } },
     });
     if (assignedCount > 0) {
       throw new ConflictException({
@@ -104,7 +115,13 @@ export class RolesService {
         message: `Cannot delete a role assigned to ${assignedCount} user(s) - reassign them first`,
       });
     }
-    await this.prisma.role.delete({ where: { id } });
+    await this.prisma.$transaction([
+      this.prisma.user.updateMany({
+        where: { roleId: role.id, status: UserStatus.DELETED },
+        data: { roleId: null },
+      }),
+      this.prisma.role.delete({ where: { id } }),
+    ]);
     return { success: true };
   }
 

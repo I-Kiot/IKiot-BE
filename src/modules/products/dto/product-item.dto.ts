@@ -40,13 +40,15 @@ export class CreateProductItemDto {
   @IsNotEmpty({ message: 'Tên mặt hàng không được để trống' })
   productName: string;
 
+  /** Optional since 2026-09-12: left blank, the service allocates `SP000001`-style codes per tenant. */
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Mã mặt hàng không được để trống' })
-  productCode: string;
+  productCode?: string;
 
+  /** Optional since 2026-09-12: left blank it follows `productCode` (kept unique per tenant). */
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'SKU không được để trống' })
-  sku: string;
+  sku?: string;
 
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })

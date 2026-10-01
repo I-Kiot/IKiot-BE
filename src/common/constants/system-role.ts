@@ -12,3 +12,12 @@ export type SystemRole = (typeof SystemRole)[keyof typeof SystemRole];
 export const CUSTOMER_PERMISSIONS: ReadonlySet<string> = new Set([
   'profile:read',
 ]);
+
+export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
+  'profile:read',
+  'products:read',
+  'categories:read',
+  'brands:read',
+  'schedules:read_own',
+  'cash_drawers:read_own',
+]);
