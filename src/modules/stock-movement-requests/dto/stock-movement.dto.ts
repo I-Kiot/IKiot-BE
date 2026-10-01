@@ -11,6 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
+import { LocationRefDto } from '../../../common/dto/location-ref.dto';
 import { MOVEMENT_STATUSES, MOVEMENT_TYPES } from '../stock-movement.constants';
 
 /** One line of a movement. Which fields are required depends on the movement type and the service enforces that: `quantity` is optional because an ADJUST line may mean "use what the system thinks", `importPrice` because EXPORT/RETURN falls back to cost price. */
@@ -56,13 +57,15 @@ export class CreateStockMovementDto {
 
   /** Where stock leaves from - required for EXPORT/RETURN/ADJUST. A STAFF account may omit it and have their posting filled in; a TENANT_OWNER has to say. */
   @IsOptional()
-  @IsUUID()
-  fromLocationId?: string;
+  @ValidateNested()
+  @Type(() => LocationRefDto)
+  fromLocation?: LocationRefDto;
 
-  /** Where stock arrives. Required for IMPORT/EXPORT/RETURN, meaningless for ADJUST. Only the id: the kind of place is read from the Location row, never taken from the client. */
+  /** Where stock arrives. Required for IMPORT/EXPORT/RETURN, meaningless for ADJUST. */
   @IsOptional()
-  @IsUUID()
-  toLocationId?: string;
+  @ValidateNested()
+  @Type(() => LocationRefDto)
+  toLocation?: LocationRefDto;
 
   @IsOptional()
   @IsString()

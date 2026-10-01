@@ -4,10 +4,6 @@ import { SystemRole } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
 import { ScheduleStatus } from './working-schedule.constants';
 import type { ShiftSupervisorAccess } from '../../common/types/auth-user.type';
-import {
-  LOCATION_TYPE_SELECT,
-  columnsOfLocation,
-} from '../../common/dto/location-ref.dto';
 
 /** The extra permissions a STAFF account holds only while the shift they are running is actually running (iKiotMS-BE's `managedScheduleAccess`): whoever is `managedBy` on a live schedule can open the till, receive stock and settle supplier paperwork at their own location without a permanent grant. Three things keep it narrow - only SCHEDULED shifts whose window contains now, only the fixed `TEMPORARY_PERMISSIONS` set, and only locations on both the shift and the supervisor's own posting. `suppliers` is the exception to the last, since supplier records are tenant-wide. */
 
@@ -71,7 +67,7 @@ export class ShiftSupervisorService {
         startAt: true,
         endAt: true,
         assignedUsers: {
-          select: { user: { select: { location: LOCATION_TYPE_SELECT } } },
+          select: { user: { select: { branchId: true, warehouseId: true } } },
         },
       },
     });
@@ -82,9 +78,8 @@ export class ShiftSupervisorService {
     const warehouseIds = new Set<string>();
     for (const schedule of schedules) {
       for (const { user: member } of schedule.assignedUsers) {
-        const posting = columnsOfLocation(member.location);
-        if (posting.branchId) branchIds.add(posting.branchId);
-        if (posting.warehouseId) warehouseIds.add(posting.warehouseId);
+        if (member.branchId) branchIds.add(member.branchId);
+        if (member.warehouseId) warehouseIds.add(member.warehouseId);
       }
     }
 

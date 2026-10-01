@@ -12,6 +12,11 @@ export interface FlatUserProfile {
   profileGender?: string | null;
 }
 
+export interface FlatLeaveBalance {
+  leaveBalanceAnnualDays?: number | null;
+  leaveBalanceRemainingDays?: number | null;
+}
+
 export interface NestedUserProfile {
   firstName: string | null;
   lastName: string | null;
@@ -23,10 +28,10 @@ export interface NestedUserProfile {
   gender: string | null;
 }
 
-/** Swaps the `profile*` columns for one nested `profile` object. */
+/** Swaps the `profile*` columns for one nested `profile` object, and the `leaveBalance*` pair likewise when the row carries them. */
 export function withNestedProfile<T extends FlatUserProfile>(
   row: T,
-): Omit<T, keyof FlatUserProfile> & {
+): Omit<T, keyof FlatUserProfile | keyof FlatLeaveBalance> & {
   profile: NestedUserProfile;
 } {
   const {
@@ -41,8 +46,17 @@ export function withNestedProfile<T extends FlatUserProfile>(
     ...rest
   } = row;
 
+  const {
+    leaveBalanceAnnualDays,
+    leaveBalanceRemainingDays,
+    ...withoutBalance
+  } = rest as typeof rest & FlatLeaveBalance;
+
   return {
-    ...rest,
+    ...(withoutBalance as Omit<
+      T,
+      keyof FlatUserProfile | keyof FlatLeaveBalance
+    >),
     profile: {
       firstName: profileFirstName ?? null,
       lastName: profileLastName ?? null,
@@ -53,5 +67,15 @@ export function withNestedProfile<T extends FlatUserProfile>(
       address: profileAddress ?? null,
       gender: profileGender ?? null,
     },
+    // Only when the caller selected it: an always-null key would read as "they have no allowance".
+    ...(leaveBalanceAnnualDays === undefined &&
+    leaveBalanceRemainingDays === undefined
+      ? {}
+      : {
+          leaveBalance: {
+            annualLeaveDays: leaveBalanceAnnualDays ?? 0,
+            remainingDays: leaveBalanceRemainingDays ?? 0,
+          },
+        }),
   };
 }

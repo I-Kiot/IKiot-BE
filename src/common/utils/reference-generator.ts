@@ -14,6 +14,7 @@ export function referenceMatcher(prefix: string): RegExp {
 export const REFERENCE_PREFIX = {
   ORDER: 'ORD',
   SUPPLIER: 'SUP',
+  PAYROLL: 'PAYR',
   SUBSCRIPTION: 'IKMS', // tenant pays iKiot for a plan (company bank - not tenant CashFlow)
   TICKET: 'TK', // support thread; shown to both the shop and the operator
 } as const;
@@ -21,4 +22,5 @@ export const REFERENCE_PREFIX = {
 export const CASHFLOW_PREFIXES = [
   REFERENCE_PREFIX.ORDER,
   REFERENCE_PREFIX.SUPPLIER,
+  REFERENCE_PREFIX.PAYROLL,
 ];

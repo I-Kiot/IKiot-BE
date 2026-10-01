@@ -28,13 +28,6 @@ import type {
   StatsQueryDto,
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
-import {
-  LOCATION_TYPE_SELECT,
-  columnsOfLocation,
-  locationRefOf,
-  postingWhere,
-  withNamedPosting,
-} from '../../common/dto/location-ref.dto';
 
 /** `COUNT(*)` is `bigint` in Postgres; every count below is cast `::int` at the source. */
 interface SummaryRow {
@@ -189,13 +182,7 @@ export class StatsService {
     });
 
     const staff = await this.prisma.user.findMany({
-      where: {
-        id: {
-          in: rows
-            .map((row) => row.userId)
-            .filter((id): id is string => id !== null),
-        },
-      },
+      where: { id: { in: rows.map((row) => row.userId) } },
       select: { id: true, profileFirstName: true, profileLastName: true },
     });
     const nameOf = new Map(staff.map((s) => [s.id, fullName(s)]));
@@ -207,8 +194,7 @@ export class StatsService {
           const orderCount = row._count._all;
           return {
             userId: row.userId,
-            // A channel-synced order has no creator, so its revenue is attributed to nobody.
-            staffName: row.userId ? (nameOf.get(row.userId) ?? null) : null,
+            staffName: nameOf.get(row.userId) ?? null,
             revenue,
             orderCount,
             aov: averageOrderValue(revenue, orderCount),
@@ -321,7 +307,8 @@ export class StatsService {
         skip: skipFor(page, limit),
         take: limit,
         include: {
-          location: { select: { id: true, type: true, name: true } },
+          branch: { select: { name: true } },
+          warehouse: { select: { name: true } },
           supplier: { select: { supplierName: true } },
           createdBy: {
             select: { profileFirstName: true, profileLastName: true },
@@ -331,26 +318,27 @@ export class StatsService {
       this.prisma.cashFlow.count({ where }),
     ]);
 
-    const data = rows.map((row) => {
-      const at = withNamedPosting(row);
-      return {
-        id: row.id,
-        flowType: row.flowType,
-        amount: Number(row.amount),
-        paymentMethod: row.paymentMethod,
-        description: row.description,
-        paymentReference: row.paymentReference,
-        branchName: at.branch?.name ?? null,
-        warehouseName: at.warehouse?.name ?? null,
-        // Flattened for the table, which has one "location" column and doesn't care which kind it is - `locationType` is kept so a row can still be traced back.
-        locationName: (at.branch ?? at.warehouse)?.name ?? null,
-        locationType: locationRefOf(row.location)?.locationType ?? null,
-        supplierName: row.supplier?.supplierName ?? null,
-        createdByName: fullName(row.createdBy),
-        orderId: row.orderId,
-        createdAt: row.createdAt,
-      };
-    });
+    const data = rows.map((row) => ({
+      id: row.id,
+      flowType: row.flowType,
+      amount: Number(row.amount),
+      paymentMethod: row.paymentMethod,
+      description: row.description,
+      paymentReference: row.paymentReference,
+      branchName: row.branch?.name ?? null,
+      warehouseName: row.warehouse?.name ?? null,
+      // Flattened for the table, which has one "location" column and doesn't care which kind it is - `locationType` is kept so a row can still be traced back.
+      locationName: row.branch?.name ?? row.warehouse?.name ?? null,
+      locationType: row.branchId
+        ? 'branch'
+        : row.warehouseId
+          ? 'warehouse'
+          : null,
+      supplierName: row.supplier?.supplierName ?? null,
+      createdByName: fullName(row.createdBy),
+      orderId: row.orderId,
+      createdAt: row.createdAt,
+    }));
 
     return paginate(data, total, page, limit);
   }
@@ -365,11 +353,11 @@ export class StatsService {
 
     return {
       tenantId: user.tenantId ?? undefined,
-      ...postingWhere(scope),
+      ...scope,
       createdAt: { gte: fromDate, lte: toDate },
       ...(query.flowType ? { flowType: query.flowType } : {}),
       ...(paymentMethod ? { paymentMethod } : {}),
-      // `flow` picks a money-flow by its reference-code prefix (ORD sales, SUP supplier payments); `startsWith` with an insensitive mode is the old anchored regex expressed so an index can still serve it.
+      // `flow` picks a money-flow by its reference-code prefix (ORD sales, SUP supplier payments, PAYR payroll); `startsWith` with an insensitive mode is the old anchored regex expressed so an index can still serve it.
       ...(query.flow
         ? {
             paymentReference: {
@@ -389,10 +377,11 @@ export class StatsService {
     const threshold = query.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;
     const tenantId = user.tenantId ?? undefined;
 
-    // Branch and warehouse ids are Location ids, so either narrows the one `location_id` column.
-    const locationId = scope.branchId ?? scope.warehouseId;
-    const locationFilter = locationId
-      ? Prisma.sql`AND i.location_id = ${locationId}`
+    const branchFilter = scope.branchId
+      ? Prisma.sql`AND i.branch_id = ${scope.branchId}`
+      : Prisma.empty;
+    const warehouseFilter = scope.warehouseId
+      ? Prisma.sql`AND i.warehouse_id = ${scope.warehouseId}`
       : Prisma.empty;
 
     const [totalRows, lowStock] = await Promise.all([
@@ -411,15 +400,17 @@ export class StatsService {
         FROM inventories i
         JOIN product_items pi ON pi.id = i.product_item_id
         WHERE i.tenant_id = ${tenantId}
-          ${locationFilter}
+          ${branchFilter}
+          ${warehouseFilter}
       `,
       this.prisma.inventory.findMany({
-        where: { tenantId, ...postingWhere(scope), stock: { lte: threshold } },
+        where: { tenantId, ...scope, stock: { lte: threshold } },
         orderBy: { stock: 'asc' },
         take: LOW_STOCK_LIST_LIMIT,
         select: {
           productItemId: true,
-          location: LOCATION_TYPE_SELECT,
+          branchId: true,
+          warehouseId: true,
           stock: true,
           productItem: { select: { productName: true, sku: true } },
         },
@@ -433,19 +424,16 @@ export class StatsService {
       skuCount: totals?.skuCount ?? 0,
       outOfStock: totals?.outOfStock ?? 0,
       lowStockThreshold: threshold,
-      lowStock: lowStock.map((row) => {
-        const { branchId, warehouseId } = columnsOfLocation(row.location);
-        return {
-          productItemId: row.productItemId,
-          productName: row.productItem.productName,
-          sku: row.productItem.sku,
-          // Kept as the branch/warehouse pair the dashboard reads, derived from the row's Location.
-          branchId,
-          warehouseId,
-          locationType: row.location.type, // BRANCH | WAREHOUSE, as stored (the one spelling, plan 2026-09-29)
-          stock: row.stock,
-        };
-      }),
+      lowStock: lowStock.map((row) => ({
+        productItemId: row.productItemId,
+        productName: row.productItem.productName,
+        sku: row.productItem.sku,
+        // Was one polymorphic `locationId`/`locationType` pair in Mongo; two nullable columns here, so the response says which one is set rather than making the client guess.
+        branchId: row.branchId,
+        warehouseId: row.warehouseId,
+        locationType: row.branchId ? 'branch' : 'warehouse',
+        stock: row.stock,
+      })),
     };
   }
 }

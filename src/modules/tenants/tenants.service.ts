@@ -10,33 +10,23 @@ import { ErrorCode } from '../../common/errors/error-codes';
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Every tenant with `hasSepayKey` - whether a webhook key is on file - the same flag `/tenant/me` answers, so the admin SePay screen and the shop's settings screen agree on "linked". The key itself stays out of the payload. */
   async findAll() {
-    const rows = await this.prisma.tenant.findMany({
-      select: { ...TENANT_SELECT, bankingSepayWebhookApiKey: true },
-    });
-    return rows.map(({ bankingSepayWebhookApiKey, ...row }) => ({
-      ...withNestedBanking(row),
-      hasSepayKey: Boolean(bankingSepayWebhookApiKey),
-    }));
+    const rows = await this.prisma.tenant.findMany({ select: TENANT_SELECT });
+    return rows.map((row) => withNestedBanking(row));
   }
 
   // findFirst + explicit throw rather than findFirstOrThrow: Prisma's not-found error isn't an HttpException, and a row in another tenant must be indistinguishable from one that doesn't exist.
   async findOne(id: string) {
     const found = await this.prisma.tenant.findFirst({
       where: { id },
-      select: { ...TENANT_SELECT, bankingSepayWebhookApiKey: true },
+      select: TENANT_SELECT,
     });
     if (!found)
       throw new NotFoundException({
         code: ErrorCode.TENANT_NOT_FOUND,
         message: 'Tenant not found',
       });
-    const { bankingSepayWebhookApiKey, ...row } = found;
-    return {
-      ...withNestedBanking(row),
-      hasSepayKey: Boolean(bankingSepayWebhookApiKey),
-    };
+    return withNestedBanking(found);
   }
 
   async create(data: CreateTenantDto) {

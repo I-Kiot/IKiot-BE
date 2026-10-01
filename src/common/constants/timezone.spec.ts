@@ -19,7 +19,7 @@ describe('cron schedules', () => {
     .filter(({ text }) => text.includes('@Cron('));
 
   it('finds the cron jobs (guards against this test silently matching nothing)', () => {
-    expect(sources.length).toBeGreaterThanOrEqual(2);
+    expect(sources.length).toBeGreaterThanOrEqual(3);
   });
 
   it.each(

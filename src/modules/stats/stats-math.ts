@@ -1,6 +1,6 @@
 import { DEFAULT_RANGE_DAYS, MS_PER_DAY, TZ_OFFSET } from './stats.constants';
 
-/** The arithmetic behind every dashboard number, as pure functions - same shape and reason as `pricing-engine.ts`: these are the rules a shop owner will argue with. */
+/** The arithmetic behind every dashboard number, as pure functions - same shape and reason as `pricing-engine.ts` and `payroll-math.ts`: these are the rules a shop owner will argue with. */
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
