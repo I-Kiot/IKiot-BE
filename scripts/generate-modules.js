@@ -115,6 +115,8 @@ const PORTED_MODELS = new Set([
   'CashFlow',
   'Holiday', 'ShiftTemplate', 'WorkingSchedule',
   'Ticket', 'AIChatHistory',
+  // Order journey (2026-10-02): written by hand from the start, never generated.
+  'ProductionRequest', 'Fulfillment', 'Shipment', 'OrderReturn', 'SalesChannel',
 ]);
 
 // Fields the server fills in from the authenticated user instead of accepting from the

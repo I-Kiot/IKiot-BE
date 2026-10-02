@@ -46,6 +46,12 @@ import { UploadModule } from './modules/uploads/uploads.module';
 import { UserModule } from './modules/users/users.module';
 import { WarehouseModule } from './modules/warehouses/warehouses.module';
 import { WorkingScheduleModule } from './modules/working-schedules/working-schedules.module';
+// Order journey (2026-10-02): registered in Phase 0 so the parallel tracks never edit this file.
+import { FulfillmentModule } from './modules/fulfillments/fulfillments.module';
+import { OrderReturnModule } from './modules/order-returns/order-returns.module';
+import { ProductionRequestModule } from './modules/production-requests/production-requests.module';
+import { SalesChannelModule } from './modules/sales-channels/sales-channels.module';
+import { ShipmentModule } from './modules/shipments/shipments.module';
 import { SentryModule } from '@sentry/nestjs/setup';
 
 @Module({
@@ -86,6 +92,11 @@ import { SentryModule } from '@sentry/nestjs/setup';
     UserModule,
     WarehouseModule,
     WorkingScheduleModule,
+    FulfillmentModule,
+    OrderReturnModule,
+    ProductionRequestModule,
+    SalesChannelModule,
+    ShipmentModule,
     SentryModule.forRoot(),
   ],
   controllers: [AppController],
