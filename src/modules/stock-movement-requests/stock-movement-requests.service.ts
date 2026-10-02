@@ -18,7 +18,12 @@ import {
 } from '../../common/dto/location-ref.dto';
 import type { LocationEnd } from '../../common/dto/location-ref.dto';
 import { isReturnDirection } from '../../common/constants/location-type';
-import { ImportSource } from '../../common/constants/inventory-ledger';
+import {
+  ImportSource,
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
@@ -353,6 +358,12 @@ export class StockMovementService {
               locationId: from.id,
               quantity,
               label: line.productItem.sku ?? line.productItemId,
+              ledger: {
+                type: InventoryTxType.TRANSFER_OUT,
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+                createdById: user.userId,
+              },
             });
             lowStock.push(this.inventory.lowStockCrossing(after, -quantity));
           }
@@ -441,15 +452,43 @@ export class StockMovementService {
           });
 
           if (quantity <= 0) continue;
+          const ledger = {
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
           if (request.movementType === MovementType.IMPORT) {
             importCost += quantity * Number(line.importPrice ?? 0);
+            // Every received import line is its own lot, costed at the import price.
+            await this.inventory.openLot(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              locationId: to.id,
+              quantity,
+              unitCost:
+                line.importPrice === null
+                  ? undefined
+                  : Number(line.importPrice),
+              sourceType: LotSourceType.SUPPLIER,
+              supplierId: request.fromSupplierId,
+              importItemId: line.id,
+              ledger: { ...ledger, type: InventoryTxType.IMPORT },
+            });
+          } else {
+            // A transfer: the goods arrive as child lots of the ones that left the source, keeping their origin and cost. One shipped before lots existed has nothing to follow.
+            await this.inventory.returnDrawn(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              toLocationId: to.id,
+              quantity,
+              drawnBy: {
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+              },
+              ledger: { ...ledger, type: InventoryTxType.TRANSFER_IN },
+              ifNeverDrawn: { sourceType: LotSourceType.OPENING },
+            });
           }
-          await this.inventory.adjustStock(tx, {
-            tenantId,
-            productItemId: line.productItemId,
-            locationId: to.id,
-            delta: quantity,
-          });
         }
 
         const warning =
@@ -559,12 +598,34 @@ export class StockMovementService {
             }
           }
 
-          const after = await this.inventory.adjustStock(tx, {
+          // A surplus is a new lot at today's cost price; a shortage draws the lots FIFO and cannot eat into stock held for orders.
+          const key = {
             tenantId,
             productItemId: change.productItemId,
             locationId: from.id,
-            delta: change.delta,
-          });
+          };
+          const ledger = {
+            type: InventoryTxType.ADJUST,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
+          const after =
+            change.delta > 0
+              ? (
+                  await this.inventory.openLot(tx, {
+                    ...key,
+                    quantity: change.delta,
+                    sourceType: LotSourceType.ADJUSTMENT,
+                    ledger,
+                  })
+                ).inventory
+              : await this.inventory.deductStock(tx, {
+                  ...key,
+                  quantity: -change.delta,
+                  label: change.label,
+                  ledger,
+                });
           lowStock.push(this.inventory.lowStockCrossing(after, change.delta));
         }
 
@@ -612,12 +673,25 @@ export class StockMovementService {
     const cancelled = await this.prisma.$transaction(async (tx) => {
       if (shouldReturnStock) {
         const from = this.source(request)!;
+        // Straight back into the lots it left.
         for (const line of request.details) {
-          await this.inventory.adjustStock(tx, {
+          await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            locationId: from.id,
-            delta: Number(line.quantity),
+            toLocationId: from.id,
+            quantity: Number(line.quantity),
+            drawnBy: {
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+            },
+            ledger: {
+              type: InventoryTxType.TRANSFER_IN,
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+              createdById: user.userId,
+              note: 'Huỷ phiếu đang vận chuyển',
+            },
+            ifNeverDrawn: { sourceType: LotSourceType.OPENING },
           });
         }
       }
