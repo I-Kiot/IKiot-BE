@@ -12,6 +12,7 @@ import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 import { PaymentMethod } from '../../common/constants/payment-method';
+import { FulfillmentType } from '../../common/constants/order-status';
 import { can } from '../../common/utils/permission';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -134,6 +135,11 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
+          // A till sale is confirmed and handled by whoever rings it up - the orders_assignee_required CHECK needs a person in charge on every non-draft order. A-2 replaces this with the order journey's own create.
+          assigneeId: userId,
+          confirmedById: userId,
+          confirmedAt: new Date(),
+          fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
           paymentMethod: dto.paymentMethod,
           paymentReference,

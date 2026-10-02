@@ -18,6 +18,7 @@ import {
 } from '../../common/dto/location-ref.dto';
 import type { LocationEnd } from '../../common/dto/location-ref.dto';
 import { isReturnDirection } from '../../common/constants/location-type';
+import { ImportSource } from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
@@ -195,6 +196,11 @@ export class StockMovementService {
       data: {
         tenantId,
         movementType: dto.movementType,
+        // The stock_movement_requests_import_source_iff_import CHECK needs a source on every IMPORT and none elsewhere. Only the supplier flow exists today; B-5 adds WORKSHOP and lets the client choose.
+        importSource:
+          dto.movementType === MovementType.IMPORT
+            ? ImportSource.SUPPLIER
+            : null,
         status,
         note: dto.note,
         createdById: user.userId,
