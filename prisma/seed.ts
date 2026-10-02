@@ -221,7 +221,18 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   orders: {
     // 'delete' added for the NestJS port - the generated orders module exposes DELETE.
-    actions: ['create', 'read', 'update', 'delete', 'view_all', 'pay_offline'],
+    // 'confirm' / 'assign' added for the order journey (2026-10-02): confirming an order
+    // holds its stock, and naming the person in charge is a decision of its own.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'view_all',
+      'pay_offline',
+      'confirm',
+      'assign',
+    ],
     label: 'Đơn hàng',
   },
   inventory: {
@@ -307,6 +318,37 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   ai_chat: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Lịch sử chat AI',
+  },
+
+  // ── The order journey (2026-10-02, docs/order-flow.md) ─────────────────────────────
+  // All added up front in Phase 0 so the parallel tracks never edit this file.
+  production_requests: {
+    // 'update' covers moving the status by hand (DRAFT → SENT → ... → COMPLETED).
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Yêu cầu sản xuất',
+  },
+  fulfillments: {
+    // 'verify' = confirming the packed goods are intact, which is what deducts the stock.
+    actions: ['create', 'read', 'update', 'verify'],
+    label: 'Đóng hàng',
+  },
+  shipments: {
+    // 'deliver' is the shipper's own right: see their deliveries, upload proof, mark delivered.
+    actions: ['create', 'read', 'update', 'deliver'],
+    label: 'Giao hàng',
+  },
+  returns: {
+    // The order's person in charge may also open a return without holding 'create'.
+    actions: ['create', 'read', 'inspect', 'cancel'],
+    label: 'Hoàn hàng',
+  },
+  sales_channels: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Kênh bán (Shopee)',
+  },
+  payments: {
+    actions: ['create', 'read', 'refund'],
+    label: 'Thanh toán đơn',
   },
 };
 

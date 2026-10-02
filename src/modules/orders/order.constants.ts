@@ -1,13 +1,10 @@
-export const OrderStatus = {
-  PENDING: 'PENDING',
-  COMPLETED: 'COMPLETED',
-  CANCELLED: 'CANCELLED',
-  RETURNED: 'RETURNED',
-} as const;
+import { OrderStatus } from '../../common/constants/order-status';
 
-export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
-
-export const ORDER_STATUSES: readonly string[] = Object.values(OrderStatus);
+// The status vocabulary is shared with the fulfillment, shipment and return modules, so it lives in common/constants; the transitions below are still the till's four-state flow until A-2/A-3 replace them.
+export {
+  OrderStatus,
+  ORDER_STATUSES,
+} from '../../common/constants/order-status';
 
 /** Where an order may go from where it is. A completed sale is never un-completed, only RETURNED; CANCELLED and RETURNED are both terminal, so correcting either means a new order. */
 export const VALID_ORDER_TRANSITIONS: Readonly<

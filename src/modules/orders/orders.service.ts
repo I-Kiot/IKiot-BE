@@ -12,6 +12,12 @@ import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 import { PaymentMethod } from '../../common/constants/payment-method';
+import { FulfillmentType } from '../../common/constants/order-status';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from '../../common/constants/inventory-ledger';
 import { can } from '../../common/utils/permission';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -134,6 +140,11 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
+          // A till sale is confirmed and handled by whoever rings it up - the orders_assignee_required CHECK needs a person in charge on every non-draft order. A-2 replaces this with the order journey's own create.
+          assigneeId: userId,
+          confirmedById: userId,
+          confirmedAt: new Date(),
+          fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
           paymentMethod: dto.paymentMethod,
           paymentReference,
@@ -167,6 +178,14 @@ export class OrderService {
 
       // Selling takes stock off the shelf, so it watches the low-stock threshold exactly like a transfer does, and `deductStock` is also what enforces "is there enough" without a check-then-decrement race.
       const lowStock: (Inventory | null)[] = [];
+      // Each ledger row names its order line, so the line's cost of goods sold is known. Lines are matched back by SKU, in order - two lines of one SKU are interchangeable.
+      const createdLines = new Map<string, string[]>();
+      for (const item of created.items) {
+        createdLines.set(item.productItemId, [
+          ...(createdLines.get(item.productItemId) ?? []),
+          item.id,
+        ]);
+      }
       for (const line of lines) {
         const after = await this.inventory.deductStock(tx, {
           tenantId,
@@ -174,6 +193,13 @@ export class OrderService {
           locationId: dto.branchId, // a Branch's id is its Location's id
           quantity: line.quantity,
           label: line.sku ?? line.productItemId,
+          ledger: {
+            type: InventoryTxType.SALE,
+            referenceType: InventoryRefType.ORDER,
+            referenceId: created.id,
+            createdById: userId,
+            orderItemId: createdLines.get(line.productItemId)?.shift() ?? null,
+          },
         });
         lowStock.push(this.inventory.lowStockCrossing(after, -line.quantity));
       }
@@ -302,12 +328,24 @@ export class OrderService {
         newStatus === OrderStatus.CANCELLED ||
         newStatus === OrderStatus.RETURNED
       ) {
+        // Back into the lots the sale drew from. A sale rung up before lots existed (2026-10-02) has no ledger rows to follow and comes back as an OPENING lot.
         for (const line of order.items) {
-          await this.inventory.adjustStock(tx, {
+          await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            locationId: order.branchId, // a Branch's id is its Location's id
-            delta: Number(line.quantity),
+            toLocationId: order.branchId, // a Branch's id is its Location's id
+            quantity: Number(line.quantity),
+            drawnBy: { orderItemId: line.id },
+            ledger: {
+              type:
+                newStatus === OrderStatus.CANCELLED
+                  ? InventoryTxType.SALE_REVERSAL
+                  : InventoryTxType.RETURN_GOOD,
+              referenceType: InventoryRefType.ORDER,
+              referenceId: order.id,
+              createdById: user.userId,
+            },
+            ifNeverDrawn: { sourceType: LotSourceType.OPENING },
           });
         }
       }

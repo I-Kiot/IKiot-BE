@@ -168,6 +168,21 @@ export const ErrorCode = {
   INVENTORY_ALREADY_AT_LOCATION: 'INVENTORY_ALREADY_AT_LOCATION',
   INVENTORY_NOT_FOUND: 'INVENTORY_NOT_FOUND',
   INVENTORY_STILL_HAS_STOCK: 'INVENTORY_STILL_HAS_STOCK',
+  // Order journey (2026-10-02): holding stock, lots and the damaged-goods location.
+  /** `stock - reserved` does not cover the quantity to hold. Distinct from INSUFFICIENT_STOCK, which is about the stock itself. */
+  INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
+  /** The lots at a location do not add up to what is being drawn - Σ lot.remaining has drifted from `stock`. A data fault, never user error. */
+  INVENTORY_LOT_SHORTAGE: 'INVENTORY_LOT_SHORTAGE',
+  /** A custom piece has no lot made for its order line at that location. */
+  INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
+  /** Stock cannot be held or sold from a damaged-goods location (`isSellable = false`). */
+  LOCATION_NOT_SELLABLE: 'LOCATION_NOT_SELLABLE',
+  /** `damagedLocationId` must be another non-sellable location of the same tenant. */
+  LOCATION_DAMAGED_INVALID: 'LOCATION_DAMAGED_INVALID',
+  /** The location has no damaged-goods location to send defective / damaged units to. */
+  LOCATION_DAMAGED_REQUIRED: 'LOCATION_DAMAGED_REQUIRED',
+  RESERVATION_NOT_ACTIVE: 'RESERVATION_NOT_ACTIVE',
+  RESERVATION_NOT_FOUND: 'RESERVATION_NOT_FOUND',
 
   // --- Stock movements -------------------------------------------------------
   IMPORT_PRICE_ABOVE_RETAIL: 'IMPORT_PRICE_ABOVE_RETAIL',
@@ -195,6 +210,17 @@ export const ErrorCode = {
   STOCK_MOVEMENT_STATUS_INVALID: 'STOCK_MOVEMENT_STATUS_INVALID',
   STOCK_MOVEMENT_SUPPLIER_REQUIRED: 'STOCK_MOVEMENT_SUPPLIER_REQUIRED',
   STOCK_MOVEMENT_WRITE_DENIED: 'STOCK_MOVEMENT_WRITE_DENIED',
+  // Two import flows (2026-10-02): SUPPLIER buys finished goods, WORKSHOP receives made-to-order goods.
+  IMPORT_SOURCE_REQUIRED: 'IMPORT_SOURCE_REQUIRED',
+  /** The supplier's `type` does not feed this `importSource` (GOODS ↔ SUPPLIER, WORKSHOP ↔ WORKSHOP). */
+  IMPORT_SOURCE_SUPPLIER_MISMATCH: 'IMPORT_SOURCE_SUPPLIER_MISMATCH',
+  /** Every line of a WORKSHOP import must point at a production request line. */
+  IMPORT_PRODUCTION_ITEM_REQUIRED: 'IMPORT_PRODUCTION_ITEM_REQUIRED',
+  /** The production request line belongs to another workshop / SKU, or is not open. */
+  IMPORT_PRODUCTION_ITEM_MISMATCH: 'IMPORT_PRODUCTION_ITEM_MISMATCH',
+  /** More received than the production request line still expects. */
+  IMPORT_PRODUCTION_QTY_EXCEEDS: 'IMPORT_PRODUCTION_QTY_EXCEEDS',
+  STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS: 'STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS',
 
   // --- Selling - orders, customers, promotions -------------------------------
   CASH_FLOW_NOT_FOUND: 'CASH_FLOW_NOT_FOUND',
@@ -223,6 +249,84 @@ export const ErrorCode = {
   PROMOTION_ORDER_ID_REQUIRED: 'PROMOTION_ORDER_ID_REQUIRED',
   PROMOTION_STACK_LIMIT: 'PROMOTION_STACK_LIMIT',
   PROMOTION_USAGE_EXHAUSTED: 'PROMOTION_USAGE_EXHAUSTED',
+
+  // --- Order journey (2026-10-02, docs/order-flow.md) -------------------------
+  /** Every order past DRAFT / PENDING_CONFIRMATION needs a person in charge. */
+  ORDER_ASSIGNEE_REQUIRED: 'ORDER_ASSIGNEE_REQUIRED',
+  /** The assignee is not an active account of this tenant. */
+  ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
+  /** Packed and handed over - an OrderReturn is the only way back. */
+  ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
+  ORDER_COMBO_INVALID: 'ORDER_COMBO_INVALID',
+  ORDER_EMPTY: 'ORDER_EMPTY',
+  ORDER_ITEM_CUSTOM_LOCKED: 'ORDER_ITEM_CUSTOM_LOCKED',
+  ORDER_ITEM_NOT_CUSTOMIZABLE: 'ORDER_ITEM_NOT_CUSTOMIZABLE',
+  ORDER_ITEM_NOT_FOUND: 'ORDER_ITEM_NOT_FOUND',
+  /** Only DRAFT / PENDING_CONFIRMATION orders can be confirmed. */
+  ORDER_NOT_CONFIRMABLE: 'ORDER_NOT_CONFIRMABLE',
+  /** Only a DRAFT may be edited freely. */
+  ORDER_NOT_DRAFT: 'ORDER_NOT_DRAFT',
+  ORDER_SOURCE_LOCATION_INVALID: 'ORDER_SOURCE_LOCATION_INVALID',
+
+  // --- Workshop: production requests ----------------------------------------
+  /** A custom SKU's line must point at the order line it is made for. */
+  PRODUCTION_REQUEST_CUSTOM_LINE_REQUIRED:
+    'PRODUCTION_REQUEST_CUSTOM_LINE_REQUIRED',
+  PRODUCTION_REQUEST_EMPTY: 'PRODUCTION_REQUEST_EMPTY',
+  PRODUCTION_REQUEST_ITEM_NOT_FOUND: 'PRODUCTION_REQUEST_ITEM_NOT_FOUND',
+  /** Lines and specs are frozen once the request is SENT. */
+  PRODUCTION_REQUEST_LOCKED: 'PRODUCTION_REQUEST_LOCKED',
+  PRODUCTION_REQUEST_NOT_FOUND: 'PRODUCTION_REQUEST_NOT_FOUND',
+  PRODUCTION_REQUEST_STATUS_INVALID: 'PRODUCTION_REQUEST_STATUS_INVALID',
+  /** The supplier on a production request must be a WORKSHOP. */
+  SUPPLIER_NOT_WORKSHOP: 'SUPPLIER_NOT_WORKSHOP',
+
+  // --- Fulfillment & delivery -----------------------------------------------
+  FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
+  FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
+  FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
+  /** The order is not READY_TO_PACK. */
+  FULFILLMENT_ORDER_NOT_READY: 'FULFILLMENT_ORDER_NOT_READY',
+  /** A multi-package item is missing packages. */
+  FULFILLMENT_PACKAGES_INCOMPLETE: 'FULFILLMENT_PACKAGES_INCOMPLETE',
+  FULFILLMENT_QTY_EXCEEDS: 'FULFILLMENT_QTY_EXCEEDS',
+  FULFILLMENT_STATUS_INVALID: 'FULFILLMENT_STATUS_INVALID',
+  /** Only the order's person in charge (or someone holding the permission) may verify the packed goods. */
+  FULFILLMENT_VERIFY_DENIED: 'FULFILLMENT_VERIFY_DENIED',
+  CARRIER_WEBHOOK_INVALID: 'CARRIER_WEBHOOK_INVALID',
+  /** The fulfillment has not been handed over yet. */
+  SHIPMENT_FULFILLMENT_NOT_HANDED_OVER: 'SHIPMENT_FULFILLMENT_NOT_HANDED_OVER',
+  /** The shipper is not the driver on this shipment. */
+  SHIPMENT_NOT_ASSIGNED: 'SHIPMENT_NOT_ASSIGNED',
+  SHIPMENT_NOT_FOUND: 'SHIPMENT_NOT_FOUND',
+  /** An INTERNAL delivery needs at least one proof photo. */
+  SHIPMENT_PROOF_REQUIRED: 'SHIPMENT_PROOF_REQUIRED',
+  SHIPMENT_STATUS_INVALID: 'SHIPMENT_STATUS_INVALID',
+  SHIPMENT_TRACKING_TAKEN: 'SHIPMENT_TRACKING_TAKEN',
+
+  // --- Returns --------------------------------------------------------------
+  ORDER_RETURN_CONDITION_REQUIRED: 'ORDER_RETURN_CONDITION_REQUIRED',
+  /** Neither the order's person in charge nor a holder of `returns:create`. */
+  ORDER_RETURN_DENIED: 'ORDER_RETURN_DENIED',
+  ORDER_RETURN_EMPTY: 'ORDER_RETURN_EMPTY',
+  ORDER_RETURN_NOT_FOUND: 'ORDER_RETURN_NOT_FOUND',
+  /** Nothing has left the shop yet - cancel the order instead. */
+  ORDER_RETURN_ORDER_NOT_RETURNABLE: 'ORDER_RETURN_ORDER_NOT_RETURNABLE',
+  /** More than was sold minus what already came back. */
+  ORDER_RETURN_QTY_EXCEEDS: 'ORDER_RETURN_QTY_EXCEEDS',
+  ORDER_RETURN_STATUS_INVALID: 'ORDER_RETURN_STATUS_INVALID',
+
+  // --- Marketplace channels & payments (Phase 2) ----------------------------
+  CHANNEL_MAPPING_DUPLICATE: 'CHANNEL_MAPPING_DUPLICATE',
+  CHANNEL_MAPPING_NOT_FOUND: 'CHANNEL_MAPPING_NOT_FOUND',
+  PAYMENT_AMOUNT_EXCEEDS_DUE: 'PAYMENT_AMOUNT_EXCEEDS_DUE',
+  PAYMENT_NOT_FOUND: 'PAYMENT_NOT_FOUND',
+  PAYMENT_REFUND_EXCEEDS_PAID: 'PAYMENT_REFUND_EXCEEDS_PAID',
+  PAYMENT_STATUS_INVALID: 'PAYMENT_STATUS_INVALID',
+  SALES_CHANNEL_ALREADY_CONNECTED: 'SALES_CHANNEL_ALREADY_CONNECTED',
+  SALES_CHANNEL_AUTH_FAILED: 'SALES_CHANNEL_AUTH_FAILED',
+  SALES_CHANNEL_NOT_CONFIGURED: 'SALES_CHANNEL_NOT_CONFIGURED',
+  SALES_CHANNEL_NOT_FOUND: 'SALES_CHANNEL_NOT_FOUND',
 
   // --- Cash drawer sessions --------------------------------------------------
   CASH_DRAWER_ALREADY_OPEN: 'CASH_DRAWER_ALREADY_OPEN',
