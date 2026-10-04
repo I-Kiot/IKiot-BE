@@ -232,6 +232,12 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'pay_offline',
       'confirm',
       'assign',
+      // Added 2026-10-04 with the revised order journey (docs/hanh-trinh-don-hang.md):
+      // packing, shipping (the step that deducts stock) and confirming the cash a shipper
+      // handed back are each a decision of their own, held by different people.
+      'pack',
+      'ship',
+      'confirm_remittance',
     ],
     label: 'Đơn hàng',
   },
@@ -324,7 +330,8 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   // All added up front in Phase 0 so the parallel tracks never edit this file.
   production_requests: {
     // 'update' covers moving the status by hand (DRAFT → SENT → ... → COMPLETED).
-    actions: ['create', 'read', 'update', 'delete'],
+    // 'receive' (2026-10-04): entering the quantity produced, which raises stock.
+    actions: ['create', 'read', 'update', 'delete', 'receive'],
     label: 'Yêu cầu sản xuất',
   },
   fulfillments: {
