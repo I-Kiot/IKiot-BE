@@ -1,7 +1,9 @@
 /**
  * The order journey (docs/hanh-trinh-don-hang.md, revised after the 2026-10-02 meeting):
  * PENDING_CONFIRMATION (Shopee) → CONFIRMED → PACKED → PICKED_UP → SHIPPING → RECEIVED → COMPLETED.
- * Nothing holds stock any more; it is deducted once, on the move to SHIPPING. Every status change
+ * Confirming holds nothing. Packing locks the goods off the shelf (inventories.locked_stock, since
+ * 2026-10-04) and is refused when the shelf is short; they are deducted once, on the move to
+ * SHIPPING, together with their lock. Every status change
  * goes through one transition function (contract §2, A-1).
  *
  * The entries marked @deprecated belong to the reservation design the meeting dropped. They stay
@@ -13,11 +15,11 @@ export const OrderStatus = {
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
   /** Confirmed with a person in charge - where a manual order is born. Stock is not touched. */
   CONFIRMED: 'CONFIRMED',
-  /** Packed, waiting for the shipper / carrier. Stock is not touched. */
+  /** Packed, waiting for the shipper / carrier. Its goods are locked off the shelf (`lockStock`), still in `stock`. */
   PACKED: 'PACKED',
-  /** The shipper / carrier has the goods. Stock is still not touched. */
+  /** The shipper / carrier has the goods. Still locked, still in `stock`. */
   PICKED_UP: 'PICKED_UP',
-  /** Confirmed under way by someone holding orders:ship - the stock is deducted here, and refused if short. */
+  /** Confirmed under way by someone holding orders:ship - the locked goods leave `stock` here (`shipLockedStock`). */
   SHIPPING: 'SHIPPING',
   /** Delivered and paid in cash to the shipper; waiting for the owner to confirm the cash came back in full. */
   RECEIVED: 'RECEIVED',

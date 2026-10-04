@@ -3,7 +3,13 @@
 //
 // Tồn kho:
 // - Tồn chỉ đổi khi hàng thật sự di chuyển: tăng khi nhận hàng nhập (NCC / xưởng) hoặc hàng hoàn
-//   nguyên vẹn; giảm khi đơn chuyển sang Đang vận chuyển (SHIPPING). Không giữ hàng cho đơn.
+//   nguyên vẹn; giảm khi đơn chuyển sang Đang vận chuyển (SHIPPING).
+// - Hàng đã đóng gói cho đơn bị khoá (inventories.locked_stock, từ 2026-10-04): khoá khi đơn
+//   CONFIRMED → PACKED (lần đóng hàng được xác nhận), trừ cả stock lẫn locked_stock khi đơn sang
+//   SHIPPING. Tồn trên kệ (actualStock) = stock − locked_stock, không lưu thành cột; mọi thứ lấy
+//   hàng khỏi kệ (bán quầy, xuất chuyển kho, kiểm kê thiếu, đóng gói đơn khác) chỉ lấy được phần này.
+//   Chứng từ khoá là Fulfillment PACKED / HANDED_OVER của đơn chưa ship (không có bảng giữ hàng
+//   riêng): locked_stock = Σ FulfillmentItem.quantity của các fulfillment đó, theo (location, SKU).
 // - Hàng nằm trong các lô (InventoryLot) giữ nguồn gốc và giá vốn: Σ lot.remaining = inventories.stock.
 // - Mọi thay đổi tồn ghi sổ kho (InventoryTransaction), mỗi dòng sổ đụng đúng một lô.
 // - Location.type là BRANCH | WAREHOUSE; Branch / Warehouse dùng chung id với Location của nó.
@@ -15,7 +21,7 @@
 //   - holidays: mỗi ngày một PUBLIC_HOLIDAY / tenant (index một phần, branch_id IS NULL)
 //   - cash_drawer_sessions: mỗi chi nhánh tối đa một ca két OPEN (index một phần)
 //   - working_schedules: không trùng ca đang hiệu lực (index một phần)
-//   - inventories: CHECK (stock >= 0)
+//   - inventories: CHECK (stock >= 0), CHECK (locked_stock >= 0 AND locked_stock <= stock)
 //   - order_items: CHECK (quantity > 0 AND returned_quantity BETWEEN 0 AND quantity)
 //   - production_request_items, order_return_items: CHECK (quantity > 0)
 //   - production_request_items: CHECK (received_quantity >= 0)
@@ -735,10 +741,11 @@ model Inventory {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
-  stock     Int      @default(0)
-  minStock  Int      @default(0) @map("min_stock") // ngưỡng cảnh báo sắp hết; 0 = không cảnh báo
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  stock       Int      @default(0) // tổng: trên kệ + đã đóng gói cho đơn chưa ship (= Σ lot.remaining)
+  lockedStock Int      @default(0) @map("locked_stock") // đã đóng gói cho đơn, chờ SHIPPING; trên kệ = stock − lockedStock
+  minStock    Int      @default(0) @map("min_stock") // ngưỡng cảnh báo sắp hết, so với tồn trên kệ; 0 = không cảnh báo
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([tenantId, locationId, productItemId])
   @@index([tenantId, locationId, minStock])

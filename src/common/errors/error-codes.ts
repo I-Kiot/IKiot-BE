@@ -173,6 +173,8 @@ export const ErrorCode = {
   INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
   /** The lots at a location do not add up to what is being drawn - Σ lot.remaining has drifted from `stock`. A data fault, never user error. */
   INVENTORY_LOT_SHORTAGE: 'INVENTORY_LOT_SHORTAGE',
+  /** Shipping or releasing more than is locked for orders at that location (2026-10-04) - the order was never packed there, or its lock was already shipped or released. */
+  INVENTORY_LOCK_MISMATCH: 'INVENTORY_LOCK_MISMATCH',
   /** A custom piece has no lot made for its order line at that location. */
   INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
   /** Stock cannot be held or sold from a damaged-goods location (`isSellable = false`). */

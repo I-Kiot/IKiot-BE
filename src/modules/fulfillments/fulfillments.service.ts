@@ -289,7 +289,7 @@ export class FulfillmentService {
     return this.findFulfillmentById(user, f.id);
   }
 
-  async verifyFulfillmentAndDeductStock(user: AuthUser, id: string) {
+  async verifyFulfillmentAndLockStock(user: AuthUser, id: string) {
     const tenantId = requireTenantId(user);
     const f = await this.findFulfillmentWithItemsAndOrder(tenantId, id);
     this.assertUserCanActAtLocation(user, f.locationId);
@@ -338,7 +338,7 @@ export class FulfillmentService {
       });
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const crossings = await this.prisma.$transaction(async (tx) => {
       const now = new Date();
       // Guard and write in one statement: two clicks must not verify twice.
       const { count } = await tx.fulfillment.updateMany({
@@ -357,14 +357,31 @@ export class FulfillmentService {
         });
       }
 
-      // Packing no longer deducts stock - that happens when the order moves to SHIPPING
-      // (POST /orders/:id/ship, deductStock with the order line on the ledger).
+      // Packing locks the goods rather than deducting them: they stay in `stock` until the order
+      // moves to SHIPPING (shipLockedStock), but leave the shelf now, so nothing else can sell or
+      // pack them. Behind the claim above, so a second click can never lock twice; refused as a
+      // whole, every short line named, when the shelf cannot cover it. This fulfillment's items
+      // are the record of the lock - whatever releases or ships it reads them back.
+      const locked = await this.inventory.lockStock(
+        tx,
+        f.items.map((i) => ({
+          tenantId,
+          locationId: f.locationId,
+          productItemId: i.orderItem.productItemId,
+          quantity: i.quantity,
+          label: i.orderItem.sku ?? i.orderItem.productName ?? i.orderItemId,
+        })),
+      );
       await this.markOrderItemsAndOrderAsPacked(
         tx,
         f.orderId,
         f.items.map((i) => i.orderItemId),
       );
+      return locked.map((row, index) =>
+        this.inventory.lowStockCrossing(row, -f.items[index].quantity),
+      );
     });
+    await this.inventory.notifyLowStock(crossings);
     return this.findFulfillmentById(user, id);
   }
 
@@ -379,7 +396,7 @@ export class FulfillmentService {
     );
     this.assertUserCanActAtLocation(user, f.locationId);
     this.assertFulfillmentIsUnpacked(f.status);
-    // Packing touched no stock, so cancelling it has nothing to give back.
+    // Only an unverified fulfillment can be cancelled, and nothing is locked before verification, so there is nothing to give back.
     await this.prisma.fulfillment.update({
       where: { id: f.id },
       data: {

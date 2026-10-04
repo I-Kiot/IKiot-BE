@@ -1,4 +1,4 @@
-/** Packing an order at its ship-from location. Stock is deducted when the person in charge verifies the packed goods are intact (`verifiedBy/At`), which is what moves it to PACKED; HANDED_OVER only records the hand-over and changes no stock. */
+/** Packing an order at its ship-from location. When the person in charge verifies the packed goods are intact (`verifiedBy/At`) the fulfillment moves to PACKED and its items are locked out of the shelf (`inventories.locked_stock`); they leave `stock` only when the order moves to SHIPPING. HANDED_OVER only records the hand-over and changes no stock. A PACKED / HANDED_OVER fulfillment of an order not yet shipped is the record of that lock. */
 export const FulfillmentStatus = {
   PENDING: 'PENDING',
   PICKING: 'PICKING',
@@ -16,7 +16,7 @@ export type FulfillmentStatus =
 export const FULFILLMENT_STATUSES: readonly string[] =
   Object.values(FulfillmentStatus);
 
-/** Before verification. Packing never touches stock, so cancelling here has nothing to give back. */
+/** Before verification. Nothing is locked until verification, so cancelling here has nothing to give back. */
 export const UNPACKED_FULFILLMENT_STATUSES: readonly string[] = [
   FulfillmentStatus.PENDING,
   FulfillmentStatus.PICKING,

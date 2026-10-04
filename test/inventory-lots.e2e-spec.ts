@@ -18,9 +18,9 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 
 // Drives InventoryService's stock primitives against real Postgres (docker compose up -d):
 // lots, the ledger, and the invariant every one of them must keep - Σ lot.remaining = stock.
-// Nothing holds stock for an order any more (docs/hanh-trinh-don-hang.md): an order line's goods
-// leave through deductStock when the order moves to SHIPPING. Creates its own tenant and
-// removes everything it wrote, so it is safe to re-run.
+// Packing an order locks its goods off the shelf (lockStock, locked_stock); they leave stock only
+// when the order moves to SHIPPING (shipLockedStock). Creates its own tenant and removes
+// everything it wrote, so it is safe to re-run.
 describe('InventoryService stock primitives (lots, ledger)', () => {
   let prisma: PrismaService;
   let inventory: InventoryService;
@@ -56,6 +56,8 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
         _sum: { remainingQuantity: true },
       });
       expect(lots._sum.remainingQuantity ?? 0).toBe(row.stock);
+      expect(row.lockedStock).toBeGreaterThanOrEqual(0);
+      expect(row.lockedStock).toBeLessThanOrEqual(row.stock);
     }
   }
 
@@ -196,7 +198,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     await assertInvariants();
   });
 
-  // The SHIPPING step: each line's goods leave through deductStock with the line on the ledger.
+  // Goods leaving the shelf with an order line on the ledger (a till sale goes this way).
   const shipLine = (orderItemId: string) =>
     run((tx) =>
       inventory.deductStock(tx, {
@@ -330,5 +332,154 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     expect(child.receivedAt).toEqual(child.parentLot!.receivedAt);
     expect(child.sourceType).toBe(child.parentLot!.sourceType);
     await assertInvariants();
+  });
+
+  // Packing → shipping (2026-10-04). Here the branch holds 4, nothing locked.
+  const lock = (quantity: number) =>
+    run((tx) => inventory.lockStock(tx, [{ ...key, quantity, label: 'Bàn' }]));
+  const ledgerCount = () =>
+    prisma.inventoryTransaction.count({ where: { tenantId } });
+
+  it('locks packed goods off the shelf without moving stock or writing the ledger', async () => {
+    expect(await stockRow()).toMatchObject({ stock: 4, lockedStock: 0 });
+    const before = await ledgerCount();
+
+    await lock(3);
+    expect(await stockRow()).toMatchObject({ stock: 4, lockedStock: 3 });
+    expect(await ledgerCount()).toBe(before);
+
+    // Only the shelf (1) can be sold or transferred - the packed 3 are not for sale.
+    await expect(
+      run((tx) =>
+        inventory.deductStock(tx, {
+          ...key,
+          quantity: 2,
+          label: 'Bàn',
+          ledger: ledger(InventoryTxType.TRANSFER_OUT),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: { code: ErrorCode.INSUFFICIENT_STOCK },
+    });
+    await assertInvariants();
+  });
+
+  it('refuses to pack beyond the shelf, naming every short line and locking none of them', async () => {
+    await expect(
+      run((tx) =>
+        inventory.lockStock(tx, [
+          { ...key, quantity: 1, label: 'Bàn A' },
+          { ...key, quantity: 5, label: 'Bàn B' },
+          { ...key, quantity: 7, label: 'Bàn C' },
+        ]),
+      ),
+    ).rejects.toMatchObject({
+      response: {
+        code: ErrorCode.INSUFFICIENT_STOCK,
+        message: expect.stringMatching(/Bàn B.*Bàn C/),
+      },
+    });
+    // The transaction rolled back, so the line that did fit is not left locked either.
+    expect((await stockRow()).lockedStock).toBe(3);
+  });
+
+  it('never packs the last piece twice when two orders verify at once', async () => {
+    const attempts = await Promise.allSettled([lock(1), lock(1)]);
+    expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+    expect(await stockRow()).toMatchObject({ stock: 4, lockedStock: 4 });
+  });
+
+  it('gives a lock back to the shelf, and never more than is locked', async () => {
+    await run((tx) =>
+      inventory.releaseLockedStock(tx, { ...key, quantity: 1, label: 'Bàn' }),
+    );
+    expect(await stockRow()).toMatchObject({ stock: 4, lockedStock: 3 });
+    await expect(
+      run((tx) =>
+        inventory.releaseLockedStock(tx, {
+          ...key,
+          quantity: 4,
+          label: 'Bàn',
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: { code: ErrorCode.INVENTORY_LOCK_MISMATCH },
+    });
+  });
+
+  it('ships locked goods: stock and lock drop together, the lots are drawn with the line on the ledger', async () => {
+    const before = await ledgerCount();
+    await run((tx) =>
+      inventory.shipLockedStock(tx, {
+        ...key,
+        quantity: 3,
+        label: 'Bàn',
+        ledger: {
+          type: InventoryTxType.SALE,
+          referenceType: InventoryRefType.ORDER,
+          referenceId: 'ship-locked',
+          orderItemId: lines[1],
+          createdById: userId,
+        },
+      }),
+    );
+    expect(await stockRow()).toMatchObject({ stock: 1, lockedStock: 0 });
+    const sales = await prisma.inventoryTransaction.findMany({
+      where: { tenantId, referenceId: 'ship-locked' },
+    });
+    expect(sales.reduce((sum, row) => sum + row.quantity, 0)).toBe(-3);
+    expect(await ledgerCount()).toBeGreaterThan(before);
+
+    // Nothing is locked any more, so nothing more can ship as packed.
+    await expect(
+      run((tx) =>
+        inventory.shipLockedStock(tx, {
+          ...key,
+          quantity: 1,
+          label: 'Bàn',
+          ledger: ledger(InventoryTxType.SALE),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: { code: ErrorCode.INVENTORY_LOCK_MISMATCH },
+    });
+    await assertInvariants();
+  });
+
+  it('judges low stock on the shelf, not the total', async () => {
+    await run((tx) =>
+      inventory.openLot(tx, {
+        ...key,
+        quantity: 5,
+        sourceType: LotSourceType.SUPPLIER,
+        ledger: ledger(InventoryTxType.IMPORT),
+      }),
+    );
+    await prisma.inventory.updateMany({ where: key, data: { minStock: 4 } });
+    const low = () =>
+      inventory.findAll(tenantId, {
+        page: 1,
+        limit: 20,
+        isLowStock: true,
+      });
+    expect((await low()).data).toHaveLength(0);
+
+    // 6 in total, 3 packed: the total is above 4 but the shelf (3) is not.
+    const [row] = await lock(3);
+    expect(inventory.lowStockCrossing(row, -3)).not.toBeNull();
+    const { data } = await low();
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({ stock: 6, lockedStock: 3, actualStock: 3 });
+
+    await run((tx) =>
+      inventory.releaseLockedStock(tx, { ...key, quantity: 3, label: 'Bàn' }),
+    );
+    await prisma.inventory.updateMany({ where: key, data: { minStock: 0 } });
+  });
+
+  it('is backed by the database: locked_stock can never exceed stock', async () => {
+    await expect(
+      prisma.inventory.updateMany({ where: key, data: { lockedStock: 99 } }),
+    ).rejects.toThrow();
   });
 });

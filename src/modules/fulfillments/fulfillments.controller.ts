@@ -69,7 +69,7 @@ export class FulfillmentController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.verifyFulfillmentAndDeductStock(user, id);
+    return this.service.verifyFulfillmentAndLockStock(user, id);
   }
 
   @Permissions('fulfillments', 'update')
