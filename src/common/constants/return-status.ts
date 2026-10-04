@@ -1,7 +1,9 @@
-/** An OrderReturn ("đơn hoàn hàng"), created by hand for any channel. INSPECTED is where the goods are put away and the stock moves. */
+/** An OrderReturn ("đơn hoàn hàng"), created by hand for any channel (docs/hanh-trinh-don-hang.md GĐ2). The stock moves when it is inspected, which completes it; "restocked" vs "recorded as damaged" is per line (`condition`), not a status. */
 export const OrderReturnStatus = {
-  PENDING: 'PENDING',
-  INSPECTED: 'INSPECTED',
+  REQUESTED: 'REQUESTED',
+  /** The goods are back at the shop and being checked. */
+  INSPECTING: 'INSPECTING',
+  COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
 } as const;
 

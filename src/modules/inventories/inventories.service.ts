@@ -15,7 +15,7 @@ import {
   resolveLocations,
 } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
-import { crossedLowStock } from './low-stock';
+import { actualStockOf, crossedLowStock } from './low-stock';
 import { QueryInventoryDto } from './dto/query-inventory.dto';
 import { AddProductToLocationDto } from './dto/add-product-to-location.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
@@ -25,19 +25,11 @@ import {
   type InventoryRefType,
   type LotSourceType,
 } from '../../common/constants/inventory-ledger';
-import { ReservationStatus } from '../../common/constants/reservation-status';
-import {
-  OrderItemStatus,
-  RESERVING_ORDER_STATUSES,
-  STOCKED_LINE_TYPES,
-} from '../../common/constants/order-status';
 import {
   averageUnitCost,
-  planArrivalAllocation,
   planDraw,
   planReturn,
   runningBalances,
-  type LineAllocation,
 } from './lot-allocation';
 
 /** One SKU at one location - the key of an `inventories` row. */
@@ -57,11 +49,6 @@ export interface LedgerRef {
   note?: string | null;
   /** SALE / SALE_REVERSAL / RETURN_* rows: the order line, so its cost of goods sold can be read off the ledger. */
   orderItemId?: string | null;
-}
-
-/** What `allocateArrivals` held for one waiting line. */
-export interface ArrivalAllocation extends LineAllocation {
-  orderId: string;
 }
 
 const PRODUCT_ITEM_SELECT = {
@@ -93,10 +80,10 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** `location` is already the shared `{ id, type, name }` (LOCATION_SELECT); `locationId` is dropped so the response names the place once. */
+  /** `location` is already the shared `{ id, type, name }` (LOCATION_SELECT); `locationId` is dropped so the response names the place once. `stock` is the total and `actualStock` what is still on the shelf - computed here, never stored. */
   private toResponse(row: InventoryRow) {
     const { locationId, ...rest } = row;
-    return rest;
+    return { ...rest, actualStock: actualStockOf(row) };
   }
 
   async findAll(tenantId: string, query: QueryInventoryDto) {
@@ -106,9 +93,13 @@ export class InventoryService {
     };
 
     if (query.isLowStock) {
-      // A row is low against its own threshold; minStock = 0 switches the alert off for that line, so those are excluded rather than matching everything.
-      where.minStock = { gt: 0 };
-      where.stock = { lte: this.prisma.inventory.fields.minStock };
+      // A row is low when its shelf (stock − locked_stock, as crossedLowStock judges it) is at or under its own threshold; minStock = 0 switches the alert off for that line, so those are excluded rather than matching everything. Prisma can compare a column with a column but not with an expression, so the ids come from SQL and every other filter stays here.
+      const low = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "inventories"
+        WHERE "tenant_id" = ${tenantId}
+          AND "min_stock" > 0
+          AND "stock" - "locked_stock" <= "min_stock"`;
+      where.id = { in: low.map((row) => row.id) };
     }
 
     if (query.search) {
@@ -228,8 +219,12 @@ export class InventoryService {
   // ─── Stock primitives, for Order / StockMovement / Fulfillment / OrderReturn ──
   //
   // The rules every caller shares (schema header, docs/order-flow.md):
-  //   - available = stock - reserved. Holding stock (reserve) only raises `reserved`; the goods
-  //     leave when the line is packed (consume), which lowers both.
+  //   - Goods packed for an order are locked (2026-10-04): `lockStock` when the order is packed
+  //     (CONFIRMED → PACKED), `shipLockedStock` when it moves to SHIPPING - the one step that
+  //     lowers `stock`, with the order line on the ledger - and `releaseLockedStock` on any way
+  //     out in between. The shelf is `stock − locked_stock` (`actualStockOf`); `deductStock` and
+  //     `lockStock` only ever take from the shelf, never from goods packed for someone else.
+  //     The fulfillment is the record of who holds the lock - there is no reservation table.
   //   - Stock sits in lots: Σ lot.remainingQuantity = inventories.stock, always. Every change
   //     writes ledger rows (InventoryTransaction), one per lot it touches.
   //   - Every write takes the caller's transactional client - a rolled-back sale must not have
@@ -289,7 +284,7 @@ export class InventoryService {
     return { inventory, lotId: lot.id };
   }
 
-  /** Take free stock off a shelf - a transfer leaving, a stocktake shortage, a till sale that never held anything. Refuses to dip into what is held for orders (`stock - reserved >= quantity`, checked inside the UPDATE, because reading the level and then decrementing lets two tills both sell the last item), then draws the lots FIFO. Packing an order line goes through `consume`, not this. */
+  /** Take stock off a shelf - a till sale, a transfer leaving, a stocktake shortage. (A packed order leaves through `shipLockedStock` instead.) Refuses to take more than is on the shelf (`stock - locked_stock >= quantity`, checked inside the UPDATE, because reading the level and then decrementing lets two tills both sell the last item) - goods packed for an order are not for sale. Then draws the lots FIFO. With `ledger.orderItemId` it draws that line's own custom lot first and refreshes the line's cost of goods (SALE). */
   async deductStock(
     tx: Prisma.TransactionClient,
     args: StockKey & {
@@ -307,17 +302,12 @@ export class InventoryService {
       WHERE "tenant_id" = ${args.tenantId}
         AND "location_id" = ${args.locationId}
         AND "product_item_id" = ${args.productItemId}
-        AND "stock" - "reserved" >= ${args.quantity}`;
+        AND "stock" - "locked_stock" >= ${args.quantity}`;
 
     if (taken === 0) {
-      const current = await tx.inventory.findFirst({
-        where: this.keyWhere(args),
-        select: { stock: true, reserved: true },
-      });
-      const available = current ? current.stock - current.reserved : 0;
       throw new BadRequestException({
         code: ErrorCode.INSUFFICIENT_STOCK,
-        message: `Not enough stock for ${args.label}: ${args.quantity} needed, ${available} available${current?.reserved ? ` (${current.reserved} held for orders)` : ''}`,
+        message: `Not enough stock for ${args.label}: ${args.quantity} needed, ${await this.shelfOf(tx, args)} available`,
       });
     }
 
@@ -326,6 +316,103 @@ export class InventoryService {
     });
     await this.drawLots(tx, args, args.quantity, inventory.stock, args.ledger);
     return inventory;
+  }
+
+  /**
+   * Lock goods on the shelf for an order being packed (CONFIRMED → PACKED). Every line is tried
+   * and the short ones are reported together, so whoever packs sees the whole problem at once.
+   * The guard (`stock - locked_stock >= quantity`) is inside the UPDATE, like `deductStock`'s,
+   * so two orders cannot both pack the last piece. Moves no stock and writes no ledger row: the
+   * goods have not left, and the fulfillment is the record of who holds them.
+   *
+   * Returns each line's row after its lock, for `lowStockCrossing(row, -quantity)` - packing
+   * empties the shelf just as a sale does.
+   */
+  async lockStock(
+    tx: Prisma.TransactionClient,
+    lines: (StockKey & { quantity: number; label: string })[],
+  ): Promise<Inventory[]> {
+    const locked: Inventory[] = [];
+    const short: string[] = [];
+    for (const line of lines) {
+      this.assertPositive(line.quantity);
+      const taken = await tx.$executeRaw`
+        UPDATE "inventories"
+        SET "locked_stock" = "locked_stock" + ${line.quantity}, "updated_at" = now()
+        WHERE "tenant_id" = ${line.tenantId}
+          AND "location_id" = ${line.locationId}
+          AND "product_item_id" = ${line.productItemId}
+          AND "stock" - "locked_stock" >= ${line.quantity}`;
+      if (taken === 0) {
+        short.push(
+          `${line.label}: ${line.quantity} needed, ${await this.shelfOf(tx, line)} on the shelf`,
+        );
+        continue;
+      }
+      locked.push(
+        await tx.inventory.findFirstOrThrow({ where: this.keyWhere(line) }),
+      );
+    }
+    if (short.length > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.INSUFFICIENT_STOCK,
+        message: `Not enough stock on the shelf to pack - ${short.join('; ')}`,
+      });
+    }
+    return locked;
+  }
+
+  /** Packed goods leave with their order (PICKED_UP → SHIPPING): `stock` and `locked_stock` drop together, so the shelf is untouched and no low-stock warning is due, then the lots are drawn exactly as `deductStock` draws them. Refuses to ship more than is locked - that means the order was never packed here, or its lock was already shipped or released. */
+  async shipLockedStock(
+    tx: Prisma.TransactionClient,
+    args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
+  ): Promise<Inventory> {
+    this.assertPositive(args.quantity);
+
+    const taken = await tx.$executeRaw`
+      UPDATE "inventories"
+      SET "stock" = "stock" - ${args.quantity},
+          "locked_stock" = "locked_stock" - ${args.quantity},
+          "updated_at" = now()
+      WHERE "tenant_id" = ${args.tenantId}
+        AND "location_id" = ${args.locationId}
+        AND "product_item_id" = ${args.productItemId}
+        AND "locked_stock" >= ${args.quantity}`;
+    if (taken === 0) {
+      throw new ConflictException({
+        code: ErrorCode.INVENTORY_LOCK_MISMATCH,
+        message: `Cannot ship ${args.quantity} of ${args.label}: fewer are locked for orders at this location`,
+      });
+    }
+
+    const inventory = await tx.inventory.findFirstOrThrow({
+      where: this.keyWhere(args),
+    });
+    await this.drawLots(tx, args, args.quantity, inventory.stock, args.ledger);
+    return inventory;
+  }
+
+  /** Give a lock back to the shelf - a packed order cancelled, or its quantity lowered, before it ships. `stock` does not change and nothing is written to the ledger, since nothing moved. Same refusal as `shipLockedStock`, for the same reason. */
+  async releaseLockedStock(
+    tx: Prisma.TransactionClient,
+    args: StockKey & { quantity: number; label: string },
+  ): Promise<Inventory> {
+    this.assertPositive(args.quantity);
+
+    const taken = await tx.$executeRaw`
+      UPDATE "inventories"
+      SET "locked_stock" = "locked_stock" - ${args.quantity}, "updated_at" = now()
+      WHERE "tenant_id" = ${args.tenantId}
+        AND "location_id" = ${args.locationId}
+        AND "product_item_id" = ${args.productItemId}
+        AND "locked_stock" >= ${args.quantity}`;
+    if (taken === 0) {
+      throw new ConflictException({
+        code: ErrorCode.INVENTORY_LOCK_MISMATCH,
+        message: `Cannot release ${args.quantity} of ${args.label}: fewer are locked for orders at this location`,
+      });
+    }
+    return tx.inventory.findFirstOrThrow({ where: this.keyWhere(args) });
   }
 
   /**
@@ -483,327 +570,6 @@ export class InventoryService {
     return inventory;
   }
 
-  /**
-   * Hold stock for one order line at one location (docs/order-flow.md B2). The availability
-   * check and the increment of `reserved` are one statement. With `allowPartial`, holds what is
-   * there (the line keeps waiting for the rest) and answers `held: 0` when nothing is;
-   * without it, holds all of it or throws. Never holds at a damaged-goods location.
-   */
-  async reserve(
-    tx: Prisma.TransactionClient,
-    args: StockKey & {
-      orderItemId: string;
-      quantity: number;
-      allowPartial?: boolean;
-      label?: string;
-    },
-  ): Promise<{ held: number; reservationId: string | null }> {
-    this.assertPositive(args.quantity);
-    await this.assertSellable(tx, args.tenantId, args.locationId);
-
-    const allowPartial = args.allowPartial ?? false;
-    const rows = await tx.$queryRaw<{ take: number }[]>`
-      WITH target AS (
-        SELECT "id", LEAST(${args.quantity}::int, "stock" - "reserved") AS take
-        FROM "inventories"
-        WHERE "tenant_id" = ${args.tenantId}
-          AND "location_id" = ${args.locationId}
-          AND "product_item_id" = ${args.productItemId}
-        FOR UPDATE
-      )
-      UPDATE "inventories" i
-      SET "reserved" = i."reserved" + target.take, "updated_at" = now()
-      FROM target
-      WHERE i."id" = target."id"
-        AND target.take > 0
-        AND (${allowPartial}::boolean OR target.take >= ${args.quantity}::int)
-      RETURNING target.take AS take`;
-    const held = rows[0]?.take ?? 0;
-
-    if (held === 0) {
-      if (allowPartial) return { held: 0, reservationId: null };
-      const current = await tx.inventory.findFirst({
-        where: this.keyWhere(args),
-        select: { stock: true, reserved: true },
-      });
-      throw new BadRequestException({
-        code: ErrorCode.INSUFFICIENT_AVAILABLE_STOCK,
-        message: `Not enough available stock for ${args.label ?? args.productItemId}: ${args.quantity} needed, ${current ? current.stock - current.reserved : 0} available`,
-      });
-    }
-
-    const reservation = await tx.stockReservation.create({
-      data: {
-        tenantId: args.tenantId,
-        orderItemId: args.orderItemId,
-        locationId: args.locationId,
-        quantity: held,
-        status: ReservationStatus.ACTIVE,
-      },
-      select: { id: true },
-    });
-    return { held, reservationId: reservation.id };
-  }
-
-  /** Hand back everything a line holds (optionally only at one location): its ACTIVE reservations turn RELEASED and `reserved` drops by as much. Call it **before** pointing the line at a different SKU (a custom piece) - the reservation does not store the SKU, it is read off the line. Returns the quantity released. */
-  async release(
-    tx: Prisma.TransactionClient,
-    args: { tenantId: string; orderItemId: string; locationId?: string },
-  ): Promise<number> {
-    const holds = await tx.$queryRaw<
-      { id: string; location_id: string; quantity: number }[]
-    >`
-      SELECT r."id", r."location_id", r."quantity"
-      FROM "stock_reservations" r
-      WHERE r."tenant_id" = ${args.tenantId}
-        AND r."order_item_id" = ${args.orderItemId}
-        AND r."status" = ${ReservationStatus.ACTIVE}
-        AND (${args.locationId ?? null}::text IS NULL OR r."location_id" = ${args.locationId ?? null}::text)
-      FOR UPDATE`;
-    if (holds.length === 0) return 0;
-
-    const { productItemId } = await tx.orderItem.findUniqueOrThrow({
-      where: { id: args.orderItemId },
-      select: { productItemId: true },
-    });
-
-    await tx.stockReservation.updateMany({
-      where: { id: { in: holds.map((hold) => hold.id) } },
-      data: { status: ReservationStatus.RELEASED },
-    });
-
-    const byLocation = new Map<string, number>();
-    for (const hold of holds) {
-      byLocation.set(
-        hold.location_id,
-        (byLocation.get(hold.location_id) ?? 0) + hold.quantity,
-      );
-    }
-    for (const [locationId, quantity] of byLocation) {
-      await tx.$executeRaw`
-        UPDATE "inventories"
-        SET "reserved" = "reserved" - ${quantity}, "updated_at" = now()
-        WHERE "tenant_id" = ${args.tenantId}
-          AND "location_id" = ${locationId}
-          AND "product_item_id" = ${productItemId}`;
-    }
-    return holds.reduce((sum, hold) => sum + hold.quantity, 0);
-  }
-
-  /**
-   * Packing (docs/order-flow.md B5): the line's hold at that location turns CONSUMED and the
-   * stock actually leaves - `stock` and `reserved` both drop, the lots are drawn (the line's
-   * own made-to-order lot first, then FIFO) with one SALE row per lot carrying the order line,
-   * and the line's `unitCostPrice` is recomputed from those rows. Packing more than the line
-   * holds there is refused. Can be called per batch of units as they are packed.
-   */
-  async consume(
-    tx: Prisma.TransactionClient,
-    args: {
-      tenantId: string;
-      orderItemId: string;
-      locationId: string;
-      quantity: number;
-      label?: string;
-      /** Defaults to SALE; the order line is always attached. */
-      ledger: Omit<LedgerRef, 'type' | 'orderItemId'> & {
-        type?: InventoryTxType;
-      };
-    },
-  ): Promise<Inventory> {
-    this.assertPositive(args.quantity);
-
-    const holds = await tx.$queryRaw<{ id: string; quantity: number }[]>`
-      SELECT "id", "quantity"
-      FROM "stock_reservations"
-      WHERE "tenant_id" = ${args.tenantId}
-        AND "order_item_id" = ${args.orderItemId}
-        AND "location_id" = ${args.locationId}
-        AND "status" = ${ReservationStatus.ACTIVE}
-      ORDER BY "created_at", "id"
-      FOR UPDATE`;
-    const held = holds.reduce((sum, hold) => sum + hold.quantity, 0);
-    if (held < args.quantity) {
-      throw new ConflictException({
-        code: ErrorCode.RESERVATION_NOT_ACTIVE,
-        message: `${args.label ?? args.orderItemId} holds ${held} at this location, cannot pack ${args.quantity}`,
-      });
-    }
-
-    let left = args.quantity;
-    for (const hold of holds) {
-      if (left <= 0) break;
-      const take = Math.min(left, hold.quantity);
-      if (take === hold.quantity) {
-        await tx.stockReservation.update({
-          where: { id: hold.id },
-          data: { status: ReservationStatus.CONSUMED },
-        });
-      } else {
-        // Part of the hold is packed: the rest stays ACTIVE, the packed part is its own CONSUMED row.
-        await tx.stockReservation.update({
-          where: { id: hold.id },
-          data: { quantity: { decrement: take } },
-        });
-        await tx.stockReservation.create({
-          data: {
-            tenantId: args.tenantId,
-            orderItemId: args.orderItemId,
-            locationId: args.locationId,
-            quantity: take,
-            status: ReservationStatus.CONSUMED,
-          },
-        });
-      }
-      left -= take;
-    }
-
-    const { productItemId } = await tx.orderItem.findUniqueOrThrow({
-      where: { id: args.orderItemId },
-      select: { productItemId: true },
-    });
-    const key: StockKey = {
-      tenantId: args.tenantId,
-      locationId: args.locationId,
-      productItemId,
-    };
-
-    const taken = await tx.$executeRaw`
-      UPDATE "inventories"
-      SET "stock" = "stock" - ${args.quantity},
-          "reserved" = "reserved" - ${args.quantity},
-          "updated_at" = now()
-      WHERE "tenant_id" = ${key.tenantId}
-        AND "location_id" = ${key.locationId}
-        AND "product_item_id" = ${key.productItemId}
-        AND "stock" >= ${args.quantity}
-        AND "reserved" >= ${args.quantity}`;
-    if (taken === 0) {
-      // The reservations said the goods were held here; the inventory row disagrees.
-      throw new ConflictException({
-        code: ErrorCode.INSUFFICIENT_STOCK,
-        message: `The stock row for ${args.label ?? productItemId} does not cover the ${args.quantity} held for it`,
-      });
-    }
-
-    const inventory = await tx.inventory.findFirstOrThrow({
-      where: this.keyWhere(key),
-    });
-    await this.drawLots(tx, key, args.quantity, inventory.stock, {
-      ...args.ledger,
-      type: args.ledger.type ?? InventoryTxType.SALE,
-      orderItemId: args.orderItemId,
-    });
-    return inventory;
-  }
-
-  /**
-   * Goods just arrived at a location (an import received): hold them for the order lines
-   * waiting on that SKU there (docs/order-flow.md B4.4) - the lines they were made for
-   * first (`priorityOrderItemIds`, e.g. the production request lines' order lines), then the
-   * other WAITING_STOCK lines by order confirmation time; the rest stays free. A line held in
-   * full becomes READY. Recomputing the order status and telling the person in charge is the
-   * caller's job (A-6) - this returns what it held, per line.
-   */
-  async allocateArrivals(
-    tx: Prisma.TransactionClient,
-    args: StockKey & { priorityOrderItemIds?: string[] },
-  ): Promise<ArrivalAllocation[]> {
-    const location = await tx.location.findFirst({
-      where: { id: args.locationId, tenantId: args.tenantId },
-      select: { isSellable: true },
-    });
-    if (!location?.isSellable) return [];
-
-    const [row] = await tx.$queryRaw<{ id: string; available: number }[]>`
-      SELECT "id", "stock" - "reserved" AS available
-      FROM "inventories"
-      WHERE "tenant_id" = ${args.tenantId}
-        AND "location_id" = ${args.locationId}
-        AND "product_item_id" = ${args.productItemId}
-      FOR UPDATE`;
-    if (!row || row.available <= 0) return [];
-
-    const priorityIds = args.priorityOrderItemIds ?? [];
-    const lines = await tx.orderItem.findMany({
-      where: {
-        productItemId: args.productItemId,
-        status: OrderItemStatus.WAITING_STOCK,
-        lineType: { in: [...STOCKED_LINE_TYPES] },
-        order: {
-          tenantId: args.tenantId,
-          status: { in: [...RESERVING_ORDER_STATUSES] },
-        },
-        OR: [
-          { sourceLocationId: args.locationId },
-          { id: { in: priorityIds } },
-        ],
-      },
-      select: {
-        id: true,
-        orderId: true,
-        quantity: true,
-        order: { select: { confirmedAt: true } },
-        stockReservations: {
-          where: {
-            status: {
-              in: [ReservationStatus.ACTIVE, ReservationStatus.CONSUMED],
-            },
-          },
-          select: { quantity: true },
-        },
-      },
-    });
-
-    const waiting = lines.map((line) => ({
-      orderItemId: line.id,
-      missing:
-        line.quantity -
-        line.stockReservations.reduce((sum, hold) => sum + hold.quantity, 0),
-      confirmedAt: line.order.confirmedAt,
-    }));
-    const byId = new Map(waiting.map((line) => [line.orderItemId, line]));
-    const plan = planArrivalAllocation(
-      row.available,
-      priorityIds.flatMap((id) => byId.get(id) ?? []),
-      waiting,
-    );
-    if (plan.length === 0) return [];
-
-    const total = plan.reduce((sum, line) => sum + line.quantity, 0);
-    await tx.$executeRaw`
-      UPDATE "inventories"
-      SET "reserved" = "reserved" + ${total}, "updated_at" = now()
-      WHERE "id" = ${row.id}`;
-    await tx.stockReservation.createMany({
-      data: plan.map((line) => ({
-        tenantId: args.tenantId,
-        orderItemId: line.orderItemId,
-        locationId: args.locationId,
-        quantity: line.quantity,
-        status: ReservationStatus.ACTIVE,
-      })),
-    });
-    const completed = plan
-      .filter((line) => line.complete)
-      .map((line) => line.orderItemId);
-    if (completed.length > 0) {
-      await tx.orderItem.updateMany({
-        where: { id: { in: completed } },
-        data: {
-          status: OrderItemStatus.READY,
-          sourceLocationId: args.locationId,
-        },
-      });
-    }
-
-    const orderIdOf = new Map(lines.map((line) => [line.id, line.orderId]));
-    return plan.map((line) => ({
-      ...line,
-      orderId: orderIdOf.get(line.orderItemId)!,
-    }));
-  }
-
   /** Append ledger rows. Every stock change goes through the primitives above, which call this - write it directly only for a row that moves no stock. */
   async writeLedger(
     tx: Prisma.TransactionClient,
@@ -949,29 +715,6 @@ export class InventoryService {
     return item.costPrice;
   }
 
-  private async assertSellable(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    locationId: string,
-  ): Promise<void> {
-    const location = await tx.location.findFirst({
-      where: { id: locationId, tenantId },
-      select: { isSellable: true },
-    });
-    if (!location) {
-      throw new NotFoundException({
-        code: ErrorCode.LOCATION_NOT_FOUND,
-        message: 'Location not found',
-      });
-    }
-    if (!location.isSellable) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_NOT_SELLABLE,
-        message: 'Stock at a damaged-goods location cannot be held or sold',
-      });
-    }
-  }
-
   private assertPositive(quantity: number): void {
     if (!Number.isInteger(quantity) || quantity <= 0) {
       throw new BadRequestException({
@@ -979,6 +722,18 @@ export class InventoryService {
         message: 'The quantity must be a whole number greater than 0',
       });
     }
+  }
+
+  /** For an error message only - the guard that refused is the UPDATE, not this read. */
+  private async shelfOf(
+    tx: Prisma.TransactionClient,
+    key: StockKey,
+  ): Promise<number> {
+    const current = await tx.inventory.findFirst({
+      where: this.keyWhere(key),
+      select: { stock: true, lockedStock: true },
+    });
+    return current ? actualStockOf(current) : 0;
   }
 
   private keyWhere(key: StockKey): Prisma.InventoryWhereInput {
@@ -1041,7 +796,8 @@ export class InventoryService {
           referenceId: inventory.id,
           ...InventoryNotificationTemplates.lowStock({
             label: item?.productName ?? item?.sku ?? 'Một mặt hàng',
-            stock: inventory.stock,
+            // The shelf, which is what crossed the threshold - not the total.
+            stock: actualStockOf(inventory),
             minStock: inventory.minStock,
           }),
         });

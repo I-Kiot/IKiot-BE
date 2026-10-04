@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
+import { actualStockOf } from '../inventories/low-stock';
 import { NotificationService } from '../notifications/notifications.service';
 import { StockMovementNotificationTemplates } from '../notifications/templates/stock-movement.templates';
 import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
@@ -965,10 +966,11 @@ export class StockMovementService {
         locationId: from.id,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
-      select: { productItemId: true, stock: true },
+      select: { productItemId: true, stock: true, lockedStock: true },
     });
+    // Only the shelf can be sent - goods packed for an order are not free to transfer. Advisory: deductStock's guard is what enforces it.
     const stockByItem = new Map(
-      rows.map((row) => [row.productItemId, row.stock]),
+      rows.map((row) => [row.productItemId, actualStockOf(row)]),
     );
 
     for (const line of lines) {
@@ -976,7 +978,7 @@ export class StockMovementService {
       if (line.quantity > available) {
         throw new BadRequestException({
           code: ErrorCode.INSUFFICIENT_STOCK,
-          message: `A quantity of ${line.quantity} exceeds the ${available} in stock at the source location`,
+          message: `A quantity of ${line.quantity} exceeds the ${available} on the shelf at the source location`,
         });
       }
     }

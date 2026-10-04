@@ -90,11 +90,12 @@ const ROLES: {
           'confirm',
           'pack',
           'ship',
-          'confirm_remittance',
+          'confirm_cash',
         ],
       ],
       ['customers', ['create', 'read', 'update']],
-      ['production_requests', ['read', 'receive']],
+      ['production_requests', ['create', 'read', 'update', 'delete']],
+      ['production', ['receive']],
       ['shipments', ['create', 'read', 'update']],
       ['returns', ['create', 'read', 'inspect', 'cancel']],
       ['inventory', ['read', 'view_all']],
@@ -121,7 +122,8 @@ const ROLES: {
       'Kiểm hàng sản xuất về và nhập số đã sản xuất (tăng tồn kho), xác nhận Đang vận chuyển (trừ tồn kho), kiểm hàng hoàn.',
     permissions: [
       ['orders', ['read', 'view_all', 'pack', 'ship']],
-      ['production_requests', ['read', 'receive']],
+      ['production_requests', ['read']],
+      ['production', ['receive']],
       ['inventory', ['read', 'update', 'view_all']],
       ['stock_movement', ['create', 'read', 'update', 'receive']],
       ['shipments', ['create', 'read']],
@@ -149,7 +151,7 @@ const ROLES: {
     description:
       'Xác nhận đã nhận đủ tiền mặt từ shipper, theo dõi thanh toán và dòng tiền.',
     permissions: [
-      ['orders', ['read', 'view_all', 'confirm_remittance']],
+      ['orders', ['read', 'view_all', 'confirm_cash']],
       ['payments', ['read']],
       ['cash_flows', ['read']],
       ['reports', ['read']],

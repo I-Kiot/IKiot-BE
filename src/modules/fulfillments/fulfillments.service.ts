@@ -26,14 +26,12 @@ import {
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
-import { ReservationStatus } from '../../common/constants/reservation-status';
 import { UserStatus } from '../../common/constants/user-status';
 import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import { can } from '../../common/utils/permission';
-import { InventoryRefType } from '../../common/constants/inventory-ledger';
 import type { Prisma } from '../../../generated/prisma/client';
 
 @Injectable()
@@ -154,23 +152,22 @@ export class FulfillmentService {
         l.status === OrderItemStatus.READY,
     );
 
-    // The ship-from location is where the goods are actually held - consume() can only deduct there.
-    const holds = await this.prisma.stockReservation.findMany({
-      where: {
-        tenantId: tenantId,
-        orderItemId: { in: lines.map((l) => l.id) },
-        status: ReservationStatus.ACTIVE,
-      },
-    });
-
-    const locationIds = [...new Set(holds.map((h) => h.locationId))];
+    // Nothing holds stock any more (docs/hanh-trinh-don-hang.md): the order is packed where its
+    // lines are due to ship from. Track C replaces this module with POST /orders/:id/pack (contract §2).
+    const locationIds = [
+      ...new Set(
+        lines
+          .map((l) => l.sourceLocationId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
     if (locationIds.length !== 1) {
       throw new ConflictException({
         code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
         message:
           locationIds.length === 0
-            ? 'Nothing is held for this order'
-            : 'Goods are held at more than one location - transfer them first',
+            ? 'No line names a location to ship from'
+            : 'Lines ship from more than one location - transfer the goods first',
       });
     }
 
@@ -292,7 +289,7 @@ export class FulfillmentService {
     return this.findFulfillmentById(user, f.id);
   }
 
-  async verifyFulfillmentAndDeductStock(user: AuthUser, id: string) {
+  async verifyFulfillmentAndLockStock(user: AuthUser, id: string) {
     const tenantId = requireTenantId(user);
     const f = await this.findFulfillmentWithItemsAndOrder(tenantId, id);
     this.assertUserCanActAtLocation(user, f.locationId);
@@ -341,9 +338,9 @@ export class FulfillmentService {
       });
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const crossings = await this.prisma.$transaction(async (tx) => {
       const now = new Date();
-      // Guard and write in one statement: two clicks must not deduct the stock twice.
+      // Guard and write in one statement: two clicks must not verify twice.
       const { count } = await tx.fulfillment.updateMany({
         where: { id: f.id, status: { in: [...UNPACKED_FULFILLMENT_STATUSES] } },
         data: {
@@ -360,26 +357,31 @@ export class FulfillmentService {
         });
       }
 
-      for (const item of f.items) {
-        await this.inventory.consume(tx, {
+      // Packing locks the goods rather than deducting them: they stay in `stock` until the order
+      // moves to SHIPPING (shipLockedStock), but leave the shelf now, so nothing else can sell or
+      // pack them. Behind the claim above, so a second click can never lock twice; refused as a
+      // whole, every short line named, when the shelf cannot cover it. This fulfillment's items
+      // are the record of the lock - whatever releases or ships it reads them back.
+      const locked = await this.inventory.lockStock(
+        tx,
+        f.items.map((i) => ({
           tenantId,
-          orderItemId: item.orderItemId,
           locationId: f.locationId,
-          quantity: item.quantity,
-          label: item.orderItem.productName ?? item.orderItem.sku ?? undefined,
-          ledger: {
-            referenceType: InventoryRefType.FULFILLMENT,
-            referenceId: f.id,
-            createdById: user.userId,
-          },
-        });
-      }
+          productItemId: i.orderItem.productItemId,
+          quantity: i.quantity,
+          label: i.orderItem.sku ?? i.orderItem.productName ?? i.orderItemId,
+        })),
+      );
       await this.markOrderItemsAndOrderAsPacked(
         tx,
         f.orderId,
         f.items.map((i) => i.orderItemId),
       );
+      return locked.map((row, index) =>
+        this.inventory.lowStockCrossing(row, -f.items[index].quantity),
+      );
     });
+    await this.inventory.notifyLowStock(crossings);
     return this.findFulfillmentById(user, id);
   }
 
@@ -394,7 +396,7 @@ export class FulfillmentService {
     );
     this.assertUserCanActAtLocation(user, f.locationId);
     this.assertFulfillmentIsUnpacked(f.status);
-    // Holds stay: the order is still READY_TO_PACK and can be packed again. Releasing them is cancelling the order (A-5).
+    // Only an unverified fulfillment can be cancelled, and nothing is locked before verification, so there is nothing to give back.
     await this.prisma.fulfillment.update({
       where: { id: f.id },
       data: {

@@ -1,5 +1,5 @@
 /**
- * The allocation rules behind InventoryService's lot and reservation writes, kept pure so they
+ * The allocation rules behind InventoryService's lot writes, kept pure so they
  * can be tested without a database. The service loads (and locks) the rows, asks these
  * functions what to do, and writes the answer - never the other way round.
  */
@@ -80,58 +80,6 @@ export function planReturn(
     left -= take;
   }
   return left > 0 ? null : slices;
-}
-
-export interface WaitingLine {
-  orderItemId: string;
-  /** Units still to hold: quantity - what is already held or consumed. */
-  missing: number;
-  /** Order confirmation time - the FIFO key. */
-  confirmedAt: Date | null;
-}
-
-export interface LineAllocation {
-  orderItemId: string;
-  quantity: number;
-  /** The hold now covers the whole line. */
-  complete: boolean;
-}
-
-/**
- * Who gets `available` units that just arrived (docs/order-flow.md B4.4): the lines the goods
- * were made for first, in the order given, then every other waiting line by the order's
- * confirmation time (earliest first; a line with no time goes last). Whatever is left over
- * stays free stock. A line can be held partly - it keeps waiting for the rest.
- */
-export function planArrivalAllocation(
-  available: number,
-  priority: readonly WaitingLine[],
-  waiting: readonly WaitingLine[],
-): LineAllocation[] {
-  const priorityIds = new Set(priority.map((line) => line.orderItemId));
-  const fifo = waiting
-    .filter((line) => !priorityIds.has(line.orderItemId))
-    .sort(
-      (a, b) =>
-        (a.confirmedAt?.getTime() ?? Number.POSITIVE_INFINITY) -
-          (b.confirmedAt?.getTime() ?? Number.POSITIVE_INFINITY) ||
-        a.orderItemId.localeCompare(b.orderItemId),
-    );
-
-  const allocations: LineAllocation[] = [];
-  let left = available;
-  for (const line of [...priority, ...fifo]) {
-    if (left <= 0) break;
-    const take = Math.min(left, line.missing);
-    if (take <= 0) continue;
-    allocations.push({
-      orderItemId: line.orderItemId,
-      quantity: take,
-      complete: take === line.missing,
-    });
-    left -= take;
-  }
-  return allocations;
 }
 
 /** Each slice's running stock level after it is applied, given the level before the whole move. Ledger rows carry it as `balanceAfter`. */

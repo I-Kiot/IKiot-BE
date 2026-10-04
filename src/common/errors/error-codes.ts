@@ -169,10 +169,12 @@ export const ErrorCode = {
   INVENTORY_NOT_FOUND: 'INVENTORY_NOT_FOUND',
   INVENTORY_STILL_HAS_STOCK: 'INVENTORY_STILL_HAS_STOCK',
   // Order journey (2026-10-02): holding stock, lots and the damaged-goods location.
-  /** `stock - reserved` does not cover the quantity to hold. Distinct from INSUFFICIENT_STOCK, which is about the stock itself. */
+  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
   INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
   /** The lots at a location do not add up to what is being drawn - Σ lot.remaining has drifted from `stock`. A data fault, never user error. */
   INVENTORY_LOT_SHORTAGE: 'INVENTORY_LOT_SHORTAGE',
+  /** Shipping or releasing more than is locked for orders at that location (2026-10-04) - the order was never packed there, or its lock was already shipped or released. */
+  INVENTORY_LOCK_MISMATCH: 'INVENTORY_LOCK_MISMATCH',
   /** A custom piece has no lot made for its order line at that location. */
   INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
   /** Stock cannot be held or sold from a damaged-goods location (`isSellable = false`). */
@@ -181,7 +183,9 @@ export const ErrorCode = {
   LOCATION_DAMAGED_INVALID: 'LOCATION_DAMAGED_INVALID',
   /** The location has no damaged-goods location to send defective / damaged units to. */
   LOCATION_DAMAGED_REQUIRED: 'LOCATION_DAMAGED_REQUIRED',
+  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
   RESERVATION_NOT_ACTIVE: 'RESERVATION_NOT_ACTIVE',
+  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
   RESERVATION_NOT_FOUND: 'RESERVATION_NOT_FOUND',
 
   // --- Stock movements -------------------------------------------------------
@@ -374,6 +378,20 @@ export const ErrorCode = {
   UPLOAD_FILE_TOO_LARGE: 'UPLOAD_FILE_TOO_LARGE',
   UPLOAD_FORMAT_UNSUPPORTED: 'UPLOAD_FORMAT_UNSUPPORTED',
   UPLOAD_NOT_CONFIGURED: 'UPLOAD_NOT_CONFIGURED',
+
+  // --- Order journey, revised 2026-10-04 (docs/api-contract-order-flow.md §6) ---
+  ORDER_COLLECTION_AMOUNT_MISMATCH: 'ORDER_COLLECTION_AMOUNT_MISMATCH',
+  ORDER_DEPOSIT_CHANGED: 'ORDER_DEPOSIT_CHANGED',
+  ORDER_DEPOSIT_EXCEEDS_TOTAL: 'ORDER_DEPOSIT_EXCEEDS_TOTAL',
+  ORDER_NOT_EDITABLE: 'ORDER_NOT_EDITABLE',
+  ORDER_REMITTANCE_AMOUNT_MISMATCH: 'ORDER_REMITTANCE_AMOUNT_MISMATCH',
+  ORDER_REMITTANCE_NOT_PENDING: 'ORDER_REMITTANCE_NOT_PENDING',
+  ORDER_SHIP_INSUFFICIENT_STOCK: 'ORDER_SHIP_INSUFFICIENT_STOCK',
+  IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST:
+    'IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST',
+  SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
+  SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
+  SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

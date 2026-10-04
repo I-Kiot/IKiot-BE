@@ -146,6 +146,8 @@ export class OrderService {
           confirmedAt: new Date(),
           fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
+          // The till's reference doubles as the order code until A-2 gives the journey its own create.
+          code: paymentReference,
           paymentMethod: dto.paymentMethod,
           paymentReference,
           grandTotal,
