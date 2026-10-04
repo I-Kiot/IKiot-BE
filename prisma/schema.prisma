@@ -1,32 +1,32 @@
-// iKiotMS schema. uuid PKs, snake_case via @map; enum-like columns are String (values in comments).
-// Core rules: available = stock - reserved; every stock change writes one InventoryTransaction;
-// stock is added as soon as an import is received, reserved on confirmation and deducted when packed.
-// Stock is held in InventoryLot rows that keep their source (supplier / workshop) and unit cost, so the
-// cost of every unit sold - and the margin per source - is known: Σ lot.remaining = inventories.stock.
-// Every ledger row moves exactly one lot; an outbound move that spans two lots writes two rows.
-// Goods are checked by the person in charge whenever they move: an import / transfer is checked line
-// by line on receive (receivedQuantity / defectQuantity), a transfer when it is shipped (shippedBy),
-// and every sale - takeaway included - when its fulfillment is verified (verifiedBy).
-// Location.type is BRANCH | WAREHOUSE; a Branch/Warehouse shares its Location's id.
+// Schema iKiotMS – PostgreSQL. Khoá chính uuid, tên cột snake_case qua @map. Cột kiểu "enum" để
+// String, các giá trị hợp lệ ghi ở comment (hằng nằm trong src/common/constants).
+//
+// Tồn kho:
+// - Tồn chỉ đổi khi hàng thật sự di chuyển: tăng khi nhận hàng nhập (NCC / xưởng) hoặc hàng hoàn
+//   nguyên vẹn; giảm khi đơn chuyển sang Đang vận chuyển (SHIPPING). Không giữ hàng cho đơn.
+// - Hàng nằm trong các lô (InventoryLot) giữ nguồn gốc và giá vốn: Σ lot.remaining = inventories.stock.
+// - Mọi thay đổi tồn ghi sổ kho (InventoryTransaction), mỗi dòng sổ đụng đúng một lô.
+// - Location.type là BRANCH | WAREHOUSE; Branch / Warehouse dùng chung id với Location của nó.
 
-// SQL-only constraints (keep them when editing a generated migration):
-//   - locations: CHECK locations_type_known (location_type IN ('BRANCH', 'WAREHOUSE'))
+// Ràng buộc chỉ có trong SQL (Prisma không biểu diễn được – giữ lại khi sửa migration sinh tự động):
+//   - locations: CHECK location_type IN ('BRANCH', 'WAREHOUSE')
 //   - branches / warehouses: CHECK (id = location_id)
-//   - users: email / identification id unique per tenant among non-DELETED rows
-//   - holidays: one PUBLIC_HOLIDAY per tenant per date (partial, branch_id IS NULL)
-//   - cash_drawer_sessions: one OPEN session per branch (partial)
-//   - working_schedules: unique live slot (partial)
-//   - inventories: CHECK (stock >= 0 AND reserved >= 0 AND reserved <= stock)
+//   - users: email / CCCD không trùng trong một tenant (bỏ qua tài khoản DELETED)
+//   - holidays: mỗi ngày một PUBLIC_HOLIDAY / tenant (index một phần, branch_id IS NULL)
+//   - cash_drawer_sessions: mỗi chi nhánh tối đa một ca két OPEN (index một phần)
+//   - working_schedules: không trùng ca đang hiệu lực (index một phần)
+//   - inventories: CHECK (stock >= 0)
 //   - order_items: CHECK (quantity > 0 AND returned_quantity BETWEEN 0 AND quantity)
-//   - stock_reservations, production_request_items, order_return_items: CHECK (quantity > 0)
+//   - production_request_items, order_return_items: CHECK (quantity > 0)
 //   - production_request_items: CHECK (received_quantity >= 0)
 //   - stock_movement_request_items: CHECK (defect_quantity BETWEEN 0 AND COALESCE(received_quantity, 0))
 //   - stock_movement_requests: CHECK ((movement_type = 'IMPORT') = (import_source IS NOT NULL))
 //   - inventory_lots: CHECK (received_quantity > 0 AND remaining_quantity BETWEEN 0 AND received_quantity)
-//   - orders: CHECK (status IN ('DRAFT', 'PENDING_CONFIRMATION') OR assignee_id IS NOT NULL)
+//   - orders: CHECK (status = 'PENDING_CONFIRMATION' OR assignee_id IS NOT NULL)
+//   - orders: CHECK tiền cọc 0 ≤ deposit_amount ≤ grand_total, 0 < deposit_percent ≤ 100
 //   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
 //   - payments: CHECK (amount > 0)
-//   - invoices: one live SALE invoice per order (partial, type = 'SALE' AND status <> 'CANCELLED')
+//   - invoices: mỗi đơn tối đa một hoá đơn SALE chưa huỷ (index một phần)
 
 generator client {
   provider     = "prisma-client"
@@ -39,9 +39,10 @@ datasource db {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// A. Foundation & platform
+// A. Nền tảng: tenant, tài khoản, phân quyền
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Một shop (khách hàng của nền tảng). Mọi dữ liệu nghiệp vụ đều thuộc một tenant.
 model Tenant {
   id            String  @id @default(uuid())
   name          String
@@ -55,9 +56,9 @@ model Tenant {
   bankingAccountNumber      String? @map("banking_account_number")
   bankingBankName           String? @map("banking_bank_name")
   bankingAccountName        String? @map("banking_account_name")
-  bankingSepayWebhookApiKey String? @map("banking_sepay_webhook_api_key") // secret - never select by default
+  bankingSepayWebhookApiKey String? @map("banking_sepay_webhook_api_key") // bí mật – không bao giờ trả ra API
 
-  invoiceAutoIssueOn String? @map("invoice_auto_issue_on") // null = off | PAID | COMPLETED
+  invoiceAutoIssueOn String? @map("invoice_auto_issue_on") // tự xuất hoá đơn khi đơn: null = tắt | PAID | COMPLETED
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -86,7 +87,6 @@ model Tenant {
   channelProductMappings  ChannelProductMapping[]
   orders                  Order[]
   orderItemCustomizations OrderItemCustomization[]
-  stockReservations       StockReservation[]
   productionRequests      ProductionRequest[]
   orderReturns            OrderReturn[]
   promotions              Promotion[]
@@ -112,15 +112,16 @@ model Tenant {
   @@map("tenants")
 }
 
+/// Tài khoản đăng nhập: admin nền tảng, chủ shop, nhân viên hoặc khách hàng (systemRole).
 model User {
   id             String    @id @default(uuid())
-  tenantId       String?   @map("tenant_id") // null = platform account (systemRole = ADMIN)
+  tenantId       String?   @map("tenant_id") // null = tài khoản nền tảng (ADMIN)
   tenant         Tenant?   @relation("TenantUsers", fields: [tenantId], references: [id])
   email          String?
   password       String?
-  phoneNumber    String    @map("phone_number") // platform-wide login handle
+  phoneNumber    String    @map("phone_number") // tên đăng nhập, duy nhất toàn nền tảng
   systemRole     String    @default("STAFF") @map("system_role") // ADMIN | TENANT_OWNER | CUSTOMER | STAFF
-  roleId         String?   @map("role_id") // tenant-defined role, STAFF only
+  roleId         String?   @map("role_id") // vai trò do shop tạo, chỉ cho STAFF
   role           Role?     @relation(fields: [roleId], references: [id])
   status         String    @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED | DELETED
   createdById    String?   @map("created_by")
@@ -133,7 +134,7 @@ model User {
   deletionReason String?   @map("deletion_reason")
   lastLogin      DateTime? @map("last_login") @db.Timestamptz(6)
   hireDate       DateTime? @map("hire_date") @db.Timestamptz(6)
-  locationId     String?   @map("location_id")
+  locationId     String?   @map("location_id") // nơi làm việc (một chi nhánh hoặc kho)
   location       Location? @relation(fields: [locationId], references: [id])
   accountNote    String?   @map("account_note")
 
@@ -189,12 +190,15 @@ model User {
   operationEvents             OperationEvent[]
   paymentsCreated             Payment[]                @relation("PaymentCreatedBy")
   paymentsCollected           Payment[]                @relation("PaymentCollectedBy")
+  paymentsRemittanceConfirmed Payment[]                @relation("PaymentRemittanceConfirmedBy")
+  ordersShipped               Order[]                  @relation("OrderShippedBy")
+  orderReturnsReceived        OrderReturn[]            @relation("OrderReturnReceivedBy")
   invoicesCreated             Invoice[]
 
   @@map("users")
 }
 
-/// STAFF only; ADMIN / TENANT_OWNER are always full-access.
+/// Vai trò do shop tự tạo, gán cho nhân viên (STAFF). ADMIN và chủ shop luôn có toàn quyền.
 model Role {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
@@ -211,6 +215,7 @@ model Role {
   @@map("roles")
 }
 
+/// Một quyền (resource:action) gán cho vai trò; chỉ chọn được từ PermissionCatalog.
 model RolePermission {
   roleId   String            @map("role_id")
   role     Role              @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -222,6 +227,7 @@ model RolePermission {
   @@map("role_permissions")
 }
 
+/// Danh mục quyền cố định do code quy định (seed), tenant chỉ chọn chứ không tạo mới.
 model PermissionCatalog {
   resource String
   action   String
@@ -233,22 +239,25 @@ model PermissionCatalog {
   @@map("permission_catalog")
 }
 
+/// Token thiết bị để gửi thông báo đẩy (Firebase) cho một tài khoản.
 model UserFcmToken {
   id        String   @id @default(uuid())
   userId    String   @map("user_id")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   token     String
-  userAgent String?  @map("user_agent")
+  userAgent String?  @map("user_agent") // thiết bị / trình duyệt
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([token])
   @@map("user_fcm_tokens")
 }
 
+/// Nhật ký thao tác (ai làm gì, lúc nào, IP), ghi tự động bởi AuditInterceptor, không sửa.
 model AuditLog {
   id         String   @id @default(uuid())
   userId     String?  @map("user_id")
   user       User?    @relation(fields: [userId], references: [id])
+  // Bản sao thông tin người thao tác lúc ghi log
   userEmail  String?  @map("user_email")
   userName   String?  @map("user_name")
   userRole   String?  @map("user_role")
@@ -266,24 +275,25 @@ model AuditLog {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// B. Access & billing
+// B. Gói dịch vụ & thanh toán gói
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Gói dịch vụ nền tảng bán cho shop (giá, chu kỳ, hạn mức).
 model Plan {
   id              String   @id @default(uuid())
   planName        String   @map("plan_name")
   planCode        String   @unique @map("plan_code")
   price           Decimal  @db.Decimal(12, 2)
   billingCycle    String   @default("NONE") @map("billing_cycle") // MONTHLY | YEARLY | NONE
-  maxBranches     Int      @map("max_branches") // -1 = unlimited (same for the three below)
+  maxBranches     Int      @map("max_branches") // -1 = không giới hạn (áp dụng cho cả 3 cột dưới)
   maxWarehouses   Int      @map("max_warehouses")
   maxUsers        Int      @map("max_users")
   maxProducts     Int      @map("max_products")
   trialDays       Int      @map("trial_days")
-  features        String[] @default([])
+  features        String[] @default([]) // mã tính năng được bật
   description     String   @default("")
-  displayFeatures String[] @default([]) @map("display_features")
-  isPopular       Boolean  @default(false) @map("is_popular")
+  displayFeatures String[] @default([]) @map("display_features") // dòng mô tả hiển thị trên bảng giá
+  isPopular       Boolean  @default(false) @map("is_popular") // đánh dấu "phổ biến" trên bảng giá
   isActive        Boolean  @default(true) @map("is_active")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -296,6 +306,7 @@ model Plan {
   @@map("plans")
 }
 
+/// Gói đang dùng của một shop; hạn mức được chụp lại lúc mua để đổi bảng giá không ảnh hưởng.
 model Subscription {
   id           String    @id @default(uuid())
   tenantId     String    @map("tenant_id")
@@ -310,6 +321,7 @@ model Subscription {
   cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelReason String?   @map("cancel_reason")
 
+  // Hạn mức chụp lại từ Plan lúc mua
   quotaSnapshotMaxBranches   Int? @map("quota_snapshot_max_branches")
   quotaSnapshotMaxWarehouses Int? @map("quota_snapshot_max_warehouses")
   quotaSnapshotMaxUsers      Int? @map("quota_snapshot_max_users")
@@ -324,6 +336,7 @@ model Subscription {
   @@map("subscriptions")
 }
 
+/// Lịch sử thay đổi gói (tạo, nâng cấp, gia hạn, huỷ).
 model SubscriptionHistoryLog {
   id             String       @id @default(uuid())
   subscriptionId String       @map("subscription_id")
@@ -334,13 +347,14 @@ model SubscriptionHistoryLog {
   toPlanId       String?      @map("to_plan_id")
   toPlan         Plan?        @relation("SubscriptionHistoryToPlan", fields: [toPlanId], references: [id])
   changedAt      DateTime?    @map("changed_at") @db.Timestamptz(6)
-  changedById    String?      @map("changed_by")
+  changedById    String?      @map("changed_by") // null khi do thanh toán tự động
   changedBy      User?        @relation("SubscriptionHistoryChangedBy", fields: [changedById], references: [id])
   note           String?
 
   @@map("subscription_history_logs")
 }
 
+/// Hoá đơn shop trả tiền gói cho nền tảng (thanh toán qua SePay).
 model SubscriptionInvoice {
   id                 String       @id @default(uuid())
   subscriptionId     String       @map("subscription_id")
@@ -355,9 +369,9 @@ model SubscriptionInvoice {
   billingPeriodStart DateTime     @map("billing_period_start") @db.Timestamptz(6)
   billingPeriodEnd   DateTime     @map("billing_period_end") @db.Timestamptz(6)
   paidAt             DateTime?    @map("paid_at") @db.Timestamptz(6)
-  paymentReference   String?      @unique @map("payment_reference")
+  paymentReference   String?      @unique @map("payment_reference") // nội dung chuyển khoản
   paymentMethod      String?      @map("payment_method") // BANK_TRANSFER | MOMO | VNPAY | SEPAY
-  transactionRef     String?      @map("transaction_ref")
+  transactionRef     String?      @map("transaction_ref") // mã giao dịch phía cổng thanh toán
   invoiceUrl         String?      @map("invoice_url")
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -366,9 +380,10 @@ model SubscriptionInvoice {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// C. Org & location reference data
+// C. Tổ chức & dữ liệu danh mục
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Địa điểm của shop: chi nhánh (bán hàng) hoặc kho. Tồn kho, nhân viên, phiếu kho đều trỏ về đây.
 model Location {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -377,7 +392,7 @@ model Location {
   name       String
   type       String  @map("location_type") // BRANCH | WAREHOUSE
   status     String  @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
-  /// false = damaged/returned-goods area (a WAREHOUSE): its stock is never available to sell.
+  /// false = kho hàng hỏng: tồn ở đây không bao giờ được bán.
   isSellable Boolean @default(true) @map("is_sellable")
 
   address     String?
@@ -387,11 +402,12 @@ model Location {
   managerId String? @map("manager_id")
   manager   User?   @relation("LocationManager", fields: [managerId], references: [id])
 
+  // Kho xuất hàng mặc định cho đơn bán tại đây (thường là kho tổng của chi nhánh)
   defaultFulfillmentLocationId String?    @map("default_fulfillment_location_id")
   defaultFulfillmentLocation   Location?  @relation("LocationDefaultFulfillment", fields: [defaultFulfillmentLocationId], references: [id])
   servedLocations              Location[] @relation("LocationDefaultFulfillment")
 
-  // Where this location's damaged / returned-broken goods go (a location with isSellable = false)
+  // Kho hàng hỏng nhận hàng lỗi / hàng hoàn hỏng của địa điểm này (isSellable = false)
   damagedLocationId String?    @map("damaged_location_id")
   damagedLocation   Location?  @relation("LocationDamaged", fields: [damagedLocationId], references: [id])
   damagedFor        Location[] @relation("LocationDamaged")
@@ -414,7 +430,6 @@ model Location {
   storageNodes          StorageNode[]
   fulfillments          Fulfillment[]
   operationEvents       OperationEvent[]
-  stockReservations     StockReservation[]
   productionRequests    ProductionRequest[]
   orderItemsSourced     OrderItem[]                @relation("OrderItemSourceLocation")
   orderReturnItems      OrderReturnItem[]
@@ -425,6 +440,7 @@ model Location {
   @@map("locations")
 }
 
+/// Phần riêng của chi nhánh (bán hàng, ca két, khuyến mãi); dùng chung id với Location.
 model Branch {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -443,6 +459,7 @@ model Branch {
   @@map("branches")
 }
 
+/// Phần riêng của kho; dùng chung id với Location.
 model Warehouse {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -454,6 +471,7 @@ model Warehouse {
   @@map("warehouses")
 }
 
+/// Thương hiệu sản phẩm của shop.
 model Brand {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")
@@ -469,6 +487,7 @@ model Brand {
   @@map("brands")
 }
 
+/// Danh mục sản phẩm, dạng cây (parentId).
 model Category {
   id          String     @id @default(uuid())
   tenantId    String     @map("tenant_id")
@@ -488,18 +507,19 @@ model Category {
   @@map("categories")
 }
 
+/// Nhà cung cấp hàng thành phẩm (GOODS) hoặc xưởng sản xuất (WORKSHOP), kèm công nợ.
 model Supplier {
   id              String   @id @default(uuid())
   tenantId        String   @map("tenant_id")
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   supplierName    String   @map("supplier_name")
-  type            String   @default("GOODS") // GOODS (sells finished goods; SUPPLIER imports) | WORKSHOP (makes goods to order; production requests + WORKSHOP imports)
+  type            String   @default("GOODS") // GOODS (NCC bán thành phẩm) | WORKSHOP (xưởng sản xuất theo YCSX)
   contactName     String?  @map("contact_name")
   phoneNumber     String?  @map("phone_number")
   email           String?
   address         String?
-  creditLimit     Decimal  @default(0) @map("credit_limit") @db.Decimal(12, 2) // <= 0 = no limit
-  outstandingDebt Decimal  @default(0) @map("outstanding_debt") @db.Decimal(12, 2)
+  creditLimit     Decimal  @default(0) @map("credit_limit") @db.Decimal(12, 2) // hạn mức công nợ; <= 0 = không giới hạn
+  outstandingDebt Decimal  @default(0) @map("outstanding_debt") @db.Decimal(12, 2) // công nợ hiện tại shop đang nợ
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -512,20 +532,22 @@ model Supplier {
   @@map("suppliers")
 }
 
+/// Khách mua hàng của shop. Xoá là xoá mềm (isDeleted) vì đơn hàng còn trỏ tới.
 model Customer {
   id           String    @id @default(uuid())
   tenantId     String    @map("tenant_id")
   tenant       Tenant    @relation(fields: [tenantId], references: [id])
-  customerCode String?   @map("customer_code")
+  customerCode String?   @map("customer_code") // mã khách, tự sinh KH000001 nếu bỏ trống
   name         String
   phone        String?
   email        String?
   gender       String? // MALE | FEMALE | OTHER
   address      String?
-  region       String?
+  region       String? // khu vực
   dob          DateTime? @db.Timestamptz(6)
   isDeleted    Boolean   @default(false) @map("is_deleted")
 
+  // Khách đồng ý nhận tin quảng cáo qua từng kênh
   marketingConsentEmail     Boolean @default(false) @map("marketing_consent_email")
   marketingConsentZalo      Boolean @default(false) @map("marketing_consent_zalo")
   marketingConsentMessenger Boolean @default(false) @map("marketing_consent_messenger")
@@ -543,9 +565,10 @@ model Customer {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// D. Catalog & inventory
+// D. Sản phẩm & tồn kho
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Sản phẩm (mục trong danh mục), gom nhiều phiên bản ProductItem.
 model Product {
   id           String    @id @default(uuid())
   tenantId     String    @map("tenant_id")
@@ -556,7 +579,7 @@ model Product {
   category     Category? @relation(fields: [categoryId], references: [id])
   name         String
   status       String    @default("ACTIVE") // ACTIVE | INACTIVE | DISCONTINUED
-  categoryName String?   @map("category_name") // denormalized
+  categoryName String?   @map("category_name") // bản sao tên danh mục, cập nhật khi đổi tên
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -566,38 +589,40 @@ model Product {
   @@map("products")
 }
 
+/// Ảnh của sản phẩm.
 model ProductImage {
   id          String  @id @default(uuid())
   productId   String  @map("product_id")
   product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   url         String
-  isThumbnail Boolean @default(false) @map("is_thumbnail")
-  position    Int     @default(0)
+  isThumbnail Boolean @default(false) @map("is_thumbnail") // ảnh đại diện
+  position    Int     @default(0) // thứ tự hiển thị
 
   @@map("product_images")
 }
 
+/// Phiên bản bán được (SKU): giá, giá vốn, kích thước. Tồn kho, đơn hàng đều theo SKU.
 model ProductItem {
   id             String   @id @default(uuid())
   tenantId       String   @map("tenant_id")
   tenant         Tenant   @relation(fields: [tenantId], references: [id])
   productId      String   @map("product_id")
   product        Product  @relation(fields: [productId], references: [id])
-  productName    String   @map("product_name") // denormalized
-  productCode    String   @map("product_code")
+  productName    String   @map("product_name") // bản sao tên sản phẩm
+  productCode    String   @map("product_code") // mã hàng, tự sinh SP000001 nếu bỏ trống
   sku            String?
   barcode        String?
   description    String?
   retailPrice    Decimal  @map("retail_price") @db.Decimal(12, 2)
   costPrice      Decimal  @map("cost_price") @db.Decimal(12, 2)
   productSlug    String?  @map("product_slug")
-  warrantyPeriod String?  @map("warranty_period")
-  vat            Decimal? @db.Decimal(5, 2)
+  warrantyPeriod String?  @map("warranty_period") // vd. "24 tháng"
+  vat            Decimal? @db.Decimal(5, 2) // thuế VAT (%)
 
-  itemType String @default("PRODUCT") @map("item_type") // PRODUCT | COMBO | SERVICE
+  itemType String @default("PRODUCT") @map("item_type") // PRODUCT | COMBO | SERVICE (dịch vụ, không có tồn)
 
-  allowCustomization Boolean @default(false) @map("allow_customization")
-  customLeadTimeDays Int?    @map("custom_lead_time_days")
+  allowCustomization Boolean @default(false) @map("allow_customization") // cho đặt kích thước / thiết kế riêng
+  customLeadTimeDays Int?    @map("custom_lead_time_days") // số ngày làm hàng custom
 
   lengthCm Decimal? @map("length_cm") @db.Decimal(10, 2)
   widthCm  Decimal? @map("width_cm") @db.Decimal(10, 2)
@@ -631,17 +656,19 @@ model ProductItem {
   @@map("product_items")
 }
 
+/// SKU này mua / đặt từ nhà cung cấp hoặc xưởng nào, thời gian chờ.
 model ProductItemSupplier {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
   supplierId    String      @map("supplier_id")
   supplier      Supplier    @relation(fields: [supplierId], references: [id])
-  leadTimeDays  Int?        @map("lead_time_days")
+  leadTimeDays  Int?        @map("lead_time_days") // số ngày chờ hàng
 
   @@id([productItemId, supplierId])
   @@map("product_item_suppliers")
 }
 
+/// Thuộc tính của phiên bản (Màu, Kích thước...), để hiển thị.
 model ProductItemDetail {
   id            String      @id @default(uuid())
   productItemId String      @map("product_item_id")
@@ -653,6 +680,7 @@ model ProductItemDetail {
   @@map("product_item_details")
 }
 
+/// Ảnh riêng của phiên bản.
 model ProductItemImage {
   id            String      @id @default(uuid())
   productItemId String      @map("product_item_id")
@@ -664,11 +692,12 @@ model ProductItemImage {
   @@map("product_item_images")
 }
 
+/// Một kiện của SKU khi giao (một tủ = 3 kiện): kích thước, khối lượng từng kiện.
 model ProductPackage {
   id            String      @id @default(uuid())
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
-  position      Int // 1..n ("kiện 1/3")
+  position      Int // thứ tự kiện 1..n ("kiện 1/3")
   name          String?
   barcode       String?
   lengthCm      Decimal?    @map("length_cm") @db.Decimal(10, 2)
@@ -682,17 +711,19 @@ model ProductPackage {
   @@map("product_packages")
 }
 
+/// Thành phần của combo: SKU combo gồm những SKU nào, mỗi loại bao nhiêu.
 model ComboComponent {
   comboItemId     String      @map("combo_item_id")
   comboItem       ProductItem @relation("ComboParent", fields: [comboItemId], references: [id], onDelete: Cascade)
   componentItemId String      @map("component_item_id")
   componentItem   ProductItem @relation("ComboComponentItem", fields: [componentItemId], references: [id])
-  quantity        Int         @default(1)
+  quantity        Int         @default(1) // số lượng món này trong một combo
 
   @@id([comboItemId, componentItemId])
   @@map("combo_components")
 }
 
+/// Tồn của một SKU tại một địa điểm.
 model Inventory {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -705,8 +736,7 @@ model Inventory {
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
   stock     Int      @default(0)
-  reserved  Int      @default(0) // = Σ ACTIVE StockReservation
-  minStock  Int      @default(0) @map("min_stock") // 0 = no low-stock alert
+  minStock  Int      @default(0) @map("min_stock") // ngưỡng cảnh báo sắp hết; 0 = không cảnh báo
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -715,7 +745,7 @@ model Inventory {
   @@map("inventories")
 }
 
-/// Append-only stock ledger.
+/// Sổ kho: mỗi lần tồn thay đổi ghi một dòng, chỉ thêm không sửa.
 model InventoryTransaction {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -725,13 +755,14 @@ model InventoryTransaction {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
-  // IMPORT | TRANSFER_OUT | TRANSFER_IN | TRANSFER_LOSS | ADJUST | SALE | RETURN_GOOD | RETURN_DAMAGED
+  // IMPORT | TRANSFER_OUT | TRANSFER_IN | TRANSFER_LOSS | ADJUST | SALE | SALE_REVERSAL |
+  // RETURN_GOOD | RETURN_DAMAGED | DEFECT | OPENING
   type         String
-  quantity     Int // signed: + in, - out
-  balanceAfter Int      @map("balance_after")
+  quantity     Int // có dấu: + vào, - ra
+  balanceAfter Int      @map("balance_after") // tồn sau khi ghi dòng này
   unitCost     Decimal? @map("unit_cost") @db.Decimal(12, 2)
 
-  referenceType String  @map("reference_type") // STOCK_MOVEMENT | FULFILLMENT | ORDER | PRODUCTION_REQUEST | ORDER_RETURN
+  referenceType String  @map("reference_type") // chứng từ gây ra: STOCK_MOVEMENT | FULFILLMENT | ORDER | PRODUCTION_REQUEST | ORDER_RETURN | INVENTORY
   referenceId   String  @map("reference_id")
   note          String?
 
@@ -739,11 +770,11 @@ model InventoryTransaction {
   createdBy   User?    @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  // The one lot this row moved. An inbound row opens it; an outbound row draws from it.
+  // Lô mà dòng này đụng tới: dòng vào mở lô, dòng ra rút từ lô.
   lotId String       @map("lot_id")
   lot   InventoryLot @relation(fields: [lotId], references: [id])
 
-  // SALE / RETURN_* rows: the order line, so cost of goods sold per line is Σ quantity × lot.unitCost
+  // Dòng SALE / RETURN_*: dòng đơn liên quan, để tính giá vốn từng dòng = Σ số lượng × lot.unitCost
   orderItemId String?    @map("order_item_id")
   orderItem   OrderItem? @relation(fields: [orderItemId], references: [id])
 
@@ -752,9 +783,8 @@ model InventoryTransaction {
   @@map("inventory_transactions")
 }
 
-/// A batch of one SKU at one location, keeping where it came from and what it cost.
-/// Opened by an inbound ledger row; outbound rows draw from lots (FIFO by receivedAt, a custom
-/// piece only from the lot made for its order line), one ledger row per lot touched.
+/// Lô hàng: một SKU tại một địa điểm, giữ nguồn gốc và giá vốn. Hàng vào mở lô mới; hàng ra rút
+/// từ lô cũ nhất trước (FIFO), riêng hàng custom chỉ rút từ lô làm cho đúng dòng đơn đó.
 model InventoryLot {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -764,28 +794,28 @@ model InventoryLot {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
-  // Origin of the goods, carried unchanged when a lot is moved or returned:
-  // SUPPLIER | WORKSHOP | ADJUSTMENT (stocktake surplus) | OPENING (stock that predates lots)
+  // Nguồn gốc hàng, giữ nguyên khi lô bị chuyển kho / hoàn về:
+  // SUPPLIER | WORKSHOP | ADJUSTMENT (dư khi kiểm kê) | OPENING (tồn có trước khi quản lý theo lô)
   sourceType String    @map("source_type")
-  supplierId String?   @map("supplier_id") // the supplier or the workshop (SUPPLIER / WORKSHOP)
+  supplierId String?   @map("supplier_id") // NCC hoặc xưởng
   supplier   Supplier? @relation(fields: [supplierId], references: [id])
 
-  importItemId            String?                   @map("import_item_id") // the IMPORT line that brought it in
+  importItemId            String?                   @map("import_item_id") // dòng phiếu nhập đã đưa lô này vào
   importItem              StockMovementRequestItem? @relation(fields: [importItemId], references: [id])
-  productionRequestItemId String?                   @map("production_request_item_id") // WORKSHOP
+  productionRequestItemId String?                   @map("production_request_item_id") // dòng YCSX (hàng xưởng)
   productionRequestItem   ProductionRequestItem?    @relation(fields: [productionRequestItemId], references: [id])
-  orderItemId             String?                   @map("order_item_id") // custom piece: only this line may consume it
+  orderItemId             String?                   @map("order_item_id") // hàng custom: chỉ dòng đơn này được lấy
   orderItem               OrderItem?                @relation("InventoryLotCustomFor", fields: [orderItemId], references: [id])
 
-  // Split off another lot by a transfer, a customer return or a defect put-away
+  // Lô cha khi lô này tách ra do chuyển kho, hoàn hàng hoặc hàng lỗi
   parentLotId String?        @map("parent_lot_id")
   parentLot   InventoryLot?  @relation("InventoryLotParent", fields: [parentLotId], references: [id])
   childLots   InventoryLot[] @relation("InventoryLotParent")
 
-  unitCost          Decimal  @map("unit_cost") @db.Decimal(12, 2) // import price; workshop price for WORKSHOP
-  receivedQuantity  Int      @map("received_quantity")
-  remainingQuantity Int      @map("remaining_quantity")
-  receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // FIFO key; kept from the parent lot
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(12, 2) // giá vốn / đơn vị (giá nhập NCC hoặc giá xưởng)
+  receivedQuantity  Int      @map("received_quantity") // số lúc mở lô
+  remainingQuantity Int      @map("remaining_quantity") // số còn lại
+  receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // ngày nhập, dùng xếp FIFO; lô tách giữ ngày của lô cha
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -797,6 +827,7 @@ model InventoryLot {
   @@map("inventory_lots")
 }
 
+/// Vị trí lưu trong kho dạng cây (khu → dãy → kệ → tầng → ô). Chưa dùng ở Phase 1.
 model StorageNode {
   id         String        @id @default(uuid())
   tenantId   String        @map("tenant_id")
@@ -807,13 +838,14 @@ model StorageNode {
   parent     StorageNode?  @relation("StorageNodeParent", fields: [parentId], references: [id], onDelete: Restrict)
   children   StorageNode[] @relation("StorageNodeParent")
 
-  type   String // AREA | AISLE | RACK | LEVEL | BIN | DISPLAY_ZONE
-  code   String // label, e.g. A-03-R2-L1-B04
+  type   String // AREA | AISLE | RACK | LEVEL | BIN | DISPLAY_ZONE (khu, dãy, kệ, tầng, ô, khu trưng bày)
+  code   String // mã in nhãn, vd. A-03-R2-L1-B04
   name   String?
   status String  @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
 
-  pickSequence Int? @map("pick_sequence") // walk order for pick lists
+  pickSequence Int? @map("pick_sequence") // thứ tự đi lấy hàng
 
+  // toạ độ trên sơ đồ kho
   posX     Float? @map("pos_x")
   posY     Float? @map("pos_y")
   width    Float?
@@ -831,6 +863,7 @@ model StorageNode {
   @@map("storage_nodes")
 }
 
+/// SKU được để ở vị trí kho nào (vị trí mặc định / nhiều vị trí). Chưa dùng ở Phase 1.
 model SkuPlacement {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -839,8 +872,8 @@ model SkuPlacement {
   storageNode   StorageNode @relation(fields: [storageNodeId], references: [id], onDelete: Cascade)
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
-  isDefault     Boolean     @default(false) @map("is_default")
-  quantity      Int?
+  isDefault     Boolean     @default(false) @map("is_default") // vị trí mặc định của SKU
+  quantity      Int? // số đang để ở vị trí này (không bắt buộc)
   createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -849,20 +882,21 @@ model SkuPlacement {
   @@map("sku_placements")
 }
 
+/// Phiếu kho: nhập (NCC / xưởng), chuyển kho, trả hàng giữa các địa điểm, kiểm kê.
 model StockMovementRequest {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  movementType String @map("movement_type") // IMPORT | EXPORT | RETURN | ADJUST
+  movementType String @map("movement_type") // IMPORT (nhập) | EXPORT (chuyển đi) | RETURN (trả về kho) | ADJUST (kiểm kê)
   status       String @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | COMPLETED | CANCELLED
 
-  // IMPORT only - the two receiving flows, never mixed on one document:
-  //   SUPPLIER = buying finished goods from a GOODS supplier
-  //   WORKSHOP = goods a WORKSHOP made; every line points at its productionRequestItem
+  // Chỉ phiếu IMPORT, mỗi phiếu một nguồn:
+  //   SUPPLIER = mua thành phẩm từ NCC
+  //   WORKSHOP = hàng xưởng giao theo YCSX; mỗi dòng trỏ về dòng YCSX
   importSource String? @map("import_source")
 
-  fromSupplierId String?   @map("from_supplier_id") // the supplier or the workshop; its type must match importSource
+  fromSupplierId String?   @map("from_supplier_id") // NCC hoặc xưởng; loại phải khớp importSource
   fromSupplier   Supplier? @relation(fields: [fromSupplierId], references: [id])
 
   fromLocationId String?   @map("from_location_id")
@@ -879,12 +913,12 @@ model StockMovementRequest {
   receivedById String?   @map("received_by")
   receivedBy   User?     @relation("StockMovementReceivedBy", fields: [receivedById], references: [id])
   receivedAt   DateTime? @map("received_at") @db.Timestamptz(6)
-  approvedById String?   @map("approved_by") // ADJUST
+  approvedById String?   @map("approved_by") // người duyệt phiếu kiểm kê
   approvedBy   User?     @relation("StockMovementApprovedBy", fields: [approvedById], references: [id])
   approvedAt   DateTime? @map("approved_at") @db.Timestamptz(6)
   cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
 
-  totalPrice Decimal  @default(0) @map("total_price") @db.Decimal(14, 2)
+  totalPrice Decimal  @default(0) @map("total_price") @db.Decimal(14, 2) // tổng tiền hàng (phiếu nhập)
   note       String?
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -898,6 +932,7 @@ model StockMovementRequest {
   @@map("stock_movement_requests")
 }
 
+/// Một dòng hàng của phiếu kho: số đặt, số nhận thực tế, số lỗi.
 model StockMovementRequestItem {
   id               String               @id @default(uuid())
   requestId        String               @map("request_id")
@@ -905,15 +940,15 @@ model StockMovementRequestItem {
   productItemId    String               @map("product_item_id")
   productItem      ProductItem          @relation(fields: [productItemId], references: [id])
   quantity         Int
-  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2) // IMPORT: becomes the lot's unit cost
-  receivedQuantity Int?                 @map("received_quantity")
-  defectQuantity   Int                  @default(0) @map("defect_quantity") // put away at defectLocation
+  importPrice      Decimal?             @map("import_price") @db.Decimal(12, 2) // giá nhập, thành giá vốn của lô
+  receivedQuantity Int?                 @map("received_quantity") // số nhận thực tế
+  defectQuantity   Int                  @default(0) @map("defect_quantity") // số hàng lỗi trong số nhận, đưa vào kho hỏng
   note             String?
 
-  productionRequestItemId String?                @map("production_request_item_id") // required on a WORKSHOP import
+  productionRequestItemId String?                @map("production_request_item_id") // bắt buộc với phiếu nhập WORKSHOP
   productionRequestItem   ProductionRequestItem? @relation(fields: [productionRequestItemId], references: [id])
 
-  // Where the defective units of this line were put (defaults to the destination's damagedLocation)
+  // Nơi để hàng lỗi của dòng này (mặc định là kho hỏng của nơi nhận)
   defectLocationId String?   @map("defect_location_id")
   defectLocation   Location? @relation("ImportDefectLocation", fields: [defectLocationId], references: [id])
 
@@ -925,16 +960,17 @@ model StockMovementRequestItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// E. HR: shift templates, rostering & holidays (payroll, attendance and leave are out of scope)
+// E. Nhân sự: mẫu ca, xếp ca, ngày lễ (lương, chấm công, nghỉ phép không nằm trong schema này)
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Mẫu ca làm việc (vd. Ca sáng 08:00–12:00).
 model ShiftTemplate {
   id        String    @id @default(uuid())
   tenantId  String    @map("tenant_id")
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   name      String?
   startTime DateTime? @map("start_time") @db.Time
-  endTime   DateTime? @map("end_time") @db.Time // may be before startTime (night shift)
+  endTime   DateTime? @map("end_time") @db.Time // có thể trước startTime (ca đêm)
   status    String    @default("ACTIVE") // ACTIVE | DELETED
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -944,13 +980,14 @@ model ShiftTemplate {
   @@map("shift_templates")
 }
 
+/// Một ca làm việc cụ thể theo ngày, tại một địa điểm, có người phụ trách ca.
 model WorkingSchedule {
   id              String         @id @default(uuid())
   tenantId        String         @map("tenant_id")
   tenant          Tenant         @relation(fields: [tenantId], references: [id])
   locationId      String?        @map("location_id")
   location        Location?      @relation(fields: [locationId], references: [id])
-  managedById     String?        @map("managed_by")
+  managedById     String?        @map("managed_by") // người phụ trách ca, có thêm quyền tạm thời trong ca
   managedBy       User?          @relation("WorkingScheduleManagedBy", fields: [managedById], references: [id])
   scheduleType    String         @default("NORMAL") @map("schedule_type") // NORMAL | OVERTIME
   shiftTemplateId String?        @map("shift_template_id")
@@ -970,6 +1007,7 @@ model WorkingSchedule {
   @@map("working_schedules")
 }
 
+/// Nhân viên được xếp vào ca.
 model WorkingScheduleUser {
   scheduleId String          @map("schedule_id")
   schedule   WorkingSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
@@ -980,6 +1018,7 @@ model WorkingScheduleUser {
   @@map("working_schedule_users")
 }
 
+/// Ngày lễ của shop (đồng bộ Google Calendar hoặc nhập tay).
 model Holiday {
   id               String   @id @default(uuid())
   tenantId         String   @map("tenant_id")
@@ -991,19 +1030,19 @@ model Holiday {
   branch           Branch?  @relation(fields: [branchId], references: [id])
   isActive         Boolean  @default(true) @map("is_active")
   source           String   @default("MANUAL") // GOOGLE_CALENDAR | MANUAL
-  isManuallyEdited Boolean  @default(false) @map("is_manually_edited")
+  isManuallyEdited Boolean  @default(false) @map("is_manually_edited") // đã sửa tay thì lần đồng bộ sau bỏ qua
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([tenantId, date, branchId, type]) // branch rows only; public holidays use a partial index (see header)
+  @@unique([tenantId, date, branchId, type]) // chỉ cho ngày lễ theo chi nhánh; lễ chung dùng index một phần (xem đầu file)
   @@map("holidays")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// F. Sales: order, payment, cash
+// F. Bán hàng: đơn, thanh toán, tiền
 // ─────────────────────────────────────────────────────────────────────────
 
-/// A connected marketplace shop (Shopee).
+/// Gian hàng sàn đã kết nối (Shopee) – Phase 2.
 model SalesChannel {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -1011,21 +1050,21 @@ model SalesChannel {
 
   platform String // SHOPEE
   name     String
-  shopId   String @map("shop_id") // the platform's own shop id
+  shopId   String @map("shop_id") // id gian hàng trên sàn
   status   String @default("ACTIVE") // ACTIVE | TOKEN_EXPIRED | DISCONNECTED
 
-  // secrets: encrypted at rest, never selected by default
+  // bí mật: mã hoá khi lưu, không bao giờ trả ra API
   accessToken    String?   @map("access_token")
   refreshToken   String?   @map("refresh_token")
   tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
 
-  branchId   String    @map("branch_id")
+  branchId   String    @map("branch_id") // chi nhánh ghi nhận đơn sàn
   branch     Branch    @relation(fields: [branchId], references: [id])
-  locationId String?   @map("location_id")
+  locationId String?   @map("location_id") // kho xuất hàng cho đơn sàn
   location   Location? @relation(fields: [locationId], references: [id])
 
   lastOrderSyncAt DateTime? @map("last_order_sync_at") @db.Timestamptz(6)
-  lastSyncError   String?   @map("last_sync_error") // e.g. an order skipped for an unmapped item
+  lastSyncError   String?   @map("last_sync_error") // lỗi đồng bộ gần nhất, vd. đơn bị bỏ qua vì chưa ghép sản phẩm
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1038,19 +1077,19 @@ model SalesChannel {
   @@map("sales_channels")
 }
 
-/// Platform listing/variant -> SKU. An unmapped line blocks its order from being imported.
+/// Ghép sản phẩm / phân loại trên sàn với SKU của shop. Dòng chưa ghép thì đơn không đồng bộ được – Phase 2.
 model ChannelProductMapping {
   id              String       @id @default(uuid())
   tenantId        String       @map("tenant_id")
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   channelId       String       @map("channel_id")
   channel         SalesChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  externalItemId  String       @map("external_item_id") // Shopee item_id
-  externalModelId String       @default("0") @map("external_model_id") // Shopee model_id, "0" = no variant
+  externalItemId  String       @map("external_item_id") // item_id trên Shopee
+  externalModelId String       @default("0") @map("external_model_id") // model_id trên Shopee, "0" = không có phân loại
   externalSku     String?      @map("external_sku")
   productItemId   String       @map("product_item_id")
   productItem     ProductItem  @relation(fields: [productItemId], references: [id])
-  syncStock       Boolean      @default(true) @map("sync_stock") // push available stock to the platform
+  syncStock       Boolean      @default(true) @map("sync_stock") // đẩy tồn kho lên sàn
   lastStockPushAt DateTime?    @map("last_stock_push_at") @db.Timestamptz(6)
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1060,59 +1099,75 @@ model ChannelProductMapping {
   @@map("channel_product_mappings")
 }
 
+/// Đơn hàng. Đơn tạo tay (MANUAL) và đơn Shopee là đơn khách đặt qua mạng, đi theo docs/hanh-trinh-don-hang.md.
+/// Bán tại quầy (POS) cũng lưu ở đây với fulfillmentType TAKEAWAY, nằm ngoài hành trình.
 model Order {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
   tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  branchId   String   @map("branch_id") // the store that sold it (not where it ships from)
+  branchId   String   @map("branch_id") // chi nhánh bán (không phải nơi xuất hàng)
   branch     Branch   @relation(fields: [branchId], references: [id])
   customerId String   @map("customer_id")
   customer   Customer @relation(fields: [customerId], references: [id])
-  status     String // DRAFT | PENDING_CONFIRMATION | CONFIRMED | READY_TO_PACK | PACKED | SHIPPING | DELIVERED | COMPLETED | CANCELLED | RETURNED
+  // Mã đơn hiển thị (sinh bằng generateReference(ORDER), trùng paymentReference của đơn POS cũ)
+  code       String
+  // PENDING_CONFIRMATION (Shopee) | CONFIRMED | PACKED | PICKED_UP | SHIPPING (đã trừ tồn) |
+  // RECEIVED (shipper đang giữ tiền mặt) | COMPLETED | CANCELLED | RETURNED.
+  // PENDING: đơn POS cũ chờ chuyển khoản SePay, bỏ khi POS chuyển sang luồng mới.
+  status     String
+  // Tag ưu tiên, cùng ngày hẹn giao dùng để chọn đơn đi trước: NORMAL | HIGH | URGENT
+  priority   String   @default("NORMAL")
 
-  userId        String?   @map("user_id") // creator; null when synced from a channel
+  userId        String?   @map("user_id") // người tạo; null khi đơn đồng bộ từ sàn
   user          User?     @relation("OrderCreatedBy", fields: [userId], references: [id])
-  assigneeId    String?   @map("assignee_id") // person in charge; required past DRAFT / PENDING_CONFIRMATION (SQL CHECK)
+  assigneeId    String?   @map("assignee_id") // người phụ trách; bắt buộc từ CONFIRMED trở đi (CHECK SQL)
   assignee      User?     @relation("OrderAssignee", fields: [assigneeId], references: [id])
-  confirmedById String?   @map("confirmed_by")
+  confirmedById String?   @map("confirmed_by") // người xác nhận đơn
   confirmedBy   User?     @relation("OrderConfirmedBy", fields: [confirmedById], references: [id])
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  // Người xác nhận chuyển sang Đang vận chuyển – bước trừ tồn kho
+  shippedById   String?   @map("shipped_by")
+  shippedBy     User?     @relation("OrderShippedBy", fields: [shippedById], references: [id])
+  shippedAt     DateTime? @map("shipped_at") @db.Timestamptz(6)
 
-  channel         String        @default("MANUAL") // MANUAL (created by staff, at the counter or not) | SHOPEE
+  channel         String        @default("MANUAL") // MANUAL (nhân viên nhập đơn khách đặt qua mạng; POS cũng là MANUAL) | SHOPEE
   channelId       String?       @map("channel_id")
   salesChannel    SalesChannel? @relation(fields: [channelId], references: [id])
-  channelOrderRef String?       @map("channel_order_ref") // Shopee order_sn
-  channelStatus   String?       @map("channel_status") // the platform's own status, as last synced
-  channelPayload  Json?         @map("channel_payload") // raw order as received, for audit/resync
-  channelSyncedAt DateTime?     @map("channel_synced_at") @db.Timestamptz(6)
-  shipByDate      DateTime?     @map("ship_by_date") @db.Timestamptz(6) // platform hand-over deadline
+  channelOrderRef String?       @map("channel_order_ref") // mã đơn trên Shopee (order_sn)
+  channelStatus   String?       @map("channel_status") // trạng thái trên sàn lần đồng bộ gần nhất
+  channelPayload  Json?         @map("channel_payload") // dữ liệu gốc từ sàn, để đối chiếu / đồng bộ lại
+  channelSyncedAt DateTime?     @map("channel_synced_at") @db.Timestamptz(6) // lần đồng bộ gần nhất
+  shipByDate      DateTime?     @map("ship_by_date") @db.Timestamptz(6) // hạn giao cho đơn vị vận chuyển của sàn
 
-  fulfillmentType String @default("HOME_DELIVERY") @map("fulfillment_type") // TAKEAWAY | STORE_PICKUP | HOME_DELIVERY
+  fulfillmentType String @default("HOME_DELIVERY") @map("fulfillment_type") // TAKEAWAY (POS bán tại quầy) | STORE_PICKUP (khách tự lấy) | HOME_DELIVERY (giao tận nơi)
 
-  // grandTotal = subtotal - (discountType = ORDER ? discountValue : 0) + shippingFee (prices VAT-inclusive);
-  // a PROMOTION discount is already inside the lines' discountAmount, discountValue only records it
-  subtotal        Decimal  @default(0) @db.Decimal(14, 2)
-  shippingFee     Decimal  @default(0) @map("shipping_fee") @db.Decimal(14, 2) // charged to the customer
-  channelFee      Decimal  @default(0) @map("channel_fee") @db.Decimal(14, 2) // kept by the marketplace (commission, payment fee...) - for margin reports
-  vatTotal        Decimal  @default(0) @map("vat_total") @db.Decimal(14, 2)
-  grandTotal      Decimal  @map("grand_total") @db.Decimal(14, 2)
-  depositRequired Decimal? @map("deposit_required") @db.Decimal(14, 2)
-  discountType    String?  @map("discount_type") // ORDER | PROMOTION
-  discountValue   Decimal  @default(0) @map("discount_value") @db.Decimal(14, 2)
+  // grandTotal = subtotal − (discountType = ORDER ? discountValue : 0) + shippingFee (giá đã gồm VAT).
+  // Giảm giá PROMOTION đã nằm trong discountAmount của từng dòng; discountValue chỉ để ghi nhận.
+  subtotal       Decimal  @default(0) @db.Decimal(14, 2)
+  shippingFee    Decimal  @default(0) @map("shipping_fee") @db.Decimal(14, 2) // phí ship thu của khách
+  channelFee     Decimal  @default(0) @map("channel_fee") @db.Decimal(14, 2) // phí sàn giữ lại (hoa hồng, phí thanh toán...) – dùng cho báo cáo lợi nhuận
+  vatTotal       Decimal  @default(0) @map("vat_total") @db.Decimal(14, 2)
+  grandTotal     Decimal  @map("grand_total") @db.Decimal(14, 2)
+  // Tiền cọc khi tạo đơn tay (tiền thật nằm ở Payment kind DEPOSIT). depositPercent chỉ có khi
+  // nhập theo %. Số shipper thu khi giao = grandTotal − depositAmount, tính chứ không lưu.
+  depositAmount  Decimal? @map("deposit_amount") @db.Decimal(14, 2)
+  depositPercent Decimal? @map("deposit_percent") @db.Decimal(5, 2)
+  discountType   String?  @map("discount_type") // ORDER (giảm tay cả đơn) | PROMOTION
+  discountValue  Decimal  @default(0) @map("discount_value") @db.Decimal(14, 2)
 
-  paymentStatus String @default("UNPAID") @map("payment_status") // derived from Payment: UNPAID | PARTIALLY_PAID | PAID | PARTIALLY_REFUNDED | REFUNDED
+  paymentStatus String @default("UNPAID") @map("payment_status") // suy ra từ Payment: UNPAID | PARTIALLY_PAID | PAID | PARTIALLY_REFUNDED | REFUNDED
 
-  // TAKEAWAY single payment only
+  // Chỉ dùng cho POS bán tại quầy (thanh toán một lần)
   paymentMethod      String?  @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
-  paymentReference   String?  @unique @map("payment_reference")
-  sepayTransactionId String?  @map("sepay_transaction_id")
-  customerPay        Decimal? @map("customer_pay") @db.Decimal(14, 2)
-  change             Decimal? @db.Decimal(14, 2)
+  paymentReference   String?  @unique @map("payment_reference") // nội dung chuyển khoản
+  sepayTransactionId String?  @map("sepay_transaction_id") // mã giao dịch SePay
+  customerPay        Decimal? @map("customer_pay") @db.Decimal(14, 2) // tiền khách đưa
+  change             Decimal? @db.Decimal(14, 2) // tiền thối
 
   recipientName         String?   @map("recipient_name")
   recipientPhone        String?   @map("recipient_phone")
   deliveryAddress       String?   @map("delivery_address")
-  requestedDeliveryDate DateTime? @map("requested_delivery_date") @db.Date
+  requestedDeliveryDate DateTime? @map("requested_delivery_date") @db.Date // ngày khách hẹn giao
 
   note      String?
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1126,11 +1181,14 @@ model Order {
   fulfillments      Fulfillment[]
   shipments         Shipment[]
   invoices          Invoice[]
-  returns           OrderReturn[]
+  returns           OrderReturn[]           @relation("OrderReturnOrder")
+  replacementFor    OrderReturn[]           @relation("OrderReturnReplacement")
   voucherCodesUsed  VoucherCode[]
 
+  @@unique([tenantId, code])
   @@unique([channelId, channelOrderRef])
   @@index([tenantId, status])
+  @@index([tenantId, status, priority])
   @@index([tenantId, assigneeId, status])
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, customerId, createdAt])
@@ -1138,43 +1196,43 @@ model Order {
   @@map("orders")
 }
 
+/// Một dòng của đơn. Giá, tên, SKU được chụp lại lúc bán.
 model OrderItem {
   id            String      @id @default(uuid())
   orderId       String      @map("order_id")
   order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
-  status        String      @default("PENDING") // PENDING | WAITING_STOCK | READY | PACKED | DELIVERED | CANCELLED | RETURNED
+  status        String      @default("PENDING") // PENDING | SHIPPED (đã trừ tồn) | CANCELLED | RETURNED
 
-  sourceLocationId String?   @map("source_location_id") // expected ship-from; drives the shortage alert
+  sourceLocationId String?   @map("source_location_id") // kho dự kiến xuất; dùng tính thiếu hàng
   sourceLocation   Location? @relation("OrderItemSourceLocation", fields: [sourceLocationId], references: [id])
 
-  // PRODUCT | COMBO (priced, no stock) | COMBO_COMPONENT (stock line, price 0) | SERVICE
+  // PRODUCT | COMBO (mang giá, không có tồn) | COMBO_COMPONENT (món trong combo, có tồn, giá 0) | SERVICE
   lineType     String      @default("PRODUCT") @map("line_type")
-  parentItemId String?     @map("parent_item_id") // the COMBO line of a COMBO_COMPONENT
+  parentItemId String?     @map("parent_item_id") // dòng COMBO cha của món trong combo
   parentItem   OrderItem?  @relation("OrderItemComboParent", fields: [parentItemId], references: [id], onDelete: Cascade)
   childItems   OrderItem[] @relation("OrderItemComboParent")
 
-  channelItemRef String? @map("channel_item_ref") // the platform's own line id
+  channelItemRef String? @map("channel_item_ref") // id dòng trên sàn
 
-  // Snapshot
+  // Chụp lại lúc bán
   productName   String?  @map("product_name")
   sku           String?
-  variantLabel  String?  @map("variant_label") // e.g. "Gỗ sồi / 1m8"
-  listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // SKU retail price at sale time
-  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // actual average cost of the units packed (Σ SALE ledger rows × lot.unitCost / quantity); null until packed
+  variantLabel  String?  @map("variant_label") // vd. "Gỗ sồi / 1m8"
+  listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // giá niêm yết lúc bán
+  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // giá vốn thực tế bình quân, tính lúc trừ tồn (Σ sổ kho SALE × lot.unitCost ÷ số lượng); null tới khi ship
   vatRate       Decimal? @map("vat_rate") @db.Decimal(5, 2)
 
   quantity         Int
-  unitPrice        Decimal @map("unit_price") @db.Decimal(12, 2) // agreed price (custom may differ from list)
+  unitPrice        Decimal @map("unit_price") @db.Decimal(12, 2) // giá thoả thuận (hàng custom có thể khác giá niêm yết)
   discountAmount   Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
-  lineTotal        Decimal @map("line_total") @db.Decimal(14, 2) // unitPrice * quantity - discountAmount
-  returnedQuantity Int     @default(0) @map("returned_quantity") // cache of Σ OrderReturnItem
+  lineTotal        Decimal @map("line_total") @db.Decimal(14, 2) // unitPrice × quantity − discountAmount
+  returnedQuantity Int     @default(0) @map("returned_quantity") // = Σ số đã hoàn (OrderReturnItem)
 
-  isCustom      Boolean                 @default(false) @map("is_custom") // made to order; only ever reserved for this line
+  isCustom      Boolean                 @default(false) @map("is_custom") // hàng làm theo thiết kế riêng cho dòng này
   customization OrderItemCustomization?
 
-  stockReservations      StockReservation[]
   productionRequestItems ProductionRequestItem[]
   fulfillmentItems       FulfillmentItem[]
   returnItems            OrderReturnItem[]
@@ -1188,39 +1246,21 @@ model OrderItem {
   @@map("order_items")
 }
 
-model StockReservation {
-  id          String    @id @default(uuid())
-  tenantId    String    @map("tenant_id")
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  orderItemId String    @map("order_item_id")
-  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  locationId  String    @map("location_id")
-  location    Location  @relation(fields: [locationId], references: [id])
-  quantity    Int
-  status      String    @default("ACTIVE") // ACTIVE | CONSUMED (line packed, stock deducted) | RELEASED
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@index([tenantId, locationId, status])
-  @@index([orderItemId])
-  @@map("stock_reservations")
-}
-
-/// "Yêu cầu sản xuất" sent to a WORKSHOP supplier; goods come back through an IMPORT.
+/// Yêu cầu sản xuất (YCSX) gửi một xưởng, chỉ định kho / chi nhánh nhận. Hàng xưởng giao về được
+/// nhận qua phiếu nhập WORKSHOP – lúc đó tồn kho nơi nhận mới tăng.
 model ProductionRequest {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
   tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  code       String // e.g. YCSX000123, quoted when calling the workshop
-  supplierId String   @map("supplier_id") // the workshop
+  code       String // mã YCSX, vd. YCSX000123, dùng khi liên hệ xưởng
+  supplierId String   @map("supplier_id") // xưởng (Supplier type WORKSHOP)
   supplier   Supplier @relation(fields: [supplierId], references: [id])
-  locationId String   @map("location_id") // where the goods are to be delivered
+  locationId String   @map("location_id") // kho / chi nhánh nhận hàng
   location   Location @relation(fields: [locationId], references: [id])
   status     String   @default("DRAFT") // DRAFT | SENT | PARTIALLY_RECEIVED | COMPLETED | CANCELLED
 
-  expectedReadyDate DateTime? @map("expected_ready_date") @db.Date
-  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  expectedReadyDate DateTime? @map("expected_ready_date") @db.Date // ngày hẹn xưởng xong
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6) // lúc gửi xưởng
   note              String?
 
   createdById       String?   @map("created_by")
@@ -1240,17 +1280,17 @@ model ProductionRequest {
   @@map("production_requests")
 }
 
-/// On import: reserve for orderItem first, then WAITING_STOCK lines by confirmedAt.
+/// Một mặt hàng trong YCSX: số đặt (quantity) và số đã nhận (receivedQuantity).
 model ProductionRequestItem {
   id                  String            @id @default(uuid())
   productionRequestId String            @map("production_request_id")
   productionRequest   ProductionRequest @relation(fields: [productionRequestId], references: [id], onDelete: Cascade)
   productItemId       String            @map("product_item_id")
   productItem         ProductItem       @relation(fields: [productItemId], references: [id])
-  orderItemId         String?           @map("order_item_id") // required for a custom line
+  orderItemId         String?           @map("order_item_id") // bắt buộc với hàng custom: làm cho dòng đơn nào
   orderItem           OrderItem?        @relation(fields: [orderItemId], references: [id])
-  quantity            Int
-  receivedQuantity    Int               @default(0) @map("received_quantity")
+  quantity            Int // số đặt xưởng
+  receivedQuantity    Int               @default(0) @map("received_quantity") // số đã nhận
   note                String?
 
   importLines StockMovementRequestItem[]
@@ -1262,7 +1302,7 @@ model ProductionRequestItem {
   @@map("production_request_items")
 }
 
-/// Specs of a custom line; locked once its production request is SENT.
+/// Thiết kế riêng của một dòng đơn custom (kích thước, chất liệu, màu...). Khoá khi YCSX đã gửi xưởng.
 model OrderItemCustomization {
   id          String    @id @default(uuid())
   tenantId    String    @map("tenant_id")
@@ -1277,7 +1317,7 @@ model OrderItemCustomization {
   color          String?
   fabricCode     String?  @map("fabric_code")
   note           String?
-  attachmentUrls String[] @map("attachment_urls") // reference photos / sketches
+  attachmentUrls String[] @map("attachment_urls") // ảnh mẫu / bản vẽ
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1287,6 +1327,7 @@ model OrderItemCustomization {
   @@map("order_item_customizations")
 }
 
+/// Một thông số thiết kế riêng (tên, giá trị, đơn vị) của dòng đơn custom.
 model OrderItemSpec {
   id              String                 @id @default(uuid())
   customizationId String                 @map("customization_id")
@@ -1299,25 +1340,33 @@ model OrderItemSpec {
   @@map("order_item_specs")
 }
 
-/// "Đơn hoàn hàng".
+/// Phiếu hoàn hàng của một đơn (khách trả hoặc giao thất bại).
 model OrderReturn {
   id         String    @id @default(uuid())
   tenantId   String    @map("tenant_id")
   tenant     Tenant    @relation(fields: [tenantId], references: [id])
   code       String
   orderId    String    @map("order_id")
-  order      Order     @relation(fields: [orderId], references: [id])
-  shipmentId String?   @map("shipment_id") // the failed delivery, when that is the cause
+  order      Order     @relation("OrderReturnOrder", fields: [orderId], references: [id])
+  shipmentId String?   @map("shipment_id") // lần giao thất bại, nếu đó là lý do hoàn
   shipment   Shipment? @relation(fields: [shipmentId], references: [id])
-  reason     String // CUSTOMER_RETURN | DELIVERY_FAILED
-  status     String    @default("PENDING") // PENDING | INSPECTED | CANCELLED
+  reason     String // CUSTOMER_RETURN (khách trả) | DELIVERY_FAILED (giao thất bại)
+  status     String    @default("REQUESTED") // REQUESTED | INSPECTING (hàng đã về, đang kiểm) | COMPLETED | CANCELLED
   note       String?
 
   createdById   String?   @map("created_by")
   createdBy     User?     @relation("OrderReturnCreatedBy", fields: [createdById], references: [id])
-  inspectedById String?   @map("inspected_by")
+  inspectedById String?   @map("inspected_by") // người kiểm hàng hoàn
   inspectedBy   User?     @relation("OrderReturnInspectedBy", fields: [inspectedById], references: [id])
   inspectedAt   DateTime? @map("inspected_at") @db.Timestamptz(6)
+  receivedById  String?   @map("received_by") // người ghi nhận hàng hoàn đã về
+  receivedBy    User?     @relation("OrderReturnReceivedBy", fields: [receivedById], references: [id])
+  receivedAt    DateTime? @map("received_at") @db.Timestamptz(6)
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz(6) // lúc xử lý xong
+
+  // Đơn mua lại khi hàng hỏng mà khách muốn mua lại (một đơn tay mới)
+  replacementOrderId String? @map("replacement_order_id")
+  replacementOrder   Order?  @relation("OrderReturnReplacement", fields: [replacementOrderId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1330,7 +1379,7 @@ model OrderReturn {
   @@map("order_returns")
 }
 
-/// GOOD -> sellable location; DAMAGED (and any custom piece) -> a location with isSellable = false.
+/// Một dòng hàng hoàn: nguyên vẹn (GOOD) về kho bán, hỏng (DAMAGED) về kho hàng hỏng.
 model OrderReturnItem {
   id          String      @id @default(uuid())
   returnId    String      @map("return_id")
@@ -1338,8 +1387,8 @@ model OrderReturnItem {
   orderItemId String      @map("order_item_id")
   orderItem   OrderItem   @relation(fields: [orderItemId], references: [id])
   quantity    Int
-  condition   String? // GOOD | DAMAGED - set at inspection
-  locationId  String?     @map("location_id") // where it was put away
+  condition   String? // GOOD | DAMAGED – ghi lúc kiểm
+  locationId  String?     @map("location_id") // nơi cất hàng hoàn
   location    Location?   @relation(fields: [locationId], references: [id])
   note        String?
 
@@ -1347,37 +1396,39 @@ model OrderReturnItem {
   @@map("order_return_items")
 }
 
+/// Khuyến mãi đã áp vào đơn và số tiền giảm.
 model OrderAppliedPromotion {
   id             String     @id @default(uuid())
   orderId        String     @map("order_id")
   order          Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   promotionId    String?    @map("promotion_id")
   promotion      Promotion? @relation(fields: [promotionId], references: [id])
-  promoName      String?    @map("promo_name")
-  discountAmount Decimal?   @map("discount_amount") @db.Decimal(12, 2)
+  promoName      String?    @map("promo_name") // tên khuyến mãi lúc áp
+  discountAmount Decimal?   @map("discount_amount") @db.Decimal(12, 2) // số tiền giảm
 
   @@map("order_applied_promotions")
 }
 
+/// Chương trình khuyến mãi (giảm % hoặc số tiền), áp cho toàn bộ / danh mục / sản phẩm.
 model Promotion {
   id                String   @id @default(uuid())
   tenantId          String   @map("tenant_id")
   tenant            Tenant   @relation(fields: [tenantId], references: [id])
   promoName         String   @map("promo_name")
   description       String?
-  discountType      String   @map("discount_type") // PERCENT | FIXED_AMOUNT
+  discountType      String   @map("discount_type") // PERCENT (%) | FIXED_AMOUNT (số tiền)
   discountValue     Decimal  @map("discount_value") @db.Decimal(12, 2)
-  maxDiscountAmount Decimal? @map("max_discount_amount") @db.Decimal(12, 2) // PERCENT only
-  minOrderValue     Decimal  @default(0) @map("min_order_value") @db.Decimal(12, 2)
+  maxDiscountAmount Decimal? @map("max_discount_amount") @db.Decimal(12, 2) // mức giảm tối đa, chỉ cho PERCENT
+  minOrderValue     Decimal  @default(0) @map("min_order_value") @db.Decimal(12, 2) // giá trị đơn tối thiểu
 
-  applicableRuleType String @map("applicable_rule_type") // all | category | product
+  applicableRuleType String @map("applicable_rule_type") // all (mọi hàng) | category | product
 
   startDate             DateTime @map("start_date") @db.Timestamptz(6)
   endDate               DateTime @map("end_date") @db.Timestamptz(6)
-  stackable             Boolean  @default(false)
-  usageLimit            Int?     @map("usage_limit")
-  usageLimitPerCustomer Int?     @map("usage_limit_per_customer")
-  usedCount             Int      @default(0) @map("used_count")
+  stackable             Boolean  @default(false) // được dùng chung với khuyến mãi khác
+  usageLimit            Int?     @map("usage_limit") // tổng lượt dùng tối đa
+  usageLimitPerCustomer Int?     @map("usage_limit_per_customer") // lượt dùng tối đa mỗi khách
+  usedCount             Int      @default(0) @map("used_count") // đã dùng
   status                String   @default("ACTIVE") // ACTIVE | INACTIVE
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1394,6 +1445,7 @@ model Promotion {
   @@map("promotions")
 }
 
+/// Chi nhánh được áp khuyến mãi (không có dòng nào = mọi chi nhánh).
 model PromotionBranch {
   promotionId String    @map("promotion_id")
   promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
@@ -1404,6 +1456,7 @@ model PromotionBranch {
   @@map("promotion_branches")
 }
 
+/// Danh mục được áp khuyến mãi.
 model PromotionCategory {
   promotionId String    @map("promotion_id")
   promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
@@ -1414,6 +1467,7 @@ model PromotionCategory {
   @@map("promotion_categories")
 }
 
+/// SKU được áp khuyến mãi.
 model PromotionProductItem {
   promotionId   String      @map("promotion_id")
   promotion     Promotion   @relation(fields: [promotionId], references: [id], onDelete: Cascade)
@@ -1424,6 +1478,7 @@ model PromotionProductItem {
   @@map("promotion_product_items")
 }
 
+/// Lịch sử dùng khuyến mãi theo đơn, để đếm giới hạn lượt dùng.
 model PromotionLog {
   id             String    @id @default(uuid())
   tenantId       String    @map("tenant_id")
@@ -1448,20 +1503,22 @@ model PromotionLog {
   @@map("promotion_logs")
 }
 
+/// Ca két tiền của một chi nhánh trong một ngày: tiền đầu ca, bàn giao, chốt cuối ngày.
 model CashDrawerSession {
   id             String   @id @default(uuid())
   tenantId       String   @map("tenant_id")
   tenant         Tenant   @relation(fields: [tenantId], references: [id])
   branchId       String   @map("branch_id")
   branch         Branch   @relation(fields: [branchId], references: [id])
-  businessDate   DateTime @map("business_date") @db.Date // local (Vietnam) trading day
+  businessDate   DateTime @map("business_date") @db.Date // ngày kinh doanh theo giờ Việt Nam
   status         String   @default("OPEN") // OPEN | CLOSED
-  openingAmount  Decimal  @map("opening_amount") @db.Decimal(14, 2)
+  openingAmount  Decimal  @map("opening_amount") @db.Decimal(14, 2) // tiền đầu ca
   openedById     String   @map("opened_by")
   openedBy       User     @relation("CashDrawerOpenedBy", fields: [openedById], references: [id])
-  currentStaffId String   @map("current_staff_id")
+  currentStaffId String   @map("current_staff_id") // người đang giữ két
   currentStaff   User     @relation("CashDrawerCurrentStaff", fields: [currentStaffId], references: [id])
 
+  // Chốt két cuối ngày: số tiền đếm được, người chốt, ghi chú
   finalLogAmount    Decimal? @map("final_log_amount") @db.Decimal(14, 2)
   finalLogManagerId String?  @map("final_log_manager_id")
   finalLogManager   User?    @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
@@ -1472,19 +1529,20 @@ model CashDrawerSession {
 
   shiftLogs CashDrawerShiftLog[]
 
-  @@unique([tenantId, branchId, businessDate]) // one OPEN per branch is a partial index (see header)
+  @@unique([tenantId, branchId, businessDate]) // mỗi chi nhánh một ca / ngày; "một ca OPEN" là index một phần (xem đầu file)
   @@map("cash_drawer_sessions")
 }
 
+/// Một lần nhận / bàn giao két trong ngày, kèm số tiền đếm được.
 model CashDrawerShiftLog {
   id          String            @id @default(uuid())
   sessionId   String            @map("session_id")
   session     CashDrawerSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  type        String            @default("END") // START | END
+  type        String            @default("END") // START (nhận két) | END (giao két)
   staffId     String            @map("staff_id")
   staff       User              @relation("ShiftLogStaff", fields: [staffId], references: [id])
-  amount      Decimal           @db.Decimal(14, 2)
-  nextStaffId String?           @map("next_staff_id")
+  amount      Decimal           @db.Decimal(14, 2) // số tiền đếm được
+  nextStaffId String?           @map("next_staff_id") // người nhận bàn giao; null = trả két cuối ngày
   nextStaff   User?             @relation("ShiftLogNextStaff", fields: [nextStaffId], references: [id])
   note        String?
   loggedAt    DateTime          @default(now()) @map("logged_at") @db.Timestamptz(6)
@@ -1492,12 +1550,12 @@ model CashDrawerShiftLog {
   @@map("cash_drawer_shift_logs")
 }
 
-/// Cash ledger, written only by money events, never through a route.
+/// Sổ quỹ: chỉ ghi tự động khi có sự kiện tiền (bán, trả NCC, hoàn...), không có API nhập tay.
 model CashFlow {
   id                 String    @id @default(uuid())
   tenantId           String    @map("tenant_id")
   tenant             Tenant    @relation(fields: [tenantId], references: [id])
-  flowType           String    @map("flow_type") // INCOME | EXPENSE
+  flowType           String    @map("flow_type") // INCOME (thu) | EXPENSE (chi)
   amount             Decimal   @db.Decimal(14, 2)
   paymentMethod      String?   @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
   locationId         String?   @map("location_id")
@@ -1522,7 +1580,7 @@ model CashFlow {
   @@map("cash_flows")
 }
 
-/// A PAID row writes exactly one CashFlow.
+/// Một khoản thanh toán của đơn (cọc, thu khi giao, hoàn tiền). Mỗi khoản PAID ghi đúng một dòng sổ quỹ.
 model Payment {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -1530,23 +1588,30 @@ model Payment {
   orderId  String @map("order_id")
   order    Order  @relation(fields: [orderId], references: [id])
 
-  method String // CASH | BANK_TRANSFER | SEPAY | CHANNEL (collected by the marketplace, paid out later)
-  kind   String // FULL | DEPOSIT | BALANCE | REFUND
-  amount Decimal @db.Decimal(14, 2) // always positive; REFUND = money out
+  method String // CASH | BANK_TRANSFER | SEPAY | CHANNEL (sàn thu hộ, trả sau)
+  kind   String // FULL (trả đủ) | DEPOSIT (cọc) | BALANCE (thu phần còn lại khi giao) | REFUND (hoàn)
+  amount Decimal @db.Decimal(14, 2) // luôn dương; REFUND là tiền ra
   status String  @default("PENDING") // PENDING | PAID | FAILED | CANCELLED
 
-  refundOfPaymentId String?   @map("refund_of_payment_id")
+  refundOfPaymentId String?   @map("refund_of_payment_id") // khoản được hoàn (cho REFUND)
   refundOf          Payment?  @relation("PaymentRefund", fields: [refundOfPaymentId], references: [id])
   refunds           Payment[] @relation("PaymentRefund")
 
-  paymentReference   String?   @unique @map("payment_reference") // code the customer puts in the transfer
+  paymentReference   String?   @unique @map("payment_reference") // nội dung khách ghi khi chuyển khoản
   sepayTransactionId String?   @map("sepay_transaction_id")
   paidAt             DateTime? @map("paid_at") @db.Timestamptz(6)
 
-  locationId    String?   @map("location_id")
+  locationId    String?   @map("location_id") // nơi thu tiền
   location      Location? @relation(fields: [locationId], references: [id])
-  collectedById String?   @map("collected_by")
+  collectedById String?   @map("collected_by") // người thu (vd. shipper)
   collectedBy   User?     @relation("PaymentCollectedBy", fields: [collectedById], references: [id])
+
+  // Tiền mặt shipper thu đã nộp lại cho chủ chưa: NOT_APPLICABLE | PENDING (shipper đang giữ) |
+  // RECEIVED (chủ đã xác nhận nhận đủ). PENDING chỉ có ở khoản BALANCE tiền mặt.
+  remittanceStatus        String    @default("NOT_APPLICABLE") @map("remittance_status")
+  remittanceConfirmedById String?   @map("remittance_confirmed_by")
+  remittanceConfirmedBy   User?     @relation("PaymentRemittanceConfirmedBy", fields: [remittanceConfirmedById], references: [id])
+  remittanceConfirmedAt   DateTime? @map("remittance_confirmed_at") @db.Timestamptz(6)
 
   createdById String?  @map("created_by")
   createdBy   User?    @relation("PaymentCreatedBy", fields: [createdById], references: [id])
@@ -1558,15 +1623,16 @@ model Payment {
 
   @@index([tenantId, orderId])
   @@index([tenantId, status, createdAt])
+  @@index([tenantId, remittanceStatus])
   @@map("payments")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// F2. Fulfillment & delivery
+// F2. Đóng hàng & giao hàng
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Packs READY lines. Packing a line consumes its reservation and deducts the stock (from lots);
-/// HANDED_OVER only records the hand-over to the carrier.
+/// Lần đóng hàng của một đơn: ai đóng, ai xác nhận, tại kho nào. Đóng hàng KHÔNG trừ tồn
+/// (tồn trừ lúc đơn sang SHIPPING).
 model Fulfillment {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1577,15 +1643,16 @@ model Fulfillment {
   location   Location @relation(fields: [locationId], references: [id])
 
   // PENDING | PICKING | PICKED | PACKING | PACKED | HANDED_OVER | EXCEPTION | CANCELLED
+  // Luồng Phase 1 tạo thẳng PACKED khi đóng đơn, HANDED_OVER khi ĐVVC lấy hàng.
   status        String  @default("PENDING")
-  exceptionNote String? @map("exception_note")
+  exceptionNote String? @map("exception_note") // ghi chú khi có sự cố
 
   assigneeId   String? @map("assignee_id")
   assignee     User?   @relation("FulfillmentAssignee", fields: [assigneeId], references: [id])
-  verifiedById String? @map("verified_by") // person in charge confirms the goods are intact before they leave
+  verifiedById String? @map("verified_by") // người xác nhận hàng đã đóng nguyên vẹn
   verifiedBy   User?   @relation("FulfillmentVerifiedBy", fields: [verifiedById], references: [id])
 
-  dueDate       DateTime? @map("due_date") @db.Date
+  dueDate       DateTime? @map("due_date") @db.Date // hạn phải đóng xong
   pickStartedAt DateTime? @map("pick_started_at") @db.Timestamptz(6)
   pickedAt      DateTime? @map("picked_at") @db.Timestamptz(6)
   packStartedAt DateTime? @map("pack_started_at") @db.Timestamptz(6)
@@ -1605,6 +1672,7 @@ model Fulfillment {
   @@map("fulfillments")
 }
 
+/// Số lượng soạn / đóng của từng dòng đơn trong lần đóng hàng.
 model FulfillmentItem {
   id            String       @id @default(uuid())
   fulfillmentId String       @map("fulfillment_id")
@@ -1612,26 +1680,27 @@ model FulfillmentItem {
   orderItemId   String       @map("order_item_id")
   orderItem     OrderItem    @relation(fields: [orderItemId], references: [id])
   quantity      Int
-  qtyPicked     Int          @default(0) @map("qty_picked")
-  qtyPacked     Int          @default(0) @map("qty_packed") // stock is deducted as units are packed
-  pickedFromId  String?      @map("picked_from_id")
+  qtyPicked     Int          @default(0) @map("qty_picked") // số đã soạn
+  qtyPacked     Int          @default(0) @map("qty_packed") // số đã đóng
+  pickedFromId  String?      @map("picked_from_id") // lấy từ vị trí kho nào
   pickedFrom    StorageNode? @relation(fields: [pickedFromId], references: [id])
 
   @@unique([fulfillmentId, orderItemId])
   @@map("fulfillment_items")
 }
 
+/// Một kiện đã đóng (mã, ảnh, cân nặng), gắn với lần đóng hàng.
 model FulfillmentPackage {
   id               String          @id @default(uuid())
   tenantId         String          @map("tenant_id")
   tenant           Tenant          @relation(fields: [tenantId], references: [id])
   fulfillmentId    String          @map("fulfillment_id")
   fulfillment      Fulfillment     @relation(fields: [fulfillmentId], references: [id], onDelete: Cascade)
-  code             String
-  productPackageId String?         @map("product_package_id")
+  code             String // mã kiện, in nhãn
+  productPackageId String?         @map("product_package_id") // kiện thứ mấy của SKU
   productPackage   ProductPackage? @relation(fields: [productPackageId], references: [id])
   weightKg         Decimal?        @map("weight_kg") @db.Decimal(10, 3)
-  photoUrls        String[]        @map("photo_urls")
+  photoUrls        String[]        @map("photo_urls") // ảnh kiện đã đóng
   packedById       String?         @map("packed_by")
   packedBy         User?           @relation(fields: [packedById], references: [id])
   packedAt         DateTime        @default(now()) @map("packed_at") @db.Timestamptz(6)
@@ -1642,7 +1711,7 @@ model FulfillmentPackage {
   @@map("fulfillment_packages")
 }
 
-/// EXTERNAL: carrier/platform reports DELIVERED. INTERNAL: shipper confirms with proof photos.
+/// Một lần giao hàng. INTERNAL: shipper / thợ của shop, xác nhận bằng ảnh. EXTERNAL: đơn vị vận chuyển ngoài.
 model Shipment {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -1652,29 +1721,31 @@ model Shipment {
   fulfillmentId String      @map("fulfillment_id")
   fulfillment   Fulfillment @relation(fields: [fulfillmentId], references: [id])
 
-  carrierType  String  @default("INTERNAL") @map("carrier_type") // INTERNAL | EXTERNAL
-  carrierName  String? @map("carrier_name")
-  trackingCode String? @map("tracking_code")
-  driverId     String? @map("driver_id")
+  carrierType  String  @default("INTERNAL") @map("carrier_type") // INTERNAL (shipper của shop) | EXTERNAL (ĐVVC ngoài)
+  carrierName  String? @map("carrier_name") // tên ĐVVC
+  trackingCode String? @map("tracking_code") // mã vận đơn
+  driverId     String? @map("driver_id") // shipper / thợ được giao
   driver       User?   @relation("ShipmentDriver", fields: [driverId], references: [id])
 
   // CREATED | PICKED_UP | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED | RETURNED | CANCELLED
+  // Phase 1: tạo ở PICKED_UP (ĐVVC đã lấy hàng), sang IN_TRANSIT khi đơn SHIPPING.
   status String @default("CREATED")
 
+  // Người nhận, chép từ đơn
   recipientName   String? @map("recipient_name")
   recipientPhone  String? @map("recipient_phone")
   deliveryAddress String? @map("delivery_address")
 
   scheduledDate      DateTime? @map("scheduled_date") @db.Date
-  scheduledSlot      String?   @map("scheduled_slot") // e.g. "08:00-12:00"
+  scheduledSlot      String?   @map("scheduled_slot") // khung giờ hẹn, vd. "08:00-12:00"
   expectedDeliveryAt DateTime? @map("expected_delivery_at") @db.Timestamptz(6)
   deliveredAt        DateTime? @map("delivered_at") @db.Timestamptz(6)
 
-  requiresInstallation Boolean   @default(false) @map("requires_installation")
+  requiresInstallation Boolean   @default(false) @map("requires_installation") // cần lắp đặt tại nhà khách
   installedAt          DateTime? @map("installed_at") @db.Timestamptz(6)
 
-  proofPhotoUrls String[] @map("proof_photo_urls")
-  shippingCost   Decimal? @map("shipping_cost") @db.Decimal(14, 2) // what the carrier charges us (≠ Order.shippingFee)
+  proofPhotoUrls String[] @map("proof_photo_urls") // ảnh bằng chứng giao hàng
+  shippingCost   Decimal? @map("shipping_cost") @db.Decimal(14, 2) // phí ĐVVC tính cho shop (≠ Order.shippingFee thu của khách)
   note           String?
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1690,12 +1761,13 @@ model Shipment {
   @@map("shipments")
 }
 
+/// Nhật trình giao hàng (nhập tay hoặc từ đơn vị vận chuyển).
 model ShipmentEvent {
   id          String   @id @default(uuid())
   shipmentId  String   @map("shipment_id")
   shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   status      String
-  source      String   @default("MANUAL") // MANUAL | CARRIER
+  source      String   @default("MANUAL") // MANUAL (nhập tay) | CARRIER (ĐVVC báo về)
   note        String?
   latitude    Float?
   longitude   Float?
@@ -1707,6 +1779,7 @@ model ShipmentEvent {
   @@map("shipment_events")
 }
 
+/// Nhật ký thao tác kho chi tiết (bắt đầu soạn, quét mã...). Chưa dùng ở Phase 1.
 model OperationEvent {
   id            String    @id @default(uuid())
   tenantId      String    @map("tenant_id")
@@ -1716,7 +1789,7 @@ model OperationEvent {
   userId        String    @map("user_id")
   user          User      @relation(fields: [userId], references: [id])
   type          String // PICK_STARTED | PICK_DONE | PACK_STARTED | PACK_DONE | SCAN_OK | SCAN_FAIL | VERIFY_OK | VERIFY_FAIL | HANDED_OVER | ...
-  referenceType String?   @map("reference_type") // FULFILLMENT | STOCK_MOVEMENT | SHIPMENT
+  referenceType String?   @map("reference_type") // chứng từ liên quan: FULFILLMENT | STOCK_MOVEMENT | SHIPMENT
   referenceId   String?   @map("reference_id")
   metadata      Json?
   occurredAt    DateTime  @default(now()) @map("occurred_at") @db.Timestamptz(6)
@@ -1728,9 +1801,10 @@ model OperationEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// F3. Vouchers & invoices (customers are reference data in section C)
+// F3. Voucher & hoá đơn (khách hàng nằm ở mục C)
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Đợt phát mã voucher gắn với một khuyến mãi. Chưa dùng ở Phase 1.
 model Voucher {
   id          String    @id @default(uuid())
   tenantId    String    @map("tenant_id")
@@ -1738,7 +1812,7 @@ model Voucher {
   promotionId String    @map("promotion_id")
   promotion   Promotion @relation(fields: [promotionId], references: [id])
   name        String
-  codePrefix  String?   @map("code_prefix")
+  codePrefix  String?   @map("code_prefix") // tiền tố khi sinh mã
   status      String    @default("ACTIVE") // ACTIVE | INACTIVE
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1748,6 +1822,7 @@ model Voucher {
   @@map("vouchers")
 }
 
+/// Một mã voucher cụ thể, có thể phát cho một khách. Chưa dùng ở Phase 1.
 model VoucherCode {
   id         String    @id @default(uuid())
   tenantId   String    @map("tenant_id")
@@ -1755,10 +1830,10 @@ model VoucherCode {
   voucherId  String    @map("voucher_id")
   voucher    Voucher   @relation(fields: [voucherId], references: [id], onDelete: Cascade)
   code       String
-  customerId String?   @map("customer_id") // null = anyone holding the code
+  customerId String?   @map("customer_id") // null = ai có mã cũng dùng được
   customer   Customer? @relation(fields: [customerId], references: [id])
   status     String    @default("AVAILABLE") // AVAILABLE | ISSUED | USED | EXPIRED | REVOKED
-  orderId    String?   @map("order_id")
+  orderId    String?   @map("order_id") // đơn đã dùng mã
   order      Order?    @relation(fields: [orderId], references: [id])
   usedAt     DateTime? @map("used_at") @db.Timestamptz(6)
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1768,30 +1843,32 @@ model VoucherCode {
   @@map("voucher_codes")
 }
 
-/// Never edited once issued; a refund issues an ADJUSTMENT.
+/// Hoá đơn bán hàng. Đã phát hành thì không sửa; hoàn tiền thì phát hoá đơn điều chỉnh. Chưa dùng ở Phase 1.
 model Invoice {
   id                String    @id @default(uuid())
   tenantId          String    @map("tenant_id")
   tenant            Tenant    @relation(fields: [tenantId], references: [id])
   orderId           String    @map("order_id")
   order             Order     @relation(fields: [orderId], references: [id])
-  invoiceNumber     String    @map("invoice_number")
-  type              String    @default("SALE") // SALE | ADJUSTMENT
-  originalInvoiceId String?   @map("original_invoice_id")
+  invoiceNumber     String    @map("invoice_number") // số hoá đơn
+  type              String    @default("SALE") // SALE (bán) | ADJUSTMENT (điều chỉnh)
+  originalInvoiceId String?   @map("original_invoice_id") // hoá đơn gốc của hoá đơn điều chỉnh
   originalInvoice   Invoice?  @relation("InvoiceAdjustment", fields: [originalInvoiceId], references: [id])
   adjustments       Invoice[] @relation("InvoiceAdjustment")
   status            String    @default("ISSUED") // DRAFT | ISSUED | CANCELLED
 
+  // Thông tin người mua để xuất VAT
   buyerName    String? @map("buyer_name")
   buyerTaxCode String? @map("buyer_tax_code")
   buyerAddress String? @map("buyer_address")
 
   subtotal  Decimal   @db.Decimal(14, 2)
   vatAmount Decimal   @default(0) @map("vat_amount") @db.Decimal(14, 2)
-  total     Decimal   @db.Decimal(14, 2) // negative for a refunding ADJUSTMENT
-  reason    String? // required for ADJUSTMENT
+  total     Decimal   @db.Decimal(14, 2) // âm với hoá đơn điều chỉnh hoàn tiền
+  reason    String? // lý do, bắt buộc với ADJUSTMENT
   issuedAt  DateTime? @map("issued_at") @db.Timestamptz(6)
 
+  // Hoá đơn điện tử: nhà cung cấp, mã tham chiếu, mã tra cứu (chưa chọn nhà cung cấp)
   einvoiceProvider   String? @map("einvoice_provider")
   einvoiceRef        String? @map("einvoice_ref")
   einvoiceLookupCode String? @map("einvoice_lookup_code")
@@ -1808,13 +1885,14 @@ model Invoice {
   @@map("invoices")
 }
 
+/// Một dòng của hoá đơn bán hàng.
 model InvoiceLine {
   id          String     @id @default(uuid())
   invoiceId   String     @map("invoice_id")
   invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   orderItemId String?    @map("order_item_id")
   orderItem   OrderItem? @relation(fields: [orderItemId], references: [id])
-  description String // name + variant + short custom spec
+  description String // tên + phiên bản + thông số custom ngắn gọn
   quantity    Int
   unitPrice   Decimal    @map("unit_price") @db.Decimal(12, 2)
   vatRate     Decimal    @default(0) @map("vat_rate") @db.Decimal(5, 2)
@@ -1826,24 +1904,25 @@ model InvoiceLine {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// G. Comms & misc
+// G. Thông báo, hỗ trợ, khác
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Thông báo trong app. tenantId và recipientId cùng null = thông báo hệ thống cho admin.
 model Notification {
   id          String   @id @default(uuid())
   title       String
   description String
-  type        String
+  type        String // loại thông báo (hằng trong templates/*.templates.ts)
   tenantId    String?  @map("tenant_id")
   tenant      Tenant?  @relation(fields: [tenantId], references: [id])
-  recipientId String?  @map("recipient_id")
+  recipientId String?  @map("recipient_id") // null = cả shop / hệ thống
   recipient   User?    @relation("NotificationRecipient", fields: [recipientId], references: [id])
-  link        String?
-  category    String? // ANNOUNCEMENT only
-  targetType  String?  @map("target_type") // ALL | SELECTION - ANNOUNCEMENT only
+  link        String? // đường dẫn mở khi bấm
+  category    String? // chỉ cho ANNOUNCEMENT
+  targetType  String?  @map("target_type") // ALL | SELECTION – chỉ cho ANNOUNCEMENT
   createdById String?  @map("created_by")
   createdBy   User?    @relation("NotificationCreatedBy", fields: [createdById], references: [id])
-  referenceId String?  @map("reference_id")
+  referenceId String?  @map("reference_id") // id đối tượng liên quan (đơn, phiếu...)
   isRead      Boolean  @default(false) @map("is_read")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1856,6 +1935,7 @@ model Notification {
   @@map("notifications")
 }
 
+/// Danh sách shop nhận một thông báo admin gửi có chọn lọc (targetType = SELECTION).
 model NotificationTargetTenant {
   notificationId String       @map("notification_id")
   notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
@@ -1866,19 +1946,20 @@ model NotificationTargetTenant {
   @@map("notification_target_tenants")
 }
 
+/// Yêu cầu hỗ trợ giữa shop và đội vận hành nền tảng.
 model Ticket {
   id                String    @id @default(uuid())
-  ticketId          String    @unique @map("ticket_id") // human-readable code
+  ticketId          String    @unique @map("ticket_id") // mã hiển thị
   tenantId          String    @map("tenant_id")
   tenant            Tenant    @relation(fields: [tenantId], references: [id])
-  tenantName        String    @map("tenant_name") // denormalized
+  tenantName        String    @map("tenant_name") // bản sao tên shop
   userId            String    @map("user_id")
   user              User      @relation(fields: [userId], references: [id])
   title             String
   description       String
   priority          String    @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
   status            String    @default("OPEN") // OPEN | IN_PROGRESS | RESOLVED | CLOSED
-  isDeletedByTenant Boolean   @default(false) @map("is_deleted_by_tenant")
+  isDeletedByTenant Boolean   @default(false) @map("is_deleted_by_tenant") // shop đã ẩn; admin vẫn thấy
   deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1888,20 +1969,22 @@ model Ticket {
   @@map("tickets")
 }
 
+/// Một tin nhắn trong yêu cầu hỗ trợ.
 model TicketMessage {
   id         String   @id @default(uuid())
   ticketId   String   @map("ticket_id")
   ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   senderId   String   @map("sender_id")
   sender     User     @relation(fields: [senderId], references: [id])
-  senderName String   @map("sender_name")
-  senderRole String   @map("sender_role")
+  senderName String   @map("sender_name") // bản sao tên người gửi
+  senderRole String   @map("sender_role") // vai trò người gửi lúc gửi
   message    String
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("ticket_messages")
 }
 
+/// Một cuộc hội thoại với trợ lý AI, thuộc riêng một người dùng.
 model AIChatHistory {
   id        String   @id @default(uuid())
   tenantId  String   @map("tenant_id")
@@ -1909,7 +1992,7 @@ model AIChatHistory {
   userId    String   @map("user_id")
   user      User     @relation(fields: [userId], references: [id])
   title     String   @default("Cuộc hội thoại mới")
-  messages  Json     @default("[]") // [{ role, parts: [{ text }], createdAt }]
+  messages  Json     @default("[]") // [{ role, parts: [{ text }], createdAt }] – chỉ lưu câu hỏi / trả lời, không lưu kết quả tool
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

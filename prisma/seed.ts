@@ -234,10 +234,11 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'assign',
       // Added 2026-10-04 with the revised order journey (docs/hanh-trinh-don-hang.md):
       // packing, shipping (the step that deducts stock) and confirming the cash a shipper
-      // handed back are each a decision of their own, held by different people.
+      // handed back are each a decision of their own, held by different people. 'pack' is
+      // not folded into 'update' so a packer cannot edit prices or lines.
       'pack',
       'ship',
-      'confirm_remittance',
+      'confirm_cash',
     ],
     label: 'Đơn hàng',
   },
@@ -330,9 +331,14 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   // All added up front in Phase 0 so the parallel tracks never edit this file.
   production_requests: {
     // 'update' covers moving the status by hand (DRAFT → SENT → ... → COMPLETED).
-    // 'receive' (2026-10-04): entering the quantity produced, which raises stock.
-    actions: ['create', 'read', 'update', 'delete', 'receive'],
+    actions: ['create', 'read', 'update', 'delete'],
     label: 'Yêu cầu sản xuất',
+  },
+  production: {
+    // The production list (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4): entering the quantity
+    // produced is what raises stock, so it is its own right (2026-10-04, contract §6).
+    actions: ['receive'],
+    label: 'Nhập hàng sản xuất',
   },
   fulfillments: {
     // 'verify' = confirming the packed goods are intact, which is what deducts the stock.

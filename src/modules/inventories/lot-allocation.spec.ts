@@ -1,6 +1,5 @@
 import {
   averageUnitCost,
-  planArrivalAllocation,
   planDraw,
   planReturn,
   runningBalances,
@@ -66,56 +65,6 @@ describe('planReturn', () => {
 
   it('refuses to bring back more than went out', () => {
     expect(planReturn([{ lotId: 'a', drawn: 2, returned: 1 }], 2)).toBeNull();
-  });
-});
-
-describe('planArrivalAllocation', () => {
-  const waiting = (
-    id: string,
-    missing: number,
-    confirmedOn: number | null,
-  ) => ({
-    orderItemId: id,
-    missing,
-    confirmedAt: confirmedOn === null ? null : day(confirmedOn),
-  });
-
-  it('serves the lines the goods were made for before anybody else', () => {
-    const plan = planArrivalAllocation(
-      3,
-      [waiting('made-for', 2, 9)],
-      [waiting('early', 5, 1), waiting('made-for', 2, 9)],
-    );
-    expect(plan).toEqual([
-      { orderItemId: 'made-for', quantity: 2, complete: true },
-      { orderItemId: 'early', quantity: 1, complete: false },
-    ]);
-  });
-
-  it('then goes by confirmation time, undated lines last', () => {
-    const plan = planArrivalAllocation(
-      10,
-      [],
-      [
-        waiting('undated', 1, null),
-        waiting('late', 1, 5),
-        waiting('early', 1, 2),
-      ],
-    );
-    expect(plan.map((a) => a.orderItemId)).toEqual([
-      'early',
-      'late',
-      'undated',
-    ]);
-  });
-
-  it('leaves the surplus unallocated', () => {
-    const plan = planArrivalAllocation(5, [], [waiting('a', 2, 1)]);
-    expect(plan).toEqual([{ orderItemId: 'a', quantity: 2, complete: true }]);
-  });
-
-  it('allocates nothing when nothing arrived', () => {
-    expect(planArrivalAllocation(0, [], [waiting('a', 2, 1)])).toEqual([]);
   });
 });
 

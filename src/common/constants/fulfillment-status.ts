@@ -16,7 +16,7 @@ export type FulfillmentStatus =
 export const FULFILLMENT_STATUSES: readonly string[] =
   Object.values(FulfillmentStatus);
 
-/** Before verification: cancelling here touches no stock, only the reservations. */
+/** Before verification. Packing never touches stock, so cancelling here has nothing to give back. */
 export const UNPACKED_FULFILLMENT_STATUSES: readonly string[] = [
   FulfillmentStatus.PENDING,
   FulfillmentStatus.PICKING,

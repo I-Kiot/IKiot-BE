@@ -26,14 +26,12 @@ import {
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
-import { ReservationStatus } from '../../common/constants/reservation-status';
 import { UserStatus } from '../../common/constants/user-status';
 import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import { can } from '../../common/utils/permission';
-import { InventoryRefType } from '../../common/constants/inventory-ledger';
 import type { Prisma } from '../../../generated/prisma/client';
 
 @Injectable()
@@ -154,23 +152,22 @@ export class FulfillmentService {
         l.status === OrderItemStatus.READY,
     );
 
-    // The ship-from location is where the goods are actually held - consume() can only deduct there.
-    const holds = await this.prisma.stockReservation.findMany({
-      where: {
-        tenantId: tenantId,
-        orderItemId: { in: lines.map((l) => l.id) },
-        status: ReservationStatus.ACTIVE,
-      },
-    });
-
-    const locationIds = [...new Set(holds.map((h) => h.locationId))];
+    // Nothing holds stock any more (docs/hanh-trinh-don-hang.md): the order is packed where its
+    // lines are due to ship from. Track C replaces this module with POST /orders/:id/pack (contract §2).
+    const locationIds = [
+      ...new Set(
+        lines
+          .map((l) => l.sourceLocationId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
     if (locationIds.length !== 1) {
       throw new ConflictException({
         code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
         message:
           locationIds.length === 0
-            ? 'Nothing is held for this order'
-            : 'Goods are held at more than one location - transfer them first',
+            ? 'No line names a location to ship from'
+            : 'Lines ship from more than one location - transfer the goods first',
       });
     }
 
@@ -343,7 +340,7 @@ export class FulfillmentService {
 
     await this.prisma.$transaction(async (tx) => {
       const now = new Date();
-      // Guard and write in one statement: two clicks must not deduct the stock twice.
+      // Guard and write in one statement: two clicks must not verify twice.
       const { count } = await tx.fulfillment.updateMany({
         where: { id: f.id, status: { in: [...UNPACKED_FULFILLMENT_STATUSES] } },
         data: {
@@ -360,20 +357,8 @@ export class FulfillmentService {
         });
       }
 
-      for (const item of f.items) {
-        await this.inventory.consume(tx, {
-          tenantId,
-          orderItemId: item.orderItemId,
-          locationId: f.locationId,
-          quantity: item.quantity,
-          label: item.orderItem.productName ?? item.orderItem.sku ?? undefined,
-          ledger: {
-            referenceType: InventoryRefType.FULFILLMENT,
-            referenceId: f.id,
-            createdById: user.userId,
-          },
-        });
-      }
+      // Packing no longer deducts stock - that happens when the order moves to SHIPPING
+      // (POST /orders/:id/ship, deductStock with the order line on the ledger).
       await this.markOrderItemsAndOrderAsPacked(
         tx,
         f.orderId,
@@ -394,7 +379,7 @@ export class FulfillmentService {
     );
     this.assertUserCanActAtLocation(user, f.locationId);
     this.assertFulfillmentIsUnpacked(f.status);
-    // Holds stay: the order is still READY_TO_PACK and can be packed again. Releasing them is cancelling the order (A-5).
+    // Packing touched no stock, so cancelling it has nothing to give back.
     await this.prisma.fulfillment.update({
       where: { id: f.id },
       data: {

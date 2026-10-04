@@ -1,23 +1,27 @@
 /**
- * The order journey (docs/order-flow.md, "Trạng thái"). The order status and each line's status
- * are kept apart on purpose: one combo can hold a piece already on the shelf and a piece still
- * at the workshop, so the order's status is derived from its lines, never set beside them.
+ * The order journey (docs/hanh-trinh-don-hang.md, revised after the 2026-10-02 meeting):
+ * PENDING_CONFIRMATION (Shopee) → CONFIRMED → PACKED → PICKED_UP → SHIPPING → RECEIVED → COMPLETED.
+ * Nothing holds stock any more; it is deducted once, on the move to SHIPPING. Every status change
+ * goes through one transition function (contract §2, A-1).
+ *
+ * The entries marked @deprecated belong to the reservation design the meeting dropped. They stay
+ * only so the fulfillment / allocation code written against it still compiles until tracks A and
+ * C rewrite it (contract §7); migration 20261004120000 refuses to run while an order sits in one.
  */
 export const OrderStatus = {
-  /** A manual order still being quoted - nothing reserved. */
-  DRAFT: 'DRAFT',
-  /** A marketplace order just synced; its stock is already held. */
+  /** A marketplace order just synced, waiting for staff to confirm it and name a person in charge. */
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
-  /** Confirmed, at least one line still waiting for stock. */
+  /** Confirmed with a person in charge - where a manual order is born. Stock is not touched. */
   CONFIRMED: 'CONFIRMED',
-  /** Every line is READY. */
-  READY_TO_PACK: 'READY_TO_PACK',
-  /** The fulfillment is verified - stock has been deducted. */
+  /** Packed, waiting for the shipper / carrier. Stock is not touched. */
   PACKED: 'PACKED',
-  /** Handed over to whoever delivers it. Stock does not change here. */
+  /** The shipper / carrier has the goods. Stock is still not touched. */
+  PICKED_UP: 'PICKED_UP',
+  /** Confirmed under way by someone holding orders:ship - the stock is deducted here, and refused if short. */
   SHIPPING: 'SHIPPING',
-  DELIVERED: 'DELIVERED',
-  /** Delivered and paid in full. */
+  /** Delivered and paid in cash to the shipper; waiting for the owner to confirm the cash came back in full. */
+  RECEIVED: 'RECEIVED',
+  /** Delivered and paid in full - and, for cash, handed back. */
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
   /** Every line has come back. */
@@ -28,6 +32,12 @@ export const OrderStatus = {
    * the statuses above and migrates these rows, after which this entry goes.
    */
   PENDING: 'PENDING',
+  /** @deprecated reservation design - nothing creates it (contract §7). */
+  DRAFT: 'DRAFT',
+  /** @deprecated reservation design - nothing creates it (contract §7). */
+  READY_TO_PACK: 'READY_TO_PACK',
+  /** @deprecated replaced by RECEIVED (contract §7). */
+  DELIVERED: 'DELIVERED',
 } as const;
 
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
@@ -36,15 +46,14 @@ export const ORDER_STATUSES: readonly string[] = Object.values(OrderStatus);
 
 /** Statuses that need no person in charge yet - every other one is pinned by the `orders_assignee_required` CHECK. */
 export const UNASSIGNED_ORDER_STATUSES: readonly string[] = [
-  OrderStatus.DRAFT,
   OrderStatus.PENDING_CONFIRMATION,
 ];
 
-/** Statuses in which the order still holds stock (ACTIVE reservations) and may still be cancelled by releasing it. */
-export const RESERVING_ORDER_STATUSES: readonly string[] = [
-  OrderStatus.PENDING_CONFIRMATION,
+/** Orders still waiting to leave: their lines are the demand the production list and stockCheck count, and they can still be edited. */
+export const UNSHIPPED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.CONFIRMED,
-  OrderStatus.READY_TO_PACK,
+  OrderStatus.PACKED,
+  OrderStatus.PICKED_UP,
 ];
 
 /** Nothing moves an order out of these. */
@@ -54,17 +63,21 @@ export const FINAL_ORDER_STATUSES: readonly string[] = [
   OrderStatus.RETURNED,
 ];
 
-/** One order line's own progress. */
+/** One order line's own progress. Whether its stock is there is shown (stockCheck), not stored. */
 export const OrderItemStatus = {
   PENDING: 'PENDING',
-  /** Some or all of the quantity is not held yet (short, or a custom piece being made). */
-  WAITING_STOCK: 'WAITING_STOCK',
-  /** The whole quantity is held. */
-  READY: 'READY',
-  PACKED: 'PACKED',
-  DELIVERED: 'DELIVERED',
+  /** Its stock was deducted when the order moved to SHIPPING. */
+  SHIPPED: 'SHIPPED',
   CANCELLED: 'CANCELLED',
   RETURNED: 'RETURNED',
+  /** @deprecated reservation design (contract §7). */
+  WAITING_STOCK: 'WAITING_STOCK',
+  /** @deprecated reservation design (contract §7). */
+  READY: 'READY',
+  /** @deprecated reservation design (contract §7) - migrated to SHIPPED. */
+  PACKED: 'PACKED',
+  /** @deprecated migrated to SHIPPED. */
+  DELIVERED: 'DELIVERED',
 } as const;
 
 export type OrderItemStatus =
@@ -85,13 +98,13 @@ export type OrderLineType = (typeof OrderLineType)[keyof typeof OrderLineType];
 
 export const ORDER_LINE_TYPES: readonly string[] = Object.values(OrderLineType);
 
-/** Lines that hold stock. COMBO is priced only and SERVICE needs no goods, so neither is ever reserved, packed or deducted. */
+/** Lines that hold stock. COMBO is priced only and SERVICE needs no goods, so neither is ever deducted. */
 export const STOCKED_LINE_TYPES: readonly string[] = [
   OrderLineType.PRODUCT,
   OrderLineType.COMBO_COMPONENT,
 ];
 
-/** Where the order came from. MANUAL covers both an order typed in by staff and a sale at the counter - they are one channel; the counter only differs by `fulfillmentType = TAKEAWAY`. There is no web channel. */
+/** Where the order came from. MANUAL and SHOPEE are both orders the customer placed online (docs/hanh-trinh-don-hang.md); MANUAL is one staff typed in. A POS sale at the counter is stored as MANUAL too, outside the journey; the counter only differs by `fulfillmentType = TAKEAWAY`. There is no channel for an own website. */
 export const OrderChannel = {
   MANUAL: 'MANUAL',
   SHOPEE: 'SHOPEE',
@@ -101,7 +114,7 @@ export type OrderChannel = (typeof OrderChannel)[keyof typeof OrderChannel];
 
 export const ORDER_CHANNELS: readonly string[] = Object.values(OrderChannel);
 
-/** How the goods reach the customer. TAKEAWAY still goes through a verified fulfillment - that is where its stock is deducted. */
+/** How the goods reach the customer. TAKEAWAY is a POS sale at the counter: paid and deducted at once, outside the order journey. */
 export const FulfillmentType = {
   TAKEAWAY: 'TAKEAWAY',
   STORE_PICKUP: 'STORE_PICKUP',
@@ -113,6 +126,17 @@ export type FulfillmentType =
 
 export const FULFILLMENT_TYPES: readonly string[] =
   Object.values(FulfillmentType);
+
+/** The tag staff pick the next order to ship by (with requestedDeliveryDate). A fixed list, highest last, so it sorts. */
+export const OrderPriority = {
+  NORMAL: 'NORMAL',
+  HIGH: 'HIGH',
+  URGENT: 'URGENT',
+} as const;
+
+export type OrderPriority = (typeof OrderPriority)[keyof typeof OrderPriority];
+
+export const ORDER_PRIORITIES: readonly string[] = Object.values(OrderPriority);
 
 /** Derived from the order's Payment rows (Phase 2, E-5) - never set from a request. */
 export const OrderPaymentStatus = {
@@ -128,3 +152,16 @@ export type OrderPaymentStatus =
 
 export const ORDER_PAYMENT_STATUSES: readonly string[] =
   Object.values(OrderPaymentStatus);
+
+/** `Payment.remittanceStatus`: has the cash a shipper collected reached the owner? PENDING only on a CASH balance collected on delivery. */
+export const RemittanceStatus = {
+  NOT_APPLICABLE: 'NOT_APPLICABLE',
+  PENDING: 'PENDING',
+  RECEIVED: 'RECEIVED',
+} as const;
+
+export type RemittanceStatus =
+  (typeof RemittanceStatus)[keyof typeof RemittanceStatus];
+
+export const REMITTANCE_STATUSES: readonly string[] =
+  Object.values(RemittanceStatus);
