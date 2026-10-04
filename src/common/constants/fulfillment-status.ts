@@ -15,11 +15,3 @@ export type FulfillmentStatus =
 
 export const FULFILLMENT_STATUSES: readonly string[] =
   Object.values(FulfillmentStatus);
-
-/** Before verification. Nothing is locked until verification, so cancelling here has nothing to give back. */
-export const UNPACKED_FULFILLMENT_STATUSES: readonly string[] = [
-  FulfillmentStatus.PENDING,
-  FulfillmentStatus.PICKING,
-  FulfillmentStatus.PICKED,
-  FulfillmentStatus.PACKING,
-];

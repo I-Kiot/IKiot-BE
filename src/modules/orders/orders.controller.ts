@@ -20,6 +20,8 @@ import {
   QueryOrderDto,
   UpdateOrderStatusDto,
 } from './dto/order.dto';
+import { PackOrderDto } from './dto/pack-order.dto';
+import { FulfillmentService } from '../fulfillments/fulfillments.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -32,7 +34,10 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 @ApiBearerAuth('bearer')
 @Controller('orders')
 export class OrderController {
-  constructor(private readonly service: OrderService) {}
+  constructor(
+    private readonly service: OrderService,
+    private readonly fulfillments: FulfillmentService,
+  ) {}
 
   @Permissions('orders', 'create')
   @Post()
@@ -68,6 +73,18 @@ export class OrderController {
       id,
       dto.status,
     );
+  }
+
+  /** Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. Quyền riêng `pack` – người đóng gói không sửa được đơn. */
+  @Permissions('orders', 'pack')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/pack')
+  pack(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PackOrderDto,
+  ) {
+    return this.fulfillments.packOrder(user, id, dto);
   }
 
   /** Settles a SePay order paid some other way. Either permission is enough, matching the old `authorize("orders", ["update", "pay_offline"])`, so a role holding only `orders:update` doesn't lose it to the port. */

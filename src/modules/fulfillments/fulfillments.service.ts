@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -7,32 +6,23 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
-import { ErrorCode } from '../../common/errors/error-codes';
-import { AuthUser } from '../../common/types/auth-user.type';
-import { SystemRole } from '../../common/constants/system-role';
-import {
-  FulfillmentStatus,
-  UNPACKED_FULFILLMENT_STATUSES,
-} from '../../common/constants/fulfillment-status';
-import {
-  CancelFulfillmentDto,
-  CreateFulfillmentDto,
-  CreatePackageDto,
-  UpdateFulfillmentItemsDto,
-} from './dto/fulfillment.dto';
+import type { AuthUser } from '../../common/types/auth-user.type';
+import type { OrderItem } from '../../../generated/prisma/client';
+import { PackOrderDto } from '../orders/dto/pack-order.dto';
 import { requireTenantId } from '../../common/utils/tenant-scope';
+import { ErrorCode } from '../../common/errors/error-codes';
 import {
-  OrderItemStatus,
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
-import { UserStatus } from '../../common/constants/user-status';
+import { SystemRole } from '../../common/constants/system-role';
 import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
-import { can } from '../../common/utils/permission';
-import type { Prisma } from '../../../generated/prisma/client';
+import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
+
+/** Đóng gói đơn hàng (C-1): tạo Fulfillment + thùng và khoá hàng tại kho xuất. Route nằm ở OrderController. */
 
 @Injectable()
 export class FulfillmentService {
@@ -41,23 +31,29 @@ export class FulfillmentService {
     private readonly inventory: InventoryService,
   ) {}
 
-  /** Cross-tenant ids answer 404, like a missing one. */
-  private async findFulfillmentWithItemsAndOrder(tenantId: string, id: string) {
-    const row = await this.prisma.fulfillment.findFirst({
-      where: { id: id, tenantId: tenantId },
-      include: { items: { include: { orderItem: true } }, order: true },
-    });
-    if (!row) {
-      throw new NotFoundException({
-        code: ErrorCode.FULFILLMENT_NOT_FOUND,
-        message: 'Fulfillment not found',
+  /** Đóng gói ở kho xuất dự kiến của các dòng. Kho nào khi các dòng khác nhau: chờ chốt B-2 – tạm thời phải chuyển kho trước. */
+  private packLocationOf(lines: OrderItem[]): string {
+    const ids = [
+      ...new Set(
+        lines
+          .map((l) => l.sourceLocationId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    if (ids.length !== 1 || lines.some((l) => l.sourceLocationId === null)) {
+      throw new ConflictException({
+        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        message:
+          ids.length > 1
+            ? 'Lines ship from more than one location - transfer the goods first'
+            : 'Every line needs a location to ship from',
       });
     }
-    return row;
+    return ids[0];
   }
 
-  /** TODO: same rule as StockMovementService.canActAt (minus shift supervision) - fold the two into one shared helper. Owner/admin act anywhere, STAFF only where posted. A Branch/Warehouse id is its Location id. */
-  private assertUserCanActAtLocation(user: AuthUser, locationId: string) {
+  /** Chủ / admin đóng ở đâu cũng được; STAFF chỉ ở nơi mình được phân công. TODO: gộp với StockMovementService.canActAt (có cả trưởng ca – supervisesLocation). */
+  private assertCanActAt(user: AuthUser, locationId: string) {
     if (
       user.systemRole === SystemRole.TENANT_OWNER ||
       user.systemRole === SystemRole.ADMIN
@@ -71,339 +67,151 @@ export class FulfillmentService {
     }
   }
 
-  /** TODO(A-1): replace with deriveLineStatus / deriveOrderStatus (docs/api-contract-order-flow.md §1). Sets PACKED directly, which ignores COMBO/SERVICE lines and lines changed after the fulfillment was created. */
-  private async markOrderItemsAndOrderAsPacked(
-    tx: Prisma.TransactionClient,
-    orderId: string,
-    orderItemIds: string[],
-  ) {
-    await tx.orderItem.updateMany({
-      where: { id: { in: orderItemIds } },
-      data: { status: OrderItemStatus.PACKED },
+  /** Mỗi đơn vị hàng × mỗi kiện khai báo của SKU (ProductPackage); SKU không khai báo kiện = 1 thùng. Một query cho cả đơn. */
+  private async boxesFor(lines: OrderItem[]) {
+    const declared = await this.prisma.productPackage.findMany({
+      // ProductPackage không có tenantId – lọc qua SKU của chính đơn này nên không với sang shop khác.
+      where: { productItemId: { in: lines.map((l) => l.productItemId) } },
+      select: { id: true, productItemId: true },
+      orderBy: { position: 'asc' },
     });
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: OrderStatus.PACKED },
+    const bySku = new Map<string, string[]>();
+    for (const p of declared)
+      bySku.set(p.productItemId, [...(bySku.get(p.productItemId) ?? []), p.id]);
+
+    return lines.flatMap((l) => {
+      const kinds: (string | null)[] = bySku.get(l.productItemId) ?? [null];
+      return Array.from({ length: l.quantity }, () =>
+        kinds.map((productPackageId) => ({ productPackageId })),
+      ).flat();
     });
   }
 
-  private assertFulfillmentIsUnpacked(status: string) {
-    if (!UNPACKED_FULFILLMENT_STATUSES.includes(status)) {
-      throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_STATUS_INVALID,
-        message: `Fulfillment is already ${status}`,
-      });
-    }
-  }
-
-  async findFulfillmentById(user: AuthUser, id: string) {
-    const tenantId = requireTenantId(user);
-    const row = await this.prisma.fulfillment.findFirst({
+  /** Đọc lại fulfillment vừa đóng (kèm dòng hàng và thùng) để trả về cho client. */
+  private findPacked(tenantId: string, id: string) {
+    return this.prisma.fulfillment.findFirstOrThrow({
       where: { id, tenantId },
       include: {
         items: {
           include: { orderItem: { select: { productName: true, sku: true } } },
         },
-        packages: true,
+        packages: { orderBy: { packedAt: 'asc' } },
       },
     });
-    if (!row)
-      throw new NotFoundException({
-        code: ErrorCode.FULFILLMENT_NOT_FOUND,
-        message: 'Fulfillment not found',
-      });
-    return row;
   }
 
-  async createFulfillment(user: AuthUser, dto: CreateFulfillmentDto) {
+  /** CONFIRMED → PACKED (GĐ1–B5): tạo Fulfillment PACKED + thùng, khoá hàng; trên kệ thiếu thì chặn cả đơn. Không trừ `stock` – việc đó ở SHIPPING (C-2). */
+  async packOrder(user: AuthUser, orderId: string, dto: PackOrderDto) {
     const tenantId = requireTenantId(user);
     const order = await this.prisma.order.findFirst({
-      where: { id: dto.orderId, tenantId: tenantId },
+      where: { id: orderId, tenantId: tenantId },
       include: { items: true },
     });
-    if (!order)
+
+    if (!order) {
       throw new NotFoundException({
         code: ErrorCode.ORDER_NOT_FOUND,
         message: 'Order not found',
       });
-    if (order.status !== OrderStatus.READY_TO_PACK) {
+    }
+
+    // TODO(A-1): thay bằng assertTransition(order.status, OrderStatus.PACKED).
+    // Chỉ để báo lỗi rõ ràng sớm; chỗ chặn thật là bước "nhận đơn" trong transaction.
+    if (order.status !== OrderStatus.CONFIRMED) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
-        message: `Order is ${order.status}, not READY_TO_PACK`,
+        code: ErrorCode.ORDER_STATUS_TRANSITION_INVALID,
+        message: `An order cannot be packed while it is ${order.status}`,
       });
     }
 
-    const existing = await this.prisma.fulfillment.findFirst({
-      where: {
-        tenantId: tenantId,
-        orderId: dto.orderId,
-        status: { not: FulfillmentStatus.CANCELLED },
-      },
-    });
-    if (existing)
-      throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ALREADY_EXISTS,
-        message: 'This order already has a fulfillment',
-      });
-
-    const lines = order.items.filter(
-      (l) =>
-        STOCKED_LINE_TYPES.includes(l.lineType) &&
-        l.status === OrderItemStatus.READY,
+    // COMBO cha chỉ mang giá, SERVICE không có hàng – chỉ dòng có tồn mới đóng gói.
+    const lines = order.items.filter((l) =>
+      STOCKED_LINE_TYPES.includes(l.lineType),
     );
-
-    // Nothing holds stock any more (docs/hanh-trinh-don-hang.md): the order is packed where its
-    // lines are due to ship from. Track C replaces this module with POST /orders/:id/pack (contract §2).
-    const locationIds = [
-      ...new Set(
-        lines
-          .map((l) => l.sourceLocationId)
-          .filter((id): id is string => id !== null),
-      ),
-    ];
-    if (locationIds.length !== 1) {
+    if (lines.length === 0) {
       throw new ConflictException({
         code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
-        message:
-          locationIds.length === 0
-            ? 'No line names a location to ship from'
-            : 'Lines ship from more than one location - transfer the goods first',
+        message: 'Nothing on this order needs packing',
       });
     }
+    const locationId = this.packLocationOf(lines);
+    this.assertCanActAt(user, locationId);
+    const boxes = await this.boxesFor(lines);
 
-    const locationId = locationIds[0];
-    this.assertUserCanActAtLocation(user, locationId);
-
-    if (dto.assigneeId) {
-      const assignee = await this.prisma.user.findFirst({
-        where: { id: dto.assigneeId, tenantId, status: UserStatus.ACTIVE },
-      });
-      if (!assignee)
-        throw new NotFoundException({
-          code: ErrorCode.USER_NOT_FOUND,
-          message: 'Assignee not found',
+    const { fulfillmentId, crossings } = await this.prisma.$transaction(
+      async (tx) => {
+        // 1. Nhận đơn: kiểm trạng thái và ghi trong MỘT câu – hai người bấm cùng lúc thì một người nhận 409.
+        const claimed = await tx.order.updateMany({
+          where: {
+            id: orderId,
+            tenantId: tenantId,
+            status: OrderStatus.CONFIRMED,
+          },
+          data: { status: OrderStatus.PACKED },
         });
-    }
+        if (claimed.count !== 1) {
+          throw new ConflictException({
+            code: ErrorCode.ORDER_STATUS_CONFLICT,
+            message: 'The order status has just changed, please reload',
+          });
+        }
 
-    const created = await this.prisma.fulfillment.create({
-      data: {
-        tenantId: tenantId,
-        orderId: order.id,
-        locationId: locationId,
-        status: FulfillmentStatus.PENDING,
-        assigneeId: dto.assigneeId ?? null,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        items: {
-          create: lines.map((l) => ({
-            orderItemId: l.id,
-            quantity: l.quantity,
+        // 2. Chứng từ khoá hàng: fulfillment PACKED + item + thùng.
+        const now = new Date();
+        const fulfillment = await tx.fulfillment.create({
+          data: {
+            tenantId,
+            orderId: order.id,
+            locationId,
+            status: FulfillmentStatus.PACKED,
+            assigneeId: user.userId,
+            verifiedById: user.userId,
+            verifiedAt: now,
+            packedAt: now,
+            exceptionNote: dto.note ?? null,
+            items: {
+              create: lines.map((l) => ({
+                orderItemId: l.id,
+                quantity: l.quantity,
+                qtyPicked: l.quantity,
+                qtyPacked: l.quantity,
+              })),
+            },
+          },
+          select: { id: true },
+        });
+        await tx.fulfillmentPackage.createMany({
+          data: boxes.map((box) => ({
+            tenantId,
+            fulfillmentId: fulfillment.id,
+            code: generateReference(REFERENCE_PREFIX.PACKAGE),
+            productPackageId: box.productPackageId,
+            packedById: user.userId,
+            packedAt: now,
           })),
-        },
+        });
+
+        // 3. Khoá hàng (hàng hóa đã có đơn). Thiếu ở bất kỳ dòng nào → INSUFFICIENT_STOCK, rollback cả 1 và 2.
+        const locked = await this.inventory.lockStock(
+          tx,
+          lines.map((l) => ({
+            tenantId,
+            locationId,
+            productItemId: l.productItemId,
+            quantity: l.quantity,
+            label: l.sku ?? l.productName ?? l.id,
+          })),
+        );
+        return {
+          fulfillmentId: fulfillment.id,
+          crossings: locked.map((row, i) =>
+            this.inventory.lowStockCrossing(row, -lines[i].quantity),
+          ),
+        };
       },
-    });
-    return this.findFulfillmentById(user, created.id);
-  }
-
-  async updateFulfillmentItems(
-    user: AuthUser,
-    id: string,
-    dto: UpdateFulfillmentItemsDto,
-  ) {
-    const f = await this.findFulfillmentWithItemsAndOrder(
-      requireTenantId(user),
-      id,
     );
-    this.assertUserCanActAtLocation(user, f.locationId);
-    this.assertFulfillmentIsUnpacked(f.status);
-
-    const byOrderItem = new Map(f.items.map((i) => [i.orderItemId, i]));
-    const updates = dto.items.map((input) => {
-      const item = byOrderItem.get(input.orderItemId);
-      if (!item)
-        throw new BadRequestException({
-          code: ErrorCode.VALIDATION_FAILED,
-          message: `${input.orderItemId} is not on this fulfillment`,
-        });
-      const qtyPicked = input.qtyPicked ?? item.qtyPicked;
-      const qtyPacked = input.qtyPacked ?? item.qtyPacked;
-      if (qtyPacked > qtyPicked || qtyPicked > item.quantity) {
-        throw new BadRequestException({
-          code: ErrorCode.FULFILLMENT_QTY_EXCEEDS,
-          message: `Need packed <= picked <= ${item.quantity}`,
-        });
-      }
-      return this.prisma.fulfillmentItem.update({
-        where: { id: item.id },
-        data: { qtyPicked, qtyPacked },
-      });
-    });
-
-    await this.prisma.$transaction([
-      ...updates,
-      this.prisma.fulfillment.update({
-        where: { id: f.id },
-        data: {
-          status: FulfillmentStatus.PACKING,
-          packStartedAt: f.packStartedAt ?? new Date(),
-        },
-      }),
-    ]);
-    return this.findFulfillmentById(user, f.id);
-  }
-
-  async addFulfillmentPackage(
-    user: AuthUser,
-    id: string,
-    dto: CreatePackageDto,
-  ) {
-    const tenantId = requireTenantId(user);
-    const f = await this.findFulfillmentWithItemsAndOrder(tenantId, id);
-    this.assertUserCanActAtLocation(user, f.locationId);
-    this.assertFulfillmentIsUnpacked(f.status);
-
-    if (dto.productPackageId) {
-      // ProductPackage has no tenantId - it must belong to a SKU on this fulfillment, or it could name another shop's.
-      const skuIds = f.items.map((i) => i.orderItem.productItemId);
-      const pkg = await this.prisma.productPackage.findFirst({
-        where: { id: dto.productPackageId, productItemId: { in: skuIds } },
-      });
-      if (!pkg) {
-        throw new BadRequestException({
-          code: ErrorCode.VALIDATION_FAILED,
-          message: 'ProductPackage does not match any SKU on this fulfillment',
-        });
-      }
-    }
-
-    await this.prisma.fulfillmentPackage.create({
-      data: {
-        tenantId: tenantId,
-        fulfillmentId: f.id,
-        code: generateReference(REFERENCE_PREFIX.PACKAGE),
-        productPackageId: dto.productPackageId ?? null,
-        weightKg: dto.weightKg ?? null,
-        photoUrls: dto.photoUrls ?? [],
-        packedById: user.userId,
-      },
-    });
-    return this.findFulfillmentById(user, f.id);
-  }
-
-  async verifyFulfillmentAndLockStock(user: AuthUser, id: string) {
-    const tenantId = requireTenantId(user);
-    const f = await this.findFulfillmentWithItemsAndOrder(tenantId, id);
-    this.assertUserCanActAtLocation(user, f.locationId);
-
-    // Either the permission or being the order's person in charge - which is why the route carries no @Permissions.
-    if (
-      !can(user, 'fulfillments', 'verify') &&
-      f.order.assigneeId !== user.userId
-    ) {
-      throw new ForbiddenException({
-        code: ErrorCode.FULFILLMENT_VERIFY_DENIED,
-        message: 'Only the person in charge may verify this order',
-      });
-    }
-    this.assertFulfillmentIsUnpacked(f.status);
-
-    const notPacked = f.items.find((i) => i.qtyPacked !== i.quantity);
-    if (notPacked) {
-      throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_STATUS_INVALID,
-        message: `${notPacked.orderItem.productName ?? notPacked.orderItemId} is not fully packed`,
-      });
-    }
-
-    // Packages needed = Σ quantity × max(1, packages of that SKU). Counts only - which box is which is not checked yet.
-    const skuIds = f.items.map((i) => i.orderItem.productItemId);
-    const perSku = await this.prisma.productPackage.groupBy({
-      by: ['productItemId'],
-      where: { productItemId: { in: skuIds } },
-      _count: true,
-    });
-    const countOf = new Map(perSku.map((p) => [p.productItemId, p._count]));
-    const required = f.items.reduce(
-      (sum, i) =>
-        sum +
-        i.quantity * Math.max(1, countOf.get(i.orderItem.productItemId) ?? 0),
-      0,
-    );
-    const packed = await this.prisma.fulfillmentPackage.count({
-      where: { fulfillmentId: f.id },
-    });
-    if (packed < required) {
-      throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_PACKAGES_INCOMPLETE,
-        message: `${packed} of ${required} packages packed`,
-      });
-    }
-
-    const crossings = await this.prisma.$transaction(async (tx) => {
-      const now = new Date();
-      // Guard and write in one statement: two clicks must not verify twice.
-      const { count } = await tx.fulfillment.updateMany({
-        where: { id: f.id, status: { in: [...UNPACKED_FULFILLMENT_STATUSES] } },
-        data: {
-          status: FulfillmentStatus.PACKED,
-          verifiedById: user.userId,
-          verifiedAt: now,
-          packedAt: now,
-        },
-      });
-      if (count !== 1) {
-        throw new ConflictException({
-          code: ErrorCode.FULFILLMENT_STATUS_INVALID,
-          message: 'Fulfillment was verified meanwhile',
-        });
-      }
-
-      // Packing locks the goods rather than deducting them: they stay in `stock` until the order
-      // moves to SHIPPING (shipLockedStock), but leave the shelf now, so nothing else can sell or
-      // pack them. Behind the claim above, so a second click can never lock twice; refused as a
-      // whole, every short line named, when the shelf cannot cover it. This fulfillment's items
-      // are the record of the lock - whatever releases or ships it reads them back.
-      const locked = await this.inventory.lockStock(
-        tx,
-        f.items.map((i) => ({
-          tenantId,
-          locationId: f.locationId,
-          productItemId: i.orderItem.productItemId,
-          quantity: i.quantity,
-          label: i.orderItem.sku ?? i.orderItem.productName ?? i.orderItemId,
-        })),
-      );
-      await this.markOrderItemsAndOrderAsPacked(
-        tx,
-        f.orderId,
-        f.items.map((i) => i.orderItemId),
-      );
-      return locked.map((row, index) =>
-        this.inventory.lowStockCrossing(row, -f.items[index].quantity),
-      );
-    });
+    // Sau commit: một đơn bị rollback không được để lại cảnh báo.
     await this.inventory.notifyLowStock(crossings);
-    return this.findFulfillmentById(user, id);
-  }
-
-  async cancelFulfillment(
-    user: AuthUser,
-    id: string,
-    dto: CancelFulfillmentDto,
-  ) {
-    const f = await this.findFulfillmentWithItemsAndOrder(
-      requireTenantId(user),
-      id,
-    );
-    this.assertUserCanActAtLocation(user, f.locationId);
-    this.assertFulfillmentIsUnpacked(f.status);
-    // Only an unverified fulfillment can be cancelled, and nothing is locked before verification, so there is nothing to give back.
-    await this.prisma.fulfillment.update({
-      where: { id: f.id },
-      data: {
-        status: FulfillmentStatus.CANCELLED,
-        exceptionNote: dto.note ?? null,
-      },
-    });
-    return this.findFulfillmentById(user, id);
+    return this.findPacked(tenantId, fulfillmentId);
   }
 }
