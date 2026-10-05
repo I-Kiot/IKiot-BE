@@ -4,6 +4,7 @@ import {
   SepayOrderWebhookController,
 } from './orders.controller';
 import { OrderService } from './orders.service';
+import { OrderReadService } from './order-read.service';
 import { SepayOrderService } from './sepay-order.service';
 import { InventoryModule } from '../inventories/inventories.module';
 import { NotificationModule } from '../notifications/notifications.module';
@@ -19,7 +20,7 @@ import { FulfillmentModule } from '../fulfillments/fulfillments.module';
     FulfillmentModule,
   ],
   controllers: [OrderController, SepayOrderWebhookController],
-  providers: [OrderService, SepayOrderService],
+  providers: [OrderService, SepayOrderService, OrderReadService],
   exports: [OrderService],
 })
 export class OrderModule {}

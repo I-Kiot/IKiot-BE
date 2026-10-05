@@ -17,10 +17,11 @@ import { SepayOrderService } from './sepay-order.service';
 import {
   CreateOrderDto,
   PayOfflineOrderDto,
-  QueryOrderDto,
   UpdateOrderStatusDto,
 } from './dto/order.dto';
 import { PackOrderDto } from './dto/pack-order.dto';
+import { QueryOrderJourneyDto } from './dto/query-order-journey.dto';
+import { OrderReadService } from './order-read.service';
 import { FulfillmentService } from '../fulfillments/fulfillments.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -37,6 +38,7 @@ export class OrderController {
   constructor(
     private readonly service: OrderService,
     private readonly fulfillments: FulfillmentService,
+    private readonly reads: OrderReadService,
   ) {}
 
   @Permissions('orders', 'create')
@@ -45,19 +47,21 @@ export class OrderController {
     return this.service.create(user, requireTenantId(user), dto);
   }
 
+  /** A-9: the order-journey list (contract §2), a superset of what POS reads off it. */
   @Permissions('orders', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderDto) {
-    return this.service.findAll(user, requireTenantId(user), query);
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderJourneyDto) {
+    return this.reads.findAll(user, requireTenantId(user), query);
   }
 
+  /** A-9: `OrderDetail` (contract §2). */
   @Permissions('orders', 'read')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(user, requireTenantId(user), id);
+    return this.reads.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('orders', 'update')
