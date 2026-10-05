@@ -51,6 +51,15 @@ export interface LedgerRef {
   orderItemId?: string | null;
 }
 
+// [C-6] THÊM MỚI
+/** Một dòng không đủ hàng trên kệ để khoá – gửi về client trong `errors` để hiện từng mặt hàng thiếu bao nhiêu. */
+export interface ShortStockLine {
+  /** SKU (hoặc tên) – chính là `label` mà `packOrder` truyền vào cho dòng đó. */
+  label: string;
+  needed: number;
+  onShelf: number;
+}
+
 const PRODUCT_ITEM_SELECT = {
   id: true,
   sku: true,
@@ -333,7 +342,8 @@ export class InventoryService {
     lines: (StockKey & { quantity: number; label: string })[],
   ): Promise<Inventory[]> {
     const locked: Inventory[] = [];
-    const short: string[] = [];
+    // [C-6] SỬA: gom object có cấu trúc thay vì chuỗi, để client đọc được từng con số.
+    const short: ShortStockLine[] = [];
     for (const line of lines) {
       this.assertPositive(line.quantity);
       const taken = await tx.$executeRaw`
@@ -344,9 +354,11 @@ export class InventoryService {
           AND "product_item_id" = ${line.productItemId}
           AND "stock" - "locked_stock" >= ${line.quantity}`;
       if (taken === 0) {
-        short.push(
-          `${line.label}: ${line.quantity} needed, ${await this.shelfOf(tx, line)} on the shelf`,
-        );
+        short.push({
+          label: line.label,
+          needed: line.quantity,
+          onShelf: await this.shelfOf(tx, line),
+        });
         continue;
       }
       locked.push(
@@ -354,9 +366,15 @@ export class InventoryService {
       );
     }
     if (short.length > 0) {
+      // [C-6] SỬA: `message` vẫn là tiếng Anh cho log; `errors` là phần client đọc (FE dựng câu tiếng Việt).
       throw new BadRequestException({
         code: ErrorCode.INSUFFICIENT_STOCK,
-        message: `Not enough stock on the shelf to pack - ${short.join('; ')}`,
+        message: `Not enough stock on the shelf to pack - ${short
+          .map(
+            (s) => `${s.label}: ${s.needed} needed, ${s.onShelf} on the shelf`,
+          )
+          .join('; ')}`,
+        errors: short,
       });
     }
     return locked;
