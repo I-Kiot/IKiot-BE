@@ -43,14 +43,14 @@ export class FulfillmentService {
     ];
     if (ids.length > 1) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        code: ErrorCode.FULFILLMENT_MULTIPLE_SOURCES,
         message:
           'Lines ship from more than one location - transfer the goods first',
       });
     }
     if (ids.length === 0 || lines.some((l) => l.sourceLocationId === null)) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        code: ErrorCode.FULFILLMENT_LINE_NO_SOURCE,
         message: 'Every line needs a location to ship from',
       });
     }
@@ -129,7 +129,7 @@ export class FulfillmentService {
     );
     if (lines.length === 0) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        code: ErrorCode.FULFILLMENT_NOTHING_TO_PACK,
         message: 'Nothing on this order needs packing',
       });
     }

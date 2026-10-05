@@ -57,12 +57,12 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     branchId,
   } as unknown as AuthUser;
 
-  /** Tạo một đơn CONFIRMED với các dòng cho trước (mặc định xuất từ kho). */
+  /** Tạo một đơn CONFIRMED với các dòng cho trước (bỏ trống `sourceLocationId` = xuất từ kho; `null` = chưa có kho xuất). */
   async function createOrder(
     lines: {
       productItemId: string;
       quantity: number;
-      sourceLocationId?: string;
+      sourceLocationId?: string | null;
     }[],
   ): Promise<string> {
     const id = randomUUID();
@@ -85,7 +85,10 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
             listUnitPrice: 1000,
             unitPrice: 1000,
             lineTotal: 1000 * line.quantity,
-            sourceLocationId: line.sourceLocationId ?? warehouseId,
+            sourceLocationId:
+              line.sourceLocationId === undefined
+                ? warehouseId
+                : line.sourceLocationId,
           })),
         },
       },
@@ -231,8 +234,22 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     await expect(
       fulfillments.packOrder(owner, orderId, {}),
     ).rejects.toMatchObject({
-      response: { code: ErrorCode.FULFILLMENT_ORDER_NOT_READY },
+      response: { code: ErrorCode.FULFILLMENT_MULTIPLE_SOURCES },
     });
+    expect(await statusOf(orderId)).toBe(OrderStatus.CONFIRMED);
+  });
+
+  it('refuses an order with a line that has no location to ship from', async () => {
+    const orderId = await createOrder([
+      { productItemId: wardrobeId, quantity: 1 },
+      { productItemId: tableId, quantity: 1, sourceLocationId: null },
+    ]);
+    await expect(
+      fulfillments.packOrder(owner, orderId, {}),
+    ).rejects.toMatchObject({
+      response: { code: ErrorCode.FULFILLMENT_LINE_NO_SOURCE },
+    });
+    expect(await statusOf(orderId)).toBe(OrderStatus.CONFIRMED);
   });
 
   let packedOrderId = '';

@@ -289,8 +289,14 @@ export const ErrorCode = {
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
   FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
   FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
-  /** The order is not READY_TO_PACK. */
+  /** No longer raised: split into FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK, so the client can say what to do. Kept because codes are append-only. */
   FULFILLMENT_ORDER_NOT_READY: 'FULFILLMENT_ORDER_NOT_READY',
+  /** The order's lines ship from more than one location - transfer the goods to one place before packing. */
+  FULFILLMENT_MULTIPLE_SOURCES: 'FULFILLMENT_MULTIPLE_SOURCES',
+  /** A line to be packed has no location to ship from. */
+  FULFILLMENT_LINE_NO_SOURCE: 'FULFILLMENT_LINE_NO_SOURCE',
+  /** Nothing on the order holds stock (only combo parents / services), so there is nothing to pack. */
+  FULFILLMENT_NOTHING_TO_PACK: 'FULFILLMENT_NOTHING_TO_PACK',
   /** A multi-package item is missing packages. */
   FULFILLMENT_PACKAGES_INCOMPLETE: 'FULFILLMENT_PACKAGES_INCOMPLETE',
   FULFILLMENT_QTY_EXCEEDS: 'FULFILLMENT_QTY_EXCEEDS',
