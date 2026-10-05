@@ -7,6 +7,7 @@ import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
 import { OrderPricingService } from './order-pricing.service';
 import { ManualOrderService } from './manual-order.service';
+import { OrderCancelService } from './order-cancel.service';
 import { CustomerModule } from '../customers/customers.module';
 import { InventoryModule } from '../inventories/inventories.module';
 import { NotificationModule } from '../notifications/notifications.module';
@@ -28,6 +29,7 @@ import { FulfillmentModule } from '../fulfillments/fulfillments.module';
     SepayOrderService,
     OrderPricingService,
     ManualOrderService,
+    OrderCancelService,
   ],
   exports: [OrderService],
 })

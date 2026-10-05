@@ -392,6 +392,12 @@ export const ErrorCode = {
   SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
+
+  // --- Order cancel (A-5, 2026-10-05) ---------------------------------------
+  /** The order holds a deposit, so whoever cancels must say how much of it goes back (0 = the shop keeps it). */
+  ORDER_REFUND_AMOUNT_REQUIRED: 'ORDER_REFUND_AMOUNT_REQUIRED',
+  /** More refunded than the deposit still held. */
+  ORDER_REFUND_EXCEEDS_DEPOSIT: 'ORDER_REFUND_EXCEEDS_DEPOSIT',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

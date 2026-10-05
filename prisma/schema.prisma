@@ -198,6 +198,7 @@ model User {
   paymentsCollected           Payment[]                @relation("PaymentCollectedBy")
   paymentsRemittanceConfirmed Payment[]                @relation("PaymentRemittanceConfirmedBy")
   ordersShipped               Order[]                  @relation("OrderShippedBy")
+  ordersCancelled             Order[]                  @relation("OrderCancelledBy")
   orderReturnsReceived        OrderReturn[]            @relation("OrderReturnReceivedBy")
   invoicesCreated             Invoice[]
 
@@ -1136,6 +1137,11 @@ model Order {
   shippedById   String?   @map("shipped_by")
   shippedBy     User?     @relation("OrderShippedBy", fields: [shippedById], references: [id])
   shippedAt     DateTime? @map("shipped_at") @db.Timestamptz(6)
+  // Hủy đơn (A-5): ai hủy, lúc nào, vì sao. Chỉ có khi status = CANCELLED.
+  cancelledById String?   @map("cancelled_by")
+  cancelledBy   User?     @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt   DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason  String?   @map("cancel_reason")
 
   channel         String        @default("MANUAL") // MANUAL (nhân viên nhập đơn khách đặt qua mạng; POS cũng là MANUAL) | SHOPEE
   channelId       String?       @map("channel_id")
