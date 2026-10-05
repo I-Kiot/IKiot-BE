@@ -139,7 +139,7 @@ CONFIRMED ──POST /orders/:id/pack──▶ PACKED ──POST /shipments─�
 | `SHIPPING` | Đang vận chuyển | **Tồn kho đã trừ.** |
 | `RECEIVED` | Đã nhận hàng | Chỉ khi shipper thu **tiền mặt**: chờ chủ xác nhận đã nhận đủ tiền. |
 | `COMPLETED` | Hoàn thành | Kết thúc GĐ1. Hoàn hàng (GĐ2) mở từ đây. |
-| `CANCELLED` | Đã hủy | **Chưa chốt** (A-5) – xem `POST /orders/:id/cancel`. |
+| `CANCELLED` | Đã hủy | Hủy được từ `CONFIRMED` / `PACKED` / `PICKED_UP` (A-5, chốt 2026-10-05) – xem `POST /orders/:id/cancel`. |
 | `RETURNED` | Đã hoàn | Mọi dòng đã hoàn đủ (§5). |
 
 Bỏ khỏi `OrderStatus`: `DRAFT`, `READY_TO_PACK`, `DELIVERED` (và `PENDING` legacy khi A-2 xong). Thêm
@@ -217,7 +217,7 @@ B-2). Mọi chỗ trong file này ghi "tại `sourceLocation`" là đề xuất 
 | `POST /orders/:id/ship` | `orders:ship` **(mới)** | `{ note? }` – `PICKED_UP` → `SHIPPING`. Trong **một transaction**: hàng đã được khoá lúc `pack`, nên `shipLockedStock` từng dòng (trừ `stock` và `locked_stock`); khoá không khớp → `INVENTORY_LOCK_MISMATCH` (409) – lỗi dữ liệu, không phải thiếu hàng. *(Bản trước: gom dòng thiếu → `ORDER_SHIP_INSUFFICIENT_STOCK`; không còn cần vì `pack` đã chặn.)* Áp cho từng dòng `STOCKED_LINE_TYPES` tại `sourceLocationId` (combo trừ từng dòng con), dòng → `SHIPPED`, ghi `unitCostPrice`, `shippedBy/At`, shipment đang mở `PICKED_UP` → `IN_TRANSIT`. `notifyLowStock` sau commit. | C-2 · C-9 |
 | `POST /orders/:id/confirm-remittance` | `orders:confirm_cash` **(mới)** | `{ amount, note? }` – `RECEIVED` + `cashRemittanceStatus = PENDING` → `RECEIVED` (tiền), đơn `COMPLETED`. `amount` ≠ số shipper đã thu → `ORDER_REMITTANCE_AMOUNT_MISMATCH` (chủ phải nhận **đủ**). | A-10 · D-9 |
 | `POST /orders/:id/confirm` | `orders:confirm` | *(Shopee – sau)* `{ assigneeId, lines?: [{ orderItemId, sourceLocationId?, customization? }] }` – `PENDING_CONFIRMATION` → `CONFIRMED`. Không giữ hàng. | A-3 · D-3 (Phase 2) |
-| `POST /orders/:id/cancel` | `orders:update` | `{ reason? }` – **chưa làm tới khi chốt** (Notion A-5, §8). Đề xuất để chốt: cho phép `CONFIRMED` / `PACKED` / `PICKED_UP` (chưa trừ kho; đơn `PACKED` / `PICKED_UP` thì `releaseLockedStock` trả phần khoá về kệ, fulfillment → `CANCELLED`; shipment đang mở → `CANCELLED`); từ `SHIPPING` trở đi → `ORDER_CANCEL_NOT_ALLOWED` (đi đường hoàn hàng). Tiền cọc và dòng YCSX của đơn hủy (dòng custom): chờ chốt. | A-5 · – |
+| `POST /orders/:id/cancel` | `orders:update` | `{ reason?, refundAmount?, refundMethod? }` – **chốt 2026-10-05**. Cho phép `CONFIRMED` / `PACKED` / `PICKED_UP` (chưa trừ kho); từ `SHIPPING` trở đi, hoặc đơn POS (`TAKEAWAY`, hủy qua `PATCH /orders/:id/status`) → `ORDER_CANCEL_NOT_ALLOWED` (409). Một transaction: nhận đơn bằng `updateMany(status)` (thua → `ORDER_STATUS_CONFLICT`), ghi `cancelledBy/At`, `cancelReason`; fulfillment `PACKED` / `HANDED_OVER` → `releaseLockedStock` từng dòng tại kho đóng gói rồi `CANCELLED`; shipment chưa kết thúc → `CANCELLED`; dòng `PENDING` → `CANCELLED`. **Tiền cọc**: đơn có cọc thì bắt buộc `refundAmount` (0 → số cọc còn giữ; thiếu → `ORDER_REFUND_AMOUNT_REQUIRED`, vượt → `ORDER_REFUND_EXCEEDS_DEPOSIT`); > 0 thì ghi `Payment { kind: REFUND, status: PAID, refundOfPaymentId }` (`refundMethod` mặc định = cách đã cọc), phần còn lại shop giữ; `paymentStatus` → `REFUNDED` / `PARTIALLY_REFUNDED` (hoàn 0 thì giữ nguyên). **YCSX** của các dòng: không đụng (hàng xưởng về thành tồn bán được), trả kèm `openProductionRequests` để người dùng tự xử lý. Trả về `{ order, refund: { held, refunded, kept } | null, openProductionRequests }`. Test: `test/order-cancel.e2e-spec.ts`. | A-5 · – |
 | `PATCH /orders/:id/status`, `POST /orders/:id/pay-offline` | như cũ | **POS bán tại quầy** – vẫn dùng, ngoài hành trình. | E-5 · E-6 |
 
 ```ts
@@ -509,7 +509,7 @@ nguyên** – danh sách là append-only.
 ## 8. Điểm chưa chốt
 
 Từ hành trình đơn hàng:
-- **Hủy đơn:** được hủy ở trạng thái nào, xử lý tiền cọc (hoàn / giữ) – A-5 chưa làm tới khi chốt.
+- ~~**Hủy đơn**~~ – **đã chốt 2026-10-05** (A-5): hủy được tới `PICKED_UP`, người hủy nhập số tiền cọc hoàn, YCSX không đụng – xem `POST /orders/:id/cancel` ở §2.
 - **COD qua ĐVVC bên thứ ba:** `cashRemittanceStatus` hiện chỉ cho shipper / thợ hợp đồng; đối soát
   với ĐVVC chốt khi làm Shopee (E-8).
 

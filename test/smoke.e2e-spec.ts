@@ -888,7 +888,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -946,7 +946,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -967,7 +967,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       data: { stock: { increment: 1 } },
     });
     const capped = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1010,7 +1010,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Ten separate lines, same variant - exactly what a till does when it rings items in
     // one at a time.
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1041,7 +1041,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('refuses a sale the branch cannot cover, and one the customer underpays', async () => {
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1052,7 +1052,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('POST /orders beyond branch stock: 400 OK');
 
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1108,7 +1108,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('opens a SePay sale as PENDING and settles it offline', async () => {
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1150,7 +1150,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('bank update raises a SYSTEM_TENANT_BANK_UPDATED notification OK');
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1223,7 +1223,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1342,7 +1342,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // out server-side now, so this is the regression test for an order that would
     // previously have been rung up at full price with a discount showing on screen.
     const withDiscount = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1367,7 +1367,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Sending the old payload shape must land on the same numbers: the extra keys are
     // stripped by ValidationPipe and the client-supplied amounts are simply not read.
     const legacyShape = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1393,7 +1393,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     // A manual whole-order discount and a promotion have one column between them.
     const conflict = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1555,7 +1555,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('GET /customers?search: OK');
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1596,7 +1596,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // tenant's live candidates comes back as "gone or not applicable to this order" -
     // one message for both, which is also the right answer for a cross-tenant id.
     const refused = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1633,7 +1633,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
 
     const refused = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1781,7 +1781,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
 
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1808,7 +1808,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   it('keeps exactly one walk-in customer under concurrent anonymous sales', async () => {
     const sale = () =>
       http()
-        .post('/orders')
+        .post('/orders/pos')
         .set(auth())
         .send({
           branchId,
@@ -2076,7 +2076,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       data: { stock: { increment: 1 } },
     });
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,

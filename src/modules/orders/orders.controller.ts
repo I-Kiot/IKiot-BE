@@ -14,8 +14,12 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
+import { ManualOrderService } from './manual-order.service';
+import { OrderCancelService } from './order-cancel.service';
+import { CancelOrderDto } from './dto/cancel-order.dto';
+import { CreateOrderDto } from './dto/create-order.dto';
 import {
-  CreateOrderDto,
+  CreatePosOrderDto,
   PayOfflineOrderDto,
   QueryOrderDto,
   UpdateOrderStatusDto,
@@ -29,7 +33,7 @@ import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of OrderController - the same five authenticated routes and permissions, plus the SePay webhook. There is no DELETE: a sale that shouldn't have happened is CANCELLED or RETURNED, both of which leave a trail. */
+/** Real port of OrderController plus the order journey's routes, and the SePay webhook. There is no DELETE: a sale that shouldn't have happened is CANCELLED or RETURNED, both of which leave a trail. */
 @ApiTags('orders')
 @ApiBearerAuth('bearer')
 @Controller('orders')
@@ -37,12 +41,22 @@ export class OrderController {
   constructor(
     private readonly service: OrderService,
     private readonly fulfillments: FulfillmentService,
+    private readonly manualOrders: ManualOrderService,
+    private readonly cancels: OrderCancelService,
   ) {}
 
+  /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
   @Permissions('orders', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
-    return this.service.create(user, requireTenantId(user), dto);
+    return this.manualOrders.create(user, requireTenantId(user), dto);
+  }
+
+  /** The till's sale: paid and deducted on the spot, outside the journey. It was `POST /orders` until A-2 gave that route to the journey. */
+  @Permissions('orders', 'create')
+  @Post('pos')
+  createPosSale(@CurrentUser() user: AuthUser, @Body() dto: CreatePosOrderDto) {
+    return this.service.createPosSale(user, requireTenantId(user), dto);
   }
 
   @Permissions('orders', 'read')
@@ -85,6 +99,18 @@ export class OrderController {
     @Body() dto: PackOrderDto,
   ) {
     return this.fulfillments.packOrder(user, id, dto);
+  }
+
+  /** A-5: cancel a journey order before its goods leave stock (CONFIRMED / PACKED / PICKED_UP). A packed order's lock goes back to the shelf; a deposit is refunded by the amount the caller names. */
+  @Permissions('orders', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/cancel')
+  cancel(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelOrderDto,
+  ) {
+    return this.cancels.cancel(user, requireTenantId(user), id, dto);
   }
 
   /** Settles a SePay order paid some other way. Either permission is enough, matching the old `authorize("orders", ["update", "pay_offline"])`, so a role holding only `orders:update` doesn't lose it to the port. */
