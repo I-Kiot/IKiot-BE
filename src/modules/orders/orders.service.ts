@@ -23,14 +23,14 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { narrowToScope } from '../../common/utils/scope-filter';
 import { SepayOrderService } from './sepay-order.service';
-import { PromotionService } from '../promotions/promotions.service';
+import { OrderPricingService } from './order-pricing.service';
 import {
   INSTANT_COMPLETE_METHODS,
   OrderStatus,
   VALID_ORDER_TRANSITIONS,
 } from './order.constants';
 import {
-  CreateOrderDto,
+  CreatePosOrderDto,
   PayOfflineOrderDto,
   QueryOrderDto,
 } from './dto/order.dto';
@@ -66,7 +66,7 @@ const ORDER_INCLUDE = {
 
 type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
 
-/** Real port of OrderService. Selling moves money and stock at once, so every method here works out the numbers, writes them in one transaction, and only then tells a human. The total is computed, never accepted - the old API stored the client's `grandTotal` - and so is the discount: the client names its promotions and `priceOrder` runs them through the same engine `/promotions/calculate` uses. */
+/** Real port of OrderService. Selling moves money and stock at once, so every method here works out the numbers, writes them in one transaction, and only then tells a human. The total is computed, never accepted - the old API stored the client's `grandTotal` - and so is the discount: the client names its promotions and `OrderPricingService.priceOrder` runs them through the same engine `/promotions/calculate` uses. */
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
@@ -77,12 +77,17 @@ export class OrderService {
     private readonly notifications: NotificationService,
     private readonly realtime: RealtimeGateway,
     private readonly sepay: SepayOrderService,
-    private readonly promotions: PromotionService,
+    private readonly pricing: OrderPricingService,
   ) {}
 
   // ─── Create ────────────────────────────────────────────────────────────────
 
-  async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
+  /** A till sale (`POST /orders/pos`): paid and deducted on the spot, outside the order journey. The journey's own manual create is `ManualOrderService.create` (`POST /orders`). */
+  async createPosSale(
+    user: AuthUser,
+    tenantId: string,
+    dto: CreatePosOrderDto,
+  ) {
     const userId = user.userId;
     // Writing a sale is scoped exactly like reading one: `create` never received the caller, so a cashier could book an order against another branch - drawing down that branch's stock and ledger, and unable to see the row afterwards to undo it.
     const scope = this.branchScope(user);
@@ -108,9 +113,13 @@ export class OrderService {
     const isSepay = dto.paymentMethod === PaymentMethod.SEPAY;
     const banking = isSepay ? await this.requireBanking(tenantId) : null;
 
-    const priced = await this.priceOrder(tenantId, dto);
+    const priced = await this.pricing.priceOrder(tenantId, dto);
     const { lines, appliedPromotions, discountType, discountValue } = priced;
-    const grandTotal = this.grandTotalOf(lines, discountType, discountValue);
+    const grandTotal = this.pricing.grandTotalOf(
+      lines,
+      discountType,
+      discountValue,
+    );
 
     // Cash tendered has to at least cover the bill - the difference between "change" and a silent shortfall booked as revenue.
     if (dto.customerPay !== undefined && dto.customerPay < grandTotal) {
@@ -140,13 +149,13 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
-          // A till sale is confirmed and handled by whoever rings it up - the orders_assignee_required CHECK needs a person in charge on every non-draft order. A-2 replaces this with the order journey's own create.
+          // A till sale is confirmed and handled by whoever rings it up - the orders_assignee_required CHECK needs a person in charge on every non-draft order. The journey's manual orders name theirs explicitly (`ManualOrderService`).
           assigneeId: userId,
           confirmedById: userId,
           confirmedAt: new Date(),
           fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
-          // The till's reference doubles as the order code until A-2 gives the journey its own create.
+          // The till's reference doubles as its order code, so a receipt and a bank transfer name the sale the same way.
           code: paymentReference,
           paymentMethod: dto.paymentMethod,
           paymentReference,
@@ -162,15 +171,10 @@ export class OrderService {
               productName: line.productName,
               sku: line.sku,
               quantity: line.quantity,
-              // A till sale is priced at the catalogue price, so the list price snapshot is the unit price.
-              listUnitPrice: line.unitPrice,
+              listUnitPrice: line.listUnitPrice,
               unitPrice: line.unitPrice,
               discountAmount: line.discountAmount,
-              lineTotal: Math.max(
-                0,
-                Math.round(line.quantity * line.unitPrice) -
-                  line.discountAmount,
-              ),
+              lineTotal: this.pricing.lineTotalOf(line),
             })),
           },
           appliedPromotions: { create: appliedPromotions },
@@ -282,7 +286,8 @@ export class OrderService {
   }
 
   /** Which branches this account may see sales from: its own by default, everything with `orders:view_all`. iKiotMS-BE didn't scope this at all, and the permission has sat in the catalog unused - the same shape `stock-movements` already uses. */
-  private branchScope(user: AuthUser): { branchId?: string } {
+  /** Which branch's orders this account may read or write: its own, or every one with `orders:view_all`. Shared with `ManualOrderService`, so both creates refuse another branch by the same rule. */
+  branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
     if (!user.branchId) {
       // Not posted anywhere, and no view_all: no branch's sales are theirs to read.
@@ -305,7 +310,11 @@ export class OrderService {
   ) {
     const order = await this.findRow(user, tenantId, id);
 
-    const allowed = VALID_ORDER_TRANSITIONS[order.status] ?? [];
+    // The till's state machine only: an order-journey order moving to RETURNED here would put every line back at the branch and skip `order-returns` entirely. Journey orders move through their own routes (`assertTransition`).
+    const allowed =
+      order.fulfillmentType === FulfillmentType.TAKEAWAY
+        ? (VALID_ORDER_TRANSITIONS[order.status] ?? [])
+        : [];
     if (!allowed.includes(newStatus)) {
       throw new ConflictException({
         code: ErrorCode.ORDER_STATUS_TRANSITION_INVALID,
@@ -542,7 +551,7 @@ export class OrderService {
 
   // ─── Internals ─────────────────────────────────────────────────────────────
 
-  private async assertCustomerExists(tenantId: string, customerId: string) {
+  async assertCustomerExists(tenantId: string, customerId: string) {
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, tenantId, isDeleted: false },
       select: { id: true },
@@ -554,71 +563,8 @@ export class OrderService {
       });
   }
 
-  /** Everything about the sale's money, worked out here rather than taken on trust. The promotion discount is priced server-side through the same engine `/promotions/calculate` runs - it used to be assumed the client had echoed a breakdown back, so a till that sent only a total got a full-price order and no error - and the engine re-checks eligibility, so an expired or out-of-branch promotion is a 400 instead of a discount. The variants are looked up twice on a promotion sale; one extra indexed read is the price of the engine owning its own view of the cart. */
-  private async priceOrder(tenantId: string, dto: CreateOrderDto) {
-    const lines = await this.priceLines(tenantId, dto);
-    const promotionIds = [
-      ...new Set((dto.appliedPromotions ?? []).map((p) => p.promotionId)),
-    ];
-
-    if (promotionIds.length === 0) {
-      if (dto.discountType === 'ORDER' && !dto.discountValue) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_DISCOUNT_VALUE_REQUIRED,
-          message:
-            'An order-level discount needs a discountValue greater than 0',
-        });
-      }
-      return {
-        lines,
-        appliedPromotions: [],
-        discountType: dto.discountType ?? null,
-        discountValue: dto.discountValue ?? 0,
-      };
-    }
-
-    // One discountType per order, so the two kinds can't be stacked - the schema has nowhere to record a total that is part manual and part promotion.
-    if (dto.discountType === 'ORDER') {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
-        message:
-          'An order cannot carry both an order-level discount and a promotion',
-      });
-    }
-
-    const pricing = await this.promotions.calculate(tenantId, {
-      branchId: dto.branchId,
-      customerId: dto.customerId,
-      items: lines.map((line) => ({
-        productItemId: line.productItemId,
-        quantity: line.quantity,
-        unitPrice: line.unitPrice,
-      })),
-      promotionIds,
-    });
-
-    // Joined by position, never by `productItemId`: the engine returns one entry per cart line in cart order, and keying by variant id collapsed duplicate lines, handing each the sum of their shares - ten identical lines under a 10% promotion came out at 100% off.
-    if (pricing.itemBreakdown.length !== lines.length) {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_PROMOTION_ALLOCATION_MISMATCH,
-        message: 'The discount could not be matched to the order lines',
-      });
-    }
-
-    return {
-      // The engine's allocation replaces whatever the client sent, including a manual line discount: two discounts on one line have no home in the schema.
-      lines: lines.map((line, index) => ({
-        ...line,
-        discountAmount: pricing.itemBreakdown[index].discountAmount,
-      })),
-      appliedPromotions: pricing.appliedPromotions,
-      discountType: 'PROMOTION',
-      discountValue: pricing.totalDiscount,
-    };
-  }
-
   /** A sale with nobody attached still needs a customer row, so each tenant gets one walk-in record created on first use - an `upsert`, since two anonymous sales at once would both find nothing and both insert. */
-  private async resolveWalkInCustomer(
+  async resolveWalkInCustomer(
     tx: Prisma.TransactionClient,
     tenantId: string,
   ): Promise<string> {
@@ -660,69 +606,6 @@ export class OrderService {
       });
     }
     return tenant;
-  }
-
-  /** Resolves each line's variant and fills in the product name for the receipt. */
-  /** The lines of a sale, priced from the catalogue. `unitPrice` comes from `ProductItem.retailPrice`, never the request, which used to let `unitPrice: 0` ring up a full basket for nothing. The manual per-line discount is capped at the line's own total and going over is a 400, not a silent trim - clamping would leave the stored `discount_amount` larger than the discount given, and `/stats/top-products` would report that product's revenue as negative. */
-  private async priceLines(tenantId: string, dto: CreateOrderDto) {
-    const ids = [...new Set(dto.items.map((item) => item.productItemId))];
-    const variants = await this.prisma.productItem.findMany({
-      where: { tenantId, id: { in: ids } },
-      select: { id: true, sku: true, productName: true, retailPrice: true },
-    });
-    if (variants.length !== ids.length) {
-      throw new NotFoundException({
-        code: ErrorCode.PRODUCT_ITEM_NOT_FOUND,
-        message: 'Product item not found in this order',
-      });
-    }
-    const byId = new Map(variants.map((v) => [v.id, v]));
-
-    return dto.items.map((item) => {
-      const variant = byId.get(item.productItemId)!;
-      const unitPrice = Number(variant.retailPrice);
-      const discountAmount = item.discountAmount ?? 0;
-      // Rounded the same way `grandTotalOf` rounds the line, so the cap and the subtraction agree to the đồng.
-      const lineTotal = Math.round(item.quantity * unitPrice);
-      if (discountAmount > lineTotal) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_LINE_DISCOUNT_EXCEEDS_TOTAL,
-          message: `A discount of ${discountAmount} exceeds the line total for ${variant.sku ?? variant.productName} (${lineTotal})`,
-        });
-      }
-      return {
-        productItemId: item.productItemId,
-        productName: variant.productName,
-        sku: variant.sku,
-        quantity: item.quantity,
-        unitPrice,
-        discountAmount,
-      };
-    });
-  }
-
-  /** What the customer actually owes: line totals minus per-line discounts, then a manual whole-order discount. A PROMOTION discount is not subtracted again - `priceOrder` has already spread it across the lines. Never below zero. */
-  private grandTotalOf(
-    lines: { quantity: number; unitPrice: number; discountAmount: number }[],
-    discountType: string | null,
-    discountValue: number,
-  ): number {
-    // Each line is rounded before its discount comes off, exactly as `pricing-engine.ts` does; rounding once at the end would leave a promotion sale a đồng or two from the total the preview quoted.
-    const afterLineDiscounts = lines.reduce(
-      (sum, line) =>
-        sum +
-        Math.max(
-          0,
-          Math.round(line.quantity * line.unitPrice) - line.discountAmount,
-        ),
-      0,
-    );
-    // Capped at what the order is actually worth: `Math.max(0, …)` alone only stopped the total going negative, so a cashier could still settle any basket at 0đ.
-    const orderDiscount =
-      discountType === 'ORDER'
-        ? Math.min(Math.max(0, discountValue), afterLineDiscounts)
-        : 0;
-    return Math.max(0, Math.round(afterLineDiscounts - orderDiscount));
   }
 
   /** The money rows for a completed sale. A cash sale with change is two rows, since the drawer really took the full note and handed some back; only the income row carries `orderId`, so `@@unique([orderId, flowType])` still holds when a RETURN writes its own EXPENSE row. */
