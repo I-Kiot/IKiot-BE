@@ -352,7 +352,7 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
       response: {
         code: ErrorCode.INSUFFICIENT_STOCK,
         message: expect.stringMatching(/TU-2K.*BAN-1K/),
-        // [C-6] THÊM MỚI: chi tiết có cấu trúc cho màn Đóng hàng. Tủ đã khoá hết 5/5, bàn chưa từng có ở kho.
+        // Chi tiết có cấu trúc cho màn Đóng hàng. Tủ đã khoá hết 5/5, bàn chưa từng có ở kho.
         errors: [
           { label: 'TU-2K', needed: 1, onShelf: 0 },
           { label: 'BAN-1K', needed: 1, onShelf: 0 },

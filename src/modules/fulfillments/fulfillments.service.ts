@@ -41,13 +41,17 @@ export class FulfillmentService {
           .filter((id): id is string => id !== null),
       ),
     ];
-    if (ids.length !== 1 || lines.some((l) => l.sourceLocationId === null)) {
+    if (ids.length > 1) {
       throw new ConflictException({
         code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
         message:
-          ids.length > 1
-            ? 'Lines ship from more than one location - transfer the goods first'
-            : 'Every line needs a location to ship from',
+          'Lines ship from more than one location - transfer the goods first',
+      });
+    }
+    if (ids.length === 0 || lines.some((l) => l.sourceLocationId === null)) {
+      throw new ConflictException({
+        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        message: 'Every line needs a location to ship from',
       });
     }
     return ids[0];
@@ -199,8 +203,8 @@ export class FulfillmentService {
         );
         return {
           fulfillmentId: fulfillment.id,
-          crossings: locked.map((row, i) =>
-            this.inventory.lowStockCrossing(row, -lines[i].quantity),
+          crossings: locked.map(({ row, quantity }) =>
+            this.inventory.lowStockCrossing(row, -quantity),
           ),
         };
       },

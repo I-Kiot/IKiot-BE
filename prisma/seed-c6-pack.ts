@@ -1,4 +1,4 @@
-// [C-6] THÊM MỚI - dữ liệu thử màn Đóng hàng (dev only, không commit nếu không cần).
+// Dữ liệu thử màn Đóng hàng (dev only, không commit nếu không cần).
 //
 // Chạy SAU `npx prisma db seed` và `npx tsx prisma/seed-furniture.ts`:
 //

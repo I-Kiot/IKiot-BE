@@ -51,13 +51,18 @@ export interface LedgerRef {
   orderItemId?: string | null;
 }
 
-// [C-6] THÊM MỚI
 /** Một dòng không đủ hàng trên kệ để khoá – gửi về client trong `errors` để hiện từng mặt hàng thiếu bao nhiêu. */
 export interface ShortStockLine {
   /** SKU (hoặc tên) – chính là `label` mà `packOrder` truyền vào cho dòng đó. */
   label: string;
   needed: number;
   onShelf: number;
+}
+
+/** Một dòng đã khoá: hàng tồn sau khi khoá kèm số lượng vừa khoá – đủ để tính cảnh báo sắp hết hàng. */
+export interface LockedLine {
+  row: Inventory;
+  quantity: number;
 }
 
 const PRODUCT_ITEM_SELECT = {
@@ -334,15 +339,16 @@ export class InventoryService {
    * so two orders cannot both pack the last piece. Moves no stock and writes no ledger row: the
    * goods have not left, and the fulfillment is the record of who holds them.
    *
-   * Returns each line's row after its lock, for `lowStockCrossing(row, -quantity)` - packing
-   * empties the shelf just as a sale does.
+   * Returns each line's row after its lock together with the quantity locked, for
+   * `lowStockCrossing(row, -quantity)` - packing empties the shelf just as a sale does. The pair
+   * travels together so the caller never has to line two arrays up by index.
    */
   async lockStock(
     tx: Prisma.TransactionClient,
     lines: (StockKey & { quantity: number; label: string })[],
-  ): Promise<Inventory[]> {
-    const locked: Inventory[] = [];
-    // [C-6] SỬA: gom object có cấu trúc thay vì chuỗi, để client đọc được từng con số.
+  ): Promise<LockedLine[]> {
+    const locked: LockedLine[] = [];
+    // Structured, not a sentence: the client renders each short line's numbers itself.
     const short: ShortStockLine[] = [];
     for (const line of lines) {
       this.assertPositive(line.quantity);
@@ -361,12 +367,15 @@ export class InventoryService {
         });
         continue;
       }
-      locked.push(
-        await tx.inventory.findFirstOrThrow({ where: this.keyWhere(line) }),
-      );
+      locked.push({
+        row: await tx.inventory.findFirstOrThrow({
+          where: this.keyWhere(line),
+        }),
+        quantity: line.quantity,
+      });
     }
     if (short.length > 0) {
-      // [C-6] SỬA: `message` vẫn là tiếng Anh cho log; `errors` là phần client đọc (FE dựng câu tiếng Việt).
+      // `message` is English for the logs; `errors` is what the client reads (it builds the Vietnamese).
       throw new BadRequestException({
         code: ErrorCode.INSUFFICIENT_STOCK,
         message: `Not enough stock on the shelf to pack - ${short
