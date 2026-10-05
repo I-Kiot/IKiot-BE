@@ -12,8 +12,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
  * Where a journey order may go from where it is. A status missing from the keys, the deprecated
  * reservation-era ones and the till's legacy PENDING included, goes nowhere.
  *
- * - Cancelling is only allowed while the goods are still in `stock` (up to PICKED_UP). This is the
- *   contract's A-5 *proposal*, not yet settled; A-5 changes this table if the decision differs.
+ * - Cancelling is only allowed while the goods are still in `stock` (up to PICKED_UP) - decided
+ *   2026-10-05 with A-5 (`OrderCancelService`).
  * - RETURNED is reached from any status where stock has already been deducted, and only when every
  *   line has come back (§5 inspect). A partial return leaves the order where it was.
  */
