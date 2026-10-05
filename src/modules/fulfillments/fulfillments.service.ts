@@ -21,6 +21,7 @@ import {
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
+import { assertTransition } from '../orders/order-status';
 
 /** Đóng gói đơn hàng (C-1): tạo Fulfillment + thùng và khoá hàng tại kho xuất. Route nằm ở OrderController. */
 
@@ -115,14 +116,8 @@ export class FulfillmentService {
       });
     }
 
-    // TODO(A-1): thay bằng assertTransition(order.status, OrderStatus.PACKED).
     // Chỉ để báo lỗi rõ ràng sớm; chỗ chặn thật là bước "nhận đơn" trong transaction.
-    if (order.status !== OrderStatus.CONFIRMED) {
-      throw new ConflictException({
-        code: ErrorCode.ORDER_STATUS_TRANSITION_INVALID,
-        message: `An order cannot be packed while it is ${order.status}`,
-      });
-    }
+    assertTransition(order.status, OrderStatus.PACKED);
 
     // COMBO cha chỉ mang giá, SERVICE không có hàng – chỉ dòng có tồn mới đóng gói.
     const lines = order.items.filter((l) =>
