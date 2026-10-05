@@ -44,8 +44,8 @@ export class AppliedPromotionDto {
   promotionId: string;
 }
 
-/** Ported from CreateOrderDTO with `grandTotal` deliberately removed - the old API stored the client's total, so a crafted request could ring up a full basket for zero. `status`, `change` and `paymentReference` are absent for the same reason. */
-export class CreateOrderDto {
+/** The till's sale (`POST /orders/pos`), ported from CreateOrderDTO with `grandTotal` deliberately removed - the old API stored the client's total, so a crafted request could ring up a full basket for zero. `status`, `change` and `paymentReference` are absent for the same reason. */
+export class CreatePosOrderDto {
   @IsUUID()
   branchId: string;
 

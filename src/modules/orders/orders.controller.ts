@@ -14,8 +14,10 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
+import { ManualOrderService } from './manual-order.service';
+import { CreateOrderDto } from './dto/create-order.dto';
 import {
-  CreateOrderDto,
+  CreatePosOrderDto,
   PayOfflineOrderDto,
   QueryOrderDto,
   UpdateOrderStatusDto,
@@ -29,7 +31,7 @@ import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of OrderController - the same five authenticated routes and permissions, plus the SePay webhook. There is no DELETE: a sale that shouldn't have happened is CANCELLED or RETURNED, both of which leave a trail. */
+/** Real port of OrderController plus the order journey's routes, and the SePay webhook. There is no DELETE: a sale that shouldn't have happened is CANCELLED or RETURNED, both of which leave a trail. */
 @ApiTags('orders')
 @ApiBearerAuth('bearer')
 @Controller('orders')
@@ -37,12 +39,21 @@ export class OrderController {
   constructor(
     private readonly service: OrderService,
     private readonly fulfillments: FulfillmentService,
+    private readonly manualOrders: ManualOrderService,
   ) {}
 
+  /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
   @Permissions('orders', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
-    return this.service.create(user, requireTenantId(user), dto);
+    return this.manualOrders.create(user, requireTenantId(user), dto);
+  }
+
+  /** The till's sale: paid and deducted on the spot, outside the journey. It was `POST /orders` until A-2 gave that route to the journey. */
+  @Permissions('orders', 'create')
+  @Post('pos')
+  createPosSale(@CurrentUser() user: AuthUser, @Body() dto: CreatePosOrderDto) {
+    return this.service.createPosSale(user, requireTenantId(user), dto);
   }
 
   @Permissions('orders', 'read')

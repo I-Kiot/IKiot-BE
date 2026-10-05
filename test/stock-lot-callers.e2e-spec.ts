@@ -234,7 +234,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
   });
 
   it('sells at the till from the lots, costing the line, and takes a return back', async () => {
-    const { order } = await orders.create(owner, tenantId, {
+    const { order } = await orders.createPosSale(owner, tenantId, {
       branchId,
       paymentMethod: 'CASH',
       items: [{ productItemId: itemId, quantity: 2 }],
