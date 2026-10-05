@@ -40,12 +40,14 @@ export interface UserRef {
   phoneNumber: string;
 }
 
-/** The contract's `UserRef`. The name is put together the way the JWT strategy does; an account with no profile name shows its phone number. */
+/** The contract's `UserRef`. A Vietnamese full name reads family name first - `lastName firstName` ("Phạm Thị Lan"), as the dashboard's staff screens show it; an account with no profile name shows its phone number. */
 export function toUserRef(user: UserRow | null): UserRef | null {
   if (!user) return null;
-  const name = user.profileFirstName
-    ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
-    : user.phoneNumber;
+  const name =
+    [user.profileLastName, user.profileFirstName]
+      .filter((part) => part && part.trim())
+      .join(' ')
+      .trim() || user.phoneNumber;
   return { id: user.id, name, phoneNumber: user.phoneNumber };
 }
 

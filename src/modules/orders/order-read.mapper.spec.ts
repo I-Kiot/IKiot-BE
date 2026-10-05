@@ -17,12 +17,17 @@ describe('toUserRef', () => {
     profileLastName: 'Nguyễn',
   };
 
-  it('puts the name together from the profile', () => {
+  it('puts the name together family name first, as Vietnamese names read', () => {
     expect(toUserRef(user)).toEqual({
       id: 'u1',
-      name: 'Lan Nguyễn',
+      name: 'Nguyễn Lan',
       phoneNumber: '0900000001',
     });
+  });
+
+  it('uses whichever part of the name there is', () => {
+    expect(toUserRef({ ...user, profileLastName: null })?.name).toBe('Lan');
+    expect(toUserRef({ ...user, profileFirstName: '  ' })?.name).toBe('Nguyễn');
   });
 
   it('falls back to the phone number for an account with no name', () => {

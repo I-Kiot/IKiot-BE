@@ -500,7 +500,7 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
         customer: { name: 'Trần Thị Khách', phone: '0911222333' },
         assignee: {
           id: assigneeId,
-          name: 'Lan Nguyễn',
+          name: 'Nguyễn Lan',
           phoneNumber: `rd-${assigneeId}`,
         },
         createdBy: { id: ownerId, name: 'Chủ' },
