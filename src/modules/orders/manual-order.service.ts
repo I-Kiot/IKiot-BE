@@ -10,6 +10,7 @@ import { CustomerService } from '../customers/customers.service';
 import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
+import { OrderShortageAlerts } from './order-shortage-alerts';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import {
   type ComboEdge,
@@ -116,6 +117,7 @@ export class ManualOrderService {
     private readonly pricing: OrderPricingService,
     private readonly customers: CustomerService,
     private readonly customizations: OrderCustomizationService,
+    private readonly shortages: OrderShortageAlerts,
   ) {}
 
   async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
@@ -197,6 +199,8 @@ export class ManualOrderService {
     const topLevelRows = items.filter((row) => !row.parentItemId);
     const now = new Date();
 
+    const shortage = await this.shortages.snapshot(tenantId, items);
+
     const orderId = await this.prisma.$transaction(async (tx) => {
       const customerId =
         dto.customerId ??
@@ -275,6 +279,7 @@ export class ManualOrderService {
       return created.id;
     });
 
+    await this.shortages.notify(tenantId, orderId, shortage, userId);
     return this.orders.findOne(user, tenantId, orderId);
   }
 

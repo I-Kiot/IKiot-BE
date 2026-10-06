@@ -7,6 +7,8 @@ import { OrderService } from './../src/modules/orders/orders.service';
 import { OrderPricingService } from './../src/modules/orders/order-pricing.service';
 import { ManualOrderService } from './../src/modules/orders/manual-order.service';
 import { OrderCustomizationService } from './../src/modules/orders/order-customization.service';
+import { OrderShortageAlerts } from './../src/modules/orders/order-shortage-alerts';
+import { ProductionListService } from './../src/modules/production-requests/production-list.service';
 import { OrderReadService } from './../src/modules/orders/order-read.service';
 import { SepayOrderService } from './../src/modules/orders/sepay-order.service';
 import { CustomerService } from './../src/modules/customers/customers.service';
@@ -124,6 +126,8 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
         OrderPricingService,
         ManualOrderService,
         OrderCustomizationService,
+        OrderShortageAlerts,
+        ProductionListService,
         OrderReadService,
         CustomerService,
         InventoryService,

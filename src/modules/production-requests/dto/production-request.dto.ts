@@ -168,6 +168,11 @@ export class QueryProductionListDto extends PaginationQueryDto {
   @Transform(trim)
   search?: string;
 
+  /** One SKU only - where a shortage notification links to (`production-request.templates.ts`). Narrows `search` further when both are sent. */
+  @IsOptional()
+  @IsUUID()
+  productItemId?: string;
+
   /** Only rows still short after stock and every open request. Defaults to false: anything can be ordered, short rows are sorted first. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>

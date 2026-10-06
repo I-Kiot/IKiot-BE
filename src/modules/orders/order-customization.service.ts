@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderService } from './orders.service';
 import { OrderReadService } from './order-read.service';
+import { OrderShortageAlerts } from './order-shortage-alerts';
 import { OrderItemCustomizationDto } from './dto/order-item-customization.dto';
 import {
   FulfillmentType,
@@ -97,6 +98,7 @@ export class OrderCustomizationService {
     private readonly prisma: PrismaService,
     private readonly orders: OrderService,
     private readonly reads: OrderReadService,
+    private readonly shortages: OrderShortageAlerts,
   ) {}
 
   async customize(
@@ -120,6 +122,7 @@ export class OrderCustomizationService {
             productItemId: true,
             lineType: true,
             isCustom: true,
+            sourceLocationId: true,
           },
         },
       },
@@ -155,6 +158,9 @@ export class OrderCustomizationService {
     this.assertCustomizable(line.lineType);
     await this.assertNotLocked(line.id);
 
+    // The line moves to a SKU of its own with no stock, so its row on the production list can tip to short (B-3).
+    const shortage = await this.shortages.snapshot(tenantId, [line]);
+
     await this.prisma.$transaction(async (tx) => {
       // Claimed on CONFIRMED (bumping updatedAt): a pack in between wins whole, and an A-8 edit read before this one is refused.
       const claimed = await tx.order.updateMany({
@@ -170,6 +176,7 @@ export class OrderCustomizationService {
       await this.apply(tx, tenantId, line, dto);
     });
 
+    await this.shortages.notify(tenantId, orderId, shortage, user.userId);
     return this.reads.findOne(user, tenantId, orderId);
   }
 

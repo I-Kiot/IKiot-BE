@@ -367,7 +367,10 @@ Công nợ xưởng: theo số **đạt** × `unitCost`, như công nợ NCC c�
 `src/modules/notifications/templates/production-request.templates.ts`, `referenceId` = `productItemId`,
 `link` = `/exchange/production-list?locationId=…&productItemId=…`. Bắn khi tạo / sửa đơn làm một dòng
 chuyển từ `shortQuantity = 0` sang `> 0` (edge-triggered như `crossedLowStock`), và báo người phụ trách
-các đơn liên quan khi nhận hàng xưởng xong.
+các đơn liên quan khi nhận hàng xưởng xong. **Đã gắn (2026-10-06)**: `POST /orders`, `PATCH /orders/:id` có
+`items`, `PUT …/customization` chụp mức thiếu trước khi ghi và gọi `notifyNewShortages` sau commit
+(`OrderShortageAlerts` trong `orders/`); gửi cho người quản lý nơi xuất, trừ chính người thao tác; lỗi gửi
+không làm hỏng đơn. Hủy đơn / ship chỉ làm giảm nhu cầu nên không báo. Chưa có cron buổi sáng.
 
 ### Nhà cung cấp, xưởng và phiếu nhập NCC (B-1, B-5, B-7) – giữ
 
