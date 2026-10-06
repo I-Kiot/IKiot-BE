@@ -1,4 +1,11 @@
-import { IsDateString, IsIn, IsOptional, IsUUID } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  IsBoolean,
+  IsDateString,
+  IsIn,
+  IsOptional,
+  IsUUID,
+} from 'class-validator';
 import { QueryOrderDto } from './order.dto';
 import {
   ORDER_CHANNELS,
@@ -43,6 +50,12 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  /** `true` leaves out the till's sales (`TAKEAWAY`): the order-journey screens send it, POS does not - both list through this route, so it is opt-in rather than the contract's "always" (decided 2026-10-06, A-8). */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  excludePos?: boolean;
 
   /** Defaults to `createdAt`. */
   @IsOptional()
