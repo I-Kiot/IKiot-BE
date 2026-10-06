@@ -823,4 +823,37 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       expect(failedEvents).toBe(1);
     });
   });
+
+  describe('GET /shipments/drivers – ô chọn shipper', () => {
+    it('lists the owner, the person in charge and staff who can deliver - and nobody else', async () => {
+      const orderId = await packedOrder();
+      const drivers = await shipments.listDrivers(
+        storekeeper,
+        tenantId,
+        orderId,
+      );
+      const ids = drivers.map((d) => d.id).sort();
+      expect(ids).toEqual([assigneeId, driverId, ownerId].sort());
+      expect(drivers.find((d) => d.id === assigneeId)?.isAssignee).toBe(true);
+      expect(drivers.find((d) => d.id === driverId)?.isAssignee).toBe(false);
+    });
+
+    it('still lists drivers once the order has been handed over, for changing the driver', async () => {
+      const orderId = await packedOrder();
+      await shipments.create(owner, tenantId, internal(orderId));
+      const drivers = await shipments.listDrivers(owner, tenantId, orderId);
+      expect(drivers.map((d) => d.id)).toContain(driverId);
+    });
+
+    it('refuses someone who could neither hand over nor reassign the order there', async () => {
+      const orderId = await packedOrder();
+      for (const caller of [managerAtBranch, outsider]) {
+        await expect(
+          shipments.listDrivers(caller, tenantId, orderId),
+        ).rejects.toMatchObject({
+          response: { code: ErrorCode.ORDER_STEP_DENIED },
+        });
+      }
+    });
+  });
 });

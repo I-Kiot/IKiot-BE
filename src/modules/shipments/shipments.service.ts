@@ -466,38 +466,17 @@ export class ShipmentService {
     return this.findDetail(tenantId, shipment.id);
   }
 
-  /**
-   * Ai được làm shipper của đơn này: chủ shop, người phụ trách đơn (toàn quyền với đơn của mình), hoặc
-   * STAFF đang hoạt động có `shipments:deliver` trong role. Quyền trưởng ca không tính – nó hết theo giờ,
-   * còn việc giao hàng kéo dài qua ca.
-   */
+  /** Shipper được chọn phải nằm trong `eligibleDriverWhere` của đơn. */
   private async assertEligibleDriver(
     tenantId: string,
     driverId: string,
     order: { assigneeId: string | null },
   ) {
     const driver = await this.prisma.user.findFirst({
-      where: { id: driverId, tenantId, status: UserStatus.ACTIVE },
-      select: {
-        id: true,
-        systemRole: true,
-        role: {
-          select: {
-            permissions: {
-              where: DRIVER_PERMISSION,
-              select: { action: true },
-            },
-          },
-        },
-      },
+      where: { AND: [eligibleDriverWhere(tenantId, order), { id: driverId }] },
+      select: { id: true },
     });
-    const eligible =
-      driver !== null &&
-      (driver.systemRole === SystemRole.TENANT_OWNER ||
-        driver.id === order.assigneeId ||
-        (driver.systemRole === SystemRole.STAFF &&
-          (driver.role?.permissions.length ?? 0) > 0));
-    if (!eligible) {
+    if (!driver) {
       throw new BadRequestException({
         code: ErrorCode.SHIPMENT_DRIVER_INVALID,
         message:
@@ -554,6 +533,73 @@ export class ShipmentService {
         createdBy: createdBy ? withNestedProfile(createdBy) : null,
       })),
     };
+  }
+
+  // ─── Chọn shipper (C-9) ─────────────────────────────────────────────────────
+
+  /**
+   * GET /shipments/drivers?orderId=: những người làm shipper được cho đơn này, cho ô chọn shipper. Chỉ
+   * người sắp chọn shipper mới thấy danh sách nhân viên – người được giao hàng (HAND_OVER) hoặc đổi
+   * shipper (CHANGE_DRIVER) cho đơn, tại kho của fulfillment.
+   */
+  async listDrivers(user: AuthUser, tenantId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, tenantId },
+      select: {
+        assigneeId: true,
+        fulfillments: {
+          where: {
+            status: {
+              in: [FulfillmentStatus.PACKED, FulfillmentStatus.HANDED_OVER],
+            },
+          },
+          select: { locationId: true },
+        },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException({
+        code: ErrorCode.ORDER_NOT_FOUND,
+        message: 'Order not found',
+      });
+    }
+    const [fulfillment] = order.fulfillments;
+    if (!fulfillment) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_ORDER_NOT_PACKED,
+        message: 'Only a packed order has drivers to choose from',
+      });
+    }
+    const canChoose =
+      orderStepAccess(
+        user,
+        order,
+        OrderStepPermission.HAND_OVER,
+        fulfillment.locationId,
+      ) ??
+      orderStepAccess(
+        user,
+        order,
+        OrderStepPermission.CHANGE_DRIVER,
+        fulfillment.locationId,
+      );
+    if (!canChoose) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_STEP_DENIED,
+        message:
+          "Only the shop owner, the order's person in charge, or someone who can hand over or reassign this order at this location can list its drivers",
+      });
+    }
+
+    const drivers = await this.prisma.user.findMany({
+      where: eligibleDriverWhere(tenantId, order),
+      select: { ...PERSON_SELECT, systemRole: true },
+      orderBy: [{ profileFirstName: 'asc' }, { phoneNumber: 'asc' }],
+    });
+    return drivers.map((driver) => ({
+      ...withNestedProfile(driver),
+      isAssignee: driver.id === order.assigneeId,
+    }));
   }
 
   // ─── Đọc & nhật trình (C-3) ─────────────────────────────────────────────────
@@ -783,6 +829,31 @@ export class ShipmentService {
       });
     }
   }
+}
+
+/**
+ * Những tài khoản làm shipper được cho đơn này (chốt 2026-10-06): chủ shop, người phụ trách đơn (toàn
+ * quyền với đơn của mình), hoặc STAFF có `shipments:deliver` trong role – đều phải đang hoạt động, cùng
+ * shop. Một `where` dùng cho cả kiểm (`assertEligibleDriver`) lẫn liệt kê (`listDrivers`), để ô chọn
+ * shipper trên màn hình không bao giờ đưa ra người mà lúc ghi lại bị từ chối. Quyền trưởng ca không tính
+ * – nó hết theo giờ, còn việc giao hàng kéo dài qua ca.
+ */
+function eligibleDriverWhere(
+  tenantId: string,
+  order: { assigneeId: string | null },
+): Prisma.UserWhereInput {
+  return {
+    tenantId,
+    status: UserStatus.ACTIVE,
+    OR: [
+      { systemRole: SystemRole.TENANT_OWNER },
+      ...(order.assigneeId ? [{ id: order.assigneeId }] : []),
+      {
+        systemRole: SystemRole.STAFF,
+        role: { permissions: { some: DRIVER_PERMISSION } },
+      },
+    ],
+  };
 }
 
 /** `from` / `to` (YYYY-MM-DD) là ngày theo giờ Việt Nam: đơn tạo lúc 23:30 thuộc đúng ngày đó, không bị đẩy sang hôm sau. */

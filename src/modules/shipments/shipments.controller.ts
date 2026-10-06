@@ -17,6 +17,7 @@ import { ChangeDriverDto } from './dto/change-driver.dto';
 import { QueryShipmentDto } from './dto/query-shipment.dto';
 import { AddShipmentEventDto } from './dto/add-shipment-event.dto';
 import { FailShipmentDto } from './dto/fail-shipment.dto';
+import { QueryDriversDto } from './dto/query-drivers.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
@@ -44,6 +45,12 @@ export class ShipmentController {
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryShipmentDto) {
     return this.service.findAll(user, requireTenantId(user), query);
+  }
+
+  /** C-9: người làm shipper được cho một đơn (ô chọn shipper). Phải khai báo TRÊN `GET :id`, nếu không "drivers" bị hiểu là một id. */
+  @Get('drivers')
+  listDrivers(@CurrentUser() user: AuthUser, @Query() query: QueryDriversDto) {
+    return this.service.listDrivers(user, requireTenantId(user), query.orderId);
   }
 
   /** C-3: chi tiết kèm nhật trình; ngoài phạm vi xem thì 404. */
