@@ -6,6 +6,13 @@ import type { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { STAFF_BASE_PERMISSIONS } from './../src/common/constants/system-role';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from './../src/common/constants/inventory-ledger';
 
 /**
  * Throwaway smoke run over everything ported on 2026-08-25 - products, inventory, staff
@@ -44,6 +51,23 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   let scheduleId = '';
 
   const auth = (token = ownerToken) => ({ Authorization: `Bearer ${token}` });
+  /** Adds stock the only way it can enter now - as a lot (cost-lot ledger, 2026-10-01). Writing `inventories.stock` straight would break "the lots add up to the stock" and the next sale could not draw. */
+  const topUp = (locationId: string, productItemId: string, quantity: number) =>
+    prisma.$transaction((tx) =>
+      app.get(InventoryService).openLot(tx, {
+        tenantId,
+        locationId,
+        productItemId,
+        quantity,
+        unitCost: 120000,
+        sourceType: LotSourceType.SUPPLIER,
+        ledger: {
+          type: InventoryTxType.IMPORT,
+          referenceType: InventoryRefType.STOCK_MOVEMENT,
+          referenceId: 'smoke-top-up',
+        },
+      }),
+    );
   const results: string[] = [];
   const note = (line: string) => results.push(line);
 
@@ -87,6 +111,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.orderAppliedPromotion.deleteMany({
       where: { order: { tenantId: t } },
     });
+    await prisma.payment.deleteMany({
+      where: { tenantId: t, refundOfPaymentId: { not: null } },
+    });
+    await prisma.payment.deleteMany({ where: { tenantId: t } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId: t } } });
     await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.order.deleteMany({ where: { tenantId: t } });
@@ -105,6 +133,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { request: { tenantId: t } },
     });
     await prisma.stockMovementRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryTransaction.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryLot.deleteMany({ where: { tenantId: t } });
     await prisma.inventory.deleteMany({ where: { tenantId: t } });
     await prisma.productItemSupplier.deleteMany({
       where: { productItem: { tenantId: t } },
@@ -232,7 +262,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note(`supplier: OK creditLimit=${supplier.body.data.creditLimit}`);
   });
 
-  it('creates a product with variants and opening stock, in one transaction', async () => {
+  // Since the cost-lot ledger (2026-10-01) a product is created with no stock: stock only enters
+  // through a lot (an import, a workshop receipt, a return). The opening stock this suite relies on
+  // is opened here the way an import would, straight through InventoryService.
+  it('creates a product with variants, then opens its stock in lots', async () => {
     const created = await http()
       .post('/products')
       .set(auth())
@@ -246,10 +279,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
             retailPrice: 200000,
             costPrice: 120000,
             productDetails: [{ name: 'Màu', value: 'Đỏ' }],
-            initialStock: [
-              { locationId: warehouseId, locationType: 'warehouse', stock: 50 },
-              { locationId: branchId, locationType: 'branch', stock: 8 },
-            ],
           },
           {
             productName: 'Áo thun xanh',
@@ -266,7 +295,28 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     itemAId = created.body.data.items.find((i: any) => i.sku === 'SKU-RED').id;
     itemBId = created.body.data.items.find((i: any) => i.sku === 'SKU-BLUE').id;
 
-    expect(created.body.data.totalStock).toBe(58);
+    expect(created.body.data.totalStock).toBe(0);
+    const inventory = app.get(InventoryService);
+    for (const [locationId, quantity] of [
+      [warehouseId, 50],
+      [branchId, 8],
+    ] as const) {
+      await prisma.$transaction((tx) =>
+        inventory.openLot(tx, {
+          tenantId,
+          locationId,
+          productItemId: itemAId,
+          quantity,
+          unitCost: 120000,
+          sourceType: LotSourceType.SUPPLIER,
+          ledger: {
+            type: InventoryTxType.IMPORT,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: 'smoke-opening',
+          },
+        }),
+      );
+    }
     expect(typeof created.body.data.items[0].retailPrice).toBe('number');
     note(
       `POST /products: OK totalStock=${created.body.data.totalStock} items=${created.body.data.items.length} price is number=${typeof created.body.data.items[0].retailPrice === 'number'}`,
@@ -305,7 +355,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const scoped = await http()
-      .get(`/products?locationId=${branchId}&locationType=branch`)
+      .get(`/products?locationId=${branchId}`)
       .set(auth())
       .expect(200);
     expect(scoped.body.data[0].totalStock).toBe(8);
@@ -330,11 +380,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(red.stockDetails).toHaveLength(2);
     note(`GET /products/:id: stockDetails=${red.stockDetails.length} OK`);
 
-    await http()
-      .get('/products?locationId=' + branchId)
+    // Since the Location refactor the two filters are independent: a kind alone narrows to every place of that kind.
+    const byKind = await http()
+      .get('/products?locationType=BRANCH')
       .set(auth())
-      .expect(400);
-    note('locationId without locationType: 400 OK');
+      .expect(200);
+    expect(byKind.body.data[0].totalStock).toBe(8);
+    note('GET /products?locationType=BRANCH: every branch, totalStock 8 OK');
   });
 
   it('runs the inventory routes, including the low-stock filter', async () => {
@@ -346,7 +398,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const branchRow = all.body.data.find(
-      (r: any) => r.location.locationType === 'branch',
+      (r: any) => r.location.type === 'BRANCH',
     );
     await http()
       .patch(`/inventory/${branchRow.id}/min-stock`)
@@ -368,7 +420,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         locationId: branchId,
-        locationType: 'branch',
         productItemId: itemBId,
       })
       .expect(201);
@@ -377,7 +428,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         locationId: branchId,
-        locationType: 'branch',
         productItemId: itemBId,
       })
       .expect(409);
@@ -505,7 +555,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         branchId,
       })
       .expect(409);
-    expect(dupEmail.body.message).toContain('Email');
+    expect(dupEmail.body.code).toBe('EMAIL_ALREADY_IN_USE');
     note('POST /users with an email already in the shop: 409 OK (case-folded)');
 
     await http()
@@ -538,7 +588,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(updated.body.data.branchId).toBeNull();
     expect(updated.body.data.warehouseId).toBe(warehouseId);
-    expect(updated.body.data.profileIdentificationId).toBe('079195001234');
+    expect(updated.body.data.profile.identificationId).toBe('079195001234');
     note('PATCH /users/:id profile + posting swap (branch cleared): OK');
 
     await http()
@@ -579,8 +629,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 20 }],
       })
       .expect(201);
@@ -626,8 +676,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 5 }],
       })
       .expect(201);
@@ -652,8 +702,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 9999 }],
       })
       .expect(400);
@@ -668,7 +718,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [
           { productItemId: itemAId, quantity: 100, importPrice: 150000 },
         ],
@@ -683,7 +733,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemAId, quantity: 1, importPrice: 900000 }],
       })
       .expect(400);
@@ -695,7 +745,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [
           { productItemId: itemBId, quantity: 60, importPrice: 130000 },
         ],
@@ -765,7 +815,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierB.body.data.id,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemBId, quantity: 8, importPrice: 100000 }],
       })
       .expect(201);
@@ -796,7 +846,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierB.body.data.id,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemBId, quantity: 1, importPrice: 100000 }],
       })
       .expect(201);
@@ -827,7 +877,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'ADJUST',
-        fromLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: branchId,
         details: [{ productItemId: itemAId, receivedQuantity: 24 }],
       })
       .expect(201);
@@ -865,20 +915,24 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `staff GET /stock-movements: sees ${list.body.pagination.total} of the tenant's movements (own branch only)`,
     );
 
+    // A transfer may be raised from either end since 2026-09-09 (CLAUDE.md "Either end may raise a
+    // transfer"), so a branch account asking the warehouse for goods is allowed. A stocktake is only
+    // ever filed where the stock is counted: this one, at the warehouse, is not the account's to file.
     await http()
       .post('/stock-movements')
       .set(auth(staffToken))
       .send({
-        movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        movementType: 'ADJUST',
+        fromLocationId: warehouseId,
         details: [{ productItemId: itemAId, quantity: 1 }],
       })
       .expect(403);
-    note('staff creating a movement out of another location: 403 OK');
+    note('staff filing a stocktake at another location: 403 OK');
 
-    await http().get('/products').set(auth(staffToken)).expect(403);
-    note('staff without products:read on /products: 403 OK');
+    // products:read is part of every staff account's baseline since 2026-09-18 (STAFF_BASE_PERMISSIONS);
+    // suppliers:read is in neither that nor this role.
+    await http().get('/suppliers').set(auth(staffToken)).expect(403);
+    note('staff without suppliers:read on /suppliers: 403 OK');
   });
 
   it('rings up a cash sale, computing the total server-side', async () => {
@@ -940,10 +994,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // believed it: `priceLines` selected only id/sku/productName and passed the client's
     // `unitPrice` straight through, so a basket could be rung up for nothing while stock
     // left the shelf and the ledger recorded an honest-looking sale.
-    await prisma.inventory.updateMany({
-      where: { tenantId, locationId: branchId, productItemId: itemAId },
-      data: { stock: { increment: 2 } },
-    });
+    await topUp(branchId, itemAId, 2);
 
     const sale = await http()
       .post('/orders/pos')
@@ -962,10 +1013,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     // The manual whole-order discount is capped at what the order is worth. `Math.max(0,…)`
     // alone only stopped the total going negative - any basket could still be settled at 0.
-    await prisma.inventory.updateMany({
-      where: { tenantId, locationId: branchId, productItemId: itemAId },
-      data: { stock: { increment: 1 } },
-    });
+    await topUp(branchId, itemAId, 1);
     const capped = await http()
       .post('/orders/pos')
       .set(auth())
@@ -988,10 +1036,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // back per LINE, so N lines of one variant each received the sum of their shares. A
     // 10% promotion split across ten identical lines discounted 100% and the order was
     // written at 0đ - while ten units left the shelf.
-    await prisma.inventory.updateMany({
-      where: { tenantId, locationId: branchId, productItemId: itemAId },
-      data: { stock: { increment: 10 } },
-    });
+    await topUp(branchId, itemAId, 10);
 
     const promo = await http()
       .post('/promotions')
@@ -1130,12 +1175,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         accountName: 'SMOKE TEST',
       })
       .expect(200);
-    expect(banked.body.data.bankingBankName).toBe('MB');
+    expect(banked.body.data.banking.bankName).toBe('MB');
     // The secret is never in a response, even to the shop that owns it.
     expect(banked.body.data.bankingSepayWebhookApiKey).toBeUndefined();
 
     const mine = await http().get('/tenant/me').set(auth()).expect(200);
-    expect(mine.body.data.bankingAccountNumber).toBe('0000000000');
+    expect(mine.body.data.banking.accountNumber).toBe('0000000000');
     expect(mine.body.data.hasSepayKey).toBe(false);
     expect(mine.body.data.bankingSepayWebhookApiKey).toBeUndefined();
     note('PUT /tenant/banking + GET /tenant/me: saved, secret withheld OK');
@@ -1655,7 +1700,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         permissions: [
-          { resource: 'products', action: 'read' },
+          { resource: 'suppliers', action: 'read' },
           { resource: 'orders', action: 'read' },
         ],
       })
@@ -1670,12 +1715,19 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth(staffLogin.body.data.accessToken))
       .expect(200);
 
-    expect(staffMe.body.data.permissions.sort()).toEqual([
-      'orders:read',
-      'products:read',
-    ]);
+    // The role's two grants, plus the baseline every staff account holds (STAFF_BASE_PERMISSIONS,
+    // added 2026-09-18 so a new hire can at least see the catalogue and their own schedule).
+    expect(staffMe.body.data.permissions.sort()).toEqual(
+      [
+        ...new Set([
+          'orders:read',
+          'suppliers:read',
+          ...STAFF_BASE_PERMISSIONS,
+        ]),
+      ].sort(),
+    );
     expect(staffMe.body.data.systemRole).toBe('STAFF');
-    note('GET /auth/me (staff): trả đúng 2 quyền của vai trò OK');
+    note('GET /auth/me (staff): quyền của vai trò + quyền nền OK');
 
     // Empty for the owner, and that means "not applicable" - they short-circuit the guard
     // entirely. A client reading it as "no permissions" would lock the owner out of their
@@ -1695,7 +1747,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .get('/auth/me')
       .set(auth(staffLogin.body.data.accessToken))
       .expect(200);
-    expect(after.body.data.permissions).toEqual(['orders:read']);
+    expect(after.body.data.permissions).not.toContain('suppliers:read');
+    expect(after.body.data.permissions.sort()).toEqual(
+      [...new Set(['orders:read', ...STAFF_BASE_PERMISSIONS])].sort(),
+    );
     note('thu hồi quyền: /auth/me phản ánh ngay trên token cũ OK');
   });
 
@@ -2071,10 +2126,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // raises what the drawer *should* hold, while the counted total stays where it was.
     // Stock is topped up by exactly what the sale consumes, so inventory nets to zero and
     // later tests see what they expected.
-    await prisma.inventory.updateMany({
-      where: { tenantId, locationId: branchId, productItemId: itemAId },
-      data: { stock: { increment: 1 } },
-    });
+    await topUp(branchId, itemAId, 1);
     await http()
       .post('/orders/pos')
       .set(auth())
@@ -2804,7 +2856,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Polymorphic location split into two nullable columns - exactly one is set.
     const row = inventory.body.data.lowStock[0];
     expect(Boolean(row.branchId) !== Boolean(row.warehouseId)).toBe(true);
-    expect(row.locationType).toBe(row.branchId ? 'branch' : 'warehouse');
+    expect(row.locationType).toBe(row.branchId ? 'BRANCH' : 'WAREHOUSE');
     note('GET /stats/inventory: valuation joins cost price, low-stock list OK');
   });
 
