@@ -17,6 +17,7 @@ import {
   resolveDeposit,
 } from './manual-order.service';
 import { depositHeld } from './order-cancel.service';
+import { OrderShortageAlerts } from './order-shortage-alerts';
 import {
   SetOrderAssigneeDto,
   SetOrderPriorityDto,
@@ -119,6 +120,7 @@ export class OrderEditService {
     private readonly pricing: OrderPricingService,
     private readonly reads: OrderReadService,
     private readonly customers: CustomerService,
+    private readonly shortages: OrderShortageAlerts,
   ) {}
 
   async update(
@@ -204,6 +206,19 @@ export class OrderEditService {
         : undefined;
     const customerId = dto.customerId ?? typedInCustomerId;
 
+    // Only a change of lines moves demand on the production list (B-3).
+    const shortage = dto.items
+      ? await this.shortages.snapshot(tenantId, [
+          ...order.items,
+          ...(money?.lines ?? []).map((line) => ({
+            productItemId: line.productItemId,
+            sourceLocationId: line.sourceLocationId,
+            lineType: line.itemType,
+          })),
+          ...addedRows,
+        ])
+      : null;
+
     await this.prisma.$transaction(async (tx) => {
       // Claimed on the row as read: a pack, a cancel or another edit in between loses this one whole.
       const claimed = await tx.order.updateMany({
@@ -279,6 +294,8 @@ export class OrderEditService {
       }
     });
 
+    if (shortage)
+      await this.shortages.notify(tenantId, id, shortage, user.userId);
     return this.reads.findOne(user, tenantId, id);
   }
 

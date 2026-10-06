@@ -13,6 +13,8 @@ import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderRemittanceService } from './order-remittance.service';
 import { CustomerModule } from '../customers/customers.module';
+import { ProductionRequestModule } from '../production-requests/production-requests.module';
+import { OrderShortageAlerts } from './order-shortage-alerts';
 import { InventoryModule } from '../inventories/inventories.module';
 import { NotificationModule } from '../notifications/notifications.module';
 import { PromotionModule } from '../promotions/promotions.module';
@@ -28,6 +30,8 @@ import { ShipmentModule } from '../shipments/shipments.module';
     FulfillmentModule,
     ShipmentModule,
     CustomerModule,
+    // ProductionListService, for the shortage alert when an order changes demand (B-3).
+    ProductionRequestModule,
   ],
   controllers: [OrderController, SepayOrderWebhookController],
   providers: [
@@ -40,6 +44,7 @@ import { ShipmentModule } from '../shipments/shipments.module';
     OrderEditService,
     OrderCustomizationService,
     OrderRemittanceService,
+    OrderShortageAlerts,
   ],
   exports: [OrderService],
 })
