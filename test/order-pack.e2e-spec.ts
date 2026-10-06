@@ -33,6 +33,8 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
 
   const tenantId = randomUUID();
   const userId = randomUUID();
+  const staffId = randomUUID();
+  const assigneeId = randomUUID();
   const branchId = randomUUID();
   const warehouseId = randomUUID();
   const productId = randomUUID();
@@ -50,20 +52,30 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     warehouseId: null,
   } as unknown as AuthUser;
 
-  /** Nhân viên được phân công ở chi nhánh, không phải kho đóng gói. */
+  /** Nhân viên có quyền `orders:pack` nhưng được phân công ở chi nhánh, không phải kho đóng gói. */
   const staffAtBranch = {
     ...owner,
+    userId: staffId,
     systemRole: SystemRole.STAFF,
     branchId,
+    permissions: new Set(['orders:pack']),
   } as unknown as AuthUser;
 
-  /** Tạo một đơn CONFIRMED với các dòng cho trước (bỏ trống `sourceLocationId` = xuất từ kho; `null` = chưa có kho xuất). */
+  /** Người phụ trách đơn: không có quyền nào trong role, đứng ở chi nhánh – vẫn đóng được đơn của mình. */
+  const assigneeAtBranch = {
+    ...staffAtBranch,
+    userId: assigneeId,
+    permissions: new Set<string>(),
+  } as unknown as AuthUser;
+
+  /** Tạo một đơn CONFIRMED với các dòng cho trước (bỏ trống `sourceLocationId` = xuất từ kho; `null` = chưa có kho xuất). Người phụ trách mặc định là chủ shop. */
   async function createOrder(
     lines: {
       productItemId: string;
       quantity: number;
       sourceLocationId?: string | null;
     }[],
+    inCharge = userId,
   ): Promise<string> {
     const id = randomUUID();
     await prisma.order.create({
@@ -74,7 +86,7 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
         branchId,
         customerId,
         userId,
-        assigneeId: userId,
+        assigneeId: inCharge,
         status: OrderStatus.CONFIRMED,
         grandTotal: 0,
         items: {
@@ -130,6 +142,14 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
         phoneNumber: `pack-${userId}`,
         systemRole: SystemRole.TENANT_OWNER,
       },
+    });
+    await prisma.user.createMany({
+      data: [staffId, assigneeId].map((id) => ({
+        id,
+        tenantId,
+        phoneNumber: `pack-${id}`,
+        systemRole: SystemRole.STAFF,
+      })),
     });
     await prisma.location.create({
       data: { id: branchId, tenantId, name: 'CN pack', type: 'BRANCH' },
@@ -214,14 +234,14 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     await prisma.$disconnect();
   });
 
-  it('refuses a STAFF account posted somewhere other than the packing location', async () => {
+  it('refuses a permission holder posted somewhere other than the packing location', async () => {
     const orderId = await createOrder([
       { productItemId: wardrobeId, quantity: 1 },
     ]);
     await expect(
       fulfillments.packOrder(staffAtBranch, orderId, {}),
     ).rejects.toMatchObject({
-      response: { code: ErrorCode.FULFILLMENT_LOCATION_DENIED },
+      response: { code: ErrorCode.ORDER_STEP_DENIED },
     });
     expect(await statusOf(orderId)).toBe(OrderStatus.CONFIRMED);
   });
@@ -254,22 +274,25 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
 
   let packedOrderId = '';
 
-  it('packs: order PACKED, one box per declared package per unit, stock locked but not deducted', async () => {
-    packedOrderId = await createOrder([
-      { productItemId: wardrobeId, quantity: 2 },
-    ]);
+  it("packs as the order's person in charge - no permission, posted elsewhere: order PACKED, one box per declared package per unit, stock locked but not deducted", async () => {
+    packedOrderId = await createOrder(
+      [{ productItemId: wardrobeId, quantity: 2 }],
+      assigneeId,
+    );
     const ledgerBefore = await prisma.inventoryTransaction.count({
       where: { tenantId },
     });
 
-    const packed = await fulfillments.packOrder(owner, packedOrderId, {
-      note: 'thùng 2 móp góc',
-    });
+    const packed = await fulfillments.packOrder(
+      assigneeAtBranch,
+      packedOrderId,
+      { note: 'thùng 2 móp góc' },
+    );
 
     expect(packed).toMatchObject({
       status: FulfillmentStatus.PACKED,
       locationId: warehouseId,
-      verifiedById: userId,
+      verifiedById: assigneeId,
       exceptionNote: 'thùng 2 móp góc',
     });
     expect(packed.items).toHaveLength(1);

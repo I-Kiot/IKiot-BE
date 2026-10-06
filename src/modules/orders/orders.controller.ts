@@ -26,6 +26,8 @@ import {
 } from './dto/order.dto';
 import { PackOrderDto } from './dto/pack-order.dto';
 import { FulfillmentService } from '../fulfillments/fulfillments.service';
+import { ShipmentService } from '../shipments/shipments.service';
+import { ShipOrderDto } from '../shipments/dto/ship-order.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -41,6 +43,7 @@ export class OrderController {
   constructor(
     private readonly service: OrderService,
     private readonly fulfillments: FulfillmentService,
+    private readonly shipments: ShipmentService,
     private readonly manualOrders: ManualOrderService,
     private readonly cancels: OrderCancelService,
   ) {}
@@ -89,8 +92,12 @@ export class OrderController {
     );
   }
 
-  /** Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. Quyền riêng `pack` – người đóng gói không sửa được đơn. */
-  @Permissions('orders', 'pack')
+  /**
+   * Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. **Cố ý không có
+   * `@Permissions`**: người phụ trách đơn đóng được đơn của mình mà không cần quyền trong role (chốt
+   * 2026-10-06), nên quyền được kiểm trong service – chủ shop, người phụ trách, hoặc `orders:pack` tại
+   * kho xuất (`assertOrderStepAccess`). `pack` vẫn là quyền riêng: người đóng gói không sửa được đơn.
+   */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pack')
   pack(
@@ -99,6 +106,21 @@ export class OrderController {
     @Body() dto: PackOrderDto,
   ) {
     return this.fulfillments.packOrder(user, id, dto);
+  }
+
+  /**
+   * C-2: PICKED_UP → SHIPPING, bước trừ tồn kho (trừ đúng phần đã khoá lúc đóng gói). **Cố ý không có
+   * `@Permissions`**, cùng lý do với `pack`: chủ shop, người phụ trách, hoặc `orders:ship` tại kho của
+   * fulfillment – kiểm trong `ShipmentService.shipOrder`.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/ship')
+  ship(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ShipOrderDto,
+  ) {
+    return this.shipments.shipOrder(user, requireTenantId(user), id, dto);
   }
 
   /** A-5: cancel a journey order before its goods leave stock (CONFIRMED / PACKED / PICKED_UP). A packed order's lock goes back to the shelf; a deposit is refunded by the amount the caller names. */

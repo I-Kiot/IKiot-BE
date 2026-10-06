@@ -287,6 +287,7 @@ export const ErrorCode = {
 
   // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
+  /** No longer raised: packing now answers ORDER_STEP_DENIED, the one refusal every journey step shares. Kept because codes are append-only. */
   FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
   FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
   /** No longer raised: split into FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK, so the client can say what to do. Kept because codes are append-only. */
@@ -396,6 +397,12 @@ export const ErrorCode = {
   IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST:
     'IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST',
   SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
+  /** The named driver is not the shop owner, the order's person in charge, or an active staff member holding shipments:deliver. */
+  SHIPMENT_DRIVER_INVALID: 'SHIPMENT_DRIVER_INVALID',
+  /** An EXTERNAL (third-party carrier) shipment has no driver of ours. */
+  SHIPMENT_DRIVER_NOT_ALLOWED: 'SHIPMENT_DRIVER_NOT_ALLOWED',
+  /** A journey step (pack, hand over, change driver, ship) is open to the shop owner, the order's person in charge, or someone holding that step's permission at that location - and the caller is none of them. */
+  ORDER_STEP_DENIED: 'ORDER_STEP_DENIED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
 
