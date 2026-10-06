@@ -4,6 +4,7 @@ import {
   SepayOrderWebhookController,
 } from './orders.controller';
 import { OrderService } from './orders.service';
+import { OrderReadService } from './order-read.service';
 import { SepayOrderService } from './sepay-order.service';
 import { OrderPricingService } from './order-pricing.service';
 import { ManualOrderService } from './manual-order.service';
@@ -30,6 +31,7 @@ import { FulfillmentModule } from '../fulfillments/fulfillments.module';
     OrderPricingService,
     ManualOrderService,
     OrderCancelService,
+    OrderReadService,
   ],
   exports: [OrderService],
 })
