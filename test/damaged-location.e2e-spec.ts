@@ -7,6 +7,8 @@ import { SubscriptionService } from './../src/modules/subscriptions/subscription
 import { BranchService } from './../src/modules/branches/branches.service';
 import { WarehouseService } from './../src/modules/warehouses/warehouses.service';
 import { ErrorCode } from './../src/common/errors/error-codes';
+import { SystemRole } from './../src/common/constants/system-role';
+import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
  * Kiểm thử kho hàng hỏng (D-4, contract §3) trên Postgres thật: `isSellable` của kho,
@@ -20,6 +22,20 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
 
   const tenantId = randomUUID();
   const otherTenantId = randomUUID();
+  // The shop owner reads every location; `findOne` takes the caller since `read_own` narrows it.
+  const owner: AuthUser = {
+    userId: randomUUID(),
+    tenantId,
+    systemRole: SystemRole.TENANT_OWNER,
+    roleId: null,
+    branchId: null,
+    warehouseId: null,
+    permissions: new Set(),
+    shiftSupervision: null,
+    email: null,
+    displayName: null,
+    phoneNumber: '0900000000',
+  };
   const phone = ['0900000000'];
   const invalid = { response: { code: ErrorCode.LOCATION_DAMAGED_INVALID } };
 
@@ -98,9 +114,9 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
       isSellable: true,
       damagedLocationId: damagedId,
     });
-    expect((await branches.findOne(tenantId, branchId)).damagedLocationId).toBe(
-      damagedId,
-    );
+    expect(
+      (await branches.findOne(owner, tenantId, branchId)).damagedLocationId,
+    ).toBe(damagedId);
   });
 
   it('lets a warehouse point at the damaged-goods warehouse too', async () => {
@@ -163,9 +179,9 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
         message: expect.stringMatching(/Showroom.*Kho tổng|Kho tổng.*Showroom/),
       },
     });
-    expect((await warehouses.findOne(tenantId, damagedId)).isSellable).toBe(
-      false,
-    );
+    expect(
+      (await warehouses.findOne(owner, tenantId, damagedId)).isSellable,
+    ).toBe(false);
   });
 
   it('clears the link with null, after which the warehouse can be made sellable', async () => {
@@ -174,7 +190,7 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
       damagedLocationId: null,
     });
     expect(
-      (await branches.findOne(tenantId, branchId)).damagedLocationId,
+      (await branches.findOne(owner, tenantId, branchId)).damagedLocationId,
     ).toBeNull();
 
     const reopened = await warehouses.update(tenantId, damagedId, {

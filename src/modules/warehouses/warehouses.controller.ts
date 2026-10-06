@@ -27,21 +27,22 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 export class WarehouseController {
   constructor(private readonly service: WarehouseService) {}
 
-  @Permissions('warehouses', 'read')
+  // `read_own` is in every STAFF account's base set and reaches only their own posting - LocationService narrows it (`locationReadScope`).
+  @Permissions('warehouses', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách kho (phân trang, tìm kiếm)' })
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryWarehouseDto) {
-    return this.service.findAll(requireTenantId(user), query);
+    return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  @Permissions('warehouses', 'read')
+  @Permissions('warehouses', 'read', 'read_own')
   @Get(':id')
   @ApiOperation({ summary: 'Chi tiết kho' })
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(requireTenantId(user), id);
+    return this.service.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('warehouses', 'create')

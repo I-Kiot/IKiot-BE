@@ -212,11 +212,27 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Nhà cung cấp',
   },
   branches: {
-    actions: ['create', 'read', 'update', 'delete', 'assign_manager'],
+    // `read_own` (2026-10-07) is part of STAFF_BASE_PERMISSIONS - every employee may read the branch they are posted to - so the role editor hides it; it is here so the base set is made of valid catalog rows.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'assign_manager',
+      'read_own',
+    ],
     label: 'Chi nhánh',
   },
   warehouses: {
-    actions: ['create', 'read', 'update', 'delete', 'assign_manager'],
+    // `read_own`: same as for branches.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'assign_manager',
+      'read_own',
+    ],
     label: 'Kho',
   },
   orders: {
