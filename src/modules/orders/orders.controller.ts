@@ -19,6 +19,8 @@ import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
 import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
+import { OrderRemittanceService } from './order-remittance.service';
+import { ConfirmRemittanceDto } from './dto/confirm-remittance.dto';
 import { OrderItemCustomizationDto } from './dto/order-item-customization.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -60,6 +62,7 @@ export class OrderController {
     private readonly reads: OrderReadService,
     private readonly edits: OrderEditService,
     private readonly customizations: OrderCustomizationService,
+    private readonly remittances: OrderRemittanceService,
   ) {}
 
   /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
@@ -142,6 +145,18 @@ export class OrderController {
       itemId,
       dto,
     );
+  }
+
+  /** A-10: the owner confirms the shipper handed back all the cash collected on delivery - RECEIVED → COMPLETED. Its own permission: counting cash is not editing orders. */
+  @Permissions('orders', 'confirm_cash')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/confirm-remittance')
+  confirmRemittance(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ConfirmRemittanceDto,
+  ) {
+    return this.remittances.confirm(user, requireTenantId(user), id, dto);
   }
 
   @Permissions('orders', 'update')

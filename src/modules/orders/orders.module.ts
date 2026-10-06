@@ -11,6 +11,7 @@ import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
 import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
+import { OrderRemittanceService } from './order-remittance.service';
 import { CustomerModule } from '../customers/customers.module';
 import { InventoryModule } from '../inventories/inventories.module';
 import { NotificationModule } from '../notifications/notifications.module';
@@ -38,6 +39,7 @@ import { ShipmentModule } from '../shipments/shipments.module';
     OrderReadService,
     OrderEditService,
     OrderCustomizationService,
+    OrderRemittanceService,
   ],
   exports: [OrderService],
 })
