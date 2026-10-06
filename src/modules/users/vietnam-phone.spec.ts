@@ -39,9 +39,13 @@ describe('validateVietnamPhoneNumber', () => {
   it.each(['111', '112', '113', '114', '115'])(
     'rejects the emergency line %s with a reason, not a length complaint',
     (value) => {
+      // Each line has its own wording (111 is the child protection hotline, 112 search and
+      // rescue, 113-115 police / fire / medical), so the test checks the shared reason - it is
+      // a service line, not a phone number - and that it is not a length complaint.
       expect(() => validateVietnamPhoneNumber(value)).toThrow(
-        /emergency number/,
+        /cannot be an employee mobile number/,
       );
+      expect(() => validateVietnamPhoneNumber(value)).not.toThrow(/digits/);
     },
   );
 });
