@@ -5,6 +5,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
 } from 'class-validator';
 
 // Mirrors iKiotMS-BE's CreateBranchRequestDTO. `status` is deliberately absent - a new branch is always ACTIVE, and the generated DTO this replaces let a caller create one already soft-deleted.
@@ -27,4 +28,9 @@ export class CreateBranchDto {
   @IsOptional()
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
+
+  /** D-4: where this branch's damaged / defective goods go - a non-sellable warehouse. `null` clears it. */
+  @IsOptional()
+  @IsUUID('all', { message: 'damagedLocationId không hợp lệ' })
+  damagedLocationId?: string | null;
 }
