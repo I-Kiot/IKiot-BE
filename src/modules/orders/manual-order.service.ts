@@ -95,6 +95,17 @@ export function resolveDeposit(
   return { amount, percent, method: deposit.method };
 }
 
+/** An order's `paymentStatus` while its only money is the deposit (before delivery collects the rest). */
+export function paymentStatusForDeposit(
+  depositAmount: number,
+  grandTotal: number,
+): string {
+  if (depositAmount <= 0) return OrderPaymentStatus.UNPAID;
+  return depositAmount >= grandTotal
+    ? OrderPaymentStatus.PAID
+    : OrderPaymentStatus.PARTIALLY_PAID;
+}
+
 /** The order journey's `POST /orders` (A-2, contract §2): a manual order staff type in for a customer who ordered online or by phone. It is born CONFIRMED with a person in charge, holds no stock and is never refused for stock - packing (C-1) is where shortage blocks. The till's sale is `OrderService.createPosSale`. */
 @Injectable()
 export class ManualOrderService {
@@ -141,7 +152,7 @@ export class ManualOrderService {
     // A Branch's id is its Location's id, so the branch itself is the last fallback.
     const defaultSource =
       branch.location.defaultFulfillmentLocationId ?? branch.id;
-    await this.assertSourceLocations(tenantId, dto);
+    await this.assertSourceLocations(tenantId, dto.items);
 
     const priced = await this.pricing.priceOrder(tenantId, dto);
     const { appliedPromotions, discountType, discountValue } = priced;
@@ -149,14 +160,7 @@ export class ManualOrderService {
       ...line,
       sourceLocationId: dto.items[index].sourceLocationId ?? defaultSource,
     }));
-    for (const line of lines) {
-      if (!SELLABLE_LINE_TYPES.includes(line.itemType)) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_COMBO_INVALID,
-          message: `${line.sku ?? line.productName} cannot be sold as an order line`,
-        });
-      }
-    }
+    this.assertSellableLines(lines);
     const components = await this.expandCombos(tenantId, lines);
 
     const subtotal = lines.reduce(
@@ -171,11 +175,10 @@ export class ManualOrderService {
     const shippingFee = Math.round(dto.shippingFee ?? 0);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
-    const paymentStatus = !deposit
-      ? OrderPaymentStatus.UNPAID
-      : deposit.amount >= grandTotal
-        ? OrderPaymentStatus.PAID
-        : OrderPaymentStatus.PARTIALLY_PAID;
+    const paymentStatus = paymentStatusForDeposit(
+      deposit?.amount ?? 0,
+      grandTotal,
+    );
 
     // Created before the transaction: CustomerService owns the code sequence and the one-phone-one-customer rule. Everything that can refuse the order has already run, so a stray customer row needs a database failure to be left behind - and is a real customer either way.
     const typedInCustomerId =
@@ -252,8 +255,20 @@ export class ManualOrderService {
     return this.orders.findOne(user, tenantId, orderId);
   }
 
-  /** The person in charge has to be someone who can log in to this shop and work an order. */
-  private async assertAssignee(tenantId: string, assigneeId: string) {
+  /** Only a product, a combo or a service can be a line of its own; a combo's components are added by the server. */
+  assertSellableLines(lines: readonly PricedLine[]) {
+    for (const line of lines) {
+      if (!SELLABLE_LINE_TYPES.includes(line.itemType)) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_COMBO_INVALID,
+          message: `${line.sku ?? line.productName} cannot be sold as an order line`,
+        });
+      }
+    }
+  }
+
+  /** The person in charge has to be someone who can log in to this shop and work an order. Shared with the edit routes (A-8). */
+  async assertAssignee(tenantId: string, assigneeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
         id: assigneeId,
@@ -272,10 +287,13 @@ export class ManualOrderService {
   }
 
   /** Every ship-from location named on a line must be one of the tenant's live locations, and one whose stock is for sale - a damaged-goods warehouse never ships to a customer. */
-  private async assertSourceLocations(tenantId: string, dto: CreateOrderDto) {
+  async assertSourceLocations(
+    tenantId: string,
+    items: readonly { sourceLocationId?: string }[],
+  ) {
     const ids = [
       ...new Set(
-        dto.items
+        items
           .map((item) => item.sourceLocationId)
           .filter((id): id is string => id !== undefined),
       ),
@@ -304,7 +322,7 @@ export class ManualOrderService {
   }
 
   /** What each COMBO line in the order finally contains, keyed by the combo's variant id (`flattenCombo`). The combo graph is loaded one nesting level per query - never one query per combo - and every level is bounded by `MAX_COMBO_DEPTH`. */
-  private async expandCombos(tenantId: string, lines: PricedLine[]) {
+  async expandCombos(tenantId: string, lines: readonly PricedLine[]) {
     const comboIds = [
       ...new Set(
         lines
@@ -357,8 +375,8 @@ export class ManualOrderService {
   }
 
   /** The order's lines as rows: each priced line, and under every COMBO line one child per leaf it finally contains (nested combos already flattened), at price 0 - the combo line carries the money, the children carry the stock and ship from the combo's location. A child is COMBO_COMPONENT, or SERVICE when the leaf is a service; SERVICE lines need no goods, so they ship from nowhere. */
-  private buildItems(
-    lines: (PricedLine & { sourceLocationId: string })[],
+  buildItems(
+    lines: readonly (PricedLine & { sourceLocationId: string })[],
     components: Map<string, ComboLeaf[]>,
   ): Prisma.OrderItemCreateManyOrderInput[] {
     const rows: Prisma.OrderItemCreateManyOrderInput[] = [];

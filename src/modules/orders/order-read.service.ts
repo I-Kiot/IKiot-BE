@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  FulfillmentType,
   RemittanceStatus,
   UNSHIPPED_ORDER_STATUSES,
 } from '../../common/constants/order-status';
@@ -182,6 +183,9 @@ export class OrderReadService {
     if (query.channel) and.push({ channel: query.channel });
     if (query.assigneeId) and.push({ assigneeId: query.assigneeId });
     if (query.priority) and.push({ priority: query.priority });
+    if (query.excludePos) {
+      and.push({ fulfillmentType: { not: FulfillmentType.TAKEAWAY } });
+    }
 
     // A named customer wins over a free-text search, as in OrderService: asking for both means the id is the specific thing.
     if (query.customerId) {

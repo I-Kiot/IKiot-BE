@@ -415,6 +415,10 @@ export const ErrorCode = {
   ORDER_REFUND_AMOUNT_REQUIRED: 'ORDER_REFUND_AMOUNT_REQUIRED',
   /** More refunded than the deposit still held. */
   ORDER_REFUND_EXCEEDS_DEPOSIT: 'ORDER_REFUND_EXCEEDS_DEPOSIT',
+
+  // --- Order edit (A-8, 2026-10-06) -----------------------------------------
+  /** An edit would drop an order line a production request was raised for; take it off the request first. */
+  ORDER_ITEM_IN_PRODUCTION: 'ORDER_ITEM_IN_PRODUCTION',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

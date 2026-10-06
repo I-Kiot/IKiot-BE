@@ -55,6 +55,18 @@ export interface ResolvedRefund {
   paymentStatus: string;
 }
 
+/** The deposit the shop still holds for an order: every PAID deposit less every PAID refund. The one rule for it - the cancel refund (A-5) and the edit check (A-8) both read it here. */
+export function depositHeld(
+  payments: readonly Pick<DepositPaymentRow, 'kind' | 'status' | 'amount'>[],
+): number {
+  const paid = payments.filter((p) => p.status === PaymentRecordStatus.PAID);
+  const sum = (kind: string) =>
+    paid
+      .filter((p) => p.kind === kind)
+      .reduce((total, p) => total + p.amount, 0);
+  return sum(PaymentKind.DEPOSIT) - sum(PaymentKind.REFUND);
+}
+
 /**
  * The deposit refund on a cancel (A-5, decided 2026-10-05): whoever cancels says how much goes back,
  * from 0 (the shop keeps the deposit) to everything still held; there is no default, because
@@ -66,14 +78,13 @@ export function resolveRefund(
   refundAmount: number | undefined,
   refundMethod: string | undefined,
 ): ResolvedRefund | null {
-  const paid = payments.filter((p) => p.status === PaymentRecordStatus.PAID);
-  const deposits = paid
-    .filter((p) => p.kind === PaymentKind.DEPOSIT)
+  const deposits = payments
+    .filter(
+      (p) =>
+        p.status === PaymentRecordStatus.PAID && p.kind === PaymentKind.DEPOSIT,
+    )
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  const refunded = paid
-    .filter((p) => p.kind === PaymentKind.REFUND)
-    .reduce((sum, p) => sum + p.amount, 0);
-  const held = deposits.reduce((sum, p) => sum + p.amount, 0) - refunded;
+  const held = depositHeld(payments);
 
   if (held <= 0) {
     if (refundAmount) {

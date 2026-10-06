@@ -16,8 +16,14 @@ import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
 import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
+import { OrderEditService } from './order-edit.service';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import {
+  SetOrderAssigneeDto,
+  SetOrderPriorityDto,
+  UpdateOrderDto,
+} from './dto/update-order.dto';
 import {
   CreatePosOrderDto,
   PayOfflineOrderDto,
@@ -49,6 +55,7 @@ export class OrderController {
     private readonly manualOrders: ManualOrderService,
     private readonly cancels: OrderCancelService,
     private readonly reads: OrderReadService,
+    private readonly edits: OrderEditService,
   ) {}
 
   /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
@@ -80,6 +87,39 @@ export class OrderController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.reads.findOne(user, requireTenantId(user), id);
+  }
+
+  /** A-8: edit a journey order before it ships. Lines only while CONFIRMED - once packed they are locked to the shelf (contract §2). */
+  @Permissions('orders', 'update')
+  @Patch(':id')
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateOrderDto,
+  ) {
+    return this.edits.update(user, requireTenantId(user), id, dto);
+  }
+
+  /** A-8: hand the order to another person in charge without opening the edit form. */
+  @Permissions('orders', 'update')
+  @Patch(':id/assignee')
+  setAssignee(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetOrderAssigneeDto,
+  ) {
+    return this.edits.setAssignee(user, requireTenantId(user), id, dto);
+  }
+
+  /** A-8: re-tag the order's priority from the list. */
+  @Permissions('orders', 'update')
+  @Patch(':id/priority')
+  setPriority(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetOrderPriorityDto,
+  ) {
+    return this.edits.setPriority(user, requireTenantId(user), id, dto);
   }
 
   @Permissions('orders', 'update')
