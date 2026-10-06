@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -17,6 +18,8 @@ import { SepayOrderService } from './sepay-order.service';
 import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
 import { OrderEditService } from './order-edit.service';
+import { OrderCustomizationService } from './order-customization.service';
+import { OrderItemCustomizationDto } from './dto/order-item-customization.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
@@ -56,6 +59,7 @@ export class OrderController {
     private readonly cancels: OrderCancelService,
     private readonly reads: OrderReadService,
     private readonly edits: OrderEditService,
+    private readonly customizations: OrderCustomizationService,
   ) {}
 
   /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
@@ -120,6 +124,24 @@ export class OrderController {
     @Body() dto: SetOrderPriorityDto,
   ) {
     return this.edits.setPriority(user, requireTenantId(user), id, dto);
+  }
+
+  /** A-4: make a line to the customer's measure. The first time it gets a ProductItem of its own; only while CONFIRMED, and fixed once a production request for it is sent. */
+  @Permissions('orders', 'update')
+  @Put(':id/items/:itemId/customization')
+  customize(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() dto: OrderItemCustomizationDto,
+  ) {
+    return this.customizations.customize(
+      user,
+      requireTenantId(user),
+      id,
+      itemId,
+      dto,
+    );
   }
 
   @Permissions('orders', 'update')

@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CustomerService } from '../customers/customers.service';
 import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
+import { OrderCustomizationService } from './order-customization.service';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import {
   type ComboEdge,
@@ -114,6 +115,7 @@ export class ManualOrderService {
     private readonly orders: OrderService,
     private readonly pricing: OrderPricingService,
     private readonly customers: CustomerService,
+    private readonly customizations: OrderCustomizationService,
   ) {}
 
   async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
@@ -161,6 +163,10 @@ export class ManualOrderService {
       sourceLocationId: dto.items[index].sourceLocationId ?? defaultSource,
     }));
     this.assertSellableLines(lines);
+    lines.forEach((line, index) => {
+      if (dto.items[index].customization)
+        this.customizations.assertCustomizable(line.itemType);
+    });
     const components = await this.expandCombos(tenantId, lines);
 
     const subtotal = lines.reduce(
@@ -187,6 +193,8 @@ export class ManualOrderService {
         : undefined;
 
     const items = this.buildItems(lines, components);
+    // buildItems emits each sent line in order, its combo children right after it.
+    const topLevelRows = items.filter((row) => !row.parentItemId);
     const now = new Date();
 
     const orderId = await this.prisma.$transaction(async (tx) => {
@@ -248,6 +256,21 @@ export class ManualOrderService {
             createdById: userId,
           },
         });
+      }
+      for (const [index, item] of dto.items.entries()) {
+        if (!item.customization) continue;
+        const row = topLevelRows[index];
+        await this.customizations.apply(
+          tx,
+          tenantId,
+          {
+            id: row.id!,
+            productItemId: row.productItemId,
+            lineType: row.lineType!,
+            isCustom: false,
+          },
+          item.customization,
+        );
       }
       return created.id;
     });
