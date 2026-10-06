@@ -24,6 +24,9 @@ RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/generated/prisma ./generated/prisma
+# The Prisma CLI (a runtime dependency for this reason) reads it, so CI can run
+# `prisma migrate deploy` from this image before the new version goes up.
+COPY --from=builder /app/prisma.config.ts ./
 
 EXPOSE 3001
 CMD ["node", "dist/src/main"]

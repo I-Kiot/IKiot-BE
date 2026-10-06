@@ -25,6 +25,18 @@ export class AppController {
     return this.appService.health();
   }
 
+  /**
+   * Readiness, for deploys: 200 only when the database answers and has every migration this image
+   * ships, 503 otherwise. Kept off `/health` on purpose - the container healthcheck polls that one,
+   * and a database blip must not get the API restarted.
+   */
+  @Public()
+  @RawResponse()
+  @Get('health/ready')
+  ready() {
+    return this.appService.ready();
+  }
+
   /** Sentry's own smoke test: throws on purpose so the `@SentryExceptionCaptured()` path in `AllExceptionsFilter` can be verified end-to-end. Public so it's reachable with a bare curl. */
   @Public()
   @Get('debug-sentry')

@@ -43,8 +43,16 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd ~/app
-            docker compose -f docker-compose.dev.yml --env-file .env.dev pull nestjs
-            docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --no-deps nestjs
-            sleep 15
-            curl -f https://api-dev.ikiot.io.vn/health || exit 1
+            cd ~/app || exit 1
+            docker compose -f docker-compose.dev.yml --env-file .env.dev pull nestjs || exit 1
+            # Migrate from the new image before it serves: a failure stops here with the old version still up.
+            docker compose -f docker-compose.dev.yml --env-file .env.dev run --rm --no-deps nestjs npx --no-install prisma migrate deploy || exit 1
+            docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --no-deps nestjs || exit 1
+            # Readiness, not liveness: 200 only once the DB answers and holds every migration this image ships.
+            for i in $(seq 1 12); do
+              curl -fsS https://api-dev.ikiot.io.vn/health/ready && break
+              [ "$i" -eq 12 ] && exit 1
+              sleep 5
+            done
+            # The image tag just moved, so the previous one is dangling; without this the disk filled up (2026-10-07).
+            docker image prune -f
