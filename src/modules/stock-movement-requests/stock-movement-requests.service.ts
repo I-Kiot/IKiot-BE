@@ -10,11 +10,9 @@ import { InventoryService } from '../inventories/inventories.service';
 import { actualStockOf } from '../inventories/low-stock';
 import { NotificationService } from '../notifications/notifications.service';
 import { StockMovementNotificationTemplates } from '../notifications/templates/stock-movement.templates';
-import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
-import { SystemRole } from '../../common/constants/system-role';
+import { SupplierService } from '../suppliers/suppliers.service';
 import {
   LOCATION_SELECT,
-  columnsOfLocation,
   resolveLocations,
 } from '../../common/dto/location-ref.dto';
 import type { LocationEnd } from '../../common/dto/location-ref.dto';
@@ -27,13 +25,16 @@ import {
 } from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
-import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
+import {
+  canActAt,
+  isPostedAt,
+  postingOf,
+} from '../../common/utils/location-access';
 import {
   FINAL_MOVEMENT_STATUSES,
   MovementStatus,
   MovementType,
 } from './stock-movement.constants';
-import { crossedCreditWarning } from './credit-warning';
 import {
   CreateStockMovementDto,
   MovementItemDto,
@@ -84,6 +85,7 @@ export class StockMovementService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly notifications: NotificationService,
+    private readonly suppliers: SupplierService,
   ) {}
 
   // ─── Reads ─────────────────────────────────────────────────────────────────
@@ -188,7 +190,13 @@ export class StockMovementService {
       dto.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (dto.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(tenantId, dto.fromSupplierId, totalPrice);
+      // A workshop's goods come in only through its production request (contract §3).
+      const supplier = await this.suppliers.requireForImport(
+        tenantId,
+        dto.fromSupplierId,
+        ImportSource.SUPPLIER,
+      );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
     // IMPORT and ADJUST have nothing to pick and pack, so they open at PENDING.
@@ -288,11 +296,12 @@ export class StockMovementService {
       request.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (request.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(
+      const supplier = await this.suppliers.requireForImport(
         tenantId,
         request.fromSupplierId,
-        totalPrice,
+        ImportSource.SUPPLIER,
       );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -494,7 +503,7 @@ export class StockMovementService {
 
         const warning =
           request.movementType === MovementType.IMPORT && request.fromSupplierId
-            ? await this.chargeSupplier(
+            ? await this.suppliers.charge(
                 tx,
                 tenantId,
                 request.fromSupplierId,
@@ -518,14 +527,13 @@ export class StockMovementService {
       },
     );
 
-    if (creditWarning) {
-      const owners = await this.notifications.tenantOwners(tenantId);
-      await this.notifications.notify({
+    if (request.fromSupplierId) {
+      await this.suppliers.notifyCreditWarning(
         tenantId,
-        recipientIds: owners.filter((ownerId) => ownerId !== user.userId),
-        referenceId: request.fromSupplierId ?? undefined,
-        ...creditWarning,
-      });
+        user.userId,
+        request.fromSupplierId,
+        creditWarning,
+      );
     }
 
     await this.notifyMovement(received, user.userId, {
@@ -984,97 +992,6 @@ export class StockMovementService {
     }
   }
 
-  /** Refuses an import that would push the supplier past their credit limit; a limit of 0 means no limit, matching how the field is seeded. */
-  private async assertCreditHeadroom(
-    tenantId: string,
-    supplierId: string | null | undefined,
-    amount: number,
-  ): Promise<void> {
-    if (!supplierId) {
-      throw new BadRequestException({
-        code: ErrorCode.STOCK_MOVEMENT_SUPPLIER_REQUIRED,
-        message: 'An import must have a supplier',
-      });
-    }
-    const supplier = await this.prisma.supplier.findFirst({
-      where: { id: supplierId, tenantId },
-      select: { creditLimit: true, outstandingDebt: true },
-    });
-    if (!supplier)
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return;
-
-    const projected = Number(supplier.outstandingDebt) + amount;
-    if (projected > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded. Current debt: ${Number(supplier.outstandingDebt)}, this movement: ${amount}, limit: ${limit}`,
-      });
-    }
-  }
-
-  /** Books received goods against the supplier: debt up, and the variants recorded as things this supplier sells us. The limit is re-checked after the increment and throws to roll the receipt back, since several imports can be open at once; returns the warning to send after commit, or null. */
-  private async chargeSupplier(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    supplierId: string,
-    amount: number,
-    receivedItemIds: string[],
-  ) {
-    if (receivedItemIds.length > 0) {
-      // Idempotent: receiving twice from the same supplier must not fail on the join row.
-      await tx.productItemSupplier.createMany({
-        data: receivedItemIds.map((productItemId) => ({
-          productItemId,
-          supplierId,
-        })),
-        skipDuplicates: true,
-      });
-    }
-    if (amount <= 0) return null;
-
-    const supplier = await tx.supplier.update({
-      where: { id: supplierId },
-      data: { outstandingDebt: { increment: amount } },
-      select: {
-        supplierName: true,
-        creditLimit: true,
-        outstandingDebt: true,
-        tenantId: true,
-      },
-    });
-    if (supplier.tenantId !== tenantId) {
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-    }
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return null;
-
-    const debt = Number(supplier.outstandingDebt);
-    if (debt > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded on receipt. New debt: ${debt}, limit: ${limit}`,
-      });
-    }
-
-    return crossedCreditWarning(debt, amount, limit)
-      ? SupplierNotificationTemplates.creditLimitWarning(
-          supplier.supplierName,
-          debt,
-          limit,
-        )
-      : null;
-  }
-
   // ─── Access ────────────────────────────────────────────────────────────────
 
   private tenantOf(user: AuthUser): string {
@@ -1087,29 +1004,14 @@ export class StockMovementService {
     return user.tenantId;
   }
 
-  /** Where a staff account is posted - `{ locationId: null }` if nowhere - or `null` for an account that may act anywhere in the tenant. `AuthUser` still carries the branch/warehouse pair, but a Branch or Warehouse shares its id with its Location, so whichever is set *is* the Location id. */
+  /** Where a staff account is posted, or `null` for one that may act anywhere - see `postingOf` in location-access. */
   private postingOf(user: AuthUser): { locationId: string | null } | null {
-    if (
-      user.systemRole === SystemRole.TENANT_OWNER ||
-      user.systemRole === SystemRole.ADMIN
-    ) {
-      return null;
-    }
-    return { locationId: user.branchId ?? user.warehouseId };
+    return postingOf(user);
   }
 
-  /** A TENANT_OWNER acts anywhere in the tenant, a STAFF account where it is posted - or where the shift it is currently supervising reaches. That clause only ever widens to a location the supervisor is already posted at, so it is about when they may act, not where. */
+  /** The shared location rule (`canActAt` in location-access), so this flow and production requests cannot disagree about who may act where. */
   private canActAt(user: AuthUser, location: LocationEnd | null): boolean {
-    const own = this.postingOf(user);
-    if (!own) return true;
-    if (!location) return false;
-    // `supervisesLocation` still speaks the branch/warehouse pair (shift supervision is not this flow's).
-    if (
-      supervisesLocation(user.shiftSupervision, columnsOfLocation(location))
-    ) {
-      return true;
-    }
-    return own.locationId === location.id;
+    return canActAt(user, location);
   }
 
   /** A movement between two of our own locations - the only kind with a source *and* a destination that both belong to us, and so the only kind either end may raise. */
@@ -1120,11 +1022,9 @@ export class StockMovementService {
     );
   }
 
-  /** Whether this is literally where the actor works. `canActAt` is about permission and answers true everywhere for an owner, which cannot tell us which end of a transfer raised it. */
+  /** Whether this is literally where the actor works - see `isPostedAt` in location-access. */
   private isPostedAt(user: AuthUser, location: LocationEnd | null): boolean {
-    const own = this.postingOf(user);
-    if (!own || !location) return false;
-    return own.locationId === location.id;
+    return isPostedAt(user, location);
   }
 
   /** Takes a missing end too: a staff account can never act at "no location", so it is refused like any other place that isn't theirs. */

@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export class QuerySupplierDto extends PaginationQueryDto {
@@ -18,4 +19,9 @@ export class QuerySupplierDto extends PaginationQueryDto {
   )
   @IsBoolean()
   hasDebt?: boolean;
+
+  /** `type=WORKSHOP` lists the workshops a production request can be sent to. */
+  @IsOptional()
+  @IsIn(SUPPLIER_TYPES)
+  type?: string;
 }

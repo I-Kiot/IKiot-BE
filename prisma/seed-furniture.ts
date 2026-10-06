@@ -2,8 +2,9 @@
 // its owner, a PRO subscription, a showroom + a main warehouse + a damaged-goods warehouse,
 // one Role per job in the journey with an account for each, and a catalogue modelled on
 // igm.vn's range (office desks, ergonomic chairs, shelving, desk accessories - real list
-// prices and dimensions). No stock, categories or combos: stock only arrives through a stock
-// movement (CLAUDE.md, "Opening stock is not a field").
+// prices and dimensions). No categories or combos. Stock only arrives through a stock movement
+// (CLAUDE.md, "Opening stock is not a field"): the production demo at the end receives the
+// opening stock through a supplier import, alongside orders and production requests.
 //
 // Run `npx prisma db seed` first - the roles draw on the PermissionCatalog it writes. Then:
 //
@@ -950,6 +951,629 @@ async function seedProducts(tenantId: string) {
   );
 }
 
+// ── Production demo (hành trình GĐ1 – Bước 4) ──────────────────────────────────────
+//
+// Enough data for the "Yêu cầu sản xuất" screen to show every state at once: confirmed
+// manual orders short of goods (one urgent, one custom-made line, one with no source location
+// chosen yet), opening stock received through a supplier import, and production requests in
+// DRAFT, SENT, PARTIALLY_RECEIVED, COMPLETED, COMPLETED-closed-short and CANCELLED.
+//
+// Goods enter stock the way the app puts them there - a RECEIVED IMPORT movement, one lot per
+// line, an IMPORT ledger row, the supplier's debt raised - so Σ lot.remaining = stock holds and
+// every number on the screen has a document behind it. `receiveGoods` below is a seed-only
+// copy of that write (the app's is InventoryService.openLot + SupplierService.charge, behind
+// Nest DI that a tsx script cannot boot); keep the two in step if the receipt changes.
+//
+// Skipped as a whole once order DH-DEMO-001 exists.
+
+const SUPPLIERS = [
+  {
+    key: 'WOOD',
+    supplierName: 'Xưởng mộc Đông Anh',
+    type: 'WORKSHOP',
+    contactName: 'Anh Thành',
+    phoneNumber: '0912345001',
+    address: 'Đông Anh, Hà Nội',
+  },
+  {
+    key: 'METAL',
+    supplierName: 'Xưởng sắt Hoài Đức',
+    type: 'WORKSHOP',
+    contactName: 'Chị Hạnh',
+    phoneNumber: '0912345002',
+    address: 'Hoài Đức, Hà Nội',
+  },
+  {
+    key: 'GOODS',
+    supplierName: 'Công ty Nội thất Hoà Phát (NCC)',
+    type: 'GOODS',
+    contactName: 'Phòng kinh doanh',
+    phoneNumber: '0912345003',
+    address: 'Hai Bà Trưng, Hà Nội',
+  },
+] as const;
+
+type SupplierKey = (typeof SUPPLIERS)[number]['key'];
+
+const CUSTOMERS = [
+  {
+    name: 'Công ty TNHH Sao Việt',
+    phone: '0987000001',
+    address: '18 Duy Tân, Cầu Giấy, Hà Nội',
+  },
+  {
+    name: 'Nguyễn Thu Trang',
+    phone: '0987000002',
+    address: '25 Láng Hạ, Đống Đa, Hà Nội',
+  },
+  {
+    name: 'Trần Đức Anh',
+    phone: '0987000003',
+    address: '9 Nguyễn Chí Thanh, Ba Đình, Hà Nội',
+  },
+  {
+    name: 'Lê Hoàng Phúc',
+    phone: '0987000004',
+    address: '102 Kim Mã, Ba Đình, Hà Nội',
+  },
+  {
+    name: 'Phạm Minh Châu',
+    phone: '0987000005',
+    address: '56 Trần Phú, Hà Đông, Hà Nội',
+  },
+  {
+    name: 'Đặng Quang Huy',
+    phone: '0987000006',
+    address: '7 Hồ Tùng Mậu, Nam Từ Liêm, Hà Nội',
+  },
+];
+
+type Loc = LocationKey | null;
+
+interface DemoLine {
+  sku: string;
+  quantity: number;
+  /** Where it ships from; null = not chosen yet (the "Chưa chọn kho" row). */
+  from: Loc;
+  custom?: {
+    lengthCm: number;
+    widthCm: number;
+    heightCm: number;
+    material: string;
+    color: string;
+    note: string;
+  };
+}
+
+const DEMO_ORDERS: {
+  code: string;
+  customer: number;
+  priority: 'NORMAL' | 'HIGH' | 'URGENT';
+  /** Days from today the customer asked for delivery. */
+  deliverInDays: number | null;
+  depositPercent?: number;
+  lines: DemoLine[];
+}[] = [
+  {
+    code: 'DH-DEMO-001',
+    customer: 0,
+    priority: 'URGENT',
+    deliverInDays: 3,
+    depositPercent: 30,
+    lines: [
+      { sku: 'BAN-2HT-DEN-OC-180', quantity: 2, from: 'MAIN_WAREHOUSE' },
+      { sku: 'GHE-GVP110-DEN', quantity: 2, from: 'MAIN_WAREHOUSE' },
+    ],
+  },
+  {
+    code: 'DH-DEMO-002',
+    customer: 1,
+    priority: 'HIGH',
+    deliverInDays: 5,
+    lines: [
+      { sku: 'KE-3T-NK-TRANG', quantity: 3, from: 'MAIN_WAREHOUSE' },
+      { sku: 'TU-LED-TRANG-80', quantity: 1, from: 'MAIN_WAREHOUSE' },
+    ],
+  },
+  {
+    code: 'DH-DEMO-003',
+    customer: 2,
+    priority: 'NORMAL',
+    deliverInDays: 10,
+    lines: [
+      {
+        sku: 'BAN-2HT-DEN-OC-180',
+        quantity: 1,
+        from: 'MAIN_WAREHOUSE',
+        custom: {
+          lengthCm: 185,
+          widthCm: 75,
+          heightCm: 75,
+          material: 'MDF lõi xanh chống ẩm',
+          color: 'Khung đen, mặt vân óc chó',
+          note: 'Khách đo phòng 1m85, khoét lỗ đi dây góc phải',
+        },
+      },
+    ],
+  },
+  {
+    code: 'DH-DEMO-004',
+    customer: 3,
+    priority: 'NORMAL',
+    deliverInDays: 7,
+    lines: [
+      { sku: 'TU-LED-TRANG-80', quantity: 2, from: 'MAIN_WAREHOUSE' },
+      { sku: 'BAN-IKEA-TRANG-140', quantity: 1, from: 'MAIN_WAREHOUSE' },
+    ],
+  },
+  {
+    code: 'DH-DEMO-005',
+    customer: 4,
+    priority: 'HIGH',
+    deliverInDays: 4,
+    lines: [{ sku: 'TU-NKA-DEN', quantity: 3, from: 'SHOWROOM' }],
+  },
+  {
+    code: 'DH-DEMO-006',
+    customer: 5,
+    priority: 'NORMAL',
+    deliverInDays: null,
+    lines: [{ sku: 'GHE-GVP110-DEN', quantity: 1, from: null }],
+  },
+];
+
+/** Opening stock, received from the GOODS supplier in one import per location. */
+const OPENING_STOCK: {
+  location: LocationKey;
+  sku: string;
+  quantity: number;
+}[] = [
+  { location: 'MAIN_WAREHOUSE', sku: 'GHE-GVP110-DEN', quantity: 10 },
+  { location: 'MAIN_WAREHOUSE', sku: 'KE-3T-NK-TRANG', quantity: 2 },
+  { location: 'MAIN_WAREHOUSE', sku: 'BAN-IKEA-TRANG-140', quantity: 1 },
+];
+
+const DEMO_REQUESTS: {
+  supplier: SupplierKey;
+  to: LocationKey;
+  status: 'DRAFT' | 'SENT' | 'PARTIALLY_RECEIVED' | 'COMPLETED' | 'CANCELLED';
+  readyInDays: number | null;
+  sentDaysAgo?: number;
+  note?: string;
+  lines: {
+    sku: string;
+    quantity: number;
+    received?: number;
+    /** Index into DEMO_ORDERS + line, for a line made for one order line. */
+    forOrder?: [number, number];
+  }[];
+}[] = [
+  {
+    supplier: 'WOOD',
+    to: 'SHOWROOM',
+    status: 'COMPLETED',
+    readyInDays: -6,
+    sentDaysAgo: 14,
+    note: 'Hàng trưng bày showroom',
+    lines: [{ sku: 'TU-NKA-DEN', quantity: 1, received: 1 }],
+  },
+  {
+    supplier: 'METAL',
+    to: 'MAIN_WAREHOUSE',
+    status: 'COMPLETED',
+    readyInDays: -3,
+    sentDaysAgo: 12,
+    note: 'Đóng thiếu: Xưởng hết ván vân sồi, phần còn lại đặt xưởng khác',
+    lines: [{ sku: 'KE-3T-NK-SOI', quantity: 3, received: 2 }],
+  },
+  {
+    supplier: 'WOOD',
+    to: 'MAIN_WAREHOUSE',
+    status: 'PARTIALLY_RECEIVED',
+    readyInDays: 2,
+    sentDaysAgo: 6,
+    lines: [
+      { sku: 'BAN-2HT-DEN-OC-180', quantity: 2, received: 1, forOrder: [0, 0] },
+    ],
+  },
+  {
+    supplier: 'WOOD',
+    to: 'MAIN_WAREHOUSE',
+    status: 'SENT',
+    readyInDays: 4,
+    sentDaysAgo: 2,
+    lines: [{ sku: 'TU-LED-TRANG-80', quantity: 2 }],
+  },
+  {
+    supplier: 'METAL',
+    to: 'MAIN_WAREHOUSE',
+    status: 'DRAFT',
+    readyInDays: 7,
+    note: 'Chờ báo giá trước khi gửi',
+    lines: [{ sku: 'KE-3T-NK-TRANG', quantity: 1, forOrder: [1, 0] }],
+  },
+  {
+    supplier: 'METAL',
+    to: 'MAIN_WAREHOUSE',
+    status: 'CANCELLED',
+    readyInDays: null,
+    sentDaysAgo: 9,
+    note: 'Khách đổi sang mẫu khác',
+    lines: [{ sku: 'TU-NKA-TRANG', quantity: 2 }],
+  },
+];
+
+const daysFromNow = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date;
+};
+/** A `@db.Date` value: UTC midnight of the local calendar day `days` from today. */
+const dateFromNow = (days: number) => {
+  const date = daysFromNow(days);
+  return new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+  );
+};
+
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/** A RECEIVED import and the stock it brings - see the section header for why this is a copy. */
+async function receiveGoods(
+  tx: Tx,
+  args: {
+    tenantId: string;
+    actorId: string;
+    supplierId: string;
+    source: 'SUPPLIER' | 'WORKSHOP';
+    locationId: string;
+    receivedAt: Date;
+    note: string;
+    lines: {
+      productItemId: string;
+      quantity: number;
+      unitCost: number;
+      productionRequestItemId?: string;
+    }[];
+  },
+) {
+  const total = args.lines.reduce((sum, l) => sum + l.quantity * l.unitCost, 0);
+  const movement = await tx.stockMovementRequest.create({
+    data: {
+      tenantId: args.tenantId,
+      movementType: 'IMPORT',
+      importSource: args.source,
+      status: 'RECEIVED',
+      fromSupplierId: args.supplierId,
+      toLocationId: args.locationId,
+      createdById: args.actorId,
+      receivedById: args.actorId,
+      receivedAt: args.receivedAt,
+      totalPrice: total,
+      note: args.note,
+      createdAt: args.receivedAt,
+      details: {
+        create: args.lines.map((l) => ({
+          productItemId: l.productItemId,
+          quantity: l.quantity,
+          importPrice: l.unitCost,
+          receivedQuantity: l.quantity,
+          productionRequestItemId: l.productionRequestItemId ?? null,
+        })),
+      },
+    },
+    select: {
+      id: true,
+      details: { select: { id: true, productItemId: true } },
+    },
+  });
+
+  for (const line of args.lines) {
+    const inventory = await tx.inventory.upsert({
+      where: {
+        tenantId_locationId_productItemId: {
+          tenantId: args.tenantId,
+          locationId: args.locationId,
+          productItemId: line.productItemId,
+        },
+      },
+      create: {
+        tenantId: args.tenantId,
+        locationId: args.locationId,
+        productItemId: line.productItemId,
+        stock: line.quantity,
+      },
+      update: { stock: { increment: line.quantity } },
+    });
+    const lot = await tx.inventoryLot.create({
+      data: {
+        tenantId: args.tenantId,
+        locationId: args.locationId,
+        productItemId: line.productItemId,
+        sourceType: args.source,
+        supplierId: args.supplierId,
+        importItemId: movement.details.find(
+          (d) => d.productItemId === line.productItemId,
+        )?.id,
+        productionRequestItemId: line.productionRequestItemId ?? null,
+        unitCost: line.unitCost,
+        receivedQuantity: line.quantity,
+        remainingQuantity: line.quantity,
+        receivedAt: args.receivedAt,
+      },
+    });
+    await tx.inventoryTransaction.create({
+      data: {
+        tenantId: args.tenantId,
+        locationId: args.locationId,
+        productItemId: line.productItemId,
+        type: 'IMPORT',
+        quantity: line.quantity,
+        balanceAfter: inventory.stock,
+        unitCost: line.unitCost,
+        referenceType: 'STOCK_MOVEMENT',
+        referenceId: movement.id,
+        createdById: args.actorId,
+        lotId: lot.id,
+        createdAt: args.receivedAt,
+      },
+    });
+  }
+
+  await tx.productItemSupplier.createMany({
+    data: args.lines.map((l) => ({
+      productItemId: l.productItemId,
+      supplierId: args.supplierId,
+    })),
+    skipDuplicates: true,
+  });
+  await tx.supplier.update({
+    where: { id: args.supplierId },
+    data: { outstandingDebt: { increment: total } },
+  });
+  return movement.id;
+}
+
+async function seedProductionDemo(
+  tenantId: string,
+  ownerId: string,
+  locations: Record<LocationKey, string>,
+) {
+  const already = await prisma.order.findFirst({
+    where: { tenantId, code: DEMO_ORDERS[0].code },
+    select: { id: true },
+  });
+  if (already) {
+    console.log('Production demo already present, skipped.');
+    return;
+  }
+
+  const skus = [
+    ...new Set([
+      ...DEMO_ORDERS.flatMap((o) => o.lines.map((l) => l.sku)),
+      ...OPENING_STOCK.map((s) => s.sku),
+      ...DEMO_REQUESTS.flatMap((r) => r.lines.map((l) => l.sku)),
+    ]),
+  ];
+  const items = await prisma.productItem.findMany({
+    where: { tenantId, sku: { in: skus } },
+    select: {
+      id: true,
+      sku: true,
+      productName: true,
+      retailPrice: true,
+      costPrice: true,
+      details: { select: { value: true }, orderBy: { position: 'asc' } },
+    },
+  });
+  const itemBySku = new Map(items.map((i) => [i.sku!, i]));
+  const missing = skus.filter((sku) => !itemBySku.has(sku));
+  if (missing.length)
+    throw new Error(`Seed SKUs not in the catalogue: ${missing.join(', ')}`);
+  const item = (sku: string) => itemBySku.get(sku)!;
+
+  const staffByPhone = new Map(
+    (
+      await prisma.user.findMany({
+        where: {
+          tenantId,
+          phoneNumber: { in: STAFF.map((p) => p.phoneNumber) },
+        },
+        select: { id: true, phoneNumber: true },
+      })
+    ).map((u) => [u.phoneNumber, u.id]),
+  );
+  const seller = staffByPhone.get('0901000002') ?? ownerId;
+  const seller2 = staffByPhone.get('0901000003') ?? ownerId;
+  const storekeeper = staffByPhone.get('0901000004') ?? ownerId;
+  const loc = (key: Loc) => (key ? locations[key] : null);
+
+  await prisma.$transaction(
+    async (tx) => {
+      const supplierIds = {} as Record<SupplierKey, string>;
+      for (const { key, ...supplier } of SUPPLIERS) {
+        const existing = await tx.supplier.findFirst({
+          where: { tenantId, supplierName: supplier.supplierName },
+          select: { id: true },
+        });
+        supplierIds[key] =
+          existing?.id ??
+          (await tx.supplier.create({ data: { tenantId, ...supplier } })).id;
+      }
+
+      // Opening stock, through a supplier import a week ago.
+      for (const key of [...new Set(OPENING_STOCK.map((s) => s.location))]) {
+        await receiveGoods(tx, {
+          tenantId,
+          actorId: storekeeper,
+          supplierId: supplierIds.GOODS,
+          source: 'SUPPLIER',
+          locationId: locations[key],
+          receivedAt: daysFromNow(-7),
+          note: 'Nhập hàng đầu kỳ (dữ liệu demo)',
+          lines: OPENING_STOCK.filter((s) => s.location === key).map((s) => ({
+            productItemId: item(s.sku).id,
+            quantity: s.quantity,
+            unitCost: Number(item(s.sku).costPrice),
+          })),
+        });
+      }
+
+      const customerIds: string[] = [];
+      for (const [index, customer] of CUSTOMERS.entries()) {
+        const row = await tx.customer.create({
+          data: {
+            tenantId,
+            customerCode: `KH${String(index + 1).padStart(6, '0')}`,
+            ...customer,
+          },
+        });
+        customerIds.push(row.id);
+      }
+
+      // Confirmed manual orders: stock is neither held nor deducted, so they only show up as demand.
+      const orderLineIds: string[][] = [];
+      for (const [index, order] of DEMO_ORDERS.entries()) {
+        const priced = order.lines.map((line) => {
+          const it = item(line.sku);
+          const unitPrice =
+            Number(it.retailPrice) + (line.custom ? 300_000 : 0);
+          return { line, it, unitPrice, lineTotal: unitPrice * line.quantity };
+        });
+        const grandTotal = priced.reduce((sum, p) => sum + p.lineTotal, 0);
+        const customer = CUSTOMERS[order.customer];
+        const assignee = index % 2 === 0 ? seller : seller2;
+        const created = await tx.order.create({
+          data: {
+            tenantId,
+            code: order.code,
+            status: 'CONFIRMED',
+            priority: order.priority,
+            branchId: locations.SHOWROOM,
+            customerId: customerIds[order.customer],
+            userId: assignee,
+            assigneeId: assignee,
+            confirmedById: assignee,
+            confirmedAt: daysFromNow(-(index + 1)),
+            subtotal: grandTotal,
+            grandTotal,
+            depositPercent: order.depositPercent ?? null,
+            depositAmount: order.depositPercent
+              ? Math.round((grandTotal * order.depositPercent) / 100)
+              : null,
+            recipientName: customer.name,
+            recipientPhone: customer.phone,
+            deliveryAddress: customer.address,
+            requestedDeliveryDate:
+              order.deliverInDays === null
+                ? null
+                : dateFromNow(order.deliverInDays),
+            createdAt: daysFromNow(-(index + 1)),
+          },
+        });
+        const ids: string[] = [];
+        for (const p of priced) {
+          const row = await tx.orderItem.create({
+            data: {
+              orderId: created.id,
+              productItemId: p.it.id,
+              sourceLocationId: loc(p.line.from),
+              productName: p.it.productName,
+              sku: p.it.sku,
+              variantLabel:
+                p.it.details
+                  .map((d) => d.value)
+                  .filter(Boolean)
+                  .join(' / ') || null,
+              listUnitPrice: p.it.retailPrice,
+              quantity: p.line.quantity,
+              unitPrice: p.unitPrice,
+              lineTotal: p.lineTotal,
+              isCustom: !!p.line.custom,
+            },
+          });
+          if (p.line.custom) {
+            const { note, ...size } = p.line.custom;
+            await tx.orderItemCustomization.create({
+              data: { tenantId, orderItemId: row.id, ...size, note },
+            });
+          }
+          ids.push(row.id);
+        }
+        orderLineIds.push(ids);
+      }
+
+      // Production requests, oldest first so the YCSX numbers read in order.
+      for (const [index, request] of DEMO_REQUESTS.entries()) {
+        const createdAt = daysFromNow(-((request.sentDaysAgo ?? 1) + 1));
+        const created = await tx.productionRequest.create({
+          data: {
+            tenantId,
+            code: `YCSX${String(index + 1).padStart(6, '0')}`,
+            supplierId: supplierIds[request.supplier],
+            locationId: locations[request.to],
+            status: request.status,
+            expectedReadyDate:
+              request.readyInDays === null
+                ? null
+                : dateFromNow(request.readyInDays),
+            sentAt:
+              request.sentDaysAgo === undefined
+                ? null
+                : daysFromNow(-request.sentDaysAgo),
+            note: request.note ?? null,
+            createdById: ownerId,
+            statusUpdatedById: request.status === 'DRAFT' ? null : ownerId,
+            statusUpdatedAt:
+              request.status === 'DRAFT' ? null : daysFromNow(-1),
+            createdAt,
+            items: {
+              create: request.lines.map((line) => ({
+                productItemId: item(line.sku).id,
+                quantity: line.quantity,
+                receivedQuantity: line.received ?? 0,
+                orderItemId: line.forOrder
+                  ? orderLineIds[line.forOrder[0]][line.forOrder[1]]
+                  : null,
+              })),
+            },
+          },
+          select: {
+            id: true,
+            items: { select: { id: true, productItemId: true } },
+          },
+        });
+
+        const arrived = request.lines.filter((l) => (l.received ?? 0) > 0);
+        if (arrived.length > 0) {
+          await receiveGoods(tx, {
+            tenantId,
+            actorId: storekeeper,
+            supplierId: supplierIds[request.supplier],
+            source: 'WORKSHOP',
+            locationId: locations[request.to],
+            receivedAt: daysFromNow(-1),
+            note: `Nhận hàng xưởng theo YCSX${String(index + 1).padStart(6, '0')}`,
+            lines: arrived.map((line) => ({
+              productItemId: item(line.sku).id,
+              quantity: line.received!,
+              unitCost: Number(item(line.sku).costPrice),
+              productionRequestItemId: created.items.find(
+                (i) => i.productItemId === item(line.sku).id,
+              )!.id,
+            })),
+          });
+        }
+      }
+    },
+    { timeout: 60_000 },
+  );
+
+  console.log(
+    `Production demo: ${SUPPLIERS.length} suppliers, ${DEMO_ORDERS.length} confirmed orders, ${DEMO_REQUESTS.length} production requests, opening stock at the main warehouse.`,
+  );
+}
+
 async function main() {
   await assertCatalogSeeded();
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
@@ -959,6 +1583,7 @@ async function main() {
   const roleIds = await seedRoles(tenantId);
   await seedStaff(tenantId, ownerId, passwordHash, roleIds, locations);
   await seedProducts(tenantId);
+  await seedProductionDemo(tenantId, ownerId, locations);
 }
 
 main()
