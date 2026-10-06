@@ -284,6 +284,27 @@ export const ErrorCode = {
   PRODUCTION_REQUEST_STATUS_INVALID: 'PRODUCTION_REQUEST_STATUS_INVALID',
   /** The supplier on a production request must be a WORKSHOP. */
   SUPPLIER_NOT_WORKSHOP: 'SUPPLIER_NOT_WORKSHOP',
+  /** A supplier's `type` cannot change once a production request or an import names it - the documents would stop matching the flow that made them. */
+  SUPPLIER_TYPE_LOCKED: 'SUPPLIER_TYPE_LOCKED',
+  /** The same SKU (for the same order line) twice on one production request. */
+  PRODUCTION_REQUEST_DUPLICATE_ITEM: 'PRODUCTION_REQUEST_DUPLICATE_ITEM',
+  /** The order line named on a production request line is not in this shop, is for another SKU, or has already shipped. */
+  PRODUCTION_REQUEST_ORDER_ITEM_INVALID:
+    'PRODUCTION_REQUEST_ORDER_ITEM_INVALID',
+  /** A STAFF account can only work on production requests delivering to its own location. */
+  PRODUCTION_REQUEST_LOCATION_DENIED: 'PRODUCTION_REQUEST_LOCATION_DENIED',
+  /** Something has already been received against it - a production request that delivered goods cannot be cancelled. */
+  PRODUCTION_REQUEST_HAS_RECEIPTS: 'PRODUCTION_REQUEST_HAS_RECEIPTS',
+  /** A receipt with nothing in it: at least one line must receive more than 0. */
+  PRODUCTION_REQUEST_RECEIVE_EMPTY: 'PRODUCTION_REQUEST_RECEIVE_EMPTY',
+  /** Could not allocate the next YCSX code after several attempts (concurrent creates). */
+  PRODUCTION_REQUEST_CODE_UNAVAILABLE: 'PRODUCTION_REQUEST_CODE_UNAVAILABLE',
+  /** Only a PRODUCT variant can be made - a COMBO is ordered through its components, a SERVICE needs no goods. */
+  PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE:
+    'PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE',
+  /** Closing a partly delivered request short needs a reason - it is the record of why ordered goods will never arrive. */
+  PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
+    'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',
 
   // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',

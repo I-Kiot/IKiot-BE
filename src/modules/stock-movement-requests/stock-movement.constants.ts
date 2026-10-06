@@ -42,6 +42,3 @@ export const FINAL_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.COMPLETED,
   MovementStatus.CANCELLED,
 ];
-
-/** How much of a supplier's credit limit has to be used before the owners are warned - the hardcoded `0.75` from the old receive path, fired once on the receipt that crosses the line. */
-export const CREDIT_WARNING_RATIO = 0.75;

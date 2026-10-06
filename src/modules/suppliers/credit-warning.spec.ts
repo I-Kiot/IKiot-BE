@@ -1,5 +1,4 @@
-import { crossedCreditWarning } from './credit-warning';
-import { CREDIT_WARNING_RATIO } from './stock-movement.constants';
+import { CREDIT_WARNING_RATIO, crossedCreditWarning } from './credit-warning';
 
 const LIMIT = 100_000_000;
 const THRESHOLD = CREDIT_WARNING_RATIO * LIMIT; // 75,000,000

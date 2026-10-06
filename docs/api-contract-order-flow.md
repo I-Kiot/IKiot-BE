@@ -14,6 +14,10 @@
 > **Ngoại lệ (2026-10-04): khoá hàng khi đóng gói.** `hanh-trinh-don-hang.md` và file này đã cập nhật,
 > Notion v2 **chưa** (P0-5, B-2, C-1, C-2, C-6, C-9, A-5, A-8 vẫn ghi "không giữ hàng", "đóng hàng chỉ
 > cảnh báo, C-2 mới chặn"). Ở những điểm đó, theo hai file trong repo cho tới khi Notion được sửa.
+>
+> **Ngoại lệ (2026-10-04): khoá hàng khi đóng gói.** `hanh-trinh-don-hang.md` và file này đã cập nhật,
+> Notion v2 **chưa** (P0-5, B-2, C-1, C-2, C-6, C-9, A-5, A-8 vẫn ghi "không giữ hàng", "đóng hàng chỉ
+> cảnh báo, C-2 mới chặn"). Ở những điểm đó, theo hai file trong repo cho tới khi Notion được sửa.
 > Cần đổi contract → nhắn Astersa, **không tự sửa route/field của track khác**.
 >
 > **Phase 1 = luồng tạo đơn bằng tay.** Phần Shopee (đơn `PENDING_CONFIRMATION`, xác nhận đơn
@@ -93,6 +97,7 @@ Tất cả nhận `tx` (Prisma transaction client) của caller. Bất biến: �
 | Hàm | Dùng ở | Ghi chú |
 |---|---|---|
 | `lockStock(tx, [{ tenantId, locationId, productItemId, quantity, label }])` → `Inventory[]` | `POST /orders/:id/pack` (C-1, `FulfillmentService.packOrder`) | Khoá từng dòng trong câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`; thử hết các dòng rồi báo **một** `INSUFFICIENT_STOCK` liệt kê mọi dòng thiếu. Không ghi sổ kho (hàng chưa đi). |
+| `lockStock(tx, [{ tenantId, locationId, productItemId, quantity, label }])` → `Inventory[]` | `POST /orders/:id/pack` (C-1, `FulfillmentService.packOrder`) | Khoá từng dòng trong câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`; thử hết các dòng rồi báo **một** `INSUFFICIENT_STOCK` liệt kê mọi dòng thiếu. Không ghi sổ kho (hàng chưa đi). |
 | `shipLockedStock(tx, { tenantId, locationId, productItemId, quantity, label, ledger })` | `POST /orders/:id/ship` (C-2) | Trừ `stock` và `locked_stock` cùng lúc + rút lô FIFO. Luồng đơn gọi với `ledger: { type: SALE, referenceType: ORDER, referenceId: orderId, orderItemId, createdById }` – **bắt buộc có `orderItemId`** thì hoàn hàng mới tìm lại đúng lô. Khoá không đủ → `INVENTORY_LOCK_MISMATCH`. |
 | `releaseLockedStock(tx, { tenantId, locationId, productItemId, quantity, label })` | hủy / sửa đơn đã `PACKED` (A-5, A-8) | Trả phần khoá về kệ, không ghi sổ. Khoá không đủ → `INVENTORY_LOCK_MISMATCH`. |
 | `deductStock(tx, { tenantId, locationId, productItemId, quantity, label, ledger })` | bán quầy, xuất chuyển kho, kiểm kê thiếu | Trừ hàng **trên kệ** + rút lô FIFO trong cùng câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`. Thiếu → `INSUFFICIENT_STOCK`. **Không** dùng cho đơn đã đóng gói. |
@@ -123,6 +128,8 @@ PENDING_CONFIRMATION (chỉ Shopee – sau)
         │ POST /orders/:id/confirm                                  (A-3)
         ▼
 CONFIRMED ──POST /orders/:id/pack──▶ PACKED ──POST /shipments──▶ PICKED_UP
+(đơn tay tạo ra ở đây, A-2)  (C-1: khoá hàng, thiếu là chặn)     (C-2)       (ĐVVC đã lấy hàng)
+                                                                     │ POST /orders/:id/ship  (C-2) ← trừ tồn kho (đúng phần đã khoá)
 (đơn tay tạo ra ở đây, A-2)  (C-1: khoá hàng, thiếu là chặn)     (C-2)       (ĐVVC đã lấy hàng)
                                                                      │ POST /orders/:id/ship  (C-2) ← trừ tồn kho (đúng phần đã khoá)
                                                                      ▼
@@ -213,6 +220,7 @@ B-2). Mọi chỗ trong file này ghi "tại `sourceLocation`" là đề xuất 
 | `PATCH /orders/:id/assignee` | `orders:update` | `{ assigneeId }` – khi đơn chưa Đang vận chuyển | A-8 · D-7 |
 | `PATCH /orders/:id/priority` | `orders:update` | `{ priority }` – khi đơn chưa Đang vận chuyển (không cần mở form sửa đơn) | A-8 · D-7 |
 | `PUT /orders/:id/items/:itemId/customization` | `orders:update` | `OrderItemCustomization`. Lần đầu: tạo ProductItem mới cùng sản phẩm, chuyển dòng sang, `isCustom = true`. Chỉ khi `CONFIRMED`; khoá khi dòng đã nằm trong một YCSX đã `SENT` (§3) → `ORDER_ITEM_CUSTOM_LOCKED`. | A-4 · D-2 (đơn tay), D-8 (Shopee, Phase 2) |
+| `POST /orders/:id/pack` | `orders:pack` **(mới)** | `{ note? }` (ghi vào `Fulfillment.exceptionNote`) – `CONFIRMED` → `PACKED`. Trong **một transaction**: nhận đơn bằng `updateMany(status: CONFIRMED)` (thua → `ORDER_STATUS_CONFLICT` 409), tạo `Fulfillment` `PACKED` + `FulfillmentItem` + **FulfillmentPackage tự sinh** (mỗi đơn vị × mỗi `ProductPackage` của SKU, không khai báo = 1 thùng; mã `PK…`), ghi `verifiedBy` = người bấm. **Khoá hàng** (`lockStock`) từng dòng `STOCKED_LINE_TYPES` tại kho đóng gói, cùng transaction; dòng nào `actualStock < quantity` → `INSUFFICIENT_STOCK` (400) liệt kê mọi dòng thiếu, không khoá dòng nào. Không trừ `stock`. `notifyLowStock` sau commit. Kho đóng gói = `sourceLocationId` chung của các dòng (thiếu / nhiều kho → `FULFILLMENT_ORDER_NOT_READY`); STAFF chỉ đóng ở nơi được phân công (`FULFILLMENT_LOCATION_DENIED`). Đơn không ở `CONFIRMED` → `ORDER_STATUS_TRANSITION_INVALID` (tạm, tới khi có A-1). Trả về Fulfillment kèm `items`, `packages`. Dòng đơn giữ `PENDING`. Test: `test/order-pack.e2e-spec.ts`. | C-1 · C-6 |
 | `POST /orders/:id/pack` | `orders:pack` **(mới)** | `{ note? }` (ghi vào `Fulfillment.exceptionNote`) – `CONFIRMED` → `PACKED`. Trong **một transaction**: nhận đơn bằng `updateMany(status: CONFIRMED)` (thua → `ORDER_STATUS_CONFLICT` 409), tạo `Fulfillment` `PACKED` + `FulfillmentItem` + **FulfillmentPackage tự sinh** (mỗi đơn vị × mỗi `ProductPackage` của SKU, không khai báo = 1 thùng; mã `PK…`), ghi `verifiedBy` = người bấm. **Khoá hàng** (`lockStock`) từng dòng `STOCKED_LINE_TYPES` tại kho đóng gói, cùng transaction; dòng nào `actualStock < quantity` → `INSUFFICIENT_STOCK` (400) liệt kê mọi dòng thiếu, không khoá dòng nào. Không trừ `stock`. `notifyLowStock` sau commit. Kho đóng gói = `sourceLocationId` chung của các dòng (thiếu / nhiều kho → `FULFILLMENT_ORDER_NOT_READY`); STAFF chỉ đóng ở nơi được phân công (`FULFILLMENT_LOCATION_DENIED`). Đơn không ở `CONFIRMED` → `ORDER_STATUS_TRANSITION_INVALID` (tạm, tới khi có A-1). Trả về Fulfillment kèm `items`, `packages`. Dòng đơn giữ `PENDING`. Test: `test/order-pack.e2e-spec.ts`. | C-1 · C-6 |
 | `POST /orders/:id/ship` | `orders:ship` **(mới)** | `{ note? }` – `PICKED_UP` → `SHIPPING`. Trong **một transaction**: hàng đã được khoá lúc `pack`, nên `shipLockedStock` từng dòng (trừ `stock` và `locked_stock`); khoá không khớp → `INVENTORY_LOCK_MISMATCH` (409) – lỗi dữ liệu, không phải thiếu hàng. *(Bản trước: gom dòng thiếu → `ORDER_SHIP_INSUFFICIENT_STOCK`; không còn cần vì `pack` đã chặn.)* Áp cho từng dòng `STOCKED_LINE_TYPES` tại `sourceLocationId` (combo trừ từng dòng con), dòng → `SHIPPED`, ghi `unitCostPrice`, `shippedBy/At`, shipment đang mở `PICKED_UP` → `IN_TRANSIT`. `notifyLowStock` sau commit. | C-2 · C-9 |
 | `POST /orders/:id/confirm-remittance` | `orders:confirm_cash` **(mới)** | `{ amount, note? }` – `RECEIVED` + `cashRemittanceStatus = PENDING` → `RECEIVED` (tiền), đơn `COMPLETED`. `amount` ≠ số shipper đã thu → `ORDER_REMITTANCE_AMOUNT_MISMATCH` (chủ phải nhận **đủ**). | A-10 · D-9 |
@@ -502,6 +510,7 @@ nguyên** – danh sách là append-only.
 
 - **Giữ hàng (đã xoá khỏi schema và code):** `StockReservation`, `inventories.reserved`, `reserve` / `release` / `consume` / `allocateArrivals` trong `InventoryService`;
   `heldQuantity`, `OrderItemStatus.WAITING_STOCK/READY`, `OrderStatus.DRAFT/READY_TO_PACK/DELIVERED`, `asDraft`.
+- **Route `/fulfillments/*` riêng – đã bỏ (2026-10-04)**: create / items / packages / verify / cancel và DTO của chúng đã xoá khỏi code; `FulfillmentController` chỉ còn khung trống. Đóng đơn đi qua `POST /orders/:id/pack` (vẫn tạo FulfillmentPackage, C-1). Hủy đơn đã đóng gói thuộc A-5 (`releaseLockedStock`).
 - **Route `/fulfillments/*` riêng – đã bỏ (2026-10-04)**: create / items / packages / verify / cancel và DTO của chúng đã xoá khỏi code; `FulfillmentController` chỉ còn khung trống. Đóng đơn đi qua `POST /orders/:id/pack` (vẫn tạo FulfillmentPackage, C-1). Hủy đơn đã đóng gói thuộc A-5 (`releaseLockedStock`).
 - FE: `src/types/order-flow.ts`, `src/lib/api/order-journey.ts`, `src/lib/api/fulfillment.ts` viết
   theo bản cũ – sửa theo file này.

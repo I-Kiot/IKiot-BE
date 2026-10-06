@@ -25,3 +25,13 @@ export const QUOTA_COUNTED_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
 ];
+
+/** `ProductItem.itemType`. Only a PRODUCT holds stock of its own: a COMBO is priced as a set and stocked through its components, and a SERVICE needs no goods at all. */
+export const ProductItemType = {
+  PRODUCT: 'PRODUCT',
+  COMBO: 'COMBO',
+  SERVICE: 'SERVICE',
+} as const;
+
+export type ProductItemType =
+  (typeof ProductItemType)[keyof typeof ProductItemType];
