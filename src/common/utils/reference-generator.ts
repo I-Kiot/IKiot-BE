@@ -17,6 +17,7 @@ export const REFERENCE_PREFIX = {
   SUBSCRIPTION: 'IKMS', // tenant pays iKiot for a plan (company bank - not tenant CashFlow)
   TICKET: 'TK', // support thread; shown to both the shop and the operator
   PACKAGE: 'PK', // FulfillmentPackage.code - printed on the box label
+  ORDER_RETURN: 'DH-HOAN-', // OrderReturn.code
 } as const;
 
 export const CASHFLOW_PREFIXES = [
