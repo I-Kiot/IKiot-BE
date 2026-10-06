@@ -21,10 +21,11 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import {
   CreatePosOrderDto,
   PayOfflineOrderDto,
-  QueryOrderDto,
   UpdateOrderStatusDto,
 } from './dto/order.dto';
 import { PackOrderDto } from './dto/pack-order.dto';
+import { QueryOrderJourneyDto } from './dto/query-order-journey.dto';
+import { OrderReadService } from './order-read.service';
 import { FulfillmentService } from '../fulfillments/fulfillments.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -43,6 +44,7 @@ export class OrderController {
     private readonly fulfillments: FulfillmentService,
     private readonly manualOrders: ManualOrderService,
     private readonly cancels: OrderCancelService,
+    private readonly reads: OrderReadService,
   ) {}
 
   /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
@@ -59,19 +61,21 @@ export class OrderController {
     return this.service.createPosSale(user, requireTenantId(user), dto);
   }
 
+  /** A-9: the order-journey list (contract §2), a superset of what POS reads off it. */
   @Permissions('orders', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderDto) {
-    return this.service.findAll(user, requireTenantId(user), query);
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderJourneyDto) {
+    return this.reads.findAll(user, requireTenantId(user), query);
   }
 
+  /** A-9: `OrderDetail` (contract §2). */
   @Permissions('orders', 'read')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(user, requireTenantId(user), id);
+    return this.reads.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('orders', 'update')
