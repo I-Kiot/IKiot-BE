@@ -15,24 +15,6 @@ export class SepayOrderService {
     return generateReference(REFERENCE_PREFIX.ORDER);
   }
 
-  buildQrUrl(
-    banking: {
-      bankingBankName: string | null;
-      bankingAccountNumber: string | null;
-      bankingAccountName: string | null;
-    },
-    amount: number,
-    paymentReference: string,
-  ): string {
-    const bankName = banking.bankingBankName ?? '';
-    const accountNumber = banking.bankingAccountNumber ?? '';
-    const accountName = banking.bankingAccountName ?? '';
-    return (
-      `https://img.vietqr.io/image/${bankName}-${accountNumber}-compact2.png` +
-      `?amount=${amount}&addInfo=${encodeURIComponent(paymentReference)}&accountName=${encodeURIComponent(accountName)}`
-    );
-  }
-
   /** `{6,10}` rather than `{10}`: references minted before the random space was widened are 6 hex characters and may still be PENDING. Greedy, so a current 10-character reference still matches in full. */
   extractOrderReference(content = ''): string | null {
     const match = content.match(/ORD[0-9A-F]{6,10}/i);

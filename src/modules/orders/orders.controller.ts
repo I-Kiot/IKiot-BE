@@ -27,6 +27,9 @@ import { PackOrderDto } from './dto/pack-order.dto';
 import { QueryOrderJourneyDto } from './dto/query-order-journey.dto';
 import { OrderReadService } from './order-read.service';
 import { FulfillmentService } from '../fulfillments/fulfillments.service';
+import { ShipmentService } from '../shipments/shipments.service';
+import { ShipmentDeliveryService } from '../shipments/shipment-delivery.service';
+import { ShipOrderDto } from '../shipments/dto/ship-order.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -42,6 +45,7 @@ export class OrderController {
   constructor(
     private readonly service: OrderService,
     private readonly fulfillments: FulfillmentService,
+    private readonly shipments: ShipmentService,
     private readonly manualOrders: ManualOrderService,
     private readonly cancels: OrderCancelService,
     private readonly reads: OrderReadService,
@@ -93,8 +97,12 @@ export class OrderController {
     );
   }
 
-  /** Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. Quyền riêng `pack` – người đóng gói không sửa được đơn. */
-  @Permissions('orders', 'pack')
+  /**
+   * Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. **Cố ý không có
+   * `@Permissions`**: người phụ trách đơn đóng được đơn của mình mà không cần quyền trong role (chốt
+   * 2026-10-06), nên quyền được kiểm trong service – chủ shop, người phụ trách, hoặc `orders:pack` tại
+   * kho xuất (`assertOrderStepAccess`). `pack` vẫn là quyền riêng: người đóng gói không sửa được đơn.
+   */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pack')
   pack(
@@ -103,6 +111,21 @@ export class OrderController {
     @Body() dto: PackOrderDto,
   ) {
     return this.fulfillments.packOrder(user, id, dto);
+  }
+
+  /**
+   * C-2: PICKED_UP → SHIPPING, bước trừ tồn kho (trừ đúng phần đã khoá lúc đóng gói). **Cố ý không có
+   * `@Permissions`**, cùng lý do với `pack`: chủ shop, người phụ trách, hoặc `orders:ship` tại kho của
+   * fulfillment – kiểm trong `ShipmentService.shipOrder`.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/ship')
+  ship(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ShipOrderDto,
+  ) {
+    return this.shipments.shipOrder(user, requireTenantId(user), id, dto);
   }
 
   /** A-5: cancel a journey order before its goods leave stock (CONFIRMED / PACKED / PICKED_UP). A packed order's lock goes back to the shelf; a deposit is refunded by the amount the caller names. */
@@ -143,6 +166,7 @@ export class SepayOrderWebhookController {
   constructor(
     private readonly service: OrderService,
     private readonly sepay: SepayOrderService,
+    private readonly delivery: ShipmentDeliveryService,
   ) {}
 
   @RawResponse()
@@ -174,14 +198,28 @@ export class SepayOrderWebhookController {
           ? String(payload.id)
           : null;
 
+      const transferAmount = Number(payload.transferAmount ?? 0);
+
+      // 1. Bán tại quầy: mã nằm trên đơn (`Order.paymentReference`).
       const order = await this.service.completeSepayOrder(
         tenant.id,
         reference,
         transactionId,
-        Number(payload.transferAmount ?? 0),
+        transferAmount,
       );
-      return order
-        ? { success: true, message: 'Order payment confirmed' }
+      if (order) {
+        return { success: true, message: 'Order payment confirmed' };
+      }
+
+      // 2. Thu tiền QR lúc giao (C-5): mã nằm trên khoản thanh toán (`Payment.paymentReference`).
+      const handled = await this.delivery.settleSepayBalance(
+        tenant.id,
+        reference,
+        transactionId,
+        transferAmount,
+      );
+      return handled
+        ? { success: true, message: 'Delivery payment processed' }
         : { success: false, message: 'Order not found or already processed' };
     } catch (error) {
       return {

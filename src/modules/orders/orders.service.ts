@@ -23,6 +23,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { narrowToScope } from '../../common/utils/scope-filter';
 import { SepayOrderService } from './sepay-order.service';
+import { buildSepayQrUrl, requireTenantBanking } from './tenant-banking';
 import { OrderPricingService } from './order-pricing.service';
 import {
   INSTANT_COMPLETE_METHODS,
@@ -111,7 +112,9 @@ export class OrderService {
     if (dto.customerId)
       await this.assertCustomerExists(tenantId, dto.customerId);
     const isSepay = dto.paymentMethod === PaymentMethod.SEPAY;
-    const banking = isSepay ? await this.requireBanking(tenantId) : null;
+    const banking = isSepay
+      ? await requireTenantBanking(this.prisma, tenantId)
+      : null;
 
     const priced = await this.pricing.priceOrder(tenantId, dto);
     const { lines, appliedPromotions, discountType, discountValue } = priced;
@@ -223,7 +226,7 @@ export class OrderService {
       order: this.toResponse(order),
       qrUrl:
         isSepay && banking
-          ? this.sepay.buildQrUrl(banking, grandTotal, paymentReference)
+          ? buildSepayQrUrl(banking, grandTotal, paymentReference)
           : null,
     };
   }
@@ -586,26 +589,6 @@ export class OrderService {
       select: { id: true },
     });
     return customer.id;
-  }
-
-  /** SePay can't be offered without somewhere for the money to land. */
-  private async requireBanking(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        bankingBankName: true,
-        bankingAccountNumber: true,
-        bankingAccountName: true,
-      },
-    });
-    if (!tenant?.bankingAccountNumber || !tenant.bankingBankName) {
-      throw new BadRequestException({
-        code: ErrorCode.TENANT_BANKING_NOT_CONFIGURED,
-        message:
-          'This shop has not configured its bank details for SePay payments',
-      });
-    }
-    return tenant;
   }
 
   /** The money rows for a completed sale. A cash sale with change is two rows, since the drawer really took the full note and handed some back; only the income row carries `orderId`, so `@@unique([orderId, flowType])` still holds when a RETURN writes its own EXPENSE row. */

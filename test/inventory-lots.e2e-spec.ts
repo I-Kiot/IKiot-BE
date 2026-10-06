@@ -465,7 +465,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     expect((await low()).data).toHaveLength(0);
 
     // 6 in total, 3 packed: the total is above 4 but the shelf (3) is not.
-    const [row] = await lock(3);
+    const [{ row }] = await lock(3);
     expect(inventory.lowStockCrossing(row, -3)).not.toBeNull();
     const { data } = await low();
     expect(data).toHaveLength(1);

@@ -1,6 +1,5 @@
 import {
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -15,13 +14,17 @@ import {
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
-import { SystemRole } from '../../common/constants/system-role';
 import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import { assertTransition } from '../orders/order-status';
+import {
+  assertOrderStepAccess,
+  assigneeClaim,
+  OrderStepPermission,
+} from '../orders/order-handler';
 
 /** Đóng gói đơn hàng (C-1): tạo Fulfillment + thùng và khoá hàng tại kho xuất. Route nằm ở OrderController. */
 
@@ -41,31 +44,20 @@ export class FulfillmentService {
           .filter((id): id is string => id !== null),
       ),
     ];
-    if (ids.length !== 1 || lines.some((l) => l.sourceLocationId === null)) {
+    if (ids.length > 1) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        code: ErrorCode.FULFILLMENT_MULTIPLE_SOURCES,
         message:
-          ids.length > 1
-            ? 'Lines ship from more than one location - transfer the goods first'
-            : 'Every line needs a location to ship from',
+          'Lines ship from more than one location - transfer the goods first',
+      });
+    }
+    if (ids.length === 0 || lines.some((l) => l.sourceLocationId === null)) {
+      throw new ConflictException({
+        code: ErrorCode.FULFILLMENT_LINE_NO_SOURCE,
+        message: 'Every line needs a location to ship from',
       });
     }
     return ids[0];
-  }
-
-  /** Chủ / admin đóng ở đâu cũng được; STAFF chỉ ở nơi mình được phân công. TODO: gộp với StockMovementService.canActAt (có cả trưởng ca – supervisesLocation). */
-  private assertCanActAt(user: AuthUser, locationId: string) {
-    if (
-      user.systemRole === SystemRole.TENANT_OWNER ||
-      user.systemRole === SystemRole.ADMIN
-    )
-      return;
-    if ((user.branchId ?? user.warehouseId) !== locationId) {
-      throw new ForbiddenException({
-        code: ErrorCode.FULFILLMENT_LOCATION_DENIED,
-        message: 'You can only pack at your own location',
-      });
-    }
   }
 
   /** Mỗi đơn vị hàng × mỗi kiện khai báo của SKU (ProductPackage); SKU không khai báo kiện = 1 thùng. Một query cho cả đơn. */
@@ -105,7 +97,7 @@ export class FulfillmentService {
   async packOrder(user: AuthUser, orderId: string, dto: PackOrderDto) {
     const tenantId = requireTenantId(user);
     const order = await this.prisma.order.findFirst({
-      where: { id: orderId, tenantId: tenantId },
+      where: { id: orderId, tenantId },
       include: { items: true },
     });
 
@@ -125,22 +117,28 @@ export class FulfillmentService {
     );
     if (lines.length === 0) {
       throw new ConflictException({
-        code: ErrorCode.FULFILLMENT_ORDER_NOT_READY,
+        code: ErrorCode.FULFILLMENT_NOTHING_TO_PACK,
         message: 'Nothing on this order needs packing',
       });
     }
     const locationId = this.packLocationOf(lines);
-    this.assertCanActAt(user, locationId);
+    const access = assertOrderStepAccess(
+      user,
+      order,
+      OrderStepPermission.PACK,
+      locationId,
+    );
     const boxes = await this.boxesFor(lines);
 
     const { fulfillmentId, crossings } = await this.prisma.$transaction(
       async (tx) => {
-        // 1. Nhận đơn: kiểm trạng thái và ghi trong MỘT câu – hai người bấm cùng lúc thì một người nhận 409.
+        // 1. Nhận đơn: kiểm trạng thái (và người phụ trách, nếu nhờ đó mà được phép) và ghi trong MỘT câu – hai người bấm cùng lúc thì một người nhận 409.
         const claimed = await tx.order.updateMany({
           where: {
             id: orderId,
-            tenantId: tenantId,
+            tenantId,
             status: OrderStatus.CONFIRMED,
+            ...assigneeClaim(access, user),
           },
           data: { status: OrderStatus.PACKED },
         });
@@ -199,8 +197,8 @@ export class FulfillmentService {
         );
         return {
           fulfillmentId: fulfillment.id,
-          crossings: locked.map((row, i) =>
-            this.inventory.lowStockCrossing(row, -lines[i].quantity),
+          crossings: locked.map(({ row, quantity }) =>
+            this.inventory.lowStockCrossing(row, -quantity),
           ),
         };
       },
