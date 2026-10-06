@@ -91,6 +91,34 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     branchId,
   } as unknown as AuthUser;
 
+  /** Shipper: role chỉ có shipments:deliver, đứng ở kho. */
+  const driver = {
+    ...owner,
+    userId: driverId,
+    systemRole: SystemRole.STAFF,
+    warehouseId,
+    permissions: new Set(['shipments:deliver']),
+  } as unknown as AuthUser;
+
+  /** Người chỉ có quyền xem, đứng ở `where`. */
+  const reader = (where: { branchId?: string; warehouseId?: string }) =>
+    ({
+      ...owner,
+      userId: outsiderId,
+      systemRole: SystemRole.STAFF,
+      branchId: where.branchId ?? null,
+      warehouseId: where.warehouseId ?? null,
+      permissions: new Set(['shipments:read']),
+    }) as unknown as AuthUser;
+
+  /** STAFF không quyền, không phụ trách, không giao gì. */
+  const outsider = {
+    ...owner,
+    userId: outsiderId,
+    systemRole: SystemRole.STAFF,
+    warehouseId,
+  } as unknown as AuthUser;
+
   /** Đơn CONFIRMED (tổng 1000 × số lượng, cọc 300) rồi đóng gói ở kho bằng tài khoản chủ. */
   async function packedOrder(quantity = 1, inCharge = assigneeId) {
     const id = randomUUID();
@@ -606,6 +634,193 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         {},
       );
       expect(shipment.order.status).toBe(OrderStatus.SHIPPING);
+    });
+  });
+
+  /** Đơn đã đóng gói, đã giao cho shipper `driverId`, đã chuyển Đang vận chuyển. */
+  async function shippedShipment(inCharge = assigneeId) {
+    const orderId = await packedOrder(1, inCharge);
+    const created = await shipments.create(owner, tenantId, internal(orderId));
+    await shipments.shipOrder(owner, tenantId, orderId, {});
+    return { orderId, shipmentId: created.id };
+  }
+
+  describe('GET /shipments, GET /shipments/:id – ai xem được gì', () => {
+    it('shows a shipment to the owner, the person in charge, the driver, and readers at the packing warehouse or the selling branch', async () => {
+      const { shipmentId } = await shippedShipment();
+      for (const viewer of [
+        owner,
+        assignee,
+        driver,
+        reader({ warehouseId }),
+        reader({ branchId }),
+      ]) {
+        const found = await shipments.findOne(viewer, tenantId, shipmentId);
+        expect(found.id).toBe(shipmentId);
+        expect(found.events.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('hides it, as a 404, from a reader posted elsewhere and from someone with no tie to it', async () => {
+      const { shipmentId } = await shippedShipment();
+      for (const viewer of [reader({ branchId: randomUUID() }), outsider]) {
+        await expect(
+          shipments.findOne(viewer, tenantId, shipmentId),
+        ).rejects.toMatchObject({
+          response: { code: ErrorCode.SHIPMENT_NOT_FOUND },
+        });
+      }
+      const elsewhere = await shipments.findAll(
+        reader({ branchId: randomUUID() }),
+        tenantId,
+        { page: 1, limit: 100 },
+      );
+      expect(elsewhere.pagination.total).toBe(0);
+    });
+
+    it("lists only a driver's own shipments", async () => {
+      await shippedShipment();
+      const mine = await shipments.findAll(driver, tenantId, {
+        page: 1,
+        limit: 100,
+      });
+      expect(mine.data.length).toBeGreaterThan(0);
+      expect(mine.data.every((row) => row.driver?.id === driverId)).toBe(true);
+    });
+
+    it('filters by status and searches by order code, and reads from/to as Vietnam calendar days', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const code = `SHIP-${orderId}`;
+      const found = await shipments.findAll(owner, tenantId, {
+        page: 1,
+        limit: 10,
+        status: ShipmentStatus.IN_TRANSIT,
+        search: code,
+      });
+      expect(found.data.map((row) => row.id)).toEqual([shipmentId]);
+      expect(found.data[0]).not.toHaveProperty('events');
+
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+      }).format(new Date());
+      const yesterday = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+      }).format(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      const onToday = await shipments.findAll(owner, tenantId, {
+        page: 1,
+        limit: 10,
+        search: code,
+        from: today,
+        to: today,
+      });
+      expect(onToday.pagination.total).toBe(1);
+      const untilYesterday = await shipments.findAll(owner, tenantId, {
+        page: 1,
+        limit: 10,
+        search: code,
+        to: yesterday,
+      });
+      expect(untilYesterday.pagination.total).toBe(0);
+    });
+  });
+
+  describe('POST /shipments/:id/events – nhật trình', () => {
+    it('lets the driver log "out for delivery", moving the shipment along but not the order', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const shipment = await shipments.addEvent(driver, tenantId, shipmentId, {
+        status: ShipmentStatus.OUT_FOR_DELIVERY,
+        note: 'đang tới',
+        latitude: 21.03,
+        longitude: 105.8,
+      });
+      expect(shipment.status).toBe(ShipmentStatus.OUT_FOR_DELIVERY);
+      expect(shipment.events.at(-1)).toMatchObject({
+        status: ShipmentStatus.OUT_FOR_DELIVERY,
+        latitude: 21.03,
+        longitude: 105.8,
+        createdBy: { id: driverId },
+      });
+      expect(await statusOf(orderId)).toBe(OrderStatus.SHIPPING);
+    });
+
+    it('refuses a shipment that is not on the road yet', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      await expect(
+        shipments.addEvent(owner, tenantId, created.id, {
+          status: ShipmentStatus.OUT_FOR_DELIVERY,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_STATUS_INVALID },
+      });
+    });
+
+    it('refuses someone who is not the owner, in charge, the driver, or holding shipments:update there', async () => {
+      const { shipmentId } = await shippedShipment();
+      await expect(
+        shipments.addEvent(outsider, tenantId, shipmentId, {
+          status: ShipmentStatus.OUT_FOR_DELIVERY,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STEP_DENIED },
+      });
+    });
+
+    it('stops a driver who has just been replaced', async () => {
+      const { shipmentId } = await shippedShipment();
+      await shipments.changeDriver(owner, tenantId, shipmentId, {
+        driverId: ownerId,
+      });
+      await expect(
+        shipments.addEvent(driver, tenantId, shipmentId, {
+          status: ShipmentStatus.OUT_FOR_DELIVERY,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STEP_DENIED },
+      });
+    });
+  });
+
+  describe('POST /shipments/:id/fail – giao không thành', () => {
+    it('marks the shipment FAILED, keeps the order SHIPPING, and tells the person in charge', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      notify.mockClear();
+      const shipment = await shipments.fail(driver, tenantId, shipmentId, {
+        note: 'khách không nghe máy',
+      });
+      expect(shipment.status).toBe(ShipmentStatus.FAILED);
+      expect(shipment.events.at(-1)).toMatchObject({
+        status: ShipmentStatus.FAILED,
+        note: 'khách không nghe máy',
+      });
+      expect(await statusOf(orderId)).toBe(OrderStatus.SHIPPING);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientIds: [assigneeId],
+          type: 'SHIPMENT_FAILED',
+        }),
+      );
+    });
+
+    it('fails once when two people report it at the same moment', async () => {
+      const { shipmentId } = await shippedShipment();
+      const attempts = await Promise.allSettled([
+        shipments.fail(driver, tenantId, shipmentId, { note: 'a' }),
+        shipments.fail(owner, tenantId, shipmentId, { note: 'b' }),
+      ]);
+      expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+      const loser = attempts.find((a) => a.status === 'rejected');
+      expect(loser?.reason?.response?.code).toBe(
+        ErrorCode.SHIPMENT_STATUS_INVALID,
+      );
+      const failedEvents = await prisma.shipmentEvent.count({
+        where: { shipmentId, status: ShipmentStatus.FAILED },
+      });
+      expect(failedEvents).toBe(1);
     });
   });
 });

@@ -16,6 +16,8 @@ export const OrderStepPermission = {
   PACK: { resource: 'orders', action: 'pack' },
   HAND_OVER: { resource: 'shipments', action: 'create' },
   CHANGE_DRIVER: { resource: 'shipments', action: 'update' },
+  /** Ghi nhật trình và báo giao không thành (C-3) – cùng cặp quyền với đổi shipper. */
+  LOG_EVENT: { resource: 'shipments', action: 'update' },
   SHIP: { resource: 'orders', action: 'ship' },
 } as const;
 

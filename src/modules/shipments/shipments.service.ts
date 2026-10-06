@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { NotificationService } from '../notifications/notifications.service';
@@ -12,11 +14,17 @@ import { assertTransition } from '../orders/order-status';
 import {
   assertOrderStepAccess,
   assigneeClaim,
+  orderStepAccess,
   OrderStepPermission,
+  type OrderStepAccess,
 } from '../orders/order-handler';
+import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { ChangeDriverDto } from './dto/change-driver.dto';
 import { ShipOrderDto } from './dto/ship-order.dto';
+import { QueryShipmentDto } from './dto/query-shipment.dto';
+import { AddShipmentEventDto } from './dto/add-shipment-event.dto';
+import { FailShipmentDto } from './dto/fail-shipment.dto';
 import {
   OrderItemStatus,
   OrderStatus,
@@ -34,7 +42,10 @@ import {
 } from '../../common/constants/inventory-ledger';
 import { SystemRole } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
+import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { can } from '../../common/utils/permission';
+import { paginate } from '../../common/utils/pagination';
 import { withNestedProfile } from '../../common/utils/user-profile';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -50,8 +61,8 @@ const PERSON_SELECT = {
   profileAvatarUrl: true,
 } as const;
 
-/** Đủ để dựng `Shipment` của contract §4. */
-const SHIPMENT_DETAIL_INCLUDE = {
+/** Một dòng của danh sách: `Shipment` của contract §4 trừ nhật trình. */
+const SHIPMENT_SUMMARY_INCLUDE = {
   order: {
     select: {
       id: true,
@@ -63,11 +74,46 @@ const SHIPMENT_DETAIL_INCLUDE = {
     },
   },
   driver: { select: PERSON_SELECT },
+} as const satisfies Prisma.ShipmentInclude;
+
+/** Chi tiết: thêm nhật trình. */
+const SHIPMENT_DETAIL_INCLUDE = {
+  ...SHIPMENT_SUMMARY_INCLUDE,
   events: {
     orderBy: { occurredAt: 'asc' },
     include: { createdBy: { select: PERSON_SELECT } },
   },
-} as const;
+} as const satisfies Prisma.ShipmentInclude;
+
+type ShipmentSummaryRow = Prisma.ShipmentGetPayload<{
+  include: typeof SHIPMENT_SUMMARY_INCLUDE;
+}>;
+
+/** Shipment đang trên đường (đơn đã SHIPPING): chỉ ở đây mới ghi nhật trình hay báo giao không thành. */
+const ON_THE_ROAD_STATUSES: readonly string[] = [
+  ShipmentStatus.IN_TRANSIT,
+  ShipmentStatus.OUT_FOR_DELIVERY,
+];
+
+/** Vì sao người gọi được ghi nhật trình / báo thất bại: như các bước của đơn, cộng thêm "là shipper của shipment này". */
+type ShipmentActorAccess = OrderStepAccess | 'DRIVER';
+
+/** Dòng shipment → hình dạng contract §4 (không kèm nhật trình). */
+function toSummary(row: ShipmentSummaryRow) {
+  const { order, driver, ...rest } = row;
+  return {
+    ...rest,
+    shippingCost: rest.shippingCost === null ? null : Number(rest.shippingCost),
+    order: {
+      id: order.id,
+      code: order.code,
+      status: order.status,
+      customerName: order.customer.name,
+      amountDue: amountDueOf(order),
+    },
+    driver: driver ? withNestedProfile(driver) : null,
+  };
+}
 
 /** Số shipper thu khi giao = tổng đơn − tiền cọc (schema: tính chứ không lưu). */
 export function amountDueOf(order: {
@@ -78,9 +124,10 @@ export function amountDueOf(order: {
 }
 
 /**
- * Lấy hàng & giao hàng (C-2, C-8): ghi nhận "ĐVVC đã lấy hàng", đổi shipper, và chuyển đơn sang
- * Đang vận chuyển – bước trừ tồn kho. Ai được làm mỗi bước do `assertOrderStepAccess` quyết định:
- * chủ shop, người phụ trách đơn, hoặc người có quyền của bước đó tại kho của fulfillment.
+ * Lấy hàng & giao hàng: ghi nhận "ĐVVC đã lấy hàng", đổi shipper, chuyển đơn sang Đang vận chuyển –
+ * bước trừ tồn kho (C-2, C-8); xem danh sách / chi tiết, ghi nhật trình, báo giao không thành (C-3).
+ * Ai được làm mỗi bước do `assertOrderStepAccess` quyết định: chủ shop, người phụ trách đơn, hoặc
+ * người có quyền của bước đó tại kho của fulfillment; nhật trình và báo thất bại thêm shipper.
  */
 @Injectable()
 export class ShipmentService {
@@ -496,27 +543,273 @@ export class ShipmentService {
 
   /** Shipment theo hình dạng của contract §4. */
   private async findDetail(tenantId: string, id: string) {
-    const shipment = await this.prisma.shipment.findFirstOrThrow({
+    const { events, ...row } = await this.prisma.shipment.findFirstOrThrow({
       where: { id, tenantId },
       include: SHIPMENT_DETAIL_INCLUDE,
     });
-    const { order, driver, events, ...rest } = shipment;
     return {
-      ...rest,
-      shippingCost:
-        rest.shippingCost === null ? null : Number(rest.shippingCost),
-      order: {
-        id: order.id,
-        code: order.code,
-        status: order.status,
-        customerName: order.customer.name,
-        amountDue: amountDueOf(order),
-      },
-      driver: driver ? withNestedProfile(driver) : null,
+      ...toSummary(row),
       events: events.map(({ createdBy, ...event }) => ({
         ...event,
         createdBy: createdBy ? withNestedProfile(createdBy) : null,
       })),
     };
   }
+
+  // ─── Đọc & nhật trình (C-3) ─────────────────────────────────────────────────
+
+  /** GET /shipments: các shipment người gọi được xem (`visibleWhere`), mới nhất trước. */
+  async findAll(user: AuthUser, tenantId: string, query: QueryShipmentDto) {
+    const where: Prisma.ShipmentWhereInput = {
+      AND: [
+        this.visibleWhere(user, tenantId),
+        {
+          ...(query.status ? { status: query.status } : {}),
+          ...(query.carrierType ? { carrierType: query.carrierType } : {}),
+          ...(query.driverId ? { driverId: query.driverId } : {}),
+          ...createdWithin(query.from, query.to),
+        },
+        query.search ? searchWhere(query.search) : {},
+      ],
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.shipment.count({ where }),
+      this.prisma.shipment.findMany({
+        where,
+        include: SHIPMENT_SUMMARY_INCLUDE,
+        orderBy: { createdAt: 'desc' },
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+    ]);
+    return paginate(rows.map(toSummary), total, query.page, query.limit);
+  }
+
+  /** GET /shipments/:id: ngoài phạm vi xem thì 404 – như không tồn tại. */
+  async findOne(user: AuthUser, tenantId: string, id: string) {
+    const visible = await this.prisma.shipment.findFirst({
+      where: { AND: [this.visibleWhere(user, tenantId), { id }] },
+      select: { id: true },
+    });
+    if (!visible) {
+      throw new NotFoundException({
+        code: ErrorCode.SHIPMENT_NOT_FOUND,
+        message: 'Shipment not found',
+      });
+    }
+    return this.findDetail(tenantId, id);
+  }
+
+  /** POST /shipments/:id/events: nhật trình chỉ mang OUT_FOR_DELIVERY và đẩy shipment sang "Đang đi giao". Không đổi trạng thái đơn. */
+  async addEvent(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: AddShipmentEventDto,
+  ) {
+    const shipment = await this.loadOnTheRoad(user, tenantId, id);
+    await this.prisma.$transaction(async (tx) => {
+      await this.claimOnTheRoad(tx, shipment, user, {
+        status: ShipmentStatus.OUT_FOR_DELIVERY,
+      });
+      await tx.shipmentEvent.create({
+        data: {
+          shipmentId: id,
+          status: dto.status,
+          source: ShipmentEventSource.MANUAL,
+          note: dto.note ?? null,
+          latitude: dto.latitude ?? null,
+          longitude: dto.longitude ?? null,
+          createdById: user.userId,
+        },
+      });
+    });
+    return this.findDetail(tenantId, id);
+  }
+
+  /** POST /shipments/:id/fail: shipment → FAILED, đơn giữ SHIPPING (hàng đã rời kho, quay về qua phiếu hoàn hàng DELIVERY_FAILED). */
+  async fail(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: FailShipmentDto,
+  ) {
+    const shipment = await this.loadOnTheRoad(user, tenantId, id);
+    await this.prisma.$transaction(async (tx) => {
+      await this.claimOnTheRoad(tx, shipment, user, {
+        status: ShipmentStatus.FAILED,
+      });
+      await tx.shipmentEvent.create({
+        data: {
+          shipmentId: id,
+          status: ShipmentStatus.FAILED,
+          source: ShipmentEventSource.MANUAL,
+          note: dto.note,
+          createdById: user.userId,
+        },
+      });
+    });
+
+    // Sau commit: người phụ trách là người lo phiếu hoàn hàng. Tự báo thất bại thì không tự báo cho mình.
+    const { assigneeId, code } = shipment.order;
+    if (assigneeId && assigneeId !== user.userId) {
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [assigneeId],
+        referenceId: id,
+        ...ShipmentNotificationTemplates.failed(id, code),
+      });
+    }
+    return this.findDetail(tenantId, id);
+  }
+
+  /**
+   * Ai được xem shipment nào (chốt 2026-10-06): chủ shop mọi shipment; người khác thấy shipment khi là
+   * người phụ trách đơn, là shipper, hoặc có `shipments:read` và đứng ở kho của fulfillment **hoặc** chi
+   * nhánh bán đơn – quản lý showroom theo dõi được đơn mình bán dù hàng xuất từ kho tổng. Chỉ cho xem;
+   * các thao tác ghi vẫn theo kho của fulfillment (`assertOrderStepAccess`).
+   */
+  private visibleWhere(
+    user: AuthUser,
+    tenantId: string,
+  ): Prisma.ShipmentWhereInput {
+    if (
+      user.systemRole === SystemRole.TENANT_OWNER ||
+      user.systemRole === SystemRole.ADMIN
+    ) {
+      return { tenantId };
+    }
+    const reachable: Prisma.ShipmentWhereInput[] = [
+      { order: { assigneeId: user.userId } },
+      { driverId: user.userId },
+    ];
+    const posting = user.branchId ?? user.warehouseId;
+    if (posting && can(user, 'shipments', 'read')) {
+      reachable.push(
+        { fulfillment: { locationId: posting } },
+        { order: { branchId: posting } },
+      );
+    }
+    return { tenantId, OR: reachable };
+  }
+
+  /** Nạp shipment cho ghi nhật trình / báo thất bại, kiểm ai được làm và shipment đang trên đường. */
+  private async loadOnTheRoad(user: AuthUser, tenantId: string, id: string) {
+    const shipment = await this.prisma.shipment.findFirst({
+      where: { id, tenantId },
+      select: {
+        id: true,
+        status: true,
+        driverId: true,
+        fulfillment: { select: { locationId: true } },
+        order: {
+          select: { id: true, code: true, status: true, assigneeId: true },
+        },
+      },
+    });
+    if (!shipment) {
+      throw new NotFoundException({
+        code: ErrorCode.SHIPMENT_NOT_FOUND,
+        message: 'Shipment not found',
+      });
+    }
+    const access = this.shipmentActorAccess(user, shipment);
+    // Chỉ báo sớm; chỗ chặn thật là câu ghi có điều kiện trong `claimOnTheRoad`.
+    if (
+      shipment.order.status !== OrderStatus.SHIPPING ||
+      !ON_THE_ROAD_STATUSES.includes(shipment.status)
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_STATUS_INVALID,
+        message: `A ${shipment.status} shipment of a ${shipment.order.status} order is not on the road`,
+      });
+    }
+    return { ...shipment, access };
+  }
+
+  /** Chủ shop / người phụ trách / `shipments:update` tại kho của fulfillment (như các bước của đơn), hoặc shipper của chính shipment này. */
+  private shipmentActorAccess(
+    user: AuthUser,
+    shipment: {
+      driverId: string | null;
+      fulfillment: { locationId: string };
+      order: { assigneeId: string | null };
+    },
+  ): ShipmentActorAccess {
+    const access = orderStepAccess(
+      user,
+      shipment.order,
+      OrderStepPermission.LOG_EVENT,
+      shipment.fulfillment.locationId,
+    );
+    if (access) return access;
+    if (shipment.driverId === user.userId) return 'DRIVER';
+    throw new ForbiddenException({
+      code: ErrorCode.ORDER_STEP_DENIED,
+      message:
+        "Only the shop owner, the order's person in charge, the shipment's driver, or someone holding shipments:update at this location can do this",
+    });
+  }
+
+  /**
+   * Ghi trạng thái mới chỉ khi shipment vẫn đang trên đường và đơn vẫn SHIPPING – hai người cùng báo
+   * thất bại, hay thất bại đúng lúc giao xong, thì một người nhận 409. Người được phép nhờ là người phụ
+   * trách / shipper thì phải vẫn còn là người đó lúc ghi.
+   */
+  private async claimOnTheRoad(
+    tx: Prisma.TransactionClient,
+    shipment: { id: string; access: ShipmentActorAccess },
+    user: AuthUser,
+    data: { status: string },
+  ) {
+    const updated = await tx.shipment.updateMany({
+      where: {
+        id: shipment.id,
+        status: { in: [...ON_THE_ROAD_STATUSES] },
+        order: {
+          status: OrderStatus.SHIPPING,
+          ...(shipment.access === 'ASSIGNEE'
+            ? { assigneeId: user.userId }
+            : {}),
+        },
+        ...(shipment.access === 'DRIVER' ? { driverId: user.userId } : {}),
+      },
+      data,
+    });
+    if (updated.count !== 1) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_STATUS_INVALID,
+        message: 'The shipment has just changed, please reload',
+      });
+    }
+  }
+}
+
+/** `from` / `to` (YYYY-MM-DD) là ngày theo giờ Việt Nam: đơn tạo lúc 23:30 thuộc đúng ngày đó, không bị đẩy sang hôm sau. */
+function createdWithin(
+  from: string | undefined,
+  to: string | undefined,
+): Prisma.ShipmentWhereInput {
+  if (!from && !to) return {};
+  const day = (value: string) =>
+    businessDayRange(new Date(`${value}T00:00:00Z`), VIETNAM_TIMEZONE);
+  return {
+    createdAt: {
+      ...(from ? { gte: day(from).start } : {}),
+      ...(to ? { lt: day(to).end } : {}),
+    },
+  };
+}
+
+/** Tìm theo mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
+function searchWhere(search: string): Prisma.ShipmentWhereInput {
+  const contains = { contains: search, mode: 'insensitive' as const };
+  return {
+    OR: [
+      { order: { code: contains } },
+      { trackingCode: contains },
+      { recipientName: contains },
+      { recipientPhone: contains },
+    ],
+  };
 }

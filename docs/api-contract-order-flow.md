@@ -403,19 +403,26 @@ cập nhật qua webhook – sau; Phase 1 đánh tay)*.
 
 | Route | Quyền | Body | Task (BE · FE) |
 |---|---|---|---|
-| `GET /shipments` | `shipments:read` | `page, limit, status, carrierType, driverId, from, to, search` | C-3 · C-9 |
+| `GET /shipments` | xem "Ai xem được shipment" dưới bảng | `page, limit, status, carrierType, driverId, from, to` (`YYYY-MM-DD`, trọn ngày giờ Việt Nam), `search` (mã đơn, mã vận đơn, tên / SĐT người nhận). Mới nhất trước; mỗi dòng là `Shipment` **không kèm `events`** | C-3 · C-9 |
 | `GET /shipments/mine` | `shipments:deliver` | đơn cần giao của chính shipper (`driverId` = mình, chưa kết thúc), **kèm `order.amountDue`** | C-5 · C-7 |
-| `GET /shipments/:id` | `shipments:read` hoặc là driver | | C-3 · C-9, C-7 |
+| `GET /shipments/:id` | như `GET /shipments` | `Shipment` kèm `events`. Ngoài phạm vi xem → `SHIPMENT_NOT_FOUND` (404, như không tồn tại) | C-3 · C-9, C-7 |
 | `POST /shipments` | chủ shop · người phụ trách đơn · `shipments:create` tại kho của fulfillment (§2 "Ai làm bước nào") | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **đây là bước "ĐVVC đã lấy hàng"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`). Trong **một transaction**: nhận đơn bằng `updateMany(status: PACKED)` → `PICKED_UP` (thua → `ORDER_STATUS_CONFLICT`), fulfillment `PACKED` → `HANDED_OVER` + `handedOverAt`, shipment `PICKED_UP` + event. Tồn kho không đổi (hàng vẫn khoá). `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`); `EXTERNAL` không được có (`SHIPMENT_DRIVER_NOT_ALLOWED`). Người nhận / địa chỉ chép từ đơn. `carrierName` + `trackingCode` đã có ở shipment khác → `SHIPMENT_TRACKING_TAKEN` (ràng buộc `@@unique([carrierName, trackingCode])` toàn hệ thống – mã vận đơn là của ĐVVC). Sau commit báo shipper (trừ khi tự gán mình). Trả về `Shipment`. | C-2, C-8 · C-9 |
 | `PATCH /shipments/:id/driver` | chủ shop · người phụ trách đơn · `shipments:update` tại kho của fulfillment | `{ driverId }` – đổi shipper / thợ của shipment `INTERNAL` (`EXTERNAL` → `SHIPMENT_DRIVER_NOT_ALLOWED`) chưa kết thúc (kết thúc, hoặc vừa kết thúc lúc ghi → `SHIPMENT_STATUS_INVALID`); báo shipper mới | C-8 · C-9 |
+| `POST /shipments/:id/events` | chủ shop · người phụ trách đơn · **shipper của shipment** · `shipments:update` tại kho của fulfillment | `{ status, note?, latitude?, longitude? }` – ghi nhật trình. `status` **chỉ được `OUT_FOR_DELIVERY`** (chốt 2026-10-06) và đẩy shipment sang `OUT_FOR_DELIVERY`; không đổi trạng thái đơn. Chỉ khi đơn `SHIPPING` và shipment `IN_TRANSIT` / `OUT_FOR_DELIVERY`, khác → `SHIPMENT_STATUS_INVALID` | C-3 · C-9 |
+| `POST /shipments/:id/deliver` | `shipments:deliver` (driver `INTERNAL`) hoặc `shipments:update` (`EXTERNAL`, đánh tay) | `DeliverDto` dưới. Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`). | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
+| `POST /shipments/:id/fail` | như `events` | `{ note }` (bắt buộc) → shipment `FAILED` + event; đơn giữ `SHIPPING` (hàng đã rời kho) – hàng quay về đi đường hoàn hàng `DELIVERY_FAILED` (§5). Cùng điều kiện trạng thái như `events`; hai người báo cùng lúc thì một người nhận `SHIPMENT_STATUS_INVALID`. Sau commit báo người phụ trách đơn | C-3 · C-9 |
+| `POST /webhook/carriers/:carrier` | `@Public()` + chữ ký | *(sau – ĐVVC / Shopee)* | C-4, E-8 (Phase 2) |
 
 **Ai làm shipper được** (`driverId`, chốt 2026-10-06): **chủ shop**, **người phụ trách của đơn đó**, hoặc
 STAFF đang `ACTIVE` có `shipments:deliver` trong role. Khác → `SHIPMENT_DRIVER_INVALID`. Quyền trưởng ca
 không tính (hết theo giờ, còn việc giao kéo dài qua ca).
-| `POST /shipments/:id/events` | `shipments:update` | `{ status, note?, latitude?, longitude? }` – ghi nhật trình, không đổi trạng thái đơn | C-3 · C-9 |
-| `POST /shipments/:id/deliver` | `shipments:deliver` (driver `INTERNAL`) hoặc `shipments:update` (`EXTERNAL`, đánh tay) | `DeliverDto` dưới. Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`). | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
-| `POST /shipments/:id/fail` | `shipments:update` hoặc driver | `{ note }` → `FAILED`; đơn giữ `SHIPPING` (hàng đã rời kho) – hàng quay về đi đường hoàn hàng `DELIVERY_FAILED` (§5) | C-3 · C-9 |
-| `POST /webhook/carriers/:carrier` | `@Public()` + chữ ký | *(sau – ĐVVC / Shopee)* | C-4, E-8 (Phase 2) |
+
+**Ai xem được shipment** (C-3, chốt 2026-10-06): chủ shop xem mọi shipment; người khác thấy shipment khi
+là **người phụ trách đơn**, là **shipper** của shipment, hoặc có `shipments:read` và đứng ở **kho của
+fulfillment** hoặc **chi nhánh bán đơn** (quản lý showroom theo dõi được đơn mình bán dù hàng xuất từ kho
+tổng). Chỉ áp cho xem – ghi vẫn theo kho của fulfillment. Một hàm `visibleWhere` dùng cho cả danh sách lẫn
+chi tiết. `events` / `fail`: người được phép nhờ là người phụ trách / shipper thì câu ghi kèm điều kiện
+"vẫn là người đó", nên bị đổi giữa chừng thì không ghi được.
 
 ```ts
 DeliverDto = {

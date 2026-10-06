@@ -11,4 +11,12 @@ export const ShipmentNotificationTemplates = {
     description: `Bạn được giao đơn ${orderCode}.`,
     link: link(shipmentId),
   }),
+
+  /** Báo người phụ trách đơn: giao không thành, hàng phải đi đường hoàn hàng. */
+  failed: (shipmentId: string, orderCode: string): NotificationContent => ({
+    type: 'SHIPMENT_FAILED',
+    title: 'Giao hàng không thành',
+    description: `Đơn ${orderCode} giao không thành, cần tạo phiếu hoàn hàng.`,
+    link: link(shipmentId),
+  }),
 };
