@@ -440,6 +440,10 @@ export const ErrorCode = {
   // --- Order edit (A-8, 2026-10-06) -----------------------------------------
   /** An edit would drop an order line a production request was raised for; take it off the request first. */
   ORDER_ITEM_IN_PRODUCTION: 'ORDER_ITEM_IN_PRODUCTION',
+
+  // --- Health (2026-10-07) --------------------------------------------------
+  /** `GET /health/ready`: the database is unreachable or misses a migration this build ships. */
+  SERVICE_NOT_READY: 'SERVICE_NOT_READY',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
