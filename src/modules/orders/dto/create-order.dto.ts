@@ -19,6 +19,7 @@ import {
 } from '../../../common/constants/order-status';
 import { DEPOSIT_METHODS } from '../../../common/constants/payment-method';
 import { AppliedPromotionDto } from './order.dto';
+import { OrderItemCustomizationDto } from './order-item-customization.dto';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -66,7 +67,11 @@ export class CreateOrderItemDto {
   @IsUUID()
   sourceLocationId?: string;
 
-  // No `customization` yet: a custom line gets its own ProductItem, which is A-4's job (`PUT /orders/:id/items/:itemId/customization`).
+  /** Made to the customer's measure: the line gets a ProductItem of its own in the same transaction as the order (A-4). Later changes go through `PUT /orders/:id/items/:itemId/customization`. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => OrderItemCustomizationDto)
+  customization?: OrderItemCustomizationDto;
 }
 
 /** A customer typed in on the order form rather than picked from the list. Matched to an existing customer by phone first. */

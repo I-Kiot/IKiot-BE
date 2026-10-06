@@ -15,6 +15,12 @@
     "outDir": "./dist",
     "incremental": true,
     "skipLibCheck": true,
+    // `strict` and `types` are spelled out because TypeScript 6 (what VS Code bundles) flipped
+    // their defaults - strict on, no @types loaded - while the project builds with 5.x. Pinning
+    // them keeps the editor and `tsc` agreeing whichever version reads this file. No `baseUrl`:
+    // nothing imports through it, and TS 6 rejects it.
+    "strict": false,
+    "types": ["node", "jest", "multer"],
     "strictNullChecks": true,
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,

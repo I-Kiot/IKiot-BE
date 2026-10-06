@@ -308,10 +308,17 @@ export const ErrorCode = {
 
   // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
+  /** No longer raised: packing now answers ORDER_STEP_DENIED, the one refusal every journey step shares. Kept because codes are append-only. */
   FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
   FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
-  /** The order is not READY_TO_PACK. */
+  /** No longer raised: split into FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK, so the client can say what to do. Kept because codes are append-only. */
   FULFILLMENT_ORDER_NOT_READY: 'FULFILLMENT_ORDER_NOT_READY',
+  /** The order's lines ship from more than one location - transfer the goods to one place before packing. */
+  FULFILLMENT_MULTIPLE_SOURCES: 'FULFILLMENT_MULTIPLE_SOURCES',
+  /** A line to be packed has no location to ship from. */
+  FULFILLMENT_LINE_NO_SOURCE: 'FULFILLMENT_LINE_NO_SOURCE',
+  /** Nothing on the order holds stock (only combo parents / services), so there is nothing to pack. */
+  FULFILLMENT_NOTHING_TO_PACK: 'FULFILLMENT_NOTHING_TO_PACK',
   /** A multi-package item is missing packages. */
   FULFILLMENT_PACKAGES_INCOMPLETE: 'FULFILLMENT_PACKAGES_INCOMPLETE',
   FULFILLMENT_QTY_EXCEEDS: 'FULFILLMENT_QTY_EXCEEDS',
@@ -411,14 +418,28 @@ export const ErrorCode = {
   IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST:
     'IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST',
   SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
+  /** The named driver is not the shop owner, the order's person in charge, or an active staff member holding shipments:deliver. */
+  SHIPMENT_DRIVER_INVALID: 'SHIPMENT_DRIVER_INVALID',
+  /** An EXTERNAL (third-party carrier) shipment has no driver of ours. */
+  SHIPMENT_DRIVER_NOT_ALLOWED: 'SHIPMENT_DRIVER_NOT_ALLOWED',
+  /** A journey step (pack, hand over, change driver, ship) is open to the shop owner, the order's person in charge, or someone holding that step's permission at that location - and the caller is none of them. */
+  ORDER_STEP_DENIED: 'ORDER_STEP_DENIED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
+  /** Confirming a delivery is for our own shippers only; a third-party carrier's delivery is reported automatically (C-4, later). */
+  SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
+  /** "The customer paid cash instead" needs a QR balance still waiting for its transfer - there is none, or the money has just arrived. */
+  ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
   // --- Order cancel (A-5, 2026-10-05) ---------------------------------------
   /** The order holds a deposit, so whoever cancels must say how much of it goes back (0 = the shop keeps it). */
   ORDER_REFUND_AMOUNT_REQUIRED: 'ORDER_REFUND_AMOUNT_REQUIRED',
   /** More refunded than the deposit still held. */
   ORDER_REFUND_EXCEEDS_DEPOSIT: 'ORDER_REFUND_EXCEEDS_DEPOSIT',
+
+  // --- Order edit (A-8, 2026-10-06) -----------------------------------------
+  /** An edit would drop an order line a production request was raised for; take it off the request first. */
+  ORDER_ITEM_IN_PRODUCTION: 'ORDER_ITEM_IN_PRODUCTION',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

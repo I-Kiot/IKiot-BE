@@ -6,6 +6,10 @@ import { LocationStatus } from '../../common/constants/location-status';
 import { UserStatus } from '../../common/constants/user-status';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { LOCATION_INCLUDE } from './location.types';
+import {
+  assertCanBecomeSellable,
+  assertDamagedLocationTarget,
+} from './damaged-location';
 import type { LocationConfig, LocationRow } from './location.types';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -25,6 +29,10 @@ export interface LocationInput {
   address?: string;
   email?: string;
   status?: string;
+  /** Warehouses only (CreateWarehouseDto); a branch's DTO has no such field. */
+  isSellable?: boolean;
+  /** `null` clears it. */
+  damagedLocationId?: string | null;
 }
 
 /** Everything a branch and a warehouse do identically. They used to be two ~220-line services that were 90% the same text, and that symmetry had already broken once: BranchService refused to move a staff member out of their current location and WarehouseService silently did it. What actually differs is passed in as a `LocationConfig`.
@@ -108,6 +116,12 @@ export abstract class LocationService {
         }),
       this.config.messages.quotaLabel,
     );
+    await assertDamagedLocationTarget(
+      this.prisma,
+      tenantId,
+      null,
+      dto.damagedLocationId,
+    );
 
     // The specialization row takes the Location's own id, which is what lets every API
     // reference (`branchId`, `locationId`, ...) name either table interchangeably.
@@ -125,6 +139,8 @@ export abstract class LocationService {
         phoneNumber: dto.phoneNumber ?? [],
         address: dto.address,
         email: dto.email,
+        isSellable: dto.isSellable,
+        damagedLocationId: dto.damagedLocationId,
       },
       include: LOCATION_INCLUDE,
     });
@@ -137,7 +153,16 @@ export abstract class LocationService {
 
   async update(tenantId: string, id: string, dto: LocationInput) {
     // Prisma's update({ where: { id } }) can't take a non-unique tenant filter, so scope has to be re-checked first or any tenant could write any row by id.
-    await this.findRow(tenantId, id);
+    const existing = await this.findRow(tenantId, id);
+    await assertDamagedLocationTarget(
+      this.prisma,
+      tenantId,
+      id,
+      dto.damagedLocationId,
+    );
+    if (dto.isSellable === true && !existing.isSellable) {
+      await assertCanBecomeSellable(this.prisma, tenantId, id);
+    }
 
     const row = await this.prisma.location.update({
       where: { id },
@@ -147,6 +172,8 @@ export abstract class LocationService {
         address: dto.address,
         email: dto.email,
         status: dto.status,
+        isSellable: dto.isSellable,
+        damagedLocationId: dto.damagedLocationId,
       },
       include: LOCATION_INCLUDE,
     });

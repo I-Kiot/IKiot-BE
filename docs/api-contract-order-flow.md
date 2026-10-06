@@ -14,10 +14,6 @@
 > **Ngoại lệ (2026-10-04): khoá hàng khi đóng gói.** `hanh-trinh-don-hang.md` và file này đã cập nhật,
 > Notion v2 **chưa** (P0-5, B-2, C-1, C-2, C-6, C-9, A-5, A-8 vẫn ghi "không giữ hàng", "đóng hàng chỉ
 > cảnh báo, C-2 mới chặn"). Ở những điểm đó, theo hai file trong repo cho tới khi Notion được sửa.
->
-> **Ngoại lệ (2026-10-04): khoá hàng khi đóng gói.** `hanh-trinh-don-hang.md` và file này đã cập nhật,
-> Notion v2 **chưa** (P0-5, B-2, C-1, C-2, C-6, C-9, A-5, A-8 vẫn ghi "không giữ hàng", "đóng hàng chỉ
-> cảnh báo, C-2 mới chặn"). Ở những điểm đó, theo hai file trong repo cho tới khi Notion được sửa.
 > Cần đổi contract → nhắn Astersa, **không tự sửa route/field của track khác**.
 >
 > **Phase 1 = luồng tạo đơn bằng tay.** Phần Shopee (đơn `PENDING_CONFIRMATION`, xác nhận đơn
@@ -96,8 +92,7 @@ Tất cả nhận `tx` (Prisma transaction client) của caller. Bất biến: �
 
 | Hàm | Dùng ở | Ghi chú |
 |---|---|---|
-| `lockStock(tx, [{ tenantId, locationId, productItemId, quantity, label }])` → `Inventory[]` | `POST /orders/:id/pack` (C-1, `FulfillmentService.packOrder`) | Khoá từng dòng trong câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`; thử hết các dòng rồi báo **một** `INSUFFICIENT_STOCK` liệt kê mọi dòng thiếu. Không ghi sổ kho (hàng chưa đi). |
-| `lockStock(tx, [{ tenantId, locationId, productItemId, quantity, label }])` → `Inventory[]` | `POST /orders/:id/pack` (C-1, `FulfillmentService.packOrder`) | Khoá từng dòng trong câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`; thử hết các dòng rồi báo **một** `INSUFFICIENT_STOCK` liệt kê mọi dòng thiếu. Không ghi sổ kho (hàng chưa đi). |
+| `lockStock(tx, [{ tenantId, locationId, productItemId, quantity, label }])` → `LockedLine[]` (`{ row, quantity }` mỗi dòng) | `POST /orders/:id/pack` (C-1, `FulfillmentService.packOrder`) | Khoá từng dòng trong câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`; thử hết các dòng rồi báo **một** `INSUFFICIENT_STOCK` liệt kê mọi dòng thiếu. Không ghi sổ kho (hàng chưa đi). |
 | `shipLockedStock(tx, { tenantId, locationId, productItemId, quantity, label, ledger })` | `POST /orders/:id/ship` (C-2) | Trừ `stock` và `locked_stock` cùng lúc + rút lô FIFO. Luồng đơn gọi với `ledger: { type: SALE, referenceType: ORDER, referenceId: orderId, orderItemId, createdById }` – **bắt buộc có `orderItemId`** thì hoàn hàng mới tìm lại đúng lô. Khoá không đủ → `INVENTORY_LOCK_MISMATCH`. |
 | `releaseLockedStock(tx, { tenantId, locationId, productItemId, quantity, label })` | hủy / sửa đơn đã `PACKED` (A-5, A-8) | Trả phần khoá về kệ, không ghi sổ. Khoá không đủ → `INVENTORY_LOCK_MISMATCH`. |
 | `deductStock(tx, { tenantId, locationId, productItemId, quantity, label, ledger })` | bán quầy, xuất chuyển kho, kiểm kê thiếu | Trừ hàng **trên kệ** + rút lô FIFO trong cùng câu `UPDATE` có điều kiện `stock − locked_stock ≥ quantity`. Thiếu → `INSUFFICIENT_STOCK`. **Không** dùng cho đơn đã đóng gói. |
@@ -128,8 +123,6 @@ PENDING_CONFIRMATION (chỉ Shopee – sau)
         │ POST /orders/:id/confirm                                  (A-3)
         ▼
 CONFIRMED ──POST /orders/:id/pack──▶ PACKED ──POST /shipments──▶ PICKED_UP
-(đơn tay tạo ra ở đây, A-2)  (C-1: khoá hàng, thiếu là chặn)     (C-2)       (ĐVVC đã lấy hàng)
-                                                                     │ POST /orders/:id/ship  (C-2) ← trừ tồn kho (đúng phần đã khoá)
 (đơn tay tạo ra ở đây, A-2)  (C-1: khoá hàng, thiếu là chặn)     (C-2)       (ĐVVC đã lấy hàng)
                                                                      │ POST /orders/:id/ship  (C-2) ← trừ tồn kho (đúng phần đã khoá)
                                                                      ▼
@@ -213,20 +206,36 @@ B-2). Mọi chỗ trong file này ghi "tại `sourceLocation`" là đề xuất 
 
 | Route | Quyền | Body / query | Task (BE · FE) |
 |---|---|---|---|
-| `GET /orders` | `orders:read` (+`view_all` để xem mọi chi nhánh) | `page, limit, search` (mã đơn, tên/SĐT khách), `status`, `channel`, `assigneeId`, `branchId`, `priority`, `stockSummary`, `cashRemittanceStatus`, `from`, `to`, `sort` (`createdAt` \| `requestedDeliveryDate` \| `priority`) | A-9 · D-1 |
+| `GET /orders` | `orders:read` (+`view_all` để xem mọi chi nhánh) | `page, limit, search` (mã đơn, tên/SĐT khách), `status`, `channel`, `assigneeId`, `branchId`, `priority`, `stockSummary`, `cashRemittanceStatus`, `from`, `to`, `sort` (`createdAt` \| `requestedDeliveryDate` \| `priority`), `excludePos` (`true` = bỏ đơn POS `TAKEAWAY`; **màn hành trình phải gửi** – POS liệt kê qua cùng route nên mặc định không lọc, chốt 2026-10-06) | A-9 · D-1 |
 | `GET /orders/:id` | `orders:read` | → `OrderDetail` | A-9 · D-3 |
 | `POST /orders` | `orders:create` | `CreateOrderDto` dưới → đơn **`CONFIRMED`**, `confirmedBy` = người tạo. Không giữ hàng, không chặn vì tồn kho. Ghi `Payment` cọc (E-5). | A-2 · D-2 |
-| `PATCH /orders/:id` | `orders:update` | Cùng field với create. Chỉ khi đơn **chưa Đang vận chuyển** (`CONFIRMED` / `PACKED` / `PICKED_UP`) → khác: `ORDER_NOT_EDITABLE`. Đổi item / giảm giá / phí ship thì tính lại `grandTotal`, `deposit.amount` (nếu cọc theo %) và `amountDue`; danh sách cần sản xuất tự phản ánh vì tính lúc xem (B-4). Đơn đã `PACKED` / `PICKED_UP` mà đổi item / số lượng: hàng đã khoá phải khớp lại – **chờ chốt**: chặn sửa item sau khi đóng gói (`ORDER_NOT_EDITABLE`), hay giảm thì `releaseLockedStock`, tăng thì `lockStock` (thiếu → chặn) và đóng gói lại. | A-8 · D-7 |
-| `PATCH /orders/:id/assignee` | `orders:update` | `{ assigneeId }` – khi đơn chưa Đang vận chuyển | A-8 · D-7 |
-| `PATCH /orders/:id/priority` | `orders:update` | `{ priority }` – khi đơn chưa Đang vận chuyển (không cần mở form sửa đơn) | A-8 · D-7 |
-| `PUT /orders/:id/items/:itemId/customization` | `orders:update` | `OrderItemCustomization`. Lần đầu: tạo ProductItem mới cùng sản phẩm, chuyển dòng sang, `isCustom = true`. Chỉ khi `CONFIRMED`; khoá khi dòng đã nằm trong một YCSX đã `SENT` (§3) → `ORDER_ITEM_CUSTOM_LOCKED`. | A-4 · D-2 (đơn tay), D-8 (Shopee, Phase 2) |
-| `POST /orders/:id/pack` | `orders:pack` **(mới)** | `{ note? }` (ghi vào `Fulfillment.exceptionNote`) – `CONFIRMED` → `PACKED`. Trong **một transaction**: nhận đơn bằng `updateMany(status: CONFIRMED)` (thua → `ORDER_STATUS_CONFLICT` 409), tạo `Fulfillment` `PACKED` + `FulfillmentItem` + **FulfillmentPackage tự sinh** (mỗi đơn vị × mỗi `ProductPackage` của SKU, không khai báo = 1 thùng; mã `PK…`), ghi `verifiedBy` = người bấm. **Khoá hàng** (`lockStock`) từng dòng `STOCKED_LINE_TYPES` tại kho đóng gói, cùng transaction; dòng nào `actualStock < quantity` → `INSUFFICIENT_STOCK` (400) liệt kê mọi dòng thiếu, không khoá dòng nào. Không trừ `stock`. `notifyLowStock` sau commit. Kho đóng gói = `sourceLocationId` chung của các dòng (thiếu / nhiều kho → `FULFILLMENT_ORDER_NOT_READY`); STAFF chỉ đóng ở nơi được phân công (`FULFILLMENT_LOCATION_DENIED`). Đơn không ở `CONFIRMED` → `ORDER_STATUS_TRANSITION_INVALID` (tạm, tới khi có A-1). Trả về Fulfillment kèm `items`, `packages`. Dòng đơn giữ `PENDING`. Test: `test/order-pack.e2e-spec.ts`. | C-1 · C-6 |
-| `POST /orders/:id/pack` | `orders:pack` **(mới)** | `{ note? }` (ghi vào `Fulfillment.exceptionNote`) – `CONFIRMED` → `PACKED`. Trong **một transaction**: nhận đơn bằng `updateMany(status: CONFIRMED)` (thua → `ORDER_STATUS_CONFLICT` 409), tạo `Fulfillment` `PACKED` + `FulfillmentItem` + **FulfillmentPackage tự sinh** (mỗi đơn vị × mỗi `ProductPackage` của SKU, không khai báo = 1 thùng; mã `PK…`), ghi `verifiedBy` = người bấm. **Khoá hàng** (`lockStock`) từng dòng `STOCKED_LINE_TYPES` tại kho đóng gói, cùng transaction; dòng nào `actualStock < quantity` → `INSUFFICIENT_STOCK` (400) liệt kê mọi dòng thiếu, không khoá dòng nào. Không trừ `stock`. `notifyLowStock` sau commit. Kho đóng gói = `sourceLocationId` chung của các dòng (thiếu / nhiều kho → `FULFILLMENT_ORDER_NOT_READY`); STAFF chỉ đóng ở nơi được phân công (`FULFILLMENT_LOCATION_DENIED`). Đơn không ở `CONFIRMED` → `ORDER_STATUS_TRANSITION_INVALID` (tạm, tới khi có A-1). Trả về Fulfillment kèm `items`, `packages`. Dòng đơn giữ `PENDING`. Test: `test/order-pack.e2e-spec.ts`. | C-1 · C-6 |
-| `POST /orders/:id/ship` | `orders:ship` **(mới)** | `{ note? }` – `PICKED_UP` → `SHIPPING`. Trong **một transaction**: hàng đã được khoá lúc `pack`, nên `shipLockedStock` từng dòng (trừ `stock` và `locked_stock`); khoá không khớp → `INVENTORY_LOCK_MISMATCH` (409) – lỗi dữ liệu, không phải thiếu hàng. *(Bản trước: gom dòng thiếu → `ORDER_SHIP_INSUFFICIENT_STOCK`; không còn cần vì `pack` đã chặn.)* Áp cho từng dòng `STOCKED_LINE_TYPES` tại `sourceLocationId` (combo trừ từng dòng con), dòng → `SHIPPED`, ghi `unitCostPrice`, `shippedBy/At`, shipment đang mở `PICKED_UP` → `IN_TRANSIT`. `notifyLowStock` sau commit. | C-2 · C-9 |
-| `POST /orders/:id/confirm-remittance` | `orders:confirm_cash` **(mới)** | `{ amount, note? }` – `RECEIVED` + `cashRemittanceStatus = PENDING` → `RECEIVED` (tiền), đơn `COMPLETED`. `amount` ≠ số shipper đã thu → `ORDER_REMITTANCE_AMOUNT_MISMATCH` (chủ phải nhận **đủ**). | A-10 · D-9 |
+| `PATCH /orders/:id` | `orders:update` | `UpdateOrderDto`: field của create trừ `branchId`, **mọi field tuỳ chọn** (không gửi = giữ nguyên; `discountType: null` / `appliedPromotions: []` = bỏ giảm giá). Chỉ khi đơn **chưa Đang vận chuyển** (`CONFIRMED` / `PACKED` / `PICKED_UP`) và không phải đơn POS → khác: `ORDER_NOT_EDITABLE`. **`items` chỉ sửa được khi `CONFIRMED`** (chốt 2026-10-06): đã `PACKED` / `PICKED_UP` thì hàng đã khoá đúng theo các dòng → `ORDER_NOT_EDITABLE`, muốn đổi hàng thì hủy rồi tạo lại; các field khác vẫn sửa được. `items` gửi lên là **toàn bộ danh sách dòng mới**: dòng có `id` = dòng cũ sửa tại chỗ (không đổi được `productItemId` → `ORDER_NOT_EDITABLE`; không gửi `unitPrice` thì giữ giá đã thoả thuận; `listUnitPrice` giữ bản chụp cũ; combo co giãn dòng con theo số lượng, giữ kho xuất), không có `id` = dòng mới, dòng cũ vắng mặt = bị xoá (dòng đã nằm trong YCSX → `ORDER_ITEM_IN_PRODUCTION`); `id` lạ → `ORDER_ITEM_NOT_FOUND`. Đổi item / giảm giá / khuyến mãi / phí ship thì tính lại `subtotal`, `grandTotal`; cọc theo % tính lại theo tổng mới. **Tiền cọc sau khi sửa phải bằng số đã thu** (Σ DEPOSIT − Σ REFUND): lệch → 409 `ORDER_DEPOSIT_CHANGED` kèm `deposit: { held, amount, difference }`, không lưu gì; FE hỏi lại rồi gửi `deposit: { type: AMOUNT, value: held }` để giữ nguyên số tiền (thu thêm / trả bớt khi sửa đơn là E-5). Ghi đè đồng thời → `ORDER_STATUS_CONFLICT`. Trả về `OrderDetail`. Test: `test/order-edit.e2e-spec.ts`. | A-8 · D-7 |
+| `PATCH /orders/:id/assignee` | `orders:update` | `{ assigneeId }` – khi đơn chưa Đang vận chuyển (kể cả đã đóng gói); người phụ trách phải là tài khoản ACTIVE của shop (`ORDER_ASSIGNEE_INVALID`). Trả về `OrderDetail` | A-8 · D-7 |
+| `PATCH /orders/:id/priority` | `orders:update` | `{ priority }` – khi đơn chưa Đang vận chuyển (không cần mở form sửa đơn). Trả về `OrderDetail` | A-8 · D-7 |
+| `PUT /orders/:id/items/:itemId/customization` | `orders:update` | `OrderItemCustomization` – **gửi đủ mỗi lần** (field không gửi = xoá khỏi bản thông số). Lần đầu: tạo ProductItem mới cùng sản phẩm (SKU `<SKU gốc>-C…`, giữ giá / VAT / kiện `ProductPackage`; kích thước lấy từ thông số, thiếu thì lấy của SKU gốc; `material` / `color` / `fabricCode` / `specs` thành `ProductItemDetail`, thay chi tiết cùng tên của SKU gốc; `attachmentUrls` thành ảnh), chuyển dòng sang, `isCustom = true`; YCSX **nháp** đang trỏ vào dòng chuyển theo item mới. Lần sau: sửa đúng item đó. Dòng `PRODUCT` hoặc `COMBO_COMPONENT`; dòng `COMBO` / `SERVICE` → `ORDER_ITEM_NOT_CUSTOMIZABLE`. Chỉ khi `CONFIRMED` (khác, hoặc POS → `ORDER_NOT_EDITABLE`); khoá khi dòng đã nằm trong một YCSX `SENT` / `PARTIALLY_RECEIVED` / `COMPLETED` (§3) → `ORDER_ITEM_CUSTOM_LOCKED`; dòng không thuộc đơn → `ORDER_ITEM_NOT_FOUND`. Không kiểm `ProductItem.allowCustomization` (chưa có API nào đặt được cờ này). Cũng nhận được trong `POST /orders` qua `items[].customization` (cùng transaction tạo đơn); `PATCH /orders/:id` **không** nhận. Trả về `OrderDetail`. Test: `test/order-customization.e2e-spec.ts`. | A-4 · D-2 (đơn tay), D-8 (Shopee, Phase 2) |
+| `POST /orders/:id/pack` | chủ shop · người phụ trách đơn · `orders:pack` tại kho xuất *(xem "Ai làm bước nào" dưới bảng)* | `{ note? }` (ghi vào `Fulfillment.exceptionNote`) – `CONFIRMED` → `PACKED`. Trong **một transaction**: nhận đơn bằng `updateMany(status: CONFIRMED)` (thua → `ORDER_STATUS_CONFLICT` 409), tạo `Fulfillment` `PACKED` + `FulfillmentItem` + **FulfillmentPackage tự sinh** (mỗi đơn vị × mỗi `ProductPackage` của SKU, không khai báo = 1 thùng; mã `PK…`), ghi `verifiedBy` = người bấm. **Khoá hàng** (`lockStock`) từng dòng `STOCKED_LINE_TYPES` tại kho đóng gói, cùng transaction; dòng nào `actualStock < quantity` → `INSUFFICIENT_STOCK` (400) liệt kê mọi dòng thiếu, không khoá dòng nào. Không trừ `stock`. `notifyLowStock` sau commit. Kho đóng gói = `sourceLocationId` chung của các dòng (nhiều kho → `FULFILLMENT_MULTIPLE_SOURCES`, có dòng thiếu kho xuất → `FULFILLMENT_LINE_NO_SOURCE`, không dòng nào có tồn → `FULFILLMENT_NOTHING_TO_PACK`, đều 409); người không thuộc ba nhóm được làm → `ORDER_STEP_DENIED` (403). Đơn không ở `CONFIRMED` → `ORDER_STATUS_TRANSITION_INVALID` (tạm, tới khi có A-1). Trả về Fulfillment kèm `items`, `packages`. Dòng đơn giữ `PENDING`. Test: `test/order-pack.e2e-spec.ts`. | C-1 · C-6 |
+| `POST /orders/:id/ship` | chủ shop · người phụ trách đơn · `orders:ship` tại kho của fulfillment | `{ note? }` (ghi vào nhật trình shipment) – `PICKED_UP` → `SHIPPING`. Trong **một transaction**: nhận đơn bằng `updateMany(status: PICKED_UP)` (thua → `ORDER_STATUS_CONFLICT`), hàng đã được khoá lúc `pack`, nên `shipLockedStock` từng dòng **của fulfillment `HANDED_OVER`** (chứng từ khoá – giống A-5 trả khoá theo đúng các dòng đó) tại `fulfillment.locationId`, ghi sổ `SALE` kèm `orderItemId`; khoá không khớp → `INVENTORY_LOCK_MISMATCH` (409) – lỗi dữ liệu, không phải thiếu hàng. *(Bản trước: gom dòng thiếu → `ORDER_SHIP_INSUFFICIENT_STOCK`; không còn cần vì `pack` đã chặn.)* Dòng đã trừ → `SHIPPED` (dòng COMBO cha / dịch vụ không có tồn nên giữ nguyên), ghi `unitCostPrice`, `shippedBy/At`, shipment đang mở `PICKED_UP` → `IN_TRANSIT` + event. Không có fulfillment đã bàn giao / shipment đang mở → `SHIPMENT_FULFILLMENT_NOT_HANDED_OVER`. **Không** `notifyLowStock`: hàng trên kệ không đổi (khoá đã trừ khỏi kệ từ lúc đóng gói), nên không có ngưỡng mới nào bị vượt. Trả về `Shipment` (§4). Test: `test/order-ship.e2e-spec.ts`. | C-2 · C-9 |
+| `POST /orders/:id/confirm-remittance` | `orders:confirm_cash` | `{ amount, note? }` – đơn `RECEIVED` có khoản `BALANCE` `PAID` `remittanceStatus = PENDING` (shipper đang giữ tiền mặt) → khoản `remittanceStatus = RECEIVED` (+ `remittanceConfirmedBy/At`; `note` nối vào ghi chú của khoản), đơn `COMPLETED`. Không có tiền mặt đang chờ (đơn QR chờ SePay, đơn chưa giao, đã xác nhận rồi) → 409 `ORDER_REMITTANCE_NOT_PENDING`. `amount` ≠ số shipper đã thu → 400 `ORDER_REMITTANCE_AMOUNT_MISMATCH` kèm `remittance: { held, amount, difference }` (chủ phải nhận **đủ**; nộp thiếu xử lý thế nào: chờ chốt). Không ghi `CashFlow` (E-5). Trả về `OrderDetail`. Test: `test/order-remittance.e2e-spec.ts`. | A-10 · D-9 |
 | `POST /orders/:id/confirm` | `orders:confirm` | *(Shopee – sau)* `{ assigneeId, lines?: [{ orderItemId, sourceLocationId?, customization? }] }` – `PENDING_CONFIRMATION` → `CONFIRMED`. Không giữ hàng. | A-3 · D-3 (Phase 2) |
 | `POST /orders/:id/cancel` | `orders:update` | `{ reason?, refundAmount?, refundMethod? }` – **chốt 2026-10-05**. Cho phép `CONFIRMED` / `PACKED` / `PICKED_UP` (chưa trừ kho); từ `SHIPPING` trở đi, hoặc đơn POS (`TAKEAWAY`, hủy qua `PATCH /orders/:id/status`) → `ORDER_CANCEL_NOT_ALLOWED` (409). Một transaction: nhận đơn bằng `updateMany(status)` (thua → `ORDER_STATUS_CONFLICT`), ghi `cancelledBy/At`, `cancelReason`; fulfillment `PACKED` / `HANDED_OVER` → `releaseLockedStock` từng dòng tại kho đóng gói rồi `CANCELLED`; shipment chưa kết thúc → `CANCELLED`; dòng `PENDING` → `CANCELLED`. **Tiền cọc**: đơn có cọc thì bắt buộc `refundAmount` (0 → số cọc còn giữ; thiếu → `ORDER_REFUND_AMOUNT_REQUIRED`, vượt → `ORDER_REFUND_EXCEEDS_DEPOSIT`); > 0 thì ghi `Payment { kind: REFUND, status: PAID, refundOfPaymentId }` (`refundMethod` mặc định = cách đã cọc), phần còn lại shop giữ; `paymentStatus` → `REFUNDED` / `PARTIALLY_REFUNDED` (hoàn 0 thì giữ nguyên). **YCSX** của các dòng: không đụng (hàng xưởng về thành tồn bán được), trả kèm `openProductionRequests` để người dùng tự xử lý. Trả về `{ order, refund: { held, refunded, kept } | null, openProductionRequests }`. Test: `test/order-cancel.e2e-spec.ts`. | A-5 · – |
 | `PATCH /orders/:id/status`, `POST /orders/:id/pay-offline` | như cũ | **POS bán tại quầy** – vẫn dùng, ngoài hành trình. | E-5 · E-6 |
+
+**Ai làm bước nào** (chốt 2026-10-06) – áp cho `pack`, `POST /shipments`, `PATCH /shipments/:id/driver`,
+`ship`, và các bước sau của hành trình khi được viết (giao hàng C-5…):
+
+- **Chủ shop** (và admin): mọi bước, mọi nơi.
+- **Người phụ trách đơn** (`Order.assigneeId`): **toàn quyền với đúng đơn đó**, từ lúc được gán tới hết
+  hành trình, **ở bất kỳ kho nào**, không cần quyền trong role. Người phụ trách là người làm hết các
+  bước; người tạo đơn có khi chỉ "đứng page tạo đơn".
+- **Người có quyền theo role**: chỉ bước mà quyền đó cho phép, và **chỉ tại nơi mình được phân công**
+  (kho xuất khi đóng gói, kho của fulfillment khi lấy hàng / đổi shipper / ship).
+
+Một hàm duy nhất quyết định – `assertOrderStepAccess` (`src/modules/orders/order-handler.ts`); khác cả
+ba → `ORDER_STEP_DENIED` (403). Vì người phụ trách không cần quyền, các route này **không có
+`@Permissions`** – guard chạy trước khi biết đơn là của ai, nên quyền được kiểm trong service. Quyền
+người phụ trách được suy ra lúc kiểm tra, không gán vào role rồi thu hồi: một cặp `resource:action` không
+gắn được với một đơn. Người được phép **nhờ là người phụ trách** thì câu nhận đơn thêm điều kiện
+`assigneeId = mình` – đổi người phụ trách (A-8) đúng lúc đang bấm thì người cũ nhận `ORDER_STATUS_CONFLICT`.
 
 ```ts
 CreateOrderDto = {
@@ -394,15 +403,28 @@ cập nhật qua webhook – sau; Phase 1 đánh tay)*.
 
 | Route | Quyền | Body | Task (BE · FE) |
 |---|---|---|---|
-| `GET /shipments` | `shipments:read` | `page, limit, status, carrierType, driverId, from, to, search` | C-3 · C-9 |
-| `GET /shipments/mine` | `shipments:deliver` | đơn cần giao của chính shipper (`driverId` = mình, chưa kết thúc), **kèm `order.amountDue`** | C-5 · C-7 |
-| `GET /shipments/:id` | `shipments:read` hoặc là driver | | C-3 · C-9, C-7 |
-| `POST /shipments` | `shipments:create` | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **đây là bước "ĐVVC đã lấy hàng"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`) → shipment `PICKED_UP`, đơn `PICKED_UP`. `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`, gán shipper – C-8). Địa chỉ copy từ đơn. | C-2, C-8 · C-9 |
-| `PATCH /shipments/:id/driver` | `shipments:update` | `{ driverId }` – đổi shipper / thợ của shipment `INTERNAL` chưa kết thúc; driver phải có quyền `shipments:deliver`; báo shipper mới | C-8 · C-9 |
-| `POST /shipments/:id/events` | `shipments:update` | `{ status, note?, latitude?, longitude? }` – ghi nhật trình, không đổi trạng thái đơn | C-3 · C-9 |
-| `POST /shipments/:id/deliver` | `shipments:deliver` (driver `INTERNAL`) hoặc `shipments:update` (`EXTERNAL`, đánh tay) | `DeliverDto` dưới. Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`). | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
-| `POST /shipments/:id/fail` | `shipments:update` hoặc driver | `{ note }` → `FAILED`; đơn giữ `SHIPPING` (hàng đã rời kho) – hàng quay về đi đường hoàn hàng `DELIVERY_FAILED` (§5) | C-3 · C-9 |
+| `GET /shipments` | xem "Ai xem được shipment" dưới bảng | `page, limit, status, carrierType, driverId, from, to` (`YYYY-MM-DD`, trọn ngày giờ Việt Nam), `search` (mã đơn, mã vận đơn, tên / SĐT người nhận). Mới nhất trước; mỗi dòng là `Shipment` **không kèm `events`** | C-3 · C-9 |
+| `GET /shipments/mine` | ai cũng gọi được – chỉ trả lần giao của chính mình | các lần giao chưa kết thúc mà người gọi là shipper (`driverId` = mình), **kèm `order.amountDue`**, ngày hẹn gần nhất trước. Không có `@Permissions`: chủ shop / người phụ trách tự làm shipper cũng cần xem. Khai báo trên `GET /shipments/:id` | C-5 · C-7 |
+| `GET /shipments/drivers` | chủ shop · người phụ trách đơn · `shipments:create` hoặc `shipments:update` tại kho của fulfillment | `orderId` → `[{ id, phoneNumber, profile, systemRole, isAssignee }]`: người làm shipper được cho đơn (đúng tập "Ai làm shipper được" dưới bảng – cùng một `where` với bước kiểm lúc ghi), cho ô chọn shipper. Đơn chưa đóng gói → `SHIPMENT_ORDER_NOT_PACKED`. Khai báo trên `GET /shipments/:id` | C-9 |
+| `GET /shipments/:id` | như `GET /shipments` | `Shipment` kèm `events`. Ngoài phạm vi xem → `SHIPMENT_NOT_FOUND` (404, như không tồn tại) | C-3 · C-9, C-7 |
+| `POST /shipments` | chủ shop · người phụ trách đơn · `shipments:create` tại kho của fulfillment (§2 "Ai làm bước nào") | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **đây là bước "ĐVVC đã lấy hàng"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`). Trong **một transaction**: nhận đơn bằng `updateMany(status: PACKED)` → `PICKED_UP` (thua → `ORDER_STATUS_CONFLICT`), fulfillment `PACKED` → `HANDED_OVER` + `handedOverAt`, shipment `PICKED_UP` + event. Tồn kho không đổi (hàng vẫn khoá). `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`); `EXTERNAL` không được có (`SHIPMENT_DRIVER_NOT_ALLOWED`). Người nhận / địa chỉ chép từ đơn. `carrierName` + `trackingCode` đã có ở shipment khác → `SHIPMENT_TRACKING_TAKEN` (ràng buộc `@@unique([carrierName, trackingCode])` toàn hệ thống – mã vận đơn là của ĐVVC). Sau commit báo shipper (trừ khi tự gán mình). Trả về `Shipment`. | C-2, C-8 · C-9 |
+| `PATCH /shipments/:id/driver` | chủ shop · người phụ trách đơn · `shipments:update` tại kho của fulfillment | `{ driverId }` – đổi shipper / thợ của shipment `INTERNAL` (`EXTERNAL` → `SHIPMENT_DRIVER_NOT_ALLOWED`) chưa kết thúc (kết thúc, hoặc vừa kết thúc lúc ghi → `SHIPMENT_STATUS_INVALID`); báo shipper mới | C-8 · C-9 |
+| `POST /shipments/:id/events` | chủ shop · người phụ trách đơn · **shipper của shipment** · `shipments:update` tại kho của fulfillment | `{ status, note?, latitude?, longitude? }` – ghi nhật trình. `status` **chỉ được `OUT_FOR_DELIVERY`** (chốt 2026-10-06) và đẩy shipment sang `OUT_FOR_DELIVERY`; không đổi trạng thái đơn. Chỉ khi đơn `SHIPPING` và shipment `IN_TRANSIT` / `OUT_FOR_DELIVERY`, khác → `SHIPMENT_STATUS_INVALID` | C-3 · C-9 |
+| `POST /shipments/:id/deliver` | **shipper của lần giao** · người phụ trách đơn · chủ shop (không có đường "có quyền trong role") | **Giao thành công.** `DeliverDto` dưới. **Chỉ lần giao `INTERNAL`** – `EXTERNAL` → `SHIPMENT_DELIVER_INTERNAL_ONLY` (hãng tự báo về, C-4, Phase 2; chốt 2026-10-06 theo hành trình Bước 7b). Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`), lần giao đang trên đường (`SHIPMENT_STATUS_INVALID`). Kết quả theo bảng dưới; có khoản QR thì `Shipment` trả kèm `payment: { reference, amount, status, qrUrl }` (cũng có ở `GET /shipments/:id` để mở lại mã QR) | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
+| `POST /shipments/:id/pay-cash` | như `deliver` | `{ note? }` – **khách không chuyển khoản QR, thu tiền mặt thay**: khoản QR `PENDING` → `CANCELLED`, ghi khoản `BALANCE` `CASH` `PAID` `remittanceStatus = PENDING`, `paymentStatus` → `PAID`; đơn giữ `RECEIVED` (chờ chủ nhận tiền, A-10). Không có khoản QR đang chờ (hoặc tiền vừa về) → `ORDER_QR_PAYMENT_NOT_PENDING` | C-5 · C-7 |
+| `POST /shipments/:id/fail` | như `events` | `{ note }` (bắt buộc) → shipment `FAILED` + event; đơn giữ `SHIPPING` (hàng đã rời kho) – hàng quay về đi đường hoàn hàng `DELIVERY_FAILED` (§5). Cùng điều kiện trạng thái như `events`; hai người báo cùng lúc thì một người nhận `SHIPMENT_STATUS_INVALID`. Sau commit báo người phụ trách đơn | C-3 · C-9 |
 | `POST /webhook/carriers/:carrier` | `@Public()` + chữ ký | *(sau – ĐVVC / Shopee)* | C-4, E-8 (Phase 2) |
+
+**Ai làm shipper được** (`driverId`, chốt 2026-10-06): **chủ shop**, **người phụ trách của đơn đó**, hoặc
+STAFF đang `ACTIVE` có `shipments:deliver` trong role. Khác → `SHIPMENT_DRIVER_INVALID`. Quyền trưởng ca
+không tính (hết theo giờ, còn việc giao kéo dài qua ca).
+
+**Ai xem được shipment** (C-3, chốt 2026-10-06): chủ shop xem mọi shipment; người khác thấy shipment khi
+là **người phụ trách đơn**, là **shipper** của shipment, hoặc có `shipments:read` và đứng ở **kho của
+fulfillment** hoặc **chi nhánh bán đơn** (quản lý showroom theo dõi được đơn mình bán dù hàng xuất từ kho
+tổng). Chỉ áp cho xem – ghi vẫn theo kho của fulfillment. Một hàm `visibleWhere` dùng cho cả danh sách lẫn
+chi tiết. `events` / `fail`: người được phép nhờ là người phụ trách / shipper thì câu ghi kèm điều kiện
+"vẫn là người đó", nên bị đổi giữa chừng thì không ghi được.
 
 ```ts
 DeliverDto = {
@@ -413,16 +435,29 @@ DeliverDto = {
 }
 ```
 
-Kết quả `deliver` (trong một transaction, qua `assertTransition`; quy tắc trạng thái theo A-10):
+Kết quả `deliver` (trong một transaction; chốt 2026-10-06 – chỉ xử lý thu **đủ 100%**):
 
-| Điều kiện | Ghi `Payment` (E-5) | Đơn | `cashRemittanceStatus` |
+| Điều kiện | Ghi `Payment` (E-5) | Đơn | `Payment.remittanceStatus` |
 |---|---|---|---|
-| `amountDue = 0` (đã cọc 100%) – `paymentMethod` phải `NONE` | – | `COMPLETED` | `NOT_APPLICABLE` |
-| `BANK_TRANSFER_QR` | `BALANCE`, `PAID`, `collectedBy` = driver | `COMPLETED` (có chờ webhook SePay không: **chờ chốt**, §8) | `NOT_APPLICABLE` |
-| `CASH` | `BALANCE`, `PAID`, `collectedBy` = driver | `RECEIVED` | `PENDING` → chủ gọi `confirm-remittance` |
+| `amountDue = 0` (đã cọc 100%) – `paymentMethod` phải `NONE` | – | `COMPLETED` | – |
+| `BANK_TRANSFER_QR` | `BALANCE`, **`SEPAY`**, **`PENDING`**, `paymentReference` = mã `ORD…` mới, `collectedBy` = người bấm | **`RECEIVED`** – chờ webhook SePay báo tiền về | `NOT_APPLICABLE` |
+| `CASH` | `BALANCE`, `CASH`, `PAID`, `collectedBy` = người bấm; `paymentStatus` → `PAID` | `RECEIVED` | `PENDING` → chủ gọi `confirm-remittance` (A-10) |
 
-`amountDue > 0` mà gửi `NONE` → `ORDER_COLLECTION_AMOUNT_MISMATCH`. Dòng đơn không đổi (đã `SHIPPED`).
-Thông báo người phụ trách + chủ khi đơn chờ nộp tiền (template mới trong `templates/order.templates.ts`).
+Số thu ≠ `amountDue`, hoặc `amountDue > 0` mà gửi `NONE` → `ORDER_COLLECTION_AMOUNT_MISMATCH`. Thu QR mà
+shop chưa cài tài khoản ngân hàng → `TENANT_BANKING_NOT_CONFIGURED`. Dòng đơn không đổi (đã `SHIPPED`).
+Thu tiền mặt (cả `pay-cash`) thì báo người phụ trách + chủ: shipper đang giữ tiền (`templates/order.templates.ts`).
+Không ghi `CashFlow` – việc của E-5, như khoản cọc của A-2.
+
+**Tiền QR về** – `POST /webhook/sepay/order`: nhánh bán tại quầy (`Order.paymentReference`) chạy trước; không
+khớp thì tìm khoản `BALANCE` `SEPAY` có đúng `Payment.paymentReference`:
+- `PENDING`, chuyển **đủ** → khoản `PAID` (`paidAt`, `sepayTransactionId`), đơn `RECEIVED` → `COMPLETED`,
+  `paymentStatus` → `PAID`; sau commit báo người phụ trách.
+- `PENDING`, chuyển **thiếu** → **chưa xử lý** (nhóm còn họp): ghi log, khoản vẫn chờ.
+- `CANCELLED` (shipper đã chuyển sang tiền mặt) → ghi log "khách có thể đã trả hai lần, cần hoàn tay".
+- `PAID` (SePay gọi lại) → không làm gì.
+
+Mọi trường hợp vẫn trả 200. "Tiền về" và "khách trả tiền mặt" cùng lúc: cả hai chỉ ghi khi khoản QR còn
+`PENDING`, nên một bên thắng.
 
 Ảnh bằng chứng upload qua `POST /uploads` hiện có, gửi URL.
 
@@ -470,7 +505,12 @@ Hành trình: "khó gắn vào quyền tổng thì tạo quyền riêng". Danh s
 | `production:receive` **(mới)** | Nhập số lượng hàng đã nhận từ xưởng / tổng đã đặt (tăng tồn kho) | GĐ1 – 4 |
 | `orders:pack` **(mới)** | Đóng đơn (C-1). Quyền riêng chứ không dùng `orders:update`: người đóng gói ở kho không được sửa giá / món của đơn, và người bán hàng có `update` không tự đóng đơn được. Chốt 2026-10-04. | GĐ1 – 5 |
 | `shipments:create` *(có)* | Ghi nhận ĐVVC đã lấy hàng | GĐ1 – 6 |
+| `shipments:update` *(có)* | Đổi shipper / thợ (C-8) | GĐ1 – 6a |
 | `orders:ship` **(mới)** | Xác nhận chuyển Đang vận chuyển (trừ tồn kho) | GĐ1 – 6 |
+
+`orders:pack`, `shipments:create`, `shipments:update`, `orders:ship` không đứng trên route nào bằng
+`@Permissions` – chúng là đường thứ hai của `assertOrderStepAccess`, chỉ hiệu lực tại nơi người đó được
+phân công; chủ shop và người phụ trách đơn không cần (§2 "Ai làm bước nào").
 | `shipments:deliver` *(có)* | Shipper xem đơn cần giao, xác nhận đã giao | GĐ1 – 6, 7 |
 | `orders:confirm_cash` **(mới)** | Xác nhận đã nhận đủ tiền từ shipper | GĐ1 – 7 |
 | `returns:create` / `returns:inspect` / `returns:cancel` *(có)* | Tạo và xử lý đơn hoàn | GĐ2 |
@@ -481,7 +521,8 @@ các cặp chưa dùng khác).
 Mã lỗi mới cần thêm vào `error-codes.ts`: `ORDER_NOT_EDITABLE`, `ORDER_DEPOSIT_EXCEEDS_TOTAL`,
 `ORDER_DEPOSIT_CHANGED`, `ORDER_SHIP_INSUFFICIENT_STOCK`, `ORDER_COLLECTION_AMOUNT_MISMATCH`,
 `ORDER_REMITTANCE_AMOUNT_MISMATCH`, `ORDER_REMITTANCE_NOT_PENDING`, `IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST`,
-`SHIPMENT_ORDER_NOT_PACKED`, `SHIPMENT_ORDER_NOT_SHIPPING`, `SHIPMENT_DRIVER_REQUIRED`.
+`SHIPMENT_ORDER_NOT_PACKED`, `SHIPMENT_ORDER_NOT_SHIPPING`, `SHIPMENT_DRIVER_REQUIRED`; thêm 2026-10-06 (A-8):
+`ORDER_ITEM_IN_PRODUCTION`.
 Mã cũ không dùng nữa (`ORDER_NOT_DRAFT`, `RESERVATION_*`, `IMPORT_PRODUCTION_*`…) **giữ
 nguyên** – danh sách là append-only.
 
@@ -511,7 +552,6 @@ nguyên** – danh sách là append-only.
 - **Giữ hàng (đã xoá khỏi schema và code):** `StockReservation`, `inventories.reserved`, `reserve` / `release` / `consume` / `allocateArrivals` trong `InventoryService`;
   `heldQuantity`, `OrderItemStatus.WAITING_STOCK/READY`, `OrderStatus.DRAFT/READY_TO_PACK/DELIVERED`, `asDraft`.
 - **Route `/fulfillments/*` riêng – đã bỏ (2026-10-04)**: create / items / packages / verify / cancel và DTO của chúng đã xoá khỏi code; `FulfillmentController` chỉ còn khung trống. Đóng đơn đi qua `POST /orders/:id/pack` (vẫn tạo FulfillmentPackage, C-1). Hủy đơn đã đóng gói thuộc A-5 (`releaseLockedStock`).
-- **Route `/fulfillments/*` riêng – đã bỏ (2026-10-04)**: create / items / packages / verify / cancel và DTO của chúng đã xoá khỏi code; `FulfillmentController` chỉ còn khung trống. Đóng đơn đi qua `POST /orders/:id/pack` (vẫn tạo FulfillmentPackage, C-1). Hủy đơn đã đóng gói thuộc A-5 (`releaseLockedStock`).
 - FE: `src/types/order-flow.ts`, `src/lib/api/order-journey.ts`, `src/lib/api/fulfillment.ts` viết
   theo bản cũ – sửa theo file này.
 
@@ -524,9 +564,12 @@ Từ hành trình đơn hàng:
 
 Từ Notion v2 (contract để chờ, không tự quyết):
 - **Kho dùng để tính tồn** (B-2): theo `sourceLocationId` của dòng hay tổng các kho.
-- **QR có cần đối soát không** (A-10, E-5): hành trình cho QR "chuyển thẳng Hoàn thành". Có muốn chờ
-  webhook SePay báo tiền về rồi mới `COMPLETED` không.
-- **`Payment.method` cho tiền QR shipper thu** (E-5): `SEPAY` hay `BANK_TRANSFER`.
+- ~~**QR có cần đối soát không**~~ – **đã chốt 2026-10-06** (C-5): **chờ webhook SePay** báo tiền về rồi mới
+  `COMPLETED`; khách không chuyển thì thu tiền mặt (`pay-cash`). Xem §4.
+- ~~**`Payment.method` cho tiền QR shipper thu**~~ – **đã chốt 2026-10-06**: `SEPAY`.
+- **Khách chuyển thiếu tiền QR** (C-5): **chờ họp** – hiện chỉ ghi log, khoản vẫn chờ, đơn ở `RECEIVED`.
+- **Giao qua ĐVVC ngoài ở Phase 1** (C-5, chốt 2026-10-06 theo hành trình): không bấm tay được "đã giao";
+  đơn `EXTERNAL` ở `SHIPPING` cho tới khi có webhook hãng (C-4, Phase 2).
 - **Thiếu ở chi nhánh, đặt xưởng về kho** (B-4): danh sách tính thiếu theo `sourceLocationId` của dòng
   đơn, nên YCSX giao về kho không trừ vào số thiếu của chi nhánh. Chọn: (a) cộng cả YCSX về
   `defaultFulfillmentLocationId` của chi nhánh vào `onOrderQuantity`, hay (b) giữ như hiện tại (chi nhánh
@@ -536,7 +579,7 @@ Của riêng contract:
 - **Lưu tình trạng tồn kho trên order item:** hành trình gợi ý lưu "tình trạng lúc kiểm tra". Contract
   này **tính lúc đọc** (`stockCheck`) vì không giữ hàng thì con số lưu lại sai ngay khi đơn khác ship.
   Cần ảnh chụp lịch sử thì thêm sau.
-- **Sửa đơn sau khi đã cọc theo %** làm tiền cọc lệch số đã thu – xem `ORDER_DEPOSIT_CHANGED`.
+- ~~**Sửa đơn sau khi đã cọc theo %**~~ – **chốt 2026-10-06 (A-8)**: chặn bằng `ORDER_DEPOSIT_CHANGED`, người dùng chọn giữ nguyên số tiền cọc; thu thêm / trả bớt khi sửa đơn chờ E-5.
 
 ## 9. Bảng đối chiếu Task Notion v2 ↔ hành trình ↔ contract
 

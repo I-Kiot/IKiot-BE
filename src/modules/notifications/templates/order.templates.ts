@@ -11,4 +11,26 @@ export const OrderNotificationTemplates = {
     description: `Đơn hàng ${paymentReference} đã nhận được ${vnd(amount)} qua chuyển khoản.`,
     link: '/sales/invoices',
   }),
+
+  /** Shipper thu tiền mặt khi giao: tiền đang ở tay shipper, chủ cần xác nhận khi nhận đủ (A-10). */
+  cashAwaitingRemittance: (
+    orderCode: string,
+    amount: number,
+  ): NotificationContent => ({
+    type: 'ORDER_CASH_AWAITING_REMITTANCE',
+    title: 'Shipper đang giữ tiền mặt',
+    description: `Đơn ${orderCode} đã giao, shipper thu ${vnd(amount)} tiền mặt - chờ nộp lại cho chủ.`,
+    link: '/shipments',
+  }),
+
+  /** Khách chuyển khoản QR lúc giao và tiền đã về: đơn hoàn thành. */
+  deliveryTransferReceived: (
+    orderCode: string,
+    amount: number,
+  ): NotificationContent => ({
+    type: 'ORDER_DELIVERY_TRANSFER_RECEIVED',
+    title: 'Tiền giao hàng đã về',
+    description: `Đơn ${orderCode} đã nhận ${vnd(amount)} qua chuyển khoản - đơn hoàn thành.`,
+    link: '/shipments',
+  }),
 };
