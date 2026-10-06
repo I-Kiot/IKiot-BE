@@ -44,6 +44,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   let manual: ManualOrderService;
   let edits: OrderEditService;
   let customizations: OrderCustomizationService;
+  let productionList: ProductionListService;
   const notify = jest.fn<Promise<void>, [NotifyArgs]>();
 
   const tenantId = randomUUID();
@@ -114,6 +115,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
     manual = moduleRef.get(ManualOrderService);
     edits = moduleRef.get(OrderEditService);
     customizations = moduleRef.get(OrderCustomizationService);
+    productionList = moduleRef.get(ProductionListService);
     const inventory = moduleRef.get(InventoryService);
 
     await prisma.tenant.create({ data: { id: tenantId, name: 'short-e2e' } });
@@ -297,5 +299,17 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
       items: [{ productItemId: tableId, quantity: 50 }],
     });
     expect(await prisma.order.count({ where: { id } })).toBe(1);
+  });
+
+  it('opens the production list on the one SKU a notification links to', async () => {
+    const page = await productionList.list(owner, {
+      page: 1,
+      limit: 50,
+      locationId: warehouseId,
+      productItemId: tableId,
+    });
+    expect(page.data.length).toBeGreaterThan(0);
+    expect(page.data.every((row) => row.productItemId === tableId)).toBe(true);
+    expect(page.data[0].shortQuantity).toBeGreaterThan(0);
   });
 });

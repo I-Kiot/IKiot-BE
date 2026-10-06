@@ -119,6 +119,11 @@ export class ProductionListService {
       });
       productItemIds = matches.map((item) => item.id);
     }
+    if (query.productItemId) {
+      productItemIds = (productItemIds ?? [query.productItemId]).filter(
+        (id) => id === query.productItemId,
+      );
+    }
 
     const onlyShort = query.onlyShort ?? false;
     const locationIds = query.locationId ? [query.locationId] : readable;
