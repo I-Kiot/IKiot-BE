@@ -6,6 +6,7 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { OrderService } from './../src/modules/orders/orders.service';
 import { OrderPricingService } from './../src/modules/orders/order-pricing.service';
 import { ManualOrderService } from './../src/modules/orders/manual-order.service';
+import { OrderCustomizationService } from './../src/modules/orders/order-customization.service';
 import { OrderEditService } from './../src/modules/orders/order-edit.service';
 import { OrderReadService } from './../src/modules/orders/order-read.service';
 import { SepayOrderService } from './../src/modules/orders/sepay-order.service';
@@ -113,6 +114,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
         OrderService,
         OrderPricingService,
         ManualOrderService,
+        OrderCustomizationService,
         OrderEditService,
         OrderReadService,
         CustomerService,

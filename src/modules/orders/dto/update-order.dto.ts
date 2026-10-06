@@ -11,8 +11,10 @@ import {
 import { ORDER_PRIORITIES } from '../../../common/constants/order-status';
 import { CreateOrderDto, CreateOrderItemDto } from './create-order.dto';
 
-/** A line on `PATCH /orders/:id`. With `id` it is that existing line, changed in place (its product cannot change - drop it and add another); without, a new line. An existing line left out of the list is removed. */
-export class UpdateOrderItemDto extends CreateOrderItemDto {
+/** A line on `PATCH /orders/:id`. With `id` it is that existing line, changed in place (its product cannot change - drop it and add another); without, a new line. An existing line left out of the list is removed. Specs are not set here: `PUT …/customization` (A-4) is the one way a line becomes custom after the order exists. */
+export class UpdateOrderItemDto extends OmitType(CreateOrderItemDto, [
+  'customization',
+] as const) {
   @IsOptional()
   @IsUUID()
   id?: string;
