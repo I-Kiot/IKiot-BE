@@ -31,6 +31,10 @@ import {
 } from './dto/promotion.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
 const PROMOTION_INCLUDE = {
   branches: { select: { branchId: true } },
@@ -239,7 +243,7 @@ export class PromotionService {
         include: {
           order: { select: { id: true, paymentReference: true } },
           customer: { select: { id: true, name: true, phone: true } },
-          branch: { select: { id: true, name: true } },
+          branch: BRANCH_NAME_SELECT,
         },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
@@ -250,6 +254,7 @@ export class PromotionService {
 
     const data = rows.map(({ discountAmount, ...log }) => ({
       ...log,
+      branch: namedBranch(log.branch),
       discountAmount: Number(discountAmount),
       paymentReference: log.order?.paymentReference ?? null,
     }));

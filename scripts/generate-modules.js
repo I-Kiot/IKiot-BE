@@ -20,10 +20,7 @@ const CHILD_MODELS = new Set([
   'UserFcmToken', 'SubscriptionHistoryLog',
   'ProductImage', 'ProductItemSupplier', 'ProductItemDetail', 'ProductItemImage',
   'StockMovementRequestItem',
-  'WorkingScheduleUser', 'LeaveRequestHandoverSchedule',
-  'PaysheetBonus', 'PaysheetBonusTier', 'PaysheetAllowance', 'PaysheetDeduction',
-  'PayslipLeaveLine', 'PayslipLeaveLineDate', 'PayslipAllowanceLine',
-  'PayslipDeductionLine', 'PayslipManualAdjustment',
+  'WorkingScheduleUser',
   'OrderItem', 'OrderAppliedPromotion',
   'PromotionBranch', 'PromotionCategory', 'PromotionProductItem',
   'CashDrawerShiftLog',
@@ -116,27 +113,24 @@ const PORTED_MODELS = new Set([
   'Order', 'Promotion', 'PromotionLog', 'Customer', 'CashDrawerSession',
   // Hand-edited down to read-only - the generator would put POST/PATCH/DELETE back.
   'CashFlow',
-  'Holiday', 'ShiftTemplate', 'WorkingSchedule', 'Attendance', 'LeaveRequest',
-  'PayrollSetting', 'Paysheet', 'PayrollPeriod', 'Payslip',
+  'Holiday', 'ShiftTemplate', 'WorkingSchedule',
   'Ticket', 'AIChatHistory',
+  // Order journey (2026-10-02): written by hand from the start, never generated.
+  'ProductionRequest', 'Fulfillment', 'Shipment', 'OrderReturn', 'SalesChannel',
 ]);
 
 // Fields the server fills in from the authenticated user instead of accepting from the
 // client - the actor of the write. They are dropped from the create DTO and set in the
 // service. `userId` is only in here for models where it means "who did this" (verified
-// against iKiotMS-BE's controllers); on Attendance and Payslip the same field name means
-// "which employee this row is about", which a manager legitimately sets for someone else,
-// so those keep it as a normal request-body field.
+// against iKiotMS-BE's controllers).
 const ACTOR_FIELD = {
   CashFlow: 'createdById',
-  Paysheet: 'createdById',
   PromotionLog: 'createdById',
   StockMovementRequest: 'createdById',
   WorkingSchedule: 'createdById',
   AIChatHistory: 'userId',
   Order: 'userId',
   Ticket: 'userId',
-  LeaveRequest: 'userId',
 };
 
 // Which PermissionCatalog resource each module's routes are gated by. Every pair used here
@@ -161,13 +155,7 @@ const RESOURCE = {
   StockMovementRequest: 'stock_movement',
   ShiftTemplate: 'schedules',
   WorkingSchedule: 'schedules',
-  Attendance: 'attendances',
-  LeaveRequest: 'leaveRequests',
   Holiday: 'holidays',
-  PayrollSetting: 'payrollSettings',
-  PayrollPeriod: 'payroll',
-  Paysheet: 'paysheets',
-  Payslip: 'payslips',
   Order: 'orders',
   Promotion: 'promotions',
   PromotionLog: 'promotions',

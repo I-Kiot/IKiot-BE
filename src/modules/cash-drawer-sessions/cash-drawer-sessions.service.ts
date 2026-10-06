@@ -44,6 +44,10 @@ import {
   withNestedProfile,
   type FlatUserProfile,
 } from '../../common/utils/user-profile';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
 const STAFF_SELECT = {
   id: true,
@@ -53,7 +57,7 @@ const STAFF_SELECT = {
 } as const;
 
 const SESSION_INCLUDE = {
-  branch: { select: { id: true, name: true } },
+  branch: BRANCH_NAME_SELECT,
   openedBy: { select: STAFF_SELECT },
   currentStaff: { select: STAFF_SELECT },
   finalLogManager: { select: STAFF_SELECT },
@@ -75,7 +79,7 @@ type SessionRow = Prisma.CashDrawerSessionGetPayload<{
 const VARIANCE_SELECT = {
   id: true,
   branchId: true,
-  branch: { select: { id: true, name: true } },
+  branch: BRANCH_NAME_SELECT,
   businessDate: true,
   status: true,
   openingAmount: true,
@@ -255,7 +259,7 @@ export class CashDrawerSessionService {
       session: {
         id: session.id,
         branchId: session.branchId,
-        branch: session.branch,
+        branch: namedBranch(session.branch),
         businessDate: session.businessDate,
         status: session.status,
       },
@@ -362,18 +366,19 @@ export class CashDrawerSessionService {
     const end = businessDayRange(toDate).end;
 
     const rows = await this.prisma.$queryRaw<CashDayRow[]>`
-      SELECT branch_id AS "branchId",
+      SELECT c.location_id AS "branchId",
              to_char(created_at AT TIME ZONE ${BUSINESS_TIMEZONE}, 'YYYY-MM-DD') AS "day",
              COALESCE(SUM(CASE WHEN flow_type = ${FlowType.INCOME} THEN amount ELSE 0 END), 0) AS "cashIn",
              COALESCE(SUM(CASE WHEN flow_type <> ${FlowType.INCOME} THEN amount ELSE 0 END), 0) AS "cashOut",
              COUNT(*)::int AS "movementCount"
-      FROM cash_flows
-      WHERE tenant_id = ${tenantId}
-        AND payment_method = ${PaymentMethod.CASH}
-        AND branch_id IS NOT NULL
-        AND created_at >= ${start}
-        AND created_at < ${end}
-        ${branchId ? Prisma.sql`AND branch_id = ${branchId}` : Prisma.empty}
+      FROM cash_flows c
+      -- Only flows booked at a branch: a warehouse's cash is not in any drawer.
+      JOIN branches b ON b.id = c.location_id
+      WHERE c.tenant_id = ${tenantId}
+        AND c.payment_method = ${PaymentMethod.CASH}
+        AND c.created_at >= ${start}
+        AND c.created_at < ${end}
+        ${branchId ? Prisma.sql`AND c.location_id = ${branchId}` : Prisma.empty}
       GROUP BY 1, 2
     `;
 
@@ -398,7 +403,7 @@ export class CashDrawerSessionService {
     return {
       sessionId: session.id,
       branchId: session.branchId,
-      branch: session.branch,
+      branch: namedBranch(session.branch),
       businessDate: session.businessDate,
       status: session.status,
       movementCount: day?.movementCount ?? 0,
@@ -436,7 +441,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** Which cash rows belong to one branch's trading day. `branchId` is required, so branchless EXPENSE rows (a supplier paid in cash, a payroll period marked paid) are not counted - a shop paying a supplier from the drawer shows that day short, and rightly so. */
+  /** Which cash rows belong to one branch's trading day. `branchId` is required, so branchless EXPENSE rows (a supplier paid in cash) are not counted - a shop paying a supplier from the drawer shows that day short, and rightly so. */
   private dayFlowWhere(
     tenantId: string,
     branchId: string,
@@ -444,7 +449,8 @@ export class CashDrawerSessionService {
   ): Prisma.CashFlowWhereInput {
     return {
       tenantId,
-      branchId,
+      // A branch's id is its Location id, which is what a cash flow records.
+      locationId: branchId,
       createdAt: { gte: window.start, lt: window.end },
     };
   }
@@ -705,14 +711,18 @@ export class CashDrawerSessionService {
   ) {
     const [branch, staff] = await Promise.all([
       this.prisma.branch.findFirst({
-        where: { id: branchId, tenantId, status: LocationStatus.ACTIVE },
+        where: {
+          id: branchId,
+          tenantId,
+          location: { status: LocationStatus.ACTIVE },
+        },
         select: { id: true },
       }),
       this.prisma.user.findFirst({
         where: {
           id: staffId,
           tenantId,
-          branchId,
+          locationId: branchId,
           status: UserStatus.ACTIVE,
           systemRole: SystemRole.STAFF,
         },
@@ -763,6 +773,7 @@ export class CashDrawerSessionService {
 
     return {
       ...rest,
+      branch: namedBranch(rest.branch),
       openedBy: person(openedBy),
       currentStaff: person(currentStaff),
       openingAmount: Number(openingAmount),

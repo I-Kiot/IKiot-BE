@@ -7,25 +7,34 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
+import { actualStockOf } from '../inventories/low-stock';
 import { NotificationService } from '../notifications/notifications.service';
 import { StockMovementNotificationTemplates } from '../notifications/templates/stock-movement.templates';
-import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
-import { SystemRole } from '../../common/constants/system-role';
+import { SupplierService } from '../suppliers/suppliers.service';
 import {
-  destinationRef,
-  sourceRef,
-  toLocationColumns,
+  LOCATION_SELECT,
+  resolveLocations,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefDto } from '../../common/dto/location-ref.dto';
+import type { LocationEnd } from '../../common/dto/location-ref.dto';
+import { isReturnDirection } from '../../common/constants/location-type';
+import {
+  ImportSource,
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
-import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
+import {
+  canActAt,
+  isPostedAt,
+  postingOf,
+} from '../../common/utils/location-access';
 import {
   FINAL_MOVEMENT_STATUSES,
   MovementStatus,
   MovementType,
 } from './stock-movement.constants';
-import { crossedCreditWarning } from './credit-warning';
 import {
   CreateStockMovementDto,
   MovementItemDto,
@@ -36,12 +45,6 @@ import {
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { withNestedProfile } from '../../common/utils/user-profile';
-
-/** The pair of nullable FKs naming one end of a movement. */
-interface LocationColumns {
-  branchId: string | null;
-  warehouseId: string | null;
-}
 
 const DETAIL_INCLUDE = {
   details: {
@@ -58,10 +61,8 @@ const DETAIL_INCLUDE = {
     },
   },
   fromSupplier: { select: { id: true, supplierName: true } },
-  fromBranch: { select: { id: true, name: true } },
-  fromWarehouse: { select: { id: true, name: true } },
-  toBranch: { select: { id: true, name: true } },
-  toWarehouse: { select: { id: true, name: true } },
+  fromLocation: LOCATION_SELECT,
+  toLocation: LOCATION_SELECT,
   createdBy: {
     select: {
       id: true,
@@ -84,6 +85,7 @@ export class StockMovementService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly notifications: NotificationService,
+    private readonly suppliers: SupplierService,
   ) {}
 
   // ─── Reads ─────────────────────────────────────────────────────────────────
@@ -97,13 +99,13 @@ export class StockMovementService {
     // A staff account sees the movements that touch their own location, from either end.
     const own = this.postingOf(user);
     if (own) {
-      if (!own.branchId && !own.warehouseId) {
-        // Posted nowhere: there is no location whose movements they could be looking at, and matching the columns directly would quietly match rows where both are null.
+      if (!own.locationId) {
+        // Posted nowhere: there is no location whose movements they could be looking at, and matching the column directly would quietly match rows where it is null.
         return paginate([], 0, query.page, query.limit);
       }
       where.OR = [
-        { fromBranchId: own.branchId, fromWarehouseId: own.warehouseId },
-        { toBranchId: own.branchId, toWarehouseId: own.warehouseId },
+        { fromLocationId: own.locationId },
+        { toLocationId: own.locationId },
       ];
     }
 
@@ -147,9 +149,17 @@ export class StockMovementService {
     const tenantId = this.tenantOf(user);
     this.assertNoDuplicateItems(dto.details);
 
-    const from = this.resolveSource(user, dto);
-    const to = dto.toLocation ? this.columnsOf(dto.toLocation) : null;
-    // An IMPORT has no source, so `resolveSource` checks nothing - which left the movement unscoped and let a staff account file goods in against any warehouse.
+    // Both ends in one query: existence, tenant and kind (the kind drives the RETURN rule).
+    // This runs before the access checks, so a location in another tenant answers 404
+    // rather than 403 - coding rule 5.
+    const fromId = this.resolveSourceId(user, dto);
+    const ends = await resolveLocations(this.prisma, tenantId, [
+      fromId,
+      dto.toLocationId,
+    ]);
+    const from = fromId ? ends.get(fromId)! : null;
+    const to = dto.toLocationId ? ends.get(dto.toLocationId)! : null;
+    // An IMPORT has no source, so it is scoped by its destination - left unchecked, a staff account could file goods in against any warehouse.
     if (dto.movementType === MovementType.IMPORT) {
       if (to) this.assertCanActAt(user, to);
     } else if (this.isTransferType(dto.movementType)) {
@@ -167,7 +177,7 @@ export class StockMovementService {
       // ADJUST counts stock at one location, so it is only ever filed there.
       this.assertCanActAt(user, from);
     }
-    await this.assertEndpointsValid(tenantId, dto.movementType, from, to);
+    this.assertEndpointsValid(dto.movementType, from, to);
 
     const details = await this.prepareLines(
       tenantId,
@@ -180,7 +190,13 @@ export class StockMovementService {
       dto.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (dto.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(tenantId, dto.fromSupplierId, totalPrice);
+      // A workshop's goods come in only through its production request (contract §3).
+      const supplier = await this.suppliers.requireForImport(
+        tenantId,
+        dto.fromSupplierId,
+        ImportSource.SUPPLIER,
+      );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
     // IMPORT and ADJUST have nothing to pick and pack, so they open at PENDING.
@@ -194,15 +210,18 @@ export class StockMovementService {
       data: {
         tenantId,
         movementType: dto.movementType,
+        // The stock_movement_requests_import_source_iff_import CHECK needs a source on every IMPORT and none elsewhere. Only the supplier flow exists today; B-5 adds WORKSHOP and lets the client choose.
+        importSource:
+          dto.movementType === MovementType.IMPORT
+            ? ImportSource.SUPPLIER
+            : null,
         status,
         note: dto.note,
         createdById: user.userId,
         totalPrice,
         fromSupplierId: dto.fromSupplierId,
-        fromBranchId: from?.branchId ?? null,
-        fromWarehouseId: from?.warehouseId ?? null,
-        toBranchId: to?.branchId ?? null,
-        toWarehouseId: to?.warehouseId ?? null,
+        fromLocationId: from?.id ?? null,
+        toLocationId: to?.id ?? null,
         details: { create: details },
       },
       include: DETAIL_INCLUDE,
@@ -277,11 +296,12 @@ export class StockMovementService {
       request.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (request.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(
+      const supplier = await this.suppliers.requireForImport(
         tenantId,
         request.fromSupplierId,
-        totalPrice,
+        ImportSource.SUPPLIER,
       );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -338,17 +358,22 @@ export class StockMovementService {
         const lowStock: (Inventory | null)[] = [];
 
         if (isTransfer) {
-          const from = this.source(request);
+          const from = this.source(request)!;
           for (const line of request.details) {
             const quantity = Number(line.quantity);
             // `deductStock` is the check as well as the write: the `assertSourceStock` calls elsewhere are advisory, and this is what stops two shipments emptying the same shelf twice.
             const after = await this.inventory.deductStock(tx, {
               tenantId,
               productItemId: line.productItemId,
-              branchId: from.branchId,
-              warehouseId: from.warehouseId,
+              locationId: from.id,
               quantity,
               label: line.productItem.sku ?? line.productItemId,
+              ledger: {
+                type: InventoryTxType.TRANSFER_OUT,
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+                createdById: user.userId,
+              },
             });
             lowStock.push(this.inventory.lowStockCrossing(after, -quantity));
           }
@@ -424,7 +449,7 @@ export class StockMovementService {
       });
     }
 
-    const to = this.destination(request);
+    const to = this.destination(request)!;
     const { received, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
         let importCost = 0;
@@ -437,21 +462,48 @@ export class StockMovementService {
           });
 
           if (quantity <= 0) continue;
+          const ledger = {
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
           if (request.movementType === MovementType.IMPORT) {
             importCost += quantity * Number(line.importPrice ?? 0);
+            // Every received import line is its own lot, costed at the import price.
+            await this.inventory.openLot(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              locationId: to.id,
+              quantity,
+              unitCost:
+                line.importPrice === null
+                  ? undefined
+                  : Number(line.importPrice),
+              sourceType: LotSourceType.SUPPLIER,
+              supplierId: request.fromSupplierId,
+              importItemId: line.id,
+              ledger: { ...ledger, type: InventoryTxType.IMPORT },
+            });
+          } else {
+            // A transfer: the goods arrive as child lots of the ones that left the source, keeping their origin and cost. One shipped before lots existed has nothing to follow.
+            await this.inventory.returnDrawn(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              toLocationId: to.id,
+              quantity,
+              drawnBy: {
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+              },
+              ledger: { ...ledger, type: InventoryTxType.TRANSFER_IN },
+              ifNeverDrawn: { sourceType: LotSourceType.OPENING },
+            });
           }
-          await this.inventory.adjustStock(tx, {
-            tenantId,
-            productItemId: line.productItemId,
-            branchId: to.branchId,
-            warehouseId: to.warehouseId,
-            delta: quantity,
-          });
         }
 
         const warning =
           request.movementType === MovementType.IMPORT && request.fromSupplierId
-            ? await this.chargeSupplier(
+            ? await this.suppliers.charge(
                 tx,
                 tenantId,
                 request.fromSupplierId,
@@ -475,14 +527,13 @@ export class StockMovementService {
       },
     );
 
-    if (creditWarning) {
-      const owners = await this.notifications.tenantOwners(tenantId);
-      await this.notifications.notify({
+    if (request.fromSupplierId) {
+      await this.suppliers.notifyCreditWarning(
         tenantId,
-        recipientIds: owners.filter((ownerId) => ownerId !== user.userId),
-        referenceId: request.fromSupplierId ?? undefined,
-        ...creditWarning,
-      });
+        user.userId,
+        request.fromSupplierId,
+        creditWarning,
+      );
     }
 
     await this.notifyMovement(received, user.userId, {
@@ -508,7 +559,7 @@ export class StockMovementService {
     }
     this.assertStatus(request, [MovementStatus.PENDING]);
 
-    const from = this.source(request);
+    const from = this.source(request)!;
     const changes = request.details.map((line) => {
       if (line.receivedQuantity === null) {
         throw new BadRequestException({
@@ -543,8 +594,7 @@ export class StockMovementService {
               where: {
                 tenantId,
                 productItemId: change.productItemId,
-                branchId: from.branchId,
-                warehouseId: from.warehouseId,
+                locationId: from.id,
               },
               select: { stock: true },
             });
@@ -557,13 +607,34 @@ export class StockMovementService {
             }
           }
 
-          const after = await this.inventory.adjustStock(tx, {
+          // A surplus is a new lot at today's cost price; a shortage draws the lots FIFO and cannot eat into stock held for orders.
+          const key = {
             tenantId,
             productItemId: change.productItemId,
-            branchId: from.branchId,
-            warehouseId: from.warehouseId,
-            delta: change.delta,
-          });
+            locationId: from.id,
+          };
+          const ledger = {
+            type: InventoryTxType.ADJUST,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
+          const after =
+            change.delta > 0
+              ? (
+                  await this.inventory.openLot(tx, {
+                    ...key,
+                    quantity: change.delta,
+                    sourceType: LotSourceType.ADJUSTMENT,
+                    ledger,
+                  })
+                ).inventory
+              : await this.inventory.deductStock(tx, {
+                  ...key,
+                  quantity: -change.delta,
+                  label: change.label,
+                  ledger,
+                });
           lowStock.push(this.inventory.lowStockCrossing(after, change.delta));
         }
 
@@ -610,14 +681,26 @@ export class StockMovementService {
 
     const cancelled = await this.prisma.$transaction(async (tx) => {
       if (shouldReturnStock) {
-        const from = this.source(request);
+        const from = this.source(request)!;
+        // Straight back into the lots it left.
         for (const line of request.details) {
-          await this.inventory.adjustStock(tx, {
+          await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            branchId: from.branchId,
-            warehouseId: from.warehouseId,
-            delta: Number(line.quantity),
+            toLocationId: from.id,
+            quantity: Number(line.quantity),
+            drawnBy: {
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+            },
+            ledger: {
+              type: InventoryTxType.TRANSFER_IN,
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+              createdById: user.userId,
+              note: 'Huỷ phiếu đang vận chuyển',
+            },
+            ifNeverDrawn: { sourceType: LotSourceType.OPENING },
           });
         }
       }
@@ -677,7 +760,7 @@ export class StockMovementService {
   /** EXPORT/RETURN lines: price defaults to cost, and the source must hold the stock. */
   private async prepareTransferLines(
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
@@ -705,15 +788,14 @@ export class StockMovementService {
   /** ADJUST lines: `receivedQuantity` is the counted figure and is required, while `quantity` is what the system thinks and is filled from inventory when absent, so the difference is against the number at count time. */
   private async prepareAdjustLines(
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
     const stock = await this.prisma.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: from.id,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -775,13 +857,12 @@ export class StockMovementService {
     }
   }
 
-  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. */
-  private async assertEndpointsValid(
-    tenantId: string,
+  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. That both ends exist in the tenant was settled by `resolveLocations` before this runs. */
+  private assertEndpointsValid(
     movementType: string,
-    from: LocationColumns | null,
-    to: LocationColumns | null,
-  ): Promise<void> {
+    from: LocationEnd | null,
+    to: LocationEnd | null,
+  ): void {
     if (movementType === MovementType.IMPORT) {
       if (!to)
         throw new BadRequestException({
@@ -811,20 +892,13 @@ export class StockMovementService {
         this.assertTransferMakesSense(movementType, from, to);
       }
     }
-
-    await this.inventory.assertLocationsExist(
-      tenantId,
-      [from, to].filter(
-        (columns): columns is LocationColumns => columns !== null,
-      ),
-    );
   }
 
   /** Builds the lines for whichever movement type this is; `from` is only ever null for an IMPORT, the one type whose lines don't depend on a source location. */
   private async prepareLines(
     tenantId: string,
     movementType: string,
-    from: LocationColumns | null,
+    from: LocationEnd | null,
     lines: MovementItemDto[],
   ) {
     if (movementType === MovementType.IMPORT) {
@@ -840,13 +914,13 @@ export class StockMovementService {
       : this.prepareTransferLines(tenantId, from, lines);
   }
 
-  /** A transfer must actually go somewhere else, and stock moving from a branch back to a warehouse is a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. */
+  /** A transfer must actually go somewhere else, and one in a return direction must be filed as a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. Which directions count lives in `isReturnDirection` (plan 2026-09-29, QĐ-1). */
   private assertTransferMakesSense(
     movementType: string,
-    from: LocationColumns,
-    to: LocationColumns,
+    from: LocationEnd,
+    to: LocationEnd,
   ): void {
-    if (from.branchId === to.branchId && from.warehouseId === to.warehouseId) {
+    if (from.id === to.id) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SAME_LOCATION,
         message: 'The source and destination locations must be different',
@@ -854,8 +928,7 @@ export class StockMovementService {
     }
     if (
       movementType === MovementType.EXPORT &&
-      from.branchId &&
-      to.warehouseId
+      isReturnDirection(from.type, to.type)
     ) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SHOULD_BE_RETURN,
@@ -879,7 +952,7 @@ export class StockMovementService {
     await this.assertStockCovers(
       client,
       request.tenantId,
-      this.source(request),
+      this.source(request)!, // every EXPORT/RETURN has a source - assertEndpointsValid required it
       request.details.map((line) => ({
         productItemId: line.productItemId,
         quantity: Number(line.quantity),
@@ -890,7 +963,7 @@ export class StockMovementService {
   private async assertStockCovers(
     client: Prisma.TransactionClient | PrismaService,
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: { productItemId: string; quantity: number }[],
   ): Promise<void> {
     if (lines.length === 0) return;
@@ -898,14 +971,14 @@ export class StockMovementService {
     const rows = await client.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: from.id,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
-      select: { productItemId: true, stock: true },
+      select: { productItemId: true, stock: true, lockedStock: true },
     });
+    // Only the shelf can be sent - goods packed for an order are not free to transfer. Advisory: deductStock's guard is what enforces it.
     const stockByItem = new Map(
-      rows.map((row) => [row.productItemId, row.stock]),
+      rows.map((row) => [row.productItemId, actualStockOf(row)]),
     );
 
     for (const line of lines) {
@@ -913,101 +986,10 @@ export class StockMovementService {
       if (line.quantity > available) {
         throw new BadRequestException({
           code: ErrorCode.INSUFFICIENT_STOCK,
-          message: `A quantity of ${line.quantity} exceeds the ${available} in stock at the source location`,
+          message: `A quantity of ${line.quantity} exceeds the ${available} on the shelf at the source location`,
         });
       }
     }
-  }
-
-  /** Refuses an import that would push the supplier past their credit limit; a limit of 0 means no limit, matching how the field is seeded. */
-  private async assertCreditHeadroom(
-    tenantId: string,
-    supplierId: string | null | undefined,
-    amount: number,
-  ): Promise<void> {
-    if (!supplierId) {
-      throw new BadRequestException({
-        code: ErrorCode.STOCK_MOVEMENT_SUPPLIER_REQUIRED,
-        message: 'An import must have a supplier',
-      });
-    }
-    const supplier = await this.prisma.supplier.findFirst({
-      where: { id: supplierId, tenantId },
-      select: { creditLimit: true, outstandingDebt: true },
-    });
-    if (!supplier)
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return;
-
-    const projected = Number(supplier.outstandingDebt) + amount;
-    if (projected > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded. Current debt: ${Number(supplier.outstandingDebt)}, this movement: ${amount}, limit: ${limit}`,
-      });
-    }
-  }
-
-  /** Books received goods against the supplier: debt up, and the variants recorded as things this supplier sells us. The limit is re-checked after the increment and throws to roll the receipt back, since several imports can be open at once; returns the warning to send after commit, or null. */
-  private async chargeSupplier(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    supplierId: string,
-    amount: number,
-    receivedItemIds: string[],
-  ) {
-    if (receivedItemIds.length > 0) {
-      // Idempotent: receiving twice from the same supplier must not fail on the join row.
-      await tx.productItemSupplier.createMany({
-        data: receivedItemIds.map((productItemId) => ({
-          productItemId,
-          supplierId,
-        })),
-        skipDuplicates: true,
-      });
-    }
-    if (amount <= 0) return null;
-
-    const supplier = await tx.supplier.update({
-      where: { id: supplierId },
-      data: { outstandingDebt: { increment: amount } },
-      select: {
-        supplierName: true,
-        creditLimit: true,
-        outstandingDebt: true,
-        tenantId: true,
-      },
-    });
-    if (supplier.tenantId !== tenantId) {
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-    }
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return null;
-
-    const debt = Number(supplier.outstandingDebt);
-    if (debt > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded on receipt. New debt: ${debt}, limit: ${limit}`,
-      });
-    }
-
-    return crossedCreditWarning(debt, amount, limit)
-      ? SupplierNotificationTemplates.creditLimitWarning(
-          supplier.supplierName,
-          debt,
-          limit,
-        )
-      : null;
   }
 
   // ─── Access ────────────────────────────────────────────────────────────────
@@ -1022,26 +1004,14 @@ export class StockMovementService {
     return user.tenantId;
   }
 
-  /** The one location a staff account may act at, or `null` for an account that may act anywhere in the tenant. */
-  private postingOf(user: AuthUser): LocationColumns | null {
-    if (
-      user.systemRole === SystemRole.TENANT_OWNER ||
-      user.systemRole === SystemRole.ADMIN
-    ) {
-      return null;
-    }
-    return { branchId: user.branchId, warehouseId: user.warehouseId };
+  /** Where a staff account is posted, or `null` for one that may act anywhere - see `postingOf` in location-access. */
+  private postingOf(user: AuthUser): { locationId: string | null } | null {
+    return postingOf(user);
   }
 
-  /** A TENANT_OWNER acts anywhere in the tenant, a STAFF account where it is posted - or where the shift it is currently supervising reaches. That clause only ever widens to a location the supervisor is already posted at, so it is about when they may act, not where. */
-  private canActAt(user: AuthUser, location: LocationColumns | null): boolean {
-    const own = this.postingOf(user);
-    if (!own) return true;
-    if (!location) return false;
-    if (supervisesLocation(user.shiftSupervision, location)) return true;
-    if (location.branchId) return own.branchId === location.branchId;
-    if (location.warehouseId) return own.warehouseId === location.warehouseId;
-    return false;
+  /** The shared location rule (`canActAt` in location-access), so this flow and production requests cannot disagree about who may act where. */
+  private canActAt(user: AuthUser, location: LocationEnd | null): boolean {
+    return canActAt(user, location);
   }
 
   /** A movement between two of our own locations - the only kind with a source *and* a destination that both belong to us, and so the only kind either end may raise. */
@@ -1052,19 +1022,13 @@ export class StockMovementService {
     );
   }
 
-  /** Whether this is literally where the actor works. `canActAt` is about permission and answers true everywhere for an owner, which cannot tell us which end of a transfer raised it. */
-  private isPostedAt(
-    user: AuthUser,
-    location: LocationColumns | null,
-  ): boolean {
-    const own = this.postingOf(user);
-    if (!own || !location) return false;
-    if (location.branchId) return own.branchId === location.branchId;
-    if (location.warehouseId) return own.warehouseId === location.warehouseId;
-    return false;
+  /** Whether this is literally where the actor works - see `isPostedAt` in location-access. */
+  private isPostedAt(user: AuthUser, location: LocationEnd | null): boolean {
+    return isPostedAt(user, location);
   }
 
-  private assertCanActAt(user: AuthUser, location: LocationColumns): void {
+  /** Takes a missing end too: a staff account can never act at "no location", so it is refused like any other place that isn't theirs. */
+  private assertCanActAt(user: AuthUser, location: LocationEnd | null): void {
     if (!this.canActAt(user, location)) {
       throw new ForbiddenException({
         code: ErrorCode.STOCK_MOVEMENT_LOCATION_DENIED,
@@ -1074,41 +1038,31 @@ export class StockMovementService {
   }
 
   /** Where the movement takes stock from: a staff account that omitted it gets their own posting, and a TENANT_OWNER has to name one. Access is not checked here - a transfer may be raised from either end, so `create()` decides which endpoint has to match. */
-  private resolveSource(
+  private resolveSourceId(
     user: AuthUser,
     dto: CreateStockMovementDto,
-  ): LocationColumns | null {
+  ): string | null {
     if (dto.movementType === MovementType.IMPORT) return null;
-    if (dto.fromLocation) {
-      return this.columnsOf(dto.fromLocation);
-    }
+    if (dto.fromLocationId) return dto.fromLocationId;
 
     const own = this.postingOf(user);
-    if (!own || (!own.branchId && !own.warehouseId)) {
+    if (!own?.locationId) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SOURCE_REQUIRED,
-        message: 'This movement must have a source location (fromLocation)',
+        message: 'This movement must have a source location (fromLocationId)',
       });
     }
-    return own;
+    return own.locationId;
   }
 
-  private columnsOf(ref: LocationRefDto): LocationColumns {
-    return toLocationColumns(ref);
+  /** The movement's source, or null for an IMPORT (its goods come from a supplier). Callers that act only on transfers or stocktakes assert it with `!`: `assertEndpointsValid` refused those without one at create. */
+  private source(request: MovementRow): LocationEnd | null {
+    return request.fromLocation;
   }
 
-  private source(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.fromBranchId,
-      warehouseId: request.fromWarehouseId,
-    };
-  }
-
-  private destination(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.toBranchId,
-      warehouseId: request.toWarehouseId,
-    };
+  /** The movement's destination, or null for an ADJUST (a stocktake happens in one place). */
+  private destination(request: MovementRow): LocationEnd | null {
+    return request.toLocation;
   }
 
   // ─── Plumbing ──────────────────────────────────────────────────────────────
@@ -1164,7 +1118,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.source(request),
+          locationId: request.fromLocationId,
         })),
       );
     }
@@ -1172,7 +1126,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.destination(request),
+          locationId: request.toLocationId,
         })),
       );
     }
@@ -1185,17 +1139,11 @@ export class StockMovementService {
     });
   }
 
-  /** Decimals become numbers, and the two location pairs become the API's ref objects. */
+  /** Decimals become numbers; each end of the movement is the shared `{ id, type, name }` (LOCATION_SELECT) or null, and the raw FK columns are dropped so each place is named once. */
   private toResponse(request: MovementRow) {
     const {
-      fromBranchId,
-      fromWarehouseId,
-      toBranchId,
-      toWarehouseId,
-      fromBranch,
-      fromWarehouse,
-      toBranch,
-      toWarehouse,
+      fromLocationId,
+      toLocationId,
       totalPrice,
       details,
       createdBy,
@@ -1207,10 +1155,6 @@ export class StockMovementService {
       // Nested like every other user payload, so the screens read `createdBy.profile.firstName`.
       createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
       totalPrice: Number(totalPrice),
-      fromLocation: sourceRef({ fromBranchId, fromWarehouseId }),
-      fromLocationName: (fromBranch ?? fromWarehouse)?.name ?? null,
-      toLocation: destinationRef({ toBranchId, toWarehouseId }),
-      toLocationName: (toBranch ?? toWarehouse)?.name ?? null,
       details: details.map((line) => ({
         ...line,
         quantity: Number(line.quantity),

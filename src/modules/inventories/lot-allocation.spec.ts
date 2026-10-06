@@ -1,0 +1,93 @@
+import {
+  averageUnitCost,
+  planDraw,
+  planReturn,
+  runningBalances,
+} from './lot-allocation';
+
+const day = (n: number) => new Date(Date.UTC(2026, 9, n));
+const lot = (
+  id: string,
+  remainingQuantity: number,
+  receivedOn: number,
+  orderItemId: string | null = null,
+) => ({ id, remainingQuantity, receivedAt: day(receivedOn), orderItemId });
+
+// FIFO decides the cost of every unit sold; getting it wrong silently misstates margins.
+describe('planDraw', () => {
+  it('draws the oldest lot first, spilling into the next', () => {
+    const lots = [lot('new', 5, 3), lot('old', 2, 1), lot('mid', 4, 2)];
+    expect(planDraw(lots, 5)).toEqual([
+      { lotId: 'old', quantity: 2 },
+      { lotId: 'mid', quantity: 3 },
+    ]);
+  });
+
+  it('breaks a receivedAt tie by id, so the same rows always give the same answer', () => {
+    const lots = [lot('b', 1, 1), lot('a', 1, 1)];
+    expect(planDraw(lots, 1)).toEqual([{ lotId: 'a', quantity: 1 }]);
+  });
+
+  it('takes a line its own made-to-order lot before any shared one, however old', () => {
+    const lots = [lot('shared', 5, 1), lot('mine', 1, 9, 'line-1')];
+    expect(planDraw(lots, 2, 'line-1')).toEqual([
+      { lotId: 'mine', quantity: 1 },
+      { lotId: 'shared', quantity: 1 },
+    ]);
+  });
+
+  it("never touches a lot made for somebody else's line", () => {
+    const lots = [lot('theirs', 5, 1, 'line-2'), lot('shared', 1, 2)];
+    expect(planDraw(lots, 2, 'line-1')).toBeNull();
+    expect(planDraw(lots, 1)).toEqual([{ lotId: 'shared', quantity: 1 }]);
+  });
+
+  it('skips empty lots and reports a shortfall as null rather than a partial plan', () => {
+    expect(planDraw([lot('empty', 0, 1), lot('a', 2, 2)], 3)).toBeNull();
+    expect(planDraw([lot('empty', 0, 1), lot('a', 2, 2)], 2)).toEqual([
+      { lotId: 'a', quantity: 2 },
+    ]);
+  });
+});
+
+describe('planReturn', () => {
+  it('returns each unit to a lot it left, net of what already came back', () => {
+    const drawn = [
+      { lotId: 'a', drawn: 2, returned: 2 },
+      { lotId: 'b', drawn: 3, returned: 1 },
+      { lotId: 'c', drawn: 1, returned: 0 },
+    ];
+    expect(planReturn(drawn, 3)).toEqual([
+      { lotId: 'b', quantity: 2 },
+      { lotId: 'c', quantity: 1 },
+    ]);
+  });
+
+  it('refuses to bring back more than went out', () => {
+    expect(planReturn([{ lotId: 'a', drawn: 2, returned: 1 }], 2)).toBeNull();
+  });
+});
+
+describe('runningBalances', () => {
+  it('walks the stock level through each ledger row', () => {
+    expect(runningBalances(10, [-2, -3])).toEqual([8, 5]);
+    expect(runningBalances(0, [4, 1])).toEqual([4, 5]);
+  });
+});
+
+describe('averageUnitCost', () => {
+  it('weights each lot by the units taken from it, net of reversals', () => {
+    expect(
+      averageUnitCost([
+        { quantity: -1, unitCost: 100 },
+        { quantity: -3, unitCost: 200 },
+      ]),
+    ).toBe(175);
+    expect(
+      averageUnitCost([
+        { quantity: -2, unitCost: 100 },
+        { quantity: 2, unitCost: 100 },
+      ]),
+    ).toBeNull();
+  });
+});

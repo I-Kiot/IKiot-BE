@@ -12,6 +12,10 @@ import {
 } from './dto/customer.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
 const CODE_PREFIX = 'KH';
 
@@ -47,6 +51,27 @@ export class CustomerService {
     });
   }
 
+  /** The customer an order form typed in by hand. One phone number is one live customer, so a number already on file returns that row (name and address are not overwritten - the order carries its own recipient fields); otherwise a new customer is created exactly as `POST /customers` would. */
+  async findOrCreateForOrder(
+    tenantId: string,
+    input: { name: string; phone?: string; address?: string },
+  ): Promise<string> {
+    const phone = normalizePhone(input.phone);
+    if (phone) {
+      const existing = await this.prisma.customer.findFirst({
+        where: { tenantId, phone, isDeleted: false },
+        select: { id: true },
+      });
+      if (existing) return existing.id;
+    }
+    const created = await this.create(tenantId, {
+      name: input.name,
+      phone,
+      address: input.address,
+    });
+    return created.id;
+  }
+
   /** The customer list, each row carrying its order history through the relation rather than the old in-memory grouping, capped at the ten most recent so a regular with four hundred orders doesn't drag the page down. */
   async findAll(tenantId: string, query: QueryCustomerDto) {
     const where: Prisma.CustomerWhereInput = { tenantId, isDeleted: false };
@@ -75,7 +100,7 @@ export class CustomerService {
               paymentMethod: true,
               grandTotal: true,
               createdAt: true,
-              branch: { select: { id: true, name: true } },
+              branch: BRANCH_NAME_SELECT,
               user: {
                 select: {
                   id: true,
@@ -104,6 +129,7 @@ export class CustomerService {
       ...customer,
       orders: customer.orders.map((order) => ({
         ...order,
+        branch: namedBranch(order.branch),
         grandTotal: Number(order.grandTotal),
         items: order.items.map((item) => ({
           ...item,

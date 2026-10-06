@@ -42,11 +42,6 @@ export class CreateUserDto {
   @IsDateString()
   hireDate?: string;
 
-  /** Which pay scheme this person is on. Must be an ACTIVE paysheet in the tenant. */
-  @IsOptional()
-  @IsUUID()
-  paysheetId?: string;
-
   /** The personal details, the same nested object `PATCH /users/:id` takes. `firstName`/`lastName` are also accepted flat, as the old `StaffDTO` spelled them, and the service prefers whichever is set. */
   @IsOptional()
   @ValidateNested()

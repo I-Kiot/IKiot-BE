@@ -46,7 +46,6 @@ const ALL_PLAN_FEATURES = [
   'sales',
   'reports',
   'hr_management',
-  'payroll',
 ];
 
 const PLANS = [
@@ -192,18 +191,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     ],
     label: 'Tài khoản',
   },
-  staff: {
-    actions: [
-      'create',
-      'read',
-      'update',
-      'delete',
-      'assign_role',
-      'suspend',
-      'inactive',
-    ],
-    label: 'Nhân viên',
-  },
   tenants: {
     actions: ['create', 'read', 'update', 'delete', 'suspend'],
     label: 'Doanh nghiệp',
@@ -234,7 +221,25 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   orders: {
     // 'delete' added for the NestJS port - the generated orders module exposes DELETE.
-    actions: ['create', 'read', 'update', 'delete', 'view_all', 'pay_offline'],
+    // 'confirm' / 'assign' added for the order journey (2026-10-02): confirming an order
+    // holds its stock, and naming the person in charge is a decision of its own.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'view_all',
+      'pay_offline',
+      'confirm',
+      'assign',
+      // Added 2026-10-04 with the revised order journey (docs/hanh-trinh-don-hang.md):
+      // packing, shipping (the step that deducts stock) and confirming the cash a shipper
+      // handed back are each a decision of their own, held by different people. 'pack' is
+      // not folded into 'update' so a packer cannot edit prices or lines.
+      'pack',
+      'ship',
+      'confirm_cash',
+    ],
     label: 'Đơn hàng',
   },
   inventory: {
@@ -250,32 +255,7 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     actions: ['create', 'read', 'update', 'delete', 'calculate', 'apply'],
     label: 'Khuyến mãi',
   },
-  notifications: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Thông báo',
-  },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
-  attendances: {
-    actions: ['create', 'read', 'update', 'delete', 'read_own', 'checkout_own'],
-    label: 'Chấm công',
-  },
-  leaveRequests: {
-    actions: [
-      'create',
-      'read',
-      'update',
-      'delete',
-      'read_all',
-      'read_mine',
-      'readBR',
-      'readWH',
-      'approve',
-      'reject',
-      'cancel',
-      'create_emergency',
-    ],
-    label: 'Đơn nghỉ phép',
-  },
   cash_drawers: {
     // 'create'/'update'/'delete' added for the NestJS port - the old system only ever
     // opened and finalised a session, never edited one directly.
@@ -290,10 +270,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'read_own',
     ],
     label: 'Ca thu ngân',
-  },
-  paysheets: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Bảng lương mẫu',
   },
   schedules: {
     actions: [
@@ -321,21 +297,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     ],
     label: 'Xuất/nhập kho',
   },
-  payrollSettings: {
-    // 'delete' added for the NestJS port.
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Cấu hình lương',
-  },
-  payroll: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Kỳ lương',
-  },
-  payslips: {
-    // Only 'read_own' existed before - an employee reading their own payslip. The generated
-    // payslips module is full CRUD (HR issuing/correcting them), hence the rest.
-    actions: ['create', 'read', 'update', 'delete', 'read_own'],
-    label: 'Phiếu lương',
-  },
   holidays: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Ngày lễ',
@@ -356,7 +317,7 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   cash_flows: {
     // Distinct from cash_drawers: a drawer is one cashier's shift, cash_flows is every
-    // movement of tenant money (payroll payouts, supplier payments, ...). The old system
+    // movement of tenant money (supplier payments, ...). The old system
     // only ever exposed it read-only under reports ('/stats/cashflow').
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Dòng tiền',
@@ -364,6 +325,43 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   ai_chat: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Lịch sử chat AI',
+  },
+
+  // ── The order journey (2026-10-02, docs/order-flow.md) ─────────────────────────────
+  // All added up front in Phase 0 so the parallel tracks never edit this file.
+  production_requests: {
+    // 'update' covers moving the status by hand (DRAFT → SENT → ... → COMPLETED).
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Yêu cầu sản xuất',
+  },
+  production: {
+    // The production list (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4): entering the quantity
+    // produced is what raises stock, so it is its own right (2026-10-04, contract §6).
+    actions: ['receive'],
+    label: 'Nhập hàng sản xuất',
+  },
+  fulfillments: {
+    // 'verify' = confirming the packed goods are intact, which is what deducts the stock.
+    actions: ['create', 'read', 'update', 'verify'],
+    label: 'Đóng hàng',
+  },
+  shipments: {
+    // 'deliver' is the shipper's own right: see their deliveries, upload proof, mark delivered.
+    actions: ['create', 'read', 'update', 'deliver'],
+    label: 'Giao hàng',
+  },
+  returns: {
+    // The order's person in charge may also open a return without holding 'create'.
+    actions: ['create', 'read', 'inspect', 'cancel'],
+    label: 'Hoàn hàng',
+  },
+  sales_channels: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Kênh bán (Shopee)',
+  },
+  payments: {
+    actions: ['create', 'read', 'refund'],
+    label: 'Thanh toán đơn',
   },
 };
 

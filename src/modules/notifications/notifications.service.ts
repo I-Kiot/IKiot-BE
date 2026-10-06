@@ -129,21 +129,16 @@ export class NotificationService {
   /** Who to tell about something that happened at one branch or warehouse. The old BRANCH_MANAGER/WAREHOUSE_MANAGER roles are gone, so this reads the location's `managerId`, falling back to the tenant's owners - where the old version returned an empty list and sent a low-stock warning to nobody. */
   async managersOfLocation(args: {
     tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
+    /** A Location id - which is also the id of the Branch or Warehouse it specializes. */
+    locationId: string | null;
   }): Promise<string[]> {
     try {
-      const location = args.branchId
-        ? await this.prisma.branch.findFirst({
-            where: { id: args.branchId, tenantId: args.tenantId },
+      const location = args.locationId
+        ? await this.prisma.location.findFirst({
+            where: { id: args.locationId, tenantId: args.tenantId },
             select: { managerId: true },
           })
-        : args.warehouseId
-          ? await this.prisma.warehouse.findFirst({
-              where: { id: args.warehouseId, tenantId: args.tenantId },
-              select: { managerId: true },
-            })
-          : null;
+        : null;
 
       if (!location?.managerId) return this.tenantOwners(args.tenantId);
 
@@ -159,52 +154,6 @@ export class NotificationService {
         error instanceof Error ? error.stack : error,
       );
       return [];
-    }
-  }
-
-  /** Who signs off on this person's requests: whoever is appointed manager of the location they work at, falling back to the owners. The requester is always removed, so a manager filing their own leave is never their own approver. */
-  async approversOf(user: {
-    userId: string;
-    tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
-  }): Promise<string[]> {
-    const managers = await this.managersOfLocation({
-      tenantId: user.tenantId,
-      branchId: user.branchId,
-      warehouseId: user.warehouseId,
-    });
-    const others = managers.filter((id) => id !== user.userId);
-    if (others.length > 0) return others;
-
-    // They manage the place themselves (or it has no manager): escalate to the owners.
-    const owners = await this.tenantOwners(user.tenantId);
-    return owners.filter((id) => id !== user.userId);
-  }
-
-  /** A person's name for notification copy, falling back through email and phone to a generic word; never throws, since a vague name beats a failed transaction. */
-  async displayName(userId: string): Promise<string> {
-    try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          profileFirstName: true,
-          profileLastName: true,
-          email: true,
-          phoneNumber: true,
-        },
-      });
-      if (!user) return 'Nhân viên';
-
-      const full =
-        `${user.profileFirstName ?? ''} ${user.profileLastName ?? ''}`.trim();
-      return full || user.email || user.phoneNumber || 'Nhân viên';
-    } catch (error) {
-      this.logger.error(
-        'displayName lookup failed',
-        error instanceof Error ? error.stack : error,
-      );
-      return 'Nhân viên';
     }
   }
 

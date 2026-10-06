@@ -6,6 +6,13 @@ import type { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { STAFF_BASE_PERMISSIONS } from './../src/common/constants/system-role';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from './../src/common/constants/inventory-ledger';
 
 /**
  * Throwaway smoke run over everything ported on 2026-08-25 - products, inventory, staff
@@ -42,11 +49,25 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   let adminId = '';
   let shiftTemplateId = '';
   let scheduleId = '';
-  let leaveRequestId = '';
-  let paysheetId = '';
-  let payrollPeriodId = '';
 
   const auth = (token = ownerToken) => ({ Authorization: `Bearer ${token}` });
+  /** Adds stock the only way it can enter now - as a lot (cost-lot ledger, 2026-10-01). Writing `inventories.stock` straight would break "the lots add up to the stock" and the next sale could not draw. */
+  const topUp = (locationId: string, productItemId: string, quantity: number) =>
+    prisma.$transaction((tx) =>
+      app.get(InventoryService).openLot(tx, {
+        tenantId,
+        locationId,
+        productItemId,
+        quantity,
+        unitCost: 120000,
+        sourceType: LotSourceType.SUPPLIER,
+        ledger: {
+          type: InventoryTxType.IMPORT,
+          referenceType: InventoryRefType.STOCK_MOVEMENT,
+          referenceId: 'smoke-top-up',
+        },
+      }),
+    );
   const results: string[] = [];
   const note = (line: string) => results.push(line);
 
@@ -90,6 +111,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.orderAppliedPromotion.deleteMany({
       where: { order: { tenantId: t } },
     });
+    await prisma.payment.deleteMany({
+      where: { tenantId: t, refundOfPaymentId: { not: null } },
+    });
+    await prisma.payment.deleteMany({ where: { tenantId: t } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId: t } } });
     await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.order.deleteMany({ where: { tenantId: t } });
@@ -108,6 +133,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { request: { tenantId: t } },
     });
     await prisma.stockMovementRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryTransaction.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryLot.deleteMany({ where: { tenantId: t } });
     await prisma.inventory.deleteMany({ where: { tenantId: t } });
     await prisma.productItemSupplier.deleteMany({
       where: { productItem: { tenantId: t } },
@@ -125,54 +152,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.product.deleteMany({ where: { tenantId: t } });
     await prisma.supplier.deleteMany({ where: { tenantId: t } });
     await prisma.holiday.deleteMany({ where: { tenantId: t } });
-    await prisma.payslipLeaveLineDate.deleteMany({
-      where: { leaveLine: { payslip: { tenantId: t } } },
-    });
-    await prisma.payslipLeaveLine.deleteMany({
-      where: { payslip: { tenantId: t } },
-    });
-    await prisma.payslipAllowanceLine.deleteMany({
-      where: { payslip: { tenantId: t } },
-    });
-    await prisma.payslipBonusLine.deleteMany({
-      where: { payslip: { tenantId: t } },
-    });
-    await prisma.payslipDeductionLine.deleteMany({
-      where: { payslip: { tenantId: t } },
-    });
-    await prisma.payslipManualAdjustment.deleteMany({
-      where: { payslip: { tenantId: t } },
-    });
-    await prisma.payslip.deleteMany({ where: { tenantId: t } });
-    await prisma.payrollPeriod.updateMany({
-      where: { tenantId: t },
-      data: { cashFlowId: null },
-    });
-    await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
-    await prisma.payrollPeriod.deleteMany({ where: { tenantId: t } });
-    await prisma.user.updateMany({
-      where: { tenantId: t },
-      data: { paysheetId: null },
-    });
-    await prisma.paysheetBonusTier.deleteMany({
-      where: { bonus: { paysheet: { tenantId: t } } },
-    });
-    await prisma.paysheetBonus.deleteMany({
-      where: { paysheet: { tenantId: t } },
-    });
-    await prisma.paysheetAllowance.deleteMany({
-      where: { paysheet: { tenantId: t } },
-    });
-    await prisma.paysheetDeduction.deleteMany({
-      where: { paysheet: { tenantId: t } },
-    });
-    await prisma.paysheet.deleteMany({ where: { tenantId: t } });
-    await prisma.payrollSetting.deleteMany({ where: { tenantId: t } });
-    await prisma.leaveRequestHandoverSchedule.deleteMany({
-      where: { leaveRequest: { tenantId: t } },
-    });
-    await prisma.leaveRequest.deleteMany({ where: { tenantId: t } });
-    await prisma.attendance.deleteMany({ where: { tenantId: t } });
     await prisma.workingScheduleUser.deleteMany({
       where: { schedule: { tenantId: t } },
     });
@@ -196,11 +175,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     await prisma.subscriptionInvoice.deleteMany({ where: { tenantId: t } });
     await prisma.subscription.deleteMany({ where: { tenantId: t } });
-    await prisma.branch.updateMany({
-      where: { tenantId: t },
-      data: { managerId: null },
-    });
-    await prisma.warehouse.updateMany({
+    await prisma.location.updateMany({
       where: { tenantId: t },
       data: { managerId: null },
     });
@@ -210,12 +185,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.userFcmToken.deleteMany({ where: { user: { tenantId: t } } });
     await prisma.user.updateMany({
       where: { tenantId: t },
-      data: { roleId: null, branchId: null, warehouseId: null },
+      data: { roleId: null, locationId: null },
     });
     await prisma.role.deleteMany({ where: { tenantId: t } });
     await prisma.user.deleteMany({ where: { tenantId: t } });
-    await prisma.branch.deleteMany({ where: { tenantId: t } });
-    await prisma.warehouse.deleteMany({ where: { tenantId: t } });
+    // Branch/Warehouse rows cascade from their Location.
+    await prisma.location.deleteMany({ where: { tenantId: t } });
     await prisma.tenant.deleteMany({ where: { id: t } });
     // Lives outside the tenant (tenantId null), so the sweep above never reaches it.
     await prisma.notification.deleteMany({
@@ -287,7 +262,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note(`supplier: OK creditLimit=${supplier.body.data.creditLimit}`);
   });
 
-  it('creates a product with variants and opening stock, in one transaction', async () => {
+  // Since the cost-lot ledger (2026-10-01) a product is created with no stock: stock only enters
+  // through a lot (an import, a workshop receipt, a return). The opening stock this suite relies on
+  // is opened here the way an import would, straight through InventoryService.
+  it('creates a product with variants, then opens its stock in lots', async () => {
     const created = await http()
       .post('/products')
       .set(auth())
@@ -301,10 +279,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
             retailPrice: 200000,
             costPrice: 120000,
             productDetails: [{ name: 'Màu', value: 'Đỏ' }],
-            initialStock: [
-              { locationId: warehouseId, locationType: 'warehouse', stock: 50 },
-              { locationId: branchId, locationType: 'branch', stock: 8 },
-            ],
           },
           {
             productName: 'Áo thun xanh',
@@ -321,7 +295,28 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     itemAId = created.body.data.items.find((i: any) => i.sku === 'SKU-RED').id;
     itemBId = created.body.data.items.find((i: any) => i.sku === 'SKU-BLUE').id;
 
-    expect(created.body.data.totalStock).toBe(58);
+    expect(created.body.data.totalStock).toBe(0);
+    const inventory = app.get(InventoryService);
+    for (const [locationId, quantity] of [
+      [warehouseId, 50],
+      [branchId, 8],
+    ] as const) {
+      await prisma.$transaction((tx) =>
+        inventory.openLot(tx, {
+          tenantId,
+          locationId,
+          productItemId: itemAId,
+          quantity,
+          unitCost: 120000,
+          sourceType: LotSourceType.SUPPLIER,
+          ledger: {
+            type: InventoryTxType.IMPORT,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: 'smoke-opening',
+          },
+        }),
+      );
+    }
     expect(typeof created.body.data.items[0].retailPrice).toBe('number');
     note(
       `POST /products: OK totalStock=${created.body.data.totalStock} items=${created.body.data.items.length} price is number=${typeof created.body.data.items[0].retailPrice === 'number'}`,
@@ -360,7 +355,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const scoped = await http()
-      .get(`/products?locationId=${branchId}&locationType=branch`)
+      .get(`/products?locationId=${branchId}`)
       .set(auth())
       .expect(200);
     expect(scoped.body.data[0].totalStock).toBe(8);
@@ -385,11 +380,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(red.stockDetails).toHaveLength(2);
     note(`GET /products/:id: stockDetails=${red.stockDetails.length} OK`);
 
-    await http()
-      .get('/products?locationId=' + branchId)
+    // Since the Location refactor the two filters are independent: a kind alone narrows to every place of that kind.
+    const byKind = await http()
+      .get('/products?locationType=BRANCH')
       .set(auth())
-      .expect(400);
-    note('locationId without locationType: 400 OK');
+      .expect(200);
+    expect(byKind.body.data[0].totalStock).toBe(8);
+    note('GET /products?locationType=BRANCH: every branch, totalStock 8 OK');
   });
 
   it('runs the inventory routes, including the low-stock filter', async () => {
@@ -401,7 +398,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const branchRow = all.body.data.find(
-      (r: any) => r.location.locationType === 'branch',
+      (r: any) => r.location.type === 'BRANCH',
     );
     await http()
       .patch(`/inventory/${branchRow.id}/min-stock`)
@@ -423,7 +420,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         locationId: branchId,
-        locationType: 'branch',
         productItemId: itemBId,
       })
       .expect(201);
@@ -432,7 +428,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         locationId: branchId,
-        locationType: 'branch',
         productItemId: itemBId,
       })
       .expect(409);
@@ -560,7 +555,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         branchId,
       })
       .expect(409);
-    expect(dupEmail.body.message).toContain('Email');
+    expect(dupEmail.body.code).toBe('EMAIL_ALREADY_IN_USE');
     note('POST /users with an email already in the shop: 409 OK (case-folded)');
 
     await http()
@@ -593,18 +588,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(updated.body.data.branchId).toBeNull();
     expect(updated.body.data.warehouseId).toBe(warehouseId);
-    expect(updated.body.data.profileIdentificationId).toBe('079195001234');
+    expect(updated.body.data.profile.identificationId).toBe('079195001234');
     note('PATCH /users/:id profile + posting swap (branch cleared): OK');
-
-    const balance = await http()
-      .patch(`/users/${staffId}/leave-balance`)
-      .set(auth())
-      .send({ annualLeaveDays: 15 })
-      .expect(200);
-    expect(balance.body.message).toBeTruthy();
-    expect(balance.body.data).toBeTruthy();
-    expect(balance.body.leaveBalance.remainingDays).toBe(15);
-    note('PATCH leave-balance → {message,data,leaveBalance} OK');
 
     await http()
       .patch(`/users/${staffId}/account/deactivate`)
@@ -644,8 +629,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 20 }],
       })
       .expect(201);
@@ -664,7 +649,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http().patch(`/stock-movements/${id}/ship`).set(auth()).expect(200);
 
     const afterShip = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemAId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(afterShip?.stock).toBe(30);
@@ -678,7 +663,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const atBranch = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(atBranch?.stock).toBe(26);
@@ -691,8 +676,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 5 }],
       })
       .expect(201);
@@ -704,7 +689,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http().patch(`/stock-movements/${id}/cancel`).set(auth()).expect(200);
 
     const back = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemAId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(back?.stock).toBe(30);
@@ -717,8 +702,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: warehouseId,
+        toLocationId: branchId,
         details: [{ productItemId: itemAId, quantity: 9999 }],
       })
       .expect(400);
@@ -733,7 +718,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [
           { productItemId: itemAId, quantity: 100, importPrice: 150000 },
         ],
@@ -748,7 +733,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemAId, quantity: 1, importPrice: 900000 }],
       })
       .expect(400);
@@ -760,7 +745,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierId,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [
           { productItemId: itemBId, quantity: 60, importPrice: 130000 },
         ],
@@ -784,7 +769,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const stocked = await prisma.inventory.findFirst({
-      where: { tenantId, warehouseId, productItemId: itemBId },
+      where: { tenantId, locationId: warehouseId, productItemId: itemBId },
       select: { stock: true },
     });
     expect(stocked?.stock).toBe(60);
@@ -830,7 +815,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierB.body.data.id,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemBId, quantity: 8, importPrice: 100000 }],
       })
       .expect(201);
@@ -861,7 +846,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         movementType: 'IMPORT',
         fromSupplierId: supplierB.body.data.id,
-        toLocation: { locationId: warehouseId, locationType: 'warehouse' },
+        toLocationId: warehouseId,
         details: [{ productItemId: itemBId, quantity: 1, importPrice: 100000 }],
       })
       .expect(201);
@@ -892,7 +877,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         movementType: 'ADJUST',
-        fromLocation: { locationId: branchId, locationType: 'branch' },
+        fromLocationId: branchId,
         details: [{ productItemId: itemAId, receivedQuantity: 24 }],
       })
       .expect(201);
@@ -908,7 +893,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after?.stock).toBe(24);
@@ -930,30 +915,34 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `staff GET /stock-movements: sees ${list.body.pagination.total} of the tenant's movements (own branch only)`,
     );
 
+    // A transfer may be raised from either end since 2026-09-09 (CLAUDE.md "Either end may raise a
+    // transfer"), so a branch account asking the warehouse for goods is allowed. A stocktake is only
+    // ever filed where the stock is counted: this one, at the warehouse, is not the account's to file.
     await http()
       .post('/stock-movements')
       .set(auth(staffToken))
       .send({
-        movementType: 'EXPORT',
-        fromLocation: { locationId: warehouseId, locationType: 'warehouse' },
-        toLocation: { locationId: branchId, locationType: 'branch' },
+        movementType: 'ADJUST',
+        fromLocationId: warehouseId,
         details: [{ productItemId: itemAId, quantity: 1 }],
       })
       .expect(403);
-    note('staff creating a movement out of another location: 403 OK');
+    note('staff filing a stocktake at another location: 403 OK');
 
-    await http().get('/products').set(auth(staffToken)).expect(403);
-    note('staff without products:read on /products: 403 OK');
+    // products:read is part of every staff account's baseline since 2026-09-18 (STAFF_BASE_PERMISSIONS);
+    // suppliers:read is in neither that nor this role.
+    await http().get('/suppliers').set(auth(staffToken)).expect(403);
+    note('staff without suppliers:read on /suppliers: 403 OK');
   });
 
   it('rings up a cash sale, computing the total server-side', async () => {
     const before = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -974,7 +963,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after!.stock).toBe(before!.stock - 2);
@@ -1005,13 +994,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // believed it: `priceLines` selected only id/sku/productName and passed the client's
     // `unitPrice` straight through, so a basket could be rung up for nothing while stock
     // left the shelf and the ledger recorded an honest-looking sale.
-    await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
-      data: { stock: { increment: 2 } },
-    });
+    await topUp(branchId, itemAId, 2);
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1027,12 +1013,9 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     // The manual whole-order discount is capped at what the order is worth. `Math.max(0,…)`
     // alone only stopped the total going negative - any basket could still be settled at 0.
-    await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
-      data: { stock: { increment: 1 } },
-    });
+    await topUp(branchId, itemAId, 1);
     const capped = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1053,10 +1036,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // back per LINE, so N lines of one variant each received the sum of their shares. A
     // 10% promotion split across ten identical lines discounted 100% and the order was
     // written at 0đ - while ten units left the shelf.
-    await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
-      data: { stock: { increment: 10 } },
-    });
+    await topUp(branchId, itemAId, 10);
 
     const promo = await http()
       .post('/promotions')
@@ -1075,7 +1055,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Ten separate lines, same variant - exactly what a till does when it rings items in
     // one at a time.
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1106,7 +1086,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('refuses a sale the branch cannot cover, and one the customer underpays', async () => {
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1117,7 +1097,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('POST /orders beyond branch stock: 400 OK');
 
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1131,7 +1111,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('returns a completed sale, putting stock and money back', async () => {
     const before = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
@@ -1149,7 +1129,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
 
     const after = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(after!.stock).toBe(before!.stock + 2);
@@ -1173,7 +1153,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   it('opens a SePay sale as PENDING and settles it offline', async () => {
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1195,12 +1175,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         accountName: 'SMOKE TEST',
       })
       .expect(200);
-    expect(banked.body.data.bankingBankName).toBe('MB');
+    expect(banked.body.data.banking.bankName).toBe('MB');
     // The secret is never in a response, even to the shop that owns it.
     expect(banked.body.data.bankingSepayWebhookApiKey).toBeUndefined();
 
     const mine = await http().get('/tenant/me').set(auth()).expect(200);
-    expect(mine.body.data.bankingAccountNumber).toBe('0000000000');
+    expect(mine.body.data.banking.accountNumber).toBe('0000000000');
     expect(mine.body.data.hasSepayKey).toBe(false);
     expect(mine.body.data.bankingSepayWebhookApiKey).toBeUndefined();
     note('PUT /tenant/banking + GET /tenant/me: saved, secret withheld OK');
@@ -1215,7 +1195,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('bank update raises a SYSTEM_TENANT_BANK_UPDATED notification OK');
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1288,7 +1268,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1407,7 +1387,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // out server-side now, so this is the regression test for an order that would
     // previously have been rung up at full price with a discount showing on screen.
     const withDiscount = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1432,7 +1412,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Sending the old payload shape must land on the same numbers: the extra keys are
     // stripped by ValidationPipe and the client-supplied amounts are simply not read.
     const legacyShape = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1458,7 +1438,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     // A manual whole-order discount and a promotion have one column between them.
     const conflict = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1620,7 +1600,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('GET /customers?search: OK');
 
     const sale = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1661,7 +1641,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // tenant's live candidates comes back as "gone or not applicable to this order" -
     // one message for both, which is also the right answer for a cross-tenant id.
     const refused = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1698,7 +1678,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
 
     const refused = await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1720,7 +1700,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({
         permissions: [
-          { resource: 'products', action: 'read' },
+          { resource: 'suppliers', action: 'read' },
           { resource: 'orders', action: 'read' },
         ],
       })
@@ -1735,12 +1715,19 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth(staffLogin.body.data.accessToken))
       .expect(200);
 
-    expect(staffMe.body.data.permissions.sort()).toEqual([
-      'orders:read',
-      'products:read',
-    ]);
+    // The role's two grants, plus the baseline every staff account holds (STAFF_BASE_PERMISSIONS,
+    // added 2026-09-18 so a new hire can at least see the catalogue and their own schedule).
+    expect(staffMe.body.data.permissions.sort()).toEqual(
+      [
+        ...new Set([
+          'orders:read',
+          'suppliers:read',
+          ...STAFF_BASE_PERMISSIONS,
+        ]),
+      ].sort(),
+    );
     expect(staffMe.body.data.systemRole).toBe('STAFF');
-    note('GET /auth/me (staff): trả đúng 2 quyền của vai trò OK');
+    note('GET /auth/me (staff): quyền của vai trò + quyền nền OK');
 
     // Empty for the owner, and that means "not applicable" - they short-circuit the guard
     // entirely. A client reading it as "no permissions" would lock the owner out of their
@@ -1760,7 +1747,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .get('/auth/me')
       .set(auth(staffLogin.body.data.accessToken))
       .expect(200);
-    expect(after.body.data.permissions).toEqual(['orders:read']);
+    expect(after.body.data.permissions).not.toContain('suppliers:read');
+    expect(after.body.data.permissions.sort()).toEqual(
+      [...new Set(['orders:read', ...STAFF_BASE_PERMISSIONS])].sort(),
+    );
     note('thu hồi quyền: /auth/me phản ánh ngay trên token cũ OK');
   });
 
@@ -1808,7 +1798,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Reuse the second branch an earlier test created - the TRIAL plan caps a shop at two,
     // so creating a third here would be refused by the quota, not by the scope rule.
     const otherBranch = await prisma.branch.findFirstOrThrow({
-      where: { tenantId, id: { not: branchId }, status: 'ACTIVE' },
+      where: {
+        tenantId,
+        id: { not: branchId },
+        location: { status: 'ACTIVE' },
+      },
       select: { id: true },
     });
 
@@ -1833,31 +1827,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .expect(200);
     note('owner vẫn lọc được theo chi nhánh bất kỳ OK');
-
-    // Same rule, other modules: `?userId=` used to replace "me" with anybody.
-    await http()
-      .get('/attendances/me')
-      .query({ userId: secondStaffId })
-      .set(auth(staffToken))
-      .expect(403);
-    await http()
-      .get('/leave-requests/me')
-      .query({ userId: secondStaffId })
-      .set(auth(staffToken))
-      .expect(403);
-    note(
-      '/attendances/me và /leave-requests/me với ?userId= người khác: 403 OK',
-    );
   });
 
   it('refuses to sell more than the shelf holds, from inside the write', async () => {
     const line = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
 
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -1872,7 +1851,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(400);
 
     const unchanged = await prisma.inventory.findFirst({
-      where: { tenantId, branchId, productItemId: itemAId },
+      where: { tenantId, locationId: branchId, productItemId: itemAId },
       select: { stock: true },
     });
     expect(unchanged!.stock).toBe(line!.stock);
@@ -1884,7 +1863,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   it('keeps exactly one walk-in customer under concurrent anonymous sales', async () => {
     const sale = () =>
       http()
-        .post('/orders')
+        .post('/orders/pos')
         .set(auth())
         .send({
           branchId,
@@ -2087,7 +2066,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const flows = await prisma.cashFlow.findMany({
       where: {
         tenantId,
-        branchId,
+        locationId: branchId,
         paymentMethod: 'CASH',
         createdAt: { gte: dayStart, lt: dayEnd },
       },
@@ -2147,12 +2126,9 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // raises what the drawer *should* hold, while the counted total stays where it was.
     // Stock is topped up by exactly what the sale consumes, so inventory nets to zero and
     // later tests see what they expected.
-    await prisma.inventory.updateMany({
-      where: { tenantId, branchId, productItemId: itemAId },
-      data: { stock: { increment: 1 } },
-    });
+    await topUp(branchId, itemAId, 1);
     await http()
-      .post('/orders')
+      .post('/orders/pos')
       .set(auth())
       .send({
         branchId,
@@ -2363,7 +2339,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Take their posting away.
     await prisma.user.update({
       where: { id: drifter.body.data.id },
-      data: { branchId: null },
+      data: { locationId: null },
     });
 
     const login = await http()
@@ -2484,11 +2460,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(listed.body.pagination.total).toBe(1);
     // 2026-09-10 is a Thursday and not a holiday.
     expect(listed.body.data[0].dayInfo.dayType).toBe('NORMAL');
-    // Nobody has clocked in yet.
-    expect(listed.body.data[0].assignedUsers[0].attendance.status).toBe(
-      'NOT_CHECKED_IN',
-    );
-    note('list: date range filter + dayInfo + attendance summary OK');
+    note('list: date range filter + dayInfo OK');
 
     await http()
       .delete(`/working-schedules/${scheduleId}/users/${secondStaffId}`)
@@ -2555,781 +2527,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { scheduleId: live.id },
     });
     await prisma.workingSchedule.delete({ where: { id: live.id } });
-  });
-
-  it('spends and refunds the leave balance, and hands shifts over', async () => {
-    await http()
-      .patch(`/roles/${roleId}`)
-      .set(auth())
-      .send({
-        permissions: [
-          { resource: 'leaveRequests', action: 'read_mine' },
-          { resource: 'leaveRequests', action: 'cancel' },
-        ],
-      })
-      .expect(200);
-
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
-    const staffToken = staffLogin.body.data.accessToken;
-
-    // Opening balance, so the arithmetic below has something to move.
-    await http()
-      .post(`/users/${staffId}/leave-balance`)
-      .set(auth())
-      .send({ annualLeaveDays: 12 })
-      .expect(201);
-
-    const before = await http()
-      .get('/leave-requests/balance')
-      .set(auth(staffToken))
-      .expect(200);
-    expect(before.body.data.remainingDays).toBe(12);
-
-    // A shift the requester supervises inside the leave window - this is what has to be
-    // handed over, and what decides a handover is needed at all.
-    const managed = await prisma.workingSchedule.create({
-      data: {
-        tenantId,
-        managedById: staffId,
-        shiftTemplateId,
-        scheduleType: 'NORMAL',
-        workDate: new Date('2026-10-06T00:00:00.000Z'),
-        startAt: new Date('2026-10-06T01:00:00.000Z'),
-        endAt: new Date('2026-10-06T05:00:00.000Z'),
-        status: 'SCHEDULED',
-        assignedUsers: { create: [{ userId: staffId }] },
-      },
-      select: { id: true },
-    });
-
-    const preview = await http()
-      .post('/leave-requests/handover/preview')
-      .set(auth(staffToken))
-      .send({ startDate: '2026-10-05', endDate: '2026-10-07' })
-      .expect(200);
-    expect(preview.body.data.requiresHandover).toBe(true);
-    expect(preview.body.data.count).toBe(1);
-    note('handover preview: 1 shift would be stranded OK');
-
-    // Filing without naming anyone to take over is refused.
-    await http()
-      .post('/leave-requests')
-      .set(auth(staffToken))
-      .send({
-        startDate: '2026-10-05',
-        endDate: '2026-10-07',
-        reason: 'Việc gia đình',
-      })
-      .expect(400);
-
-    const filed = await http()
-      .post('/leave-requests')
-      .set(auth(staffToken))
-      .send({
-        startDate: '2026-10-05',
-        endDate: '2026-10-07',
-        reason: 'Việc gia đình',
-        handoverToUserId: secondStaffId,
-      })
-      .expect(201);
-    leaveRequestId = filed.body.data.id;
-    expect(filed.body.handover.required).toBe(true);
-    expect(filed.body.data.status).toBe('PENDING');
-
-    // Overlapping the same days again is refused while the first is still live.
-    await http()
-      .post('/leave-requests')
-      .set(auth(staffToken))
-      .send({
-        startDate: '2026-10-06',
-        endDate: '2026-10-08',
-        reason: 'Trùng ngày',
-        handoverToUserId: secondStaffId,
-      })
-      .expect(409);
-    note('overlapping leave request: 409 OK');
-
-    // Nobody approves their own leave, whatever they hold.
-    await http()
-      .post(`/leave-requests/${leaveRequestId}/approve`)
-      .set(auth(staffToken))
-      .send({ paidLeaveDays: 3, unpaidLeaveDays: 0 })
-      .expect(403);
-
-    // 3 requested, 4 approved - more days than were asked for.
-    await http()
-      .post(`/leave-requests/${leaveRequestId}/approve`)
-      .set(auth())
-      .send({ paidLeaveDays: 4, unpaidLeaveDays: 0 })
-      .expect(400);
-
-    const approved = await http()
-      .post(`/leave-requests/${leaveRequestId}/approve`)
-      .set(auth())
-      .send({ paidLeaveDays: 2, unpaidLeaveDays: 1 })
-      .expect(200);
-    expect(approved.body.data.status).toBe('APPROVED');
-
-    const spent = await http()
-      .get('/leave-requests/balance')
-      .set(auth(staffToken))
-      .expect(200);
-    expect(spent.body.data.remainingDays).toBe(10);
-    expect(spent.body.data.usedDays).toBe(2);
-
-    // The shift moved to the person taking over.
-    const handedOver = await prisma.workingSchedule.findUniqueOrThrow({
-      where: { id: managed.id },
-      select: { managedById: true },
-    });
-    expect(handedOver.managedById).toBe(secondStaffId);
-    note('approve: 2 paid days spent, shift handed over OK');
-
-    const cancelled = await http()
-      .post(`/leave-requests/${leaveRequestId}/cancel`)
-      .set(auth(staffToken))
-      .expect(200);
-    expect(cancelled.body.data.status).toBe('CANCELLED');
-
-    const refunded = await http()
-      .get('/leave-requests/balance')
-      .set(auth(staffToken))
-      .expect(200);
-    expect(refunded.body.data.remainingDays).toBe(12);
-
-    // **Back to the original supervisor, not to nobody** - iKiotMS-BE set this to null.
-    const restored = await prisma.workingSchedule.findUniqueOrThrow({
-      where: { id: managed.id },
-      select: { managedById: true },
-    });
-    expect(restored.managedById).toBe(staffId);
-    note('cancel: 2 days refunded, shift returned to the original manager OK');
-
-    await prisma.leaveRequestHandoverSchedule.deleteMany({
-      where: { scheduleId: managed.id },
-    });
-    await prisma.workingScheduleUser.deleteMany({
-      where: { scheduleId: managed.id },
-    });
-    await prisma.workingSchedule.delete({ where: { id: managed.id } });
-  });
-
-  it('clocks in and out inside the geofence', async () => {
-    // The branch needs a geofence before anyone can clock in against it.
-    await http()
-      .patch(`/branches/${branchId}`)
-      .set(auth())
-      .send({
-        attendanceTakingLocation: {
-          latitude: 10.772,
-          longitude: 106.698,
-          allowedRadiusMeters: 100,
-          maxAccuracyMeters: 100,
-        },
-      })
-      .expect(200);
-
-    // A shift that is running right now, so the check-in window is open.
-    const now = new Date();
-    const shift = await prisma.workingSchedule.create({
-      data: {
-        tenantId,
-        managedById: staffId,
-        shiftTemplateId,
-        scheduleType: 'NORMAL',
-        workDate: new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`),
-        startAt: new Date(now.getTime() - 90 * 60 * 1000),
-        endAt: new Date(now.getTime() + 90 * 60 * 1000),
-        status: 'SCHEDULED',
-        assignedUsers: { create: [{ userId: staffId }] },
-      },
-      select: { id: true, startAt: true },
-    });
-
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
-    const staffToken = staffLogin.body.data.accessToken;
-
-    await http()
-      .patch(`/roles/${roleId}`)
-      .set(auth())
-      .send({
-        permissions: [
-          { resource: 'attendances', action: 'create' },
-          { resource: 'attendances', action: 'update' },
-          { resource: 'attendances', action: 'read_own' },
-        ],
-      })
-      .expect(200);
-
-    // Standing 330m away with a good fix: they are simply not at work.
-    const away = await http()
-      .post('/attendances/check-in')
-      .set(auth(staffToken))
-      .send({
-        scheduleId: shift.id,
-        actualCheckinAt: now.toISOString(),
-        checkInLocation: { latitude: 10.775, longitude: 106.698, accuracy: 5 },
-      })
-      .expect(403);
-    expect(away.body.errors.verificationStatus).toBe('OUT_OF_RANGE');
-
-    // At the shop, but the phone doesn't know where it is - a different failure.
-    const vague = await http()
-      .post('/attendances/check-in')
-      .set(auth(staffToken))
-      .send({
-        scheduleId: shift.id,
-        actualCheckinAt: now.toISOString(),
-        checkInLocation: {
-          latitude: 10.772,
-          longitude: 106.698,
-          accuracy: 500,
-        },
-      })
-      .expect(422);
-    expect(vague.body.errors.verificationStatus).toBe('LOW_ACCURACY');
-
-    // 60 minutes after the shift started, grace is 15 → the full 60 counts.
-    const checkinAt = new Date(shift.startAt!.getTime() + 60 * 60 * 1000);
-    const checkedIn = await http()
-      .post('/attendances/check-in')
-      .set(auth(staffToken))
-      .send({
-        scheduleId: shift.id,
-        actualCheckinAt: checkinAt.toISOString(),
-        checkInLocation: { latitude: 10.772, longitude: 106.698, accuracy: 10 },
-      })
-      .expect(201);
-    const attendanceId = checkedIn.body.data.attendance.id;
-    expect(checkedIn.body.data.attendance.status).toBe('CHECKED_IN');
-    expect(checkedIn.body.data.geo.verificationStatus).toBe('VERIFIED');
-    // Stored, not just derived - iKiotMS-BE never wrote this column.
-    expect(checkedIn.body.data.attendance.lateMinutes).toBe(60);
-    note('check-in: geofence VERIFIED, lateMinutes stored (60, grace 15) OK');
-
-    await http()
-      .post('/attendances/check-in')
-      .set(auth(staffToken))
-      .send({
-        scheduleId: shift.id,
-        actualCheckinAt: checkinAt.toISOString(),
-        checkInLocation: { latitude: 10.772, longitude: 106.698, accuracy: 10 },
-      })
-      .expect(409);
-    note('check-in twice for one shift: 409 OK');
-
-    const checkedOut = await http()
-      .post('/attendances/check-out')
-      .set(auth(staffToken))
-      .send({
-        attendanceId,
-        actualCheckoutAt: new Date(
-          checkinAt.getTime() + 30 * 60 * 1000,
-        ).toISOString(),
-        checkOutLocation: {
-          latitude: 10.772,
-          longitude: 106.698,
-          accuracy: 10,
-        },
-      })
-      .expect(200);
-    expect(checkedOut.body.data.attendance.status).toBe('CHECKED_OUT');
-    expect(checkedOut.body.data.attendance.workedMinutes).toBe(30);
-    note('check-out: workedMinutes 30, CHECKED_OUT OK');
-
-    // The filter the old system shipped with and could never satisfy.
-    const late = await http()
-      .get('/attendances/me?lateOnly=true')
-      .set(auth(staffToken))
-      .expect(200);
-    expect(late.body.pagination.total).toBe(1);
-    expect(late.body.data[0].id).toBe(attendanceId);
-    note(
-      'GET /attendances/me?lateOnly=true: 1 row (was always empty before) OK',
-    );
-
-    // A manager cannot correct their own attendance, whatever their permissions.
-    const ownEdit = await http()
-      .patch(`/attendances/${attendanceId}/manual-checkout`)
-      .set(auth(staffToken))
-      .send({ actualCheckoutAt: now.toISOString(), reason: 'tự sửa' })
-      .expect(403);
-    expect(ownEdit.body.code).toBe('ATTENDANCE_SELF_CORRECTION_DENIED');
-    note('manual-checkout on your own record: 403 OK');
-
-    await prisma.attendance.deleteMany({ where: { scheduleId: shift.id } });
-    await prisma.workingScheduleUser.deleteMany({
-      where: { scheduleId: shift.id },
-    });
-    await prisma.workingSchedule.delete({ where: { id: shift.id } });
-  });
-
-  it('runs a payroll period from draft to paid', async () => {
-    await http()
-      .post('/payroll/settings')
-      .set(auth())
-      .send({ standardWorkingDays: 26, standardWorkingHoursPerDay: 8 })
-      .expect(201);
-
-    const paysheet = await http()
-      .post('/payroll/paysheets')
-      .set(auth())
-      .send({
-        name: 'Ca 400k',
-        basicPay: { payType: 'PAY_BY_SHIFT', amountPerShift: 400_000 },
-        deductions: [
-          {
-            name: 'Đi muộn',
-            enable: true,
-            deductionType: 'LATE',
-            conditionType: 'BY_OCCURRENCE',
-            deductionValue: 50_000,
-          },
-        ],
-      })
-      .expect(201);
-    paysheetId = paysheet.body.data.id;
-
-    // A FIXED paysheet with no salary is refused at configuration time, not at month end.
-    await http()
-      .post('/payroll/paysheets')
-      .set(auth())
-      .send({ name: 'Thiếu lương', basicPay: { payType: 'FIXED' } })
-      .expect(400);
-
-    await http()
-      .patch(`/users/${staffId}`)
-      .set(auth())
-      .send({ paysheetId })
-      .expect(200);
-
-    // One worked shift last month: 09:00–17:00 Vietnam on a Monday, clocked in 40 minutes
-    // late (grace is 15, so the whole 40 counts and the LATE rule charges once).
-    const worked = await prisma.workingSchedule.create({
-      data: {
-        tenantId,
-        managedById: staffId,
-        shiftTemplateId,
-        scheduleType: 'NORMAL',
-        workDate: new Date('2026-07-06T00:00:00.000Z'),
-        startAt: new Date('2026-07-06T02:00:00.000Z'),
-        endAt: new Date('2026-07-06T10:00:00.000Z'),
-        status: 'SCHEDULED',
-        assignedUsers: { create: [{ userId: staffId }] },
-      },
-      select: { id: true },
-    });
-    await prisma.attendance.create({
-      data: {
-        tenantId,
-        userId: staffId,
-        scheduleId: worked.id,
-        workDate: new Date('2026-07-06T00:00:00.000Z'),
-        actualCheckinAt: new Date('2026-07-06T02:40:00.000Z'),
-        actualCheckoutAt: new Date('2026-07-06T10:00:00.000Z'),
-        lateMinutes: 40,
-        status: 'CHECKED_OUT',
-      },
-    });
-
-    const preview = await http()
-      .post('/payroll/preview')
-      .set(auth())
-      .send({ payrollMonth: '2026-07', userIds: [staffId] })
-      .expect(200);
-    const slip = preview.body.data.payslips[0];
-    // A LATE rule is configured, so the 40 minutes lost to arriving late are restored to
-    // the payable time - the penalty takes the money instead. Full shift, full 400k.
-    expect(slip.basePay).toBe(400_000);
-    expect(slip.deduction).toBe(50_000);
-    expect(slip.netSalary).toBe(350_000);
-    expect(slip.totalWorkedDays).toBe(1);
-    note('payroll preview: late restored to time, charged once as 50k OK');
-
-    // A period that hasn't ended yet cannot be generated.
-    const future = new Date();
-    const futureMonth = `${future.getUTCFullYear() + 1}-01`;
-    await http()
-      .post('/payroll/periods')
-      .set(auth())
-      .send({ payrollMonth: futureMonth })
-      .expect(422);
-
-    const generated = await http()
-      .post('/payroll/periods')
-      .set(auth())
-      .send({ payrollMonth: '2026-07', userIds: [staffId] })
-      .expect(201);
-    payrollPeriodId = generated.body.data.payrollPeriod.id;
-    expect(generated.body.data.payrollPeriod.status).toBe('DRAFT');
-
-    // A second period over the same month collides.
-    await http()
-      .post('/payroll/periods')
-      .set(auth())
-      .send({ payrollMonth: '2026-07', userIds: [staffId] })
-      .expect(409);
-    note('generate: DRAFT created, overlapping period 409 OK');
-
-    const detail = await http()
-      .get(`/payroll/periods/${payrollPeriodId}`)
-      .set(auth())
-      .expect(200);
-    expect(detail.body.payrollPeriod.totalCost).toBe(350_000);
-    const payslipId = detail.body.data[0].id;
-
-    // A manual advance comes off the net, and the payslip is re-totalled from its stored
-    // components rather than from the previous net - editing twice must not compound.
-    const adjusted = await http()
-      .patch(`/payroll/periods/${payrollPeriodId}/payslips/${payslipId}`)
-      .set(auth())
-      .send({
-        manualAdjustments: [
-          { category: 'SALARY_ADVANCE', name: 'Ứng lương', amount: -100_000 },
-        ],
-      })
-      .expect(200);
-    expect(adjusted.body.data.payslip.netSalary).toBe(250_000);
-
-    await http()
-      .patch(`/payroll/periods/${payrollPeriodId}/payslips/${payslipId}`)
-      .set(auth())
-      .send({
-        manualAdjustments: [
-          { category: 'SALARY_ADVANCE', name: 'Ứng lương', amount: -100_000 },
-        ],
-      })
-      .expect(200);
-    const stillOnce = await http()
-      .get(`/payroll/periods/${payrollPeriodId}/payslips/${payslipId}`)
-      .set(auth())
-      .expect(200);
-    expect(stillOnce.body.data.netSalary).toBe(250_000);
-    note('draft edit: advance applied once, re-editing does not compound OK');
-
-    // An adjustment that would make the net negative is refused.
-    await http()
-      .patch(`/payroll/periods/${payrollPeriodId}/payslips/${payslipId}`)
-      .set(auth())
-      .send({
-        manualAdjustments: [
-          { category: 'OTHER', name: 'Quá tay', amount: -999_999 },
-        ],
-      })
-      .expect(422);
-
-    // Approving straight from DRAFT skips REVIEW.
-    await http()
-      .post(`/payroll/periods/${payrollPeriodId}/approve`)
-      .set(auth())
-      .send({})
-      .expect(409);
-
-    await http()
-      .post(`/payroll/periods/${payrollPeriodId}/submit`)
-      .set(auth())
-      .send({})
-      .expect(200);
-
-    // Returning to draft needs a reason.
-    await http()
-      .post(`/payroll/periods/${payrollPeriodId}/return-to-draft`)
-      .set(auth())
-      .send({})
-      .expect(400);
-
-    await http()
-      .post(`/payroll/periods/${payrollPeriodId}/approve`)
-      .set(auth())
-      .send({})
-      .expect(200);
-
-    const paid = await http()
-      .post(`/payroll/periods/${payrollPeriodId}/mark-paid`)
-      .set(auth())
-      .send({ paymentNote: 'Trả tay' })
-      .expect(200);
-    expect(paid.body.data.status).toBe('PAID');
-    // Server-owned: the client never names a payment method.
-    expect(paid.body.data.paymentMethod).toBe('CASH');
-    expect(paid.body.data.cashFlowReference).toMatch(/^PAYR/);
-
-    // The ledger row and the status are written together - one can't exist without the
-    // other, and `CashFlow.payrollPeriodId` is unique so a replay writes no second row.
-    const ledger = await prisma.cashFlow.findMany({
-      where: { tenantId, payrollPeriodId },
-      select: { amount: true, flowType: true },
-    });
-    expect(ledger).toHaveLength(1);
-    expect(Number(ledger[0].amount)).toBe(250_000);
-    expect(ledger[0].flowType).toBe('EXPENSE');
-    note(
-      'mark-paid: PAID + one PAYR expense row of 250k, method server-owned OK',
-    );
-
-    // The employee can now see it; a DRAFT one they could not.
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
-    await http()
-      .patch(`/roles/${roleId}`)
-      .set(auth())
-      .send({ permissions: [{ resource: 'payslips', action: 'read_own' }] })
-      .expect(200);
-
-    const mine = await http()
-      .get('/payroll/my-payslips')
-      .set(auth(staffLogin.body.data.accessToken))
-      .expect(200);
-    expect(mine.body.pagination.total).toBe(1);
-    expect(mine.body.data[0].netSalary).toBe(250_000);
-    note('my-payslips: employee sees the PAID slip OK');
-
-    await prisma.attendance.deleteMany({ where: { scheduleId: worked.id } });
-    await prisma.workingScheduleUser.deleteMany({
-      where: { scheduleId: worked.id },
-    });
-    await prisma.workingSchedule.delete({ where: { id: worked.id } });
-  });
-
-  it('prices the revenue-tier bonus on a paysheet', async () => {
-    // Neither codebase ever priced this: both wrote a literal `bonus = 0` under a comment
-    // saying the configuration was stored but not applied. Every number below is therefore
-    // a decision the shop owner made on 2026-09-06, not a ported behaviour.
-    const walkIn = await prisma.customer.findFirstOrThrow({
-      where: { tenantId, customerCode: 'KH_VANGLAI' },
-      select: { id: true },
-    });
-
-    // June 2026, so this has its own payroll period and cannot disturb the July one the
-    // previous test already generated and paid.
-    const june = (day: number, hour = 5) =>
-      new Date(Date.UTC(2026, 5, day, hour));
-
-    /** A completed sale by this cashier, with the moment its money landed as a separate
-     *  fact - that separation is what tells NET_REVENUE from COLLECTED_REVENUE apart. */
-    const sell = async (args: {
-      unitPrice: number;
-      discount: number;
-      soldAt: Date;
-      paidAt: Date;
-    }) => {
-      const grandTotal = args.unitPrice - args.discount;
-      const order = await prisma.order.create({
-        data: {
-          tenantId,
-          branchId,
-          customerId: walkIn.id,
-          userId: staffId,
-          status: 'COMPLETED',
-          paymentMethod: 'CASH',
-          grandTotal,
-          createdAt: args.soldAt,
-          items: {
-            create: [
-              {
-                productItemId: itemAId,
-                quantity: 1,
-                unitPrice: args.unitPrice,
-                discountAmount: args.discount,
-              },
-            ],
-          },
-        },
-        select: { id: true },
-      });
-      await prisma.cashFlow.create({
-        data: {
-          tenantId,
-          branchId,
-          orderId: order.id,
-          flowType: 'INCOME',
-          amount: grandTotal,
-          paymentMethod: 'CASH',
-          createdAt: args.paidAt,
-        },
-      });
-      return order.id;
-    };
-
-    // Two sales paid the day they were rung up, and one SePay sale whose money only landed
-    // in July - a real case, and the only thing that separates the cash basis from the
-    // accrual one.
-    await sell({
-      unitPrice: 3_000_000,
-      discount: 500_000,
-      soldAt: june(8),
-      paidAt: june(8),
-    });
-    await sell({
-      unitPrice: 5_000_000,
-      discount: 500_000,
-      soldAt: june(9),
-      paidAt: june(9),
-    });
-    await sell({
-      unitPrice: 3_000_000,
-      discount: 0,
-      soldAt: june(30, 16),
-      paidAt: new Date(Date.UTC(2026, 6, 1, 3)),
-    });
-
-    //   GROSS     = 3.0 + 5.0 + 3.0 = 11.0tr   (before discount)
-    //   NET       = 2.5 + 4.5 + 3.0 = 10.0tr   (after discount)
-    //   COLLECTED = 2.5 + 4.5       =  7.0tr   (the third sale's money landed in July)
-    const withBonus = (calculationType: string, extra: unknown[] = []) =>
-      http()
-        .put(`/payroll/paysheets/${paysheetId}`)
-        .set(auth())
-        .send({
-          name: 'Ca 400k',
-          basicPay: { payType: 'PAY_BY_SHIFT', amountPerShift: 400_000 },
-          deductions: [
-            {
-              name: 'Đi muộn',
-              enable: true,
-              deductionType: 'LATE',
-              conditionType: 'BY_OCCURRENCE',
-              deductionValue: 50_000,
-            },
-          ],
-          bonuses: [
-            {
-              bonusType: 'EMPLOYEE_REVENUE',
-              calculationType,
-              enable: true,
-              tiers: [
-                {
-                  name: 'Bậc 1',
-                  fromValue: 3_000_000,
-                  rewardType: 'PERCENTAGE',
-                  rewardValue: 5,
-                },
-                {
-                  name: 'Bậc 2',
-                  fromValue: 5_000_000,
-                  rewardType: 'PERCENTAGE',
-                  rewardValue: 14,
-                },
-              ],
-            },
-            ...extra,
-          ],
-        })
-        .expect(200);
-
-    const previewJune = async () => {
-      const preview = await http()
-        .post('/payroll/preview')
-        .set(auth())
-        .send({ payrollMonth: '2026-06', userIds: [staffId] })
-        .expect(200);
-      return preview.body.data.payslips[0];
-    };
-
-    // ── The three revenue figures are genuinely different numbers ────────────
-    await withBonus('NET_REVENUE');
-    const net = await previewJune();
-    expect(net.bonusLines).toHaveLength(1);
-    expect(net.bonusLines[0]).toMatchObject({
-      bonusType: 'EMPLOYEE_REVENUE',
-      calculationType: 'NET_REVENUE',
-      revenue: 10_000_000,
-      tierName: 'Bậc 2',
-      amount: 1_400_000,
-    });
-    expect(net.bonus).toBe(1_400_000);
-
-    await withBonus('GROSS_REVENUE');
-    const gross = await previewJune();
-    expect(gross.bonusLines[0].revenue).toBe(11_000_000);
-    expect(gross.bonus).toBe(1_540_000);
-
-    await withBonus('COLLECTED_REVENUE');
-    const collected = await previewJune();
-    // The June sale settled on 1 July is out: its money moved in the next period.
-    expect(collected.bonusLines[0].revenue).toBe(7_000_000);
-    // The worked example from the decision: 7tr against 5tr→14%, flat, on the whole figure.
-    expect(collected.bonus).toBe(980_000);
-    // Not the two readings it was chosen over.
-    expect(collected.bonus).not.toBe(380_000);
-    expect(collected.bonus).not.toBe(1_330_000);
-    note(
-      `bonus: gộp ${gross.bonusLines[0].revenue} → ${gross.bonus}, thuần ${net.bonusLines[0].revenue} → ${net.bonus}, thực thu ${collected.bonusLines[0].revenue} → ${collected.bonus} OK`,
-    );
-
-    // No shifts in June, so pay is a bare deduction; the bonus is what lifts it.
-    expect(collected.netSalary).toBe(
-      collected.grossSalary +
-        collected.bonus +
-        collected.allowance -
-        collected.deduction,
-    );
-
-    // ── The income floor sees the commission, and lands exactly on its promise ──
-    await withBonus('COLLECTED_REVENUE', [
-      {
-        bonusType: 'MINIMUM_AVENUE_INCOME',
-        calculationType: 'COLLECTED_REVENUE',
-        enable: true,
-        tiers: [
-          {
-            name: 'Đảm bảo',
-            fromValue: 0,
-            rewardType: 'FIXED_AMOUNT',
-            rewardValue: 3_000_000,
-          },
-        ],
-      },
-    ]);
-    const guaranteed = await previewJune();
-    const floorLine = guaranteed.bonusLines.find(
-      (line: any) => line.bonusType === 'MINIMUM_AVENUE_INCOME',
-    );
-    // Take-home is exactly the guarantee: the floor topped up what was still missing after
-    // the 980k commission, rather than paying the whole guarantee on top of it.
-    expect(guaranteed.netSalary).toBe(3_000_000);
-    expect(guaranteed.bonus).toBe(980_000 + floorLine.amount);
-    expect(floorLine.amount).toBeLessThan(3_000_000);
-    note(
-      `đảm bảo thu nhập: hoa hồng 980.000 + bù ${floorLine.amount} ⇒ thực nhận đúng 3.000.000 OK`,
-    );
-
-    // ── And it survives being written down ──────────────────────────────────
-    const period = await http()
-      .post('/payroll/periods')
-      .set(auth())
-      .send({ payrollMonth: '2026-06', userIds: [staffId] })
-      .expect(201);
-
-    const saved = await prisma.payslip.findFirstOrThrow({
-      where: {
-        payrollPeriodId: period.body.data.payrollPeriod.id,
-        userId: staffId,
-      },
-      include: { bonusLines: true },
-    });
-    expect(Number(saved.bonus)).toBe(guaranteed.bonus);
-    expect(saved.bonusLines).toHaveLength(2);
-    const commissionRow = saved.bonusLines.find(
-      (line) => line.bonusType === 'EMPLOYEE_REVENUE',
-    )!;
-    // The tier is snapshotted, not referenced: the paysheet was rewritten four times in
-    // this test alone, and a payslip has to still explain itself afterwards.
-    expect(Number(commissionRow.revenue)).toBe(7_000_000);
-    expect(commissionRow.tierName).toBe('Bậc 2');
-    expect(Number(commissionRow.fromValue)).toBe(5_000_000);
-    expect(Number(commissionRow.amount)).toBe(980_000);
-    note(
-      `phiếu lương lưu ${saved.bonusLines.length} dòng thưởng kèm bậc đã chốt, tổng ${Number(saved.bonus)} OK`,
-    );
   });
 
   it('manages the public holiday calendar', async () => {
@@ -3621,8 +2818,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
     note('GET /stats/top-products: line revenue summed and ranked in SQL OK');
 
-    // Cashflow: the ledger view of the same sales, plus the payroll expense marked paid
-    // earlier in this suite. `flow=ORD` isolates the sales half by reference prefix.
+    // Cashflow: the ledger view of the same sales. `flow=ORD` isolates them by reference prefix.
     const cash = await http().get('/stats/cashflow').set(auth()).expect(200);
     expect(cash.body.data.income).toBeGreaterThan(0);
     expect(cash.body.data.expense).toBeGreaterThan(0);
@@ -3631,24 +2827,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
 
     // ORD is not "income" - a refunded order writes an ORD-prefixed EXPENSE, so the sales
-    // flow has both sides. What it must not contain is payroll.
+    // flow has both sides.
     const salesOnly = await http()
       .get('/stats/cashflow?flow=ORD')
       .set(auth())
       .expect(200);
     expect(salesOnly.body.data.income).toBe(cash.body.data.income);
     expect(salesOnly.body.data.expense).toBeGreaterThan(0);
-
-    const payrollOnly = await http()
-      .get('/stats/cashflow?flow=PAYR')
-      .set(auth())
-      .expect(200);
-    expect(payrollOnly.body.data.income).toBe(0);
-    // The two flows partition the expense side between them.
-    expect(payrollOnly.body.data.expense + salesOnly.body.data.expense).toBe(
-      cash.body.data.expense,
-    );
-    note('GET /stats/cashflow: flow=ORD / flow=PAYR partition the ledger OK');
+    // Every cash row this suite writes is a sale or its refund.
+    expect(salesOnly.body.data.expense).toBe(cash.body.data.expense);
+    note('GET /stats/cashflow: flow=ORD selects the sales ledger OK');
 
     const transactions = await http()
       .get('/stats/cashflow/transactions?page=1&limit=5')
@@ -3656,12 +2844,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(transactions.body.data.length).toBeGreaterThan(0);
     expect(transactions.body.pagination.total).toBeGreaterThan(0);
-    const payrollRow = transactions.body.data.find(
-      (row: { paymentReference: string | null }) =>
-        row.paymentReference?.startsWith('PAYR'),
-    );
-    expect(payrollRow.flowType).toBe('EXPENSE');
-    expect(payrollRow.locationType).toBeNull();
     note('GET /stats/cashflow/transactions: paginated, names resolved OK');
 
     const inventory = await http()
@@ -3674,7 +2856,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Polymorphic location split into two nullable columns - exactly one is set.
     const row = inventory.body.data.lowStock[0];
     expect(Boolean(row.branchId) !== Boolean(row.warehouseId)).toBe(true);
-    expect(row.locationType).toBe(row.branchId ? 'branch' : 'warehouse');
+    expect(row.locationType).toBe(row.branchId ? 'BRANCH' : 'WAREHOUSE');
     note('GET /stats/inventory: valuation joins cost price, low-stock list OK');
   });
 
@@ -3686,8 +2868,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const staffToken = staffLogin.body.data.accessToken;
 
     // Without reports:read the dashboard is closed to them at the guard, before any
-    // scoping runs. (PATCH /roles replaces the whole permission set, so this also proves
-    // the previous test's payslips:read_own is gone.)
+    // scoping runs.
     await http().get('/stats/overview').set(auth(staffToken)).expect(403);
 
     await http()

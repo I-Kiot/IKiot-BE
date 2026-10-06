@@ -1,4 +1,3 @@
-import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
@@ -6,9 +5,8 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  ValidateNested,
+  IsUUID,
 } from 'class-validator';
-import { AttendanceLocationDto } from '../../../common/dto/attendance-location.dto';
 
 // Mirrors iKiotMS-BE's CreateBranchRequestDTO. `status` is deliberately absent - a new branch is always ACTIVE, and the generated DTO this replaces let a caller create one already soft-deleted.
 export class CreateBranchDto {
@@ -31,8 +29,8 @@ export class CreateBranchDto {
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
 
+  /** D-4: where this branch's damaged / defective goods go - a non-sellable warehouse. `null` clears it. */
   @IsOptional()
-  @ValidateNested()
-  @Type(() => AttendanceLocationDto)
-  attendanceTakingLocation?: AttendanceLocationDto;
+  @IsUUID('all', { message: 'damagedLocationId không hợp lệ' })
+  damagedLocationId?: string | null;
 }

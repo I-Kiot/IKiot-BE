@@ -16,7 +16,6 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
 import {
   DeleteStaffDto,
-  LeaveBalanceDto,
   StaffAccountPasswordDto,
 } from './dto/staff-account.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -24,7 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Staff accounts - iKiotMS-BE's `/staff` module, at `/users`, keeping the old sub-paths for leave balance and the account lifecycle. The old `GET /staff/roles` is not reproduced: roles are tenant-defined rows, so `GET /roles` is the answer. All of these are `users:update` rather than `staff:update`, since two catalog resources for one thing is how a permission ends up granted in one place and checked in the other. */
+/** Staff accounts - iKiotMS-BE's `/staff` module, at `/users`, keeping the old sub-paths for the account lifecycle. The old `GET /staff/roles` is not reproduced: roles are tenant-defined rows, so `GET /roles` is the answer. All of these are `users:update` rather than `staff:update`, since two catalog resources for one thing is how a permission ends up granted in one place and checked in the other. */
 @ApiTags('users')
 @ApiBearerAuth('bearer')
 @Controller('users')
@@ -118,29 +117,5 @@ export class UserController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.usersService.deactivateAccount(user, requireTenantId(user), id);
-  }
-
-  // ─── Leave balance ─────────────────────────────────────────────────────────
-
-  /** Change the yearly allowance, keeping days already taken. */
-  @Permissions('users', 'update')
-  @Patch(':id/leave-balance')
-  updateLeaveBalance(
-    @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: LeaveBalanceDto,
-  ) {
-    return this.usersService.updateLeaveBalance(requireTenantId(user), id, dto);
-  }
-
-  /** Set the opening balance - only valid while nothing has been taken yet. */
-  @Permissions('users', 'update')
-  @Post(':id/leave-balance')
-  createLeaveBalance(
-    @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: LeaveBalanceDto,
-  ) {
-    return this.usersService.createLeaveBalance(requireTenantId(user), id, dto);
   }
 }

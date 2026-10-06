@@ -19,15 +19,11 @@ describe('STAFF_BASE_PERMISSIONS', () => {
   });
 
   it('never grants a widening or managerial action', () => {
-    // `attendances:update` is the one this set exists to stop needing: it is the manager's
-    // manual-edit right and used to be required just to clock out of your own shift.
     const forbidden =
       /:(update|delete|read_all|view_all|manage|approve|reject|finalize|export|assign_[a-z_]+)$/;
     for (const key of STAFF_BASE_PERMISSIONS) {
       expect(key).not.toMatch(forbidden);
     }
-    expect(STAFF_BASE_PERMISSIONS.has('attendances:update')).toBe(false);
-    expect(STAFF_BASE_PERMISSIONS.has('attendances:checkout_own')).toBe(true);
   });
 
   it.each([

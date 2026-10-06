@@ -14,10 +14,7 @@ import { BranchService } from '../branches/branches.service';
 import { WarehouseService } from '../warehouses/warehouses.service';
 import { SupplierService } from '../suppliers/suppliers.service';
 import { UserService } from '../users/users.service';
-import { AttendanceService } from '../attendances/attendances.service';
-import { LeaveRequestService } from '../leave-requests/leave-requests.service';
 import { WorkingScheduleService } from '../working-schedules/working-schedules.service';
-import { PaysheetService } from '../paysheets/paysheets.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from '../orders/orders.service';
 import { PromotionService } from '../promotions/promotions.service';
@@ -39,10 +36,7 @@ import { QueryUserDto } from '../users/dto/query-user.dto';
 import { QueryInventoryDto } from '../inventories/dto/query-inventory.dto';
 import { QueryOrderDto } from '../orders/dto/order.dto';
 import { QueryPromotionDto } from '../promotions/dto/promotion.dto';
-import { QueryAttendanceDto } from '../attendances/dto/attendance.dto';
-import { QueryLeaveRequestDto } from '../leave-requests/dto/leave-request.dto';
 import { QueryWorkingScheduleDto } from '../working-schedules/dto/working-schedule.dto';
-import { QueryPaysheetDto } from '../paysheets/dto/paysheet.dto';
 import { QueryStockMovementDto } from '../stock-movement-requests/dto/stock-movement.dto';
 import { QueryCashDrawerDto } from '../cash-drawer-sessions/dto/cash-drawer.dto';
 import {
@@ -69,11 +63,8 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getBranchList: ['branches', 'read'],
   getWarehouseList: ['warehouses', 'read'],
   getSupplierList: ['suppliers', 'read'],
-  getStaffList: ['staff', 'read'],
-  getStaffAttendanceReport: ['attendances', 'read'],
-  getLeaveRequests: ['leaveRequests', 'read'],
+  getStaffList: ['users', 'read'],
   getStaffWorkingSchedule: ['schedules', 'read'],
-  getPayrollSummary: ['paysheets', 'read'],
   getActivePromotions: ['promotions', 'read'],
   getTenantSubscriptionInfo: ['subscriptions', 'read'],
   getInventoryList: ['inventory', 'read'],
@@ -107,10 +98,7 @@ export class AiToolsService {
     private readonly warehouses: WarehouseService,
     private readonly suppliers: SupplierService,
     private readonly users: UserService,
-    private readonly attendances: AttendanceService,
-    private readonly leaveRequests: LeaveRequestService,
     private readonly schedules: WorkingScheduleService,
-    private readonly paysheets: PaysheetService,
     private readonly inventories: InventoryService,
     private readonly orders: OrderService,
     private readonly promotions: PromotionService,
@@ -237,28 +225,10 @@ export class AiToolsService {
           await this.dto(QueryUserDto, args),
         );
 
-      case 'getStaffAttendanceReport':
-        return this.attendances.findAll(
-          user,
-          await this.dto(QueryAttendanceDto, args),
-        );
-
-      case 'getLeaveRequests':
-        return this.leaveRequests.findAll(
-          user,
-          await this.dto(QueryLeaveRequestDto, args),
-        );
-
       case 'getStaffWorkingSchedule':
         return this.schedules.findAll(
           tenantId,
           await this.dto(QueryWorkingScheduleDto, args),
-        );
-
-      case 'getPayrollSummary':
-        return this.paysheets.findAll(
-          tenantId,
-          await this.dto(QueryPaysheetDto, args),
         );
 
       // ─── Selling ─────────────────────────────────────────────────────────
