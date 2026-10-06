@@ -7,6 +7,17 @@ import { InventoryService } from './../src/modules/inventories/inventories.servi
 import { NotificationService } from './../src/modules/notifications/notifications.service';
 import { FulfillmentService } from './../src/modules/fulfillments/fulfillments.service';
 import { ShipmentService } from './../src/modules/shipments/shipments.service';
+import { ShipmentDeliveryService } from './../src/modules/shipments/shipment-delivery.service';
+import {
+  DeliveryCollectionMethod,
+  PaymentKind,
+  PaymentMethod,
+  PaymentRecordStatus,
+} from './../src/common/constants/payment-method';
+import {
+  OrderPaymentStatus,
+  RemittanceStatus,
+} from './../src/common/constants/order-status';
 import {
   InventoryRefType,
   InventoryTxType,
@@ -35,6 +46,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
   let prisma: PrismaService;
   let fulfillments: FulfillmentService;
   let shipments: ShipmentService;
+  let delivery: ShipmentDeliveryService;
   let inventory: InventoryService;
   const notify = jest.fn();
 
@@ -119,8 +131,12 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     warehouseId,
   } as unknown as AuthUser;
 
-  /** Đơn CONFIRMED (tổng 1000 × số lượng, cọc 300) rồi đóng gói ở kho bằng tài khoản chủ. */
-  async function packedOrder(quantity = 1, inCharge = assigneeId) {
+  /** Đơn CONFIRMED (tổng 1000 × số lượng, cọc mặc định 300) rồi đóng gói ở kho bằng tài khoản chủ. */
+  async function packedOrder(
+    quantity = 1,
+    inCharge = assigneeId,
+    deposit = 300,
+  ) {
     const id = randomUUID();
     await prisma.order.create({
       data: {
@@ -133,7 +149,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         assigneeId: inCharge,
         status: OrderStatus.CONFIRMED,
         grandTotal: 1000 * quantity,
-        depositAmount: 300,
+        depositAmount: deposit,
         recipientName: 'Anh Nam',
         recipientPhone: '0912345678',
         deliveryAddress: '1 Cầu Giấy, Hà Nội',
@@ -177,9 +193,14 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         InventoryService,
         FulfillmentService,
         ShipmentService,
+        ShipmentDeliveryService,
         {
           provide: NotificationService,
-          useValue: { managersOfLocation: () => Promise.resolve([]), notify },
+          useValue: {
+            managersOfLocation: () => Promise.resolve([]),
+            tenantOwners: () => Promise.resolve([ownerId]),
+            notify,
+          },
         },
       ],
     }).compile();
@@ -187,9 +208,19 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     prisma = moduleRef.get(PrismaService);
     fulfillments = moduleRef.get(FulfillmentService);
     shipments = moduleRef.get(ShipmentService);
+    delivery = moduleRef.get(ShipmentDeliveryService);
     inventory = moduleRef.get(InventoryService);
 
-    await prisma.tenant.create({ data: { id: tenantId, name: 'ship-e2e' } });
+    // Có tài khoản ngân hàng để thu được QR lúc giao (C-5).
+    await prisma.tenant.create({
+      data: {
+        id: tenantId,
+        name: 'ship-e2e',
+        bankingBankName: 'VCB',
+        bankingAccountNumber: '0123456789',
+        bankingAccountName: 'NOI THAT DEMO',
+      },
+    });
     await prisma.role.create({
       data: {
         id: roleId,
@@ -273,6 +304,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
     await prisma.order.deleteMany({ where: { tenantId } });
     await prisma.inventory.deleteMany({ where: { tenantId } });
@@ -637,9 +669,9 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     });
   });
 
-  /** Đơn đã đóng gói, đã giao cho shipper `driverId`, đã chuyển Đang vận chuyển. */
-  async function shippedShipment(inCharge = assigneeId) {
-    const orderId = await packedOrder(1, inCharge);
+  /** Đơn đã đóng gói, đã giao cho shipper `driverId`, đã chuyển Đang vận chuyển. Còn phải thu = 1000 − cọc. */
+  async function shippedShipment(inCharge = assigneeId, deposit = 300) {
+    const orderId = await packedOrder(1, inCharge, deposit);
     const created = await shipments.create(owner, tenantId, internal(orderId));
     await shipments.shipOrder(owner, tenantId, orderId, {});
     return { orderId, shipmentId: created.id };
@@ -853,6 +885,368 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         ).rejects.toMatchObject({
           response: { code: ErrorCode.ORDER_STEP_DENIED },
         });
+      }
+    });
+  });
+
+  // ─── C-5: giao xong và thu tiền ─────────────────────────────────────────────
+
+  const proof = ['https://res.cloudinary.com/demo/image/upload/proof.jpg'];
+
+  /** Body "Đã giao" – mặc định còn phải thu 700 (1000 − cọc 300). */
+  const delivered = (paymentMethod: string, collectedAmount = 700) => ({
+    proofPhotoUrls: proof,
+    paymentMethod,
+    collectedAmount,
+  });
+
+  /** Các khoản thanh toán của đơn, cũ trước. */
+  const paymentsOf = (orderId: string) =>
+    prisma.payment.findMany({
+      where: { orderId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+  const orderOf = (orderId: string) =>
+    prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+
+  describe('GET /shipments/mine', () => {
+    it("lists only the caller's own unfinished deliveries", async () => {
+      const { shipmentId } = await shippedShipment();
+      const mine = await delivery.listMine(driver, tenantId);
+      expect(mine.map((row) => row.id)).toContain(shipmentId);
+      expect(mine.every((row) => row.driver?.id === driverId)).toBe(true);
+      expect(mine.find((row) => row.id === shipmentId)?.order.amountDue).toBe(
+        700,
+      );
+
+      await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.CASH),
+      );
+      const after = await delivery.listMine(driver, tenantId);
+      expect(after.map((row) => row.id)).not.toContain(shipmentId);
+    });
+  });
+
+  describe('POST /shipments/:id/deliver – giao thành công', () => {
+    it('cash: shipment DELIVERED, order RECEIVED and paid, the cash held by the shipper until the owner confirms', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      notify.mockClear();
+
+      const shipment = await delivery.deliver(driver, tenantId, shipmentId, {
+        ...delivered(DeliveryCollectionMethod.CASH),
+        note: 'khách nhận đủ',
+      });
+
+      expect(shipment.status).toBe(ShipmentStatus.DELIVERED);
+      expect(shipment.deliveredAt).not.toBeNull();
+      expect(shipment.proofPhotoUrls).toEqual(proof);
+      expect(shipment.events.at(-1)).toMatchObject({
+        status: ShipmentStatus.DELIVERED,
+        createdBy: { id: driverId },
+      });
+
+      const order = await orderOf(orderId);
+      expect(order.status).toBe(OrderStatus.RECEIVED);
+      expect(order.paymentStatus).toBe(OrderPaymentStatus.PAID);
+
+      const [cash] = await paymentsOf(orderId);
+      expect(cash).toMatchObject({
+        kind: PaymentKind.BALANCE,
+        method: PaymentMethod.CASH,
+        status: PaymentRecordStatus.PAID,
+        remittanceStatus: RemittanceStatus.PENDING,
+        collectedById: driverId,
+      });
+      expect(Number(cash.amount)).toBe(700);
+
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientIds: [assigneeId, ownerId],
+          type: 'ORDER_CASH_AWAITING_REMITTANCE',
+        }),
+      );
+    });
+
+    it('nothing left to collect (deposit covered everything): order COMPLETED, no payment written', async () => {
+      const { orderId, shipmentId } = await shippedShipment(assigneeId, 1000);
+      await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.NONE, 0),
+      );
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.COMPLETED);
+      expect(await paymentsOf(orderId)).toHaveLength(0);
+    });
+
+    it('QR: order RECEIVED with a SePay payment waiting; the transfer arriving completes it, once', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const shipment = await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.BANK_TRANSFER_QR),
+      );
+
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
+      expect(shipment.payment).toMatchObject({
+        amount: 700,
+        status: PaymentRecordStatus.PENDING,
+      });
+      expect(shipment.payment?.reference).toMatch(/^ORD/);
+      expect(shipment.payment?.qrUrl).toContain('img.vietqr.io');
+
+      const reference = shipment.payment!.reference;
+      notify.mockClear();
+      expect(
+        await delivery.settleSepayBalance(tenantId, reference, 'TX-1', 700),
+      ).toBe(true);
+
+      const order = await orderOf(orderId);
+      expect(order.status).toBe(OrderStatus.COMPLETED);
+      expect(order.paymentStatus).toBe(OrderPaymentStatus.PAID);
+      const [qr] = await paymentsOf(orderId);
+      expect(qr).toMatchObject({
+        method: PaymentMethod.SEPAY,
+        status: PaymentRecordStatus.PAID,
+        sepayTransactionId: 'TX-1',
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // SePay gọi lại cùng giao dịch: không đổi gì, không báo lại.
+      expect(
+        await delivery.settleSepayBalance(tenantId, reference, 'TX-1', 700),
+      ).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
+    it('QR transfer short: left waiting, nothing changes (short transfers are not handled yet)', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const shipment = await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.BANK_TRANSFER_QR),
+      );
+      await delivery.settleSepayBalance(
+        tenantId,
+        shipment.payment!.reference,
+        'TX-SHORT',
+        500,
+      );
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
+      const [qr] = await paymentsOf(orderId);
+      expect(qr.status).toBe(PaymentRecordStatus.PENDING);
+    });
+
+    it('says a reference is not ours when no delivery payment carries it', async () => {
+      expect(
+        await delivery.settleSepayBalance(tenantId, 'ORD0000000000', 'X', 1),
+      ).toBe(false);
+    });
+
+    it("lets the order's person in charge confirm with no permission", async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      await delivery.deliver(
+        assignee,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.CASH),
+      );
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
+    });
+
+    it('refuses someone who is neither the driver, in charge, nor the owner - even holding shipments:update there', async () => {
+      const { shipmentId } = await shippedShipment();
+      await expect(
+        delivery.deliver(
+          storekeeper,
+          tenantId,
+          shipmentId,
+          delivered(DeliveryCollectionMethod.CASH),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STEP_DENIED },
+      });
+    });
+
+    it('refuses a third-party carrier delivery - the carrier reports it (C-4)', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(owner, tenantId, {
+        orderId,
+        carrierType: CarrierType.EXTERNAL,
+        carrierName: 'GHN',
+        trackingCode: `GHN-DELIVER-${orderId}`,
+      });
+      await shipments.shipOrder(owner, tenantId, orderId, {});
+      await expect(
+        delivery.deliver(
+          owner,
+          tenantId,
+          created.id,
+          delivered(DeliveryCollectionMethod.CASH),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_DELIVER_INTERNAL_ONLY },
+      });
+    });
+
+    it('refuses no proof photo, the wrong amount, and "nothing to collect" while money is due', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      await expect(
+        delivery.deliver(driver, tenantId, shipmentId, {
+          ...delivered(DeliveryCollectionMethod.CASH),
+          proofPhotoUrls: [],
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_PROOF_REQUIRED },
+      });
+      await expect(
+        delivery.deliver(
+          driver,
+          tenantId,
+          shipmentId,
+          delivered(DeliveryCollectionMethod.CASH, 500),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH },
+      });
+      await expect(
+        delivery.deliver(
+          driver,
+          tenantId,
+          shipmentId,
+          delivered(DeliveryCollectionMethod.NONE, 0),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH },
+      });
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.SHIPPING);
+    });
+
+    it('refuses an order that has not left yet', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      await expect(
+        delivery.deliver(
+          driver,
+          tenantId,
+          created.id,
+          delivered(DeliveryCollectionMethod.CASH),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_ORDER_NOT_SHIPPING },
+      });
+    });
+
+    it('delivers once, with one payment, when confirmed twice at the same moment', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const attempts = await Promise.allSettled([
+        delivery.deliver(
+          driver,
+          tenantId,
+          shipmentId,
+          delivered(DeliveryCollectionMethod.CASH),
+        ),
+        delivery.deliver(
+          owner,
+          tenantId,
+          shipmentId,
+          delivered(DeliveryCollectionMethod.CASH),
+        ),
+      ]);
+      expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+      const loser = attempts.find((a) => a.status === 'rejected');
+      expect([
+        ErrorCode.SHIPMENT_STATUS_INVALID,
+        ErrorCode.SHIPMENT_ORDER_NOT_SHIPPING,
+      ]).toContain(loser?.reason?.response?.code);
+      expect(await paymentsOf(orderId)).toHaveLength(1);
+    });
+  });
+
+  describe('POST /shipments/:id/pay-cash – khách không chuyển khoản', () => {
+    it('cancels the waiting QR payment and records cash held by the shipper; a late transfer then changes nothing', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const shipment = await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.BANK_TRANSFER_QR),
+      );
+
+      await delivery.payCash(driver, tenantId, shipmentId, {
+        note: 'khách không có app ngân hàng',
+      });
+
+      const [qr, cash] = await paymentsOf(orderId);
+      expect(qr.status).toBe(PaymentRecordStatus.CANCELLED);
+      expect(cash).toMatchObject({
+        method: PaymentMethod.CASH,
+        status: PaymentRecordStatus.PAID,
+        remittanceStatus: RemittanceStatus.PENDING,
+      });
+      const order = await orderOf(orderId);
+      expect(order.status).toBe(OrderStatus.RECEIVED);
+      expect(order.paymentStatus).toBe(OrderPaymentStatus.PAID);
+
+      // Tiền chuyển khoản tới muộn: chỉ ghi log, đơn vẫn chờ chủ nhận tiền mặt.
+      await delivery.settleSepayBalance(
+        tenantId,
+        shipment.payment!.reference,
+        'TX-LATE',
+        700,
+      );
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
+
+      // Không còn khoản QR nào chờ.
+      await expect(
+        delivery.payCash(driver, tenantId, shipmentId, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING },
+      });
+    });
+
+    it('lets exactly one win when the transfer lands while the shipper switches to cash', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      const shipment = await delivery.deliver(
+        driver,
+        tenantId,
+        shipmentId,
+        delivered(DeliveryCollectionMethod.BANK_TRANSFER_QR),
+      );
+
+      const [switched] = await Promise.allSettled([
+        delivery.payCash(driver, tenantId, shipmentId, {}),
+        delivery.settleSepayBalance(
+          tenantId,
+          shipment.payment!.reference,
+          'TX-RACE',
+          700,
+        ),
+      ]);
+
+      const payments = await paymentsOf(orderId);
+      const qr = payments[0];
+      if (qr.status === PaymentRecordStatus.PAID) {
+        // Tiền về trước: đơn hoàn thành, không có khoản tiền mặt.
+        expect(switched.status).toBe('rejected');
+        expect(payments).toHaveLength(1);
+        expect((await orderOf(orderId)).status).toBe(OrderStatus.COMPLETED);
+      } else {
+        // Chuyển sang tiền mặt trước: khoản QR bị huỷ, có khoản tiền mặt, đơn chờ chủ nhận tiền.
+        expect(qr.status).toBe(PaymentRecordStatus.CANCELLED);
+        expect(switched.status).toBe('fulfilled');
+        expect(payments).toHaveLength(2);
+        expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
       }
     });
   });

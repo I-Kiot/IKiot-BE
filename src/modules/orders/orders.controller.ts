@@ -27,6 +27,7 @@ import {
 import { PackOrderDto } from './dto/pack-order.dto';
 import { FulfillmentService } from '../fulfillments/fulfillments.service';
 import { ShipmentService } from '../shipments/shipments.service';
+import { ShipmentDeliveryService } from '../shipments/shipment-delivery.service';
 import { ShipOrderDto } from '../shipments/dto/ship-order.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -161,6 +162,7 @@ export class SepayOrderWebhookController {
   constructor(
     private readonly service: OrderService,
     private readonly sepay: SepayOrderService,
+    private readonly delivery: ShipmentDeliveryService,
   ) {}
 
   @RawResponse()
@@ -192,14 +194,28 @@ export class SepayOrderWebhookController {
           ? String(payload.id)
           : null;
 
+      const transferAmount = Number(payload.transferAmount ?? 0);
+
+      // 1. Bán tại quầy: mã nằm trên đơn (`Order.paymentReference`).
       const order = await this.service.completeSepayOrder(
         tenant.id,
         reference,
         transactionId,
-        Number(payload.transferAmount ?? 0),
+        transferAmount,
       );
-      return order
-        ? { success: true, message: 'Order payment confirmed' }
+      if (order) {
+        return { success: true, message: 'Order payment confirmed' };
+      }
+
+      // 2. Thu tiền QR lúc giao (C-5): mã nằm trên khoản thanh toán (`Payment.paymentReference`).
+      const handled = await this.delivery.settleSepayBalance(
+        tenant.id,
+        reference,
+        transactionId,
+        transferAmount,
+      );
+      return handled
+        ? { success: true, message: 'Delivery payment processed' }
         : { success: false, message: 'Order not found or already processed' };
     } catch (error) {
       return {

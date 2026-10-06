@@ -16,8 +16,19 @@ import {
   assigneeClaim,
   orderStepAccess,
   OrderStepPermission,
-  type OrderStepAccess,
 } from '../orders/order-handler';
+import {
+  loadShipmentDetail,
+  PERSON_SELECT,
+  SHIPMENT_SUMMARY_INCLUDE,
+  toSummary,
+} from './shipment-view';
+import {
+  ON_THE_ROAD_STATUSES,
+  onTheRoadWhere,
+  trackingActorAccess,
+  type ShipmentActorAccess,
+} from './shipment-actor';
 import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { ChangeDriverDto } from './dto/change-driver.dto';
@@ -51,77 +62,6 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 
 /** Quyền theo role để làm shipper / thợ giao hàng. */
 const DRIVER_PERMISSION = { resource: 'shipments', action: 'deliver' } as const;
-
-/** Một người trong payload: `{ id, phoneNumber, profile }` như mọi chỗ khác (`withNestedProfile`). */
-const PERSON_SELECT = {
-  id: true,
-  phoneNumber: true,
-  profileFirstName: true,
-  profileLastName: true,
-  profileAvatarUrl: true,
-} as const;
-
-/** Một dòng của danh sách: `Shipment` của contract §4 trừ nhật trình. */
-const SHIPMENT_SUMMARY_INCLUDE = {
-  order: {
-    select: {
-      id: true,
-      code: true,
-      status: true,
-      grandTotal: true,
-      depositAmount: true,
-      customer: { select: { name: true } },
-    },
-  },
-  driver: { select: PERSON_SELECT },
-} as const satisfies Prisma.ShipmentInclude;
-
-/** Chi tiết: thêm nhật trình. */
-const SHIPMENT_DETAIL_INCLUDE = {
-  ...SHIPMENT_SUMMARY_INCLUDE,
-  events: {
-    orderBy: { occurredAt: 'asc' },
-    include: { createdBy: { select: PERSON_SELECT } },
-  },
-} as const satisfies Prisma.ShipmentInclude;
-
-type ShipmentSummaryRow = Prisma.ShipmentGetPayload<{
-  include: typeof SHIPMENT_SUMMARY_INCLUDE;
-}>;
-
-/** Shipment đang trên đường (đơn đã SHIPPING): chỉ ở đây mới ghi nhật trình hay báo giao không thành. */
-const ON_THE_ROAD_STATUSES: readonly string[] = [
-  ShipmentStatus.IN_TRANSIT,
-  ShipmentStatus.OUT_FOR_DELIVERY,
-];
-
-/** Vì sao người gọi được ghi nhật trình / báo thất bại: như các bước của đơn, cộng thêm "là shipper của shipment này". */
-type ShipmentActorAccess = OrderStepAccess | 'DRIVER';
-
-/** Dòng shipment → hình dạng contract §4 (không kèm nhật trình). */
-function toSummary(row: ShipmentSummaryRow) {
-  const { order, driver, ...rest } = row;
-  return {
-    ...rest,
-    shippingCost: rest.shippingCost === null ? null : Number(rest.shippingCost),
-    order: {
-      id: order.id,
-      code: order.code,
-      status: order.status,
-      customerName: order.customer.name,
-      amountDue: amountDueOf(order),
-    },
-    driver: driver ? withNestedProfile(driver) : null,
-  };
-}
-
-/** Số shipper thu khi giao = tổng đơn − tiền cọc (schema: tính chứ không lưu). */
-export function amountDueOf(order: {
-  grandTotal: unknown;
-  depositAmount: unknown;
-}): number {
-  return Number(order.grandTotal) - Number(order.depositAmount ?? 0);
-}
 
 /**
  * Lấy hàng & giao hàng: ghi nhận "ĐVVC đã lấy hàng", đổi shipper, chuyển đơn sang Đang vận chuyển –
@@ -520,19 +460,9 @@ export class ShipmentService {
     });
   }
 
-  /** Shipment theo hình dạng của contract §4. */
-  private async findDetail(tenantId: string, id: string) {
-    const { events, ...row } = await this.prisma.shipment.findFirstOrThrow({
-      where: { id, tenantId },
-      include: SHIPMENT_DETAIL_INCLUDE,
-    });
-    return {
-      ...toSummary(row),
-      events: events.map(({ createdBy, ...event }) => ({
-        ...event,
-        createdBy: createdBy ? withNestedProfile(createdBy) : null,
-      })),
-    };
+  /** Shipment theo hình dạng của contract §4 – `loadShipmentDetail`, dùng chung với ShipmentDeliveryService. */
+  private findDetail(tenantId: string, id: string) {
+    return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
   // ─── Chọn shipper (C-9) ─────────────────────────────────────────────────────
@@ -759,7 +689,7 @@ export class ShipmentService {
         message: 'Shipment not found',
       });
     }
-    const access = this.shipmentActorAccess(user, shipment);
+    const access = trackingActorAccess(user, shipment);
     // Chỉ báo sớm; chỗ chặn thật là câu ghi có điều kiện trong `claimOnTheRoad`.
     if (
       shipment.order.status !== OrderStatus.SHIPPING ||
@@ -773,34 +703,9 @@ export class ShipmentService {
     return { ...shipment, access };
   }
 
-  /** Chủ shop / người phụ trách / `shipments:update` tại kho của fulfillment (như các bước của đơn), hoặc shipper của chính shipment này. */
-  private shipmentActorAccess(
-    user: AuthUser,
-    shipment: {
-      driverId: string | null;
-      fulfillment: { locationId: string };
-      order: { assigneeId: string | null };
-    },
-  ): ShipmentActorAccess {
-    const access = orderStepAccess(
-      user,
-      shipment.order,
-      OrderStepPermission.LOG_EVENT,
-      shipment.fulfillment.locationId,
-    );
-    if (access) return access;
-    if (shipment.driverId === user.userId) return 'DRIVER';
-    throw new ForbiddenException({
-      code: ErrorCode.ORDER_STEP_DENIED,
-      message:
-        "Only the shop owner, the order's person in charge, the shipment's driver, or someone holding shipments:update at this location can do this",
-    });
-  }
-
   /**
-   * Ghi trạng thái mới chỉ khi shipment vẫn đang trên đường và đơn vẫn SHIPPING – hai người cùng báo
-   * thất bại, hay thất bại đúng lúc giao xong, thì một người nhận 409. Người được phép nhờ là người phụ
-   * trách / shipper thì phải vẫn còn là người đó lúc ghi.
+   * Ghi trạng thái mới chỉ khi lần giao vẫn đang trên đường (`onTheRoadWhere`) – hai người cùng báo
+   * thất bại, hay thất bại đúng lúc giao xong, thì một người nhận 409.
    */
   private async claimOnTheRoad(
     tx: Prisma.TransactionClient,
@@ -809,17 +714,7 @@ export class ShipmentService {
     data: { status: string },
   ) {
     const updated = await tx.shipment.updateMany({
-      where: {
-        id: shipment.id,
-        status: { in: [...ON_THE_ROAD_STATUSES] },
-        order: {
-          status: OrderStatus.SHIPPING,
-          ...(shipment.access === 'ASSIGNEE'
-            ? { assigneeId: user.userId }
-            : {}),
-        },
-        ...(shipment.access === 'DRIVER' ? { driverId: user.userId } : {}),
-      },
+      where: onTheRoadWhere(shipment.id, shipment.access, user),
       data,
     });
     if (updated.count !== 1) {

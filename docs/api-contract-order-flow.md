@@ -404,13 +404,14 @@ cập nhật qua webhook – sau; Phase 1 đánh tay)*.
 | Route | Quyền | Body | Task (BE · FE) |
 |---|---|---|---|
 | `GET /shipments` | xem "Ai xem được shipment" dưới bảng | `page, limit, status, carrierType, driverId, from, to` (`YYYY-MM-DD`, trọn ngày giờ Việt Nam), `search` (mã đơn, mã vận đơn, tên / SĐT người nhận). Mới nhất trước; mỗi dòng là `Shipment` **không kèm `events`** | C-3 · C-9 |
-| `GET /shipments/mine` | `shipments:deliver` | đơn cần giao của chính shipper (`driverId` = mình, chưa kết thúc), **kèm `order.amountDue`** | C-5 · C-7 |
+| `GET /shipments/mine` | ai cũng gọi được – chỉ trả lần giao của chính mình | các lần giao chưa kết thúc mà người gọi là shipper (`driverId` = mình), **kèm `order.amountDue`**, ngày hẹn gần nhất trước. Không có `@Permissions`: chủ shop / người phụ trách tự làm shipper cũng cần xem. Khai báo trên `GET /shipments/:id` | C-5 · C-7 |
 | `GET /shipments/drivers` | chủ shop · người phụ trách đơn · `shipments:create` hoặc `shipments:update` tại kho của fulfillment | `orderId` → `[{ id, phoneNumber, profile, systemRole, isAssignee }]`: người làm shipper được cho đơn (đúng tập "Ai làm shipper được" dưới bảng – cùng một `where` với bước kiểm lúc ghi), cho ô chọn shipper. Đơn chưa đóng gói → `SHIPMENT_ORDER_NOT_PACKED`. Khai báo trên `GET /shipments/:id` | C-9 |
 | `GET /shipments/:id` | như `GET /shipments` | `Shipment` kèm `events`. Ngoài phạm vi xem → `SHIPMENT_NOT_FOUND` (404, như không tồn tại) | C-3 · C-9, C-7 |
 | `POST /shipments` | chủ shop · người phụ trách đơn · `shipments:create` tại kho của fulfillment (§2 "Ai làm bước nào") | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **đây là bước "ĐVVC đã lấy hàng"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`). Trong **một transaction**: nhận đơn bằng `updateMany(status: PACKED)` → `PICKED_UP` (thua → `ORDER_STATUS_CONFLICT`), fulfillment `PACKED` → `HANDED_OVER` + `handedOverAt`, shipment `PICKED_UP` + event. Tồn kho không đổi (hàng vẫn khoá). `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`); `EXTERNAL` không được có (`SHIPMENT_DRIVER_NOT_ALLOWED`). Người nhận / địa chỉ chép từ đơn. `carrierName` + `trackingCode` đã có ở shipment khác → `SHIPMENT_TRACKING_TAKEN` (ràng buộc `@@unique([carrierName, trackingCode])` toàn hệ thống – mã vận đơn là của ĐVVC). Sau commit báo shipper (trừ khi tự gán mình). Trả về `Shipment`. | C-2, C-8 · C-9 |
 | `PATCH /shipments/:id/driver` | chủ shop · người phụ trách đơn · `shipments:update` tại kho của fulfillment | `{ driverId }` – đổi shipper / thợ của shipment `INTERNAL` (`EXTERNAL` → `SHIPMENT_DRIVER_NOT_ALLOWED`) chưa kết thúc (kết thúc, hoặc vừa kết thúc lúc ghi → `SHIPMENT_STATUS_INVALID`); báo shipper mới | C-8 · C-9 |
 | `POST /shipments/:id/events` | chủ shop · người phụ trách đơn · **shipper của shipment** · `shipments:update` tại kho của fulfillment | `{ status, note?, latitude?, longitude? }` – ghi nhật trình. `status` **chỉ được `OUT_FOR_DELIVERY`** (chốt 2026-10-06) và đẩy shipment sang `OUT_FOR_DELIVERY`; không đổi trạng thái đơn. Chỉ khi đơn `SHIPPING` và shipment `IN_TRANSIT` / `OUT_FOR_DELIVERY`, khác → `SHIPMENT_STATUS_INVALID` | C-3 · C-9 |
-| `POST /shipments/:id/deliver` | `shipments:deliver` (driver `INTERNAL`) hoặc `shipments:update` (`EXTERNAL`, đánh tay) | `DeliverDto` dưới. Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`). | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
+| `POST /shipments/:id/deliver` | **shipper của lần giao** · người phụ trách đơn · chủ shop (không có đường "có quyền trong role") | **Giao thành công.** `DeliverDto` dưới. **Chỉ lần giao `INTERNAL`** – `EXTERNAL` → `SHIPMENT_DELIVER_INTERNAL_ONLY` (hãng tự báo về, C-4, Phase 2; chốt 2026-10-06 theo hành trình Bước 7b). Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`), lần giao đang trên đường (`SHIPMENT_STATUS_INVALID`). Kết quả theo bảng dưới; có khoản QR thì `Shipment` trả kèm `payment: { reference, amount, status, qrUrl }` (cũng có ở `GET /shipments/:id` để mở lại mã QR) | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
+| `POST /shipments/:id/pay-cash` | như `deliver` | `{ note? }` – **khách không chuyển khoản QR, thu tiền mặt thay**: khoản QR `PENDING` → `CANCELLED`, ghi khoản `BALANCE` `CASH` `PAID` `remittanceStatus = PENDING`, `paymentStatus` → `PAID`; đơn giữ `RECEIVED` (chờ chủ nhận tiền, A-10). Không có khoản QR đang chờ (hoặc tiền vừa về) → `ORDER_QR_PAYMENT_NOT_PENDING` | C-5 · C-7 |
 | `POST /shipments/:id/fail` | như `events` | `{ note }` (bắt buộc) → shipment `FAILED` + event; đơn giữ `SHIPPING` (hàng đã rời kho) – hàng quay về đi đường hoàn hàng `DELIVERY_FAILED` (§5). Cùng điều kiện trạng thái như `events`; hai người báo cùng lúc thì một người nhận `SHIPMENT_STATUS_INVALID`. Sau commit báo người phụ trách đơn | C-3 · C-9 |
 | `POST /webhook/carriers/:carrier` | `@Public()` + chữ ký | *(sau – ĐVVC / Shopee)* | C-4, E-8 (Phase 2) |
 
@@ -434,16 +435,29 @@ DeliverDto = {
 }
 ```
 
-Kết quả `deliver` (trong một transaction, qua `assertTransition`; quy tắc trạng thái theo A-10):
+Kết quả `deliver` (trong một transaction; chốt 2026-10-06 – chỉ xử lý thu **đủ 100%**):
 
-| Điều kiện | Ghi `Payment` (E-5) | Đơn | `cashRemittanceStatus` |
+| Điều kiện | Ghi `Payment` (E-5) | Đơn | `Payment.remittanceStatus` |
 |---|---|---|---|
-| `amountDue = 0` (đã cọc 100%) – `paymentMethod` phải `NONE` | – | `COMPLETED` | `NOT_APPLICABLE` |
-| `BANK_TRANSFER_QR` | `BALANCE`, `PAID`, `collectedBy` = driver | `COMPLETED` (có chờ webhook SePay không: **chờ chốt**, §8) | `NOT_APPLICABLE` |
-| `CASH` | `BALANCE`, `PAID`, `collectedBy` = driver | `RECEIVED` | `PENDING` → chủ gọi `confirm-remittance` |
+| `amountDue = 0` (đã cọc 100%) – `paymentMethod` phải `NONE` | – | `COMPLETED` | – |
+| `BANK_TRANSFER_QR` | `BALANCE`, **`SEPAY`**, **`PENDING`**, `paymentReference` = mã `ORD…` mới, `collectedBy` = người bấm | **`RECEIVED`** – chờ webhook SePay báo tiền về | `NOT_APPLICABLE` |
+| `CASH` | `BALANCE`, `CASH`, `PAID`, `collectedBy` = người bấm; `paymentStatus` → `PAID` | `RECEIVED` | `PENDING` → chủ gọi `confirm-remittance` (A-10) |
 
-`amountDue > 0` mà gửi `NONE` → `ORDER_COLLECTION_AMOUNT_MISMATCH`. Dòng đơn không đổi (đã `SHIPPED`).
-Thông báo người phụ trách + chủ khi đơn chờ nộp tiền (template mới trong `templates/order.templates.ts`).
+Số thu ≠ `amountDue`, hoặc `amountDue > 0` mà gửi `NONE` → `ORDER_COLLECTION_AMOUNT_MISMATCH`. Thu QR mà
+shop chưa cài tài khoản ngân hàng → `TENANT_BANKING_NOT_CONFIGURED`. Dòng đơn không đổi (đã `SHIPPED`).
+Thu tiền mặt (cả `pay-cash`) thì báo người phụ trách + chủ: shipper đang giữ tiền (`templates/order.templates.ts`).
+Không ghi `CashFlow` – việc của E-5, như khoản cọc của A-2.
+
+**Tiền QR về** – `POST /webhook/sepay/order`: nhánh bán tại quầy (`Order.paymentReference`) chạy trước; không
+khớp thì tìm khoản `BALANCE` `SEPAY` có đúng `Payment.paymentReference`:
+- `PENDING`, chuyển **đủ** → khoản `PAID` (`paidAt`, `sepayTransactionId`), đơn `RECEIVED` → `COMPLETED`,
+  `paymentStatus` → `PAID`; sau commit báo người phụ trách.
+- `PENDING`, chuyển **thiếu** → **chưa xử lý** (nhóm còn họp): ghi log, khoản vẫn chờ.
+- `CANCELLED` (shipper đã chuyển sang tiền mặt) → ghi log "khách có thể đã trả hai lần, cần hoàn tay".
+- `PAID` (SePay gọi lại) → không làm gì.
+
+Mọi trường hợp vẫn trả 200. "Tiền về" và "khách trả tiền mặt" cùng lúc: cả hai chỉ ghi khi khoản QR còn
+`PENDING`, nên một bên thắng.
 
 Ảnh bằng chứng upload qua `POST /uploads` hiện có, gửi URL.
 
@@ -549,9 +563,12 @@ Từ hành trình đơn hàng:
 
 Từ Notion v2 (contract để chờ, không tự quyết):
 - **Kho dùng để tính tồn** (B-2): theo `sourceLocationId` của dòng hay tổng các kho.
-- **QR có cần đối soát không** (A-10, E-5): hành trình cho QR "chuyển thẳng Hoàn thành". Có muốn chờ
-  webhook SePay báo tiền về rồi mới `COMPLETED` không.
-- **`Payment.method` cho tiền QR shipper thu** (E-5): `SEPAY` hay `BANK_TRANSFER`.
+- ~~**QR có cần đối soát không**~~ – **đã chốt 2026-10-06** (C-5): **chờ webhook SePay** báo tiền về rồi mới
+  `COMPLETED`; khách không chuyển thì thu tiền mặt (`pay-cash`). Xem §4.
+- ~~**`Payment.method` cho tiền QR shipper thu**~~ – **đã chốt 2026-10-06**: `SEPAY`.
+- **Khách chuyển thiếu tiền QR** (C-5): **chờ họp** – hiện chỉ ghi log, khoản vẫn chờ, đơn ở `RECEIVED`.
+- **Giao qua ĐVVC ngoài ở Phase 1** (C-5, chốt 2026-10-06 theo hành trình): không bấm tay được "đã giao";
+  đơn `EXTERNAL` ở `SHIPPING` cho tới khi có webhook hãng (C-4, Phase 2).
 - **Thiếu ở chi nhánh, đặt xưởng về kho** (B-4): danh sách tính thiếu theo `sourceLocationId` của dòng
   đơn, nên YCSX giao về kho không trừ vào số thiếu của chi nhánh. Chọn: (a) cộng cả YCSX về
   `defaultFulfillmentLocationId` của chi nhánh vào `onOrderQuantity`, hay (b) giữ như hiện tại (chi nhánh

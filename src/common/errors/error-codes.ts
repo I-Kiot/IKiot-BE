@@ -405,6 +405,10 @@ export const ErrorCode = {
   ORDER_STEP_DENIED: 'ORDER_STEP_DENIED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
+  /** Confirming a delivery is for our own shippers only; a third-party carrier's delivery is reported automatically (C-4, later). */
+  SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
+  /** "The customer paid cash instead" needs a QR balance still waiting for its transfer - there is none, or the money has just arrived. */
+  ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
   // --- Order cancel (A-5, 2026-10-05) ---------------------------------------
   /** The order holds a deposit, so whoever cancels must say how much of it goes back (0 = the shop keeps it). */

@@ -32,6 +32,24 @@ export const PaymentRecordStatus = {
 export type PaymentRecordStatus =
   (typeof PaymentRecordStatus)[keyof typeof PaymentRecordStatus];
 
+/**
+ * Cách shipper thu số tiền còn phải thu khi giao (`POST /shipments/:id/deliver`, C-5). Khác `PaymentMethod`
+ * vì đây là lựa chọn của shipper trên màn hình: `BANK_TRANSFER_QR` ghi thành khoản SEPAY chờ webhook,
+ * `NONE` là đã cọc đủ – không ghi khoản nào.
+ */
+export const DeliveryCollectionMethod = {
+  CASH: 'CASH',
+  BANK_TRANSFER_QR: 'BANK_TRANSFER_QR',
+  NONE: 'NONE',
+} as const;
+
+export type DeliveryCollectionMethod =
+  (typeof DeliveryCollectionMethod)[keyof typeof DeliveryCollectionMethod];
+
+export const DELIVERY_COLLECTION_METHODS: readonly string[] = Object.values(
+  DeliveryCollectionMethod,
+);
+
 /** How a deposit can be taken when a manual order is created (contract §2 `deposit.method`). */
 export const DEPOSIT_METHODS: readonly string[] = [
   PaymentMethod.CASH,
