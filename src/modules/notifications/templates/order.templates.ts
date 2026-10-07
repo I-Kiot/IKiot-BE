@@ -14,13 +14,15 @@ export const OrderNotificationTemplates = {
 
   /** Shipper thu tiền mặt khi giao: tiền đang ở tay shipper, chủ cần xác nhận khi nhận đủ (A-10). */
   cashAwaitingRemittance: (
+    orderId: string,
     orderCode: string,
     amount: number,
   ): NotificationContent => ({
     type: 'ORDER_CASH_AWAITING_REMITTANCE',
     title: 'Shipper đang giữ tiền mặt',
     description: `Đơn ${orderCode} đã giao, shipper thu ${vnd(amount)} tiền mặt - chờ nộp lại cho chủ.`,
-    link: '/shipments',
+    // The order page opens its "Xác nhận đã nhận tiền" dialog on this flag (OrderActions).
+    link: `/sales/orders/${orderId}?confirmCash=1`,
   }),
 
   /** Khách chuyển khoản QR lúc giao và tiền đã về: đơn hoàn thành. */

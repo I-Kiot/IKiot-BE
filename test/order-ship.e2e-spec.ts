@@ -521,6 +521,19 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         response: { code: ErrorCode.SHIPMENT_DRIVER_INVALID },
       });
 
+      // On the road already: the shipper has the goods, so no swap.
+      await prisma.shipment.update({
+        where: { id: created.id },
+        data: { status: ShipmentStatus.IN_TRANSIT },
+      });
+      await expect(
+        shipments.changeDriver(owner, tenantId, created.id, {
+          driverId: ownerId,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_STATUS_INVALID },
+      });
+
       await prisma.shipment.update({
         where: { id: created.id },
         data: { status: ShipmentStatus.DELIVERED },
@@ -803,7 +816,13 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     });
 
     it('stops a driver who has just been replaced', async () => {
-      const { shipmentId } = await shippedShipment();
+      // The swap is only possible before the goods are on the road.
+      const orderId = await packedOrder();
+      const { id: shipmentId } = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
       await shipments.changeDriver(owner, tenantId, shipmentId, {
         driverId: ownerId,
       });

@@ -470,7 +470,11 @@ export class ShipmentDeliveryService {
       tenantId,
       recipientIds: [order.assigneeId, ...owners],
       referenceId: order.id,
-      ...OrderNotificationTemplates.cashAwaitingRemittance(order.code, amount),
+      ...OrderNotificationTemplates.cashAwaitingRemittance(
+        order.id,
+        order.code,
+        amount,
+      ),
     });
   }
 }

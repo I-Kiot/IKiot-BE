@@ -43,7 +43,7 @@ import {
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
   CarrierType,
-  FINAL_SHIPMENT_STATUSES,
+  DRIVER_CHANGEABLE_STATUSES,
   ShipmentEventSource,
   ShipmentStatus,
 } from '../../common/constants/shipment-status';
@@ -235,7 +235,7 @@ export class ShipmentService {
         message: 'A third-party carrier delivery has no driver of ours',
       });
     }
-    if (FINAL_SHIPMENT_STATUSES.includes(shipment.status)) {
+    if (!DRIVER_CHANGEABLE_STATUSES.includes(shipment.status)) {
       throw new ConflictException({
         code: ErrorCode.SHIPMENT_STATUS_INVALID,
         message: `A ${shipment.status} shipment cannot change driver`,
@@ -246,12 +246,12 @@ export class ShipmentService {
     }
     await this.assertEligibleDriver(tenantId, dto.driverId, shipment.order);
 
-    // Ghi có điều kiện: shipment vừa kết thúc, hoặc người gọi vừa thôi phụ trách đơn, thì không ghi.
+    // Ghi có điều kiện: shipment vừa đi giao hoặc kết thúc, hoặc người gọi vừa thôi phụ trách đơn, thì không ghi.
     const updated = await this.prisma.shipment.updateMany({
       where: {
         id,
         tenantId,
-        status: { notIn: [...FINAL_SHIPMENT_STATUSES] },
+        status: { in: [...DRIVER_CHANGEABLE_STATUSES] },
         ...(access === 'ASSIGNEE'
           ? { order: { assigneeId: user.userId } }
           : {}),

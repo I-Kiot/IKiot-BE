@@ -24,6 +24,12 @@ export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.CANCELLED,
 ];
 
+/** The driver can be swapped only while the goods are still with us. Once the order is SHIPPING (IN_TRANSIT / OUT_FOR_DELIVERY) the shipper is on the road with them, and changing it would hand the goods - and the cash they are about to collect - to someone who never took them. */
+export const DRIVER_CHANGEABLE_STATUSES: readonly string[] = [
+  ShipmentStatus.CREATED,
+  ShipmentStatus.PICKED_UP,
+];
+
 /** INTERNAL: our own shipper confirms with proof photos. EXTERNAL: a carrier (or the marketplace's logistics) reports DELIVERED - or, with no carrier API, staff mark it by hand. */
 export const CarrierType = {
   INTERNAL: 'INTERNAL',
