@@ -18,7 +18,9 @@ import {
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import {
   MANUAL_PRODUCTION_REQUEST_STATUSES,
+  PRODUCTION_DELIVERY_STATUSES,
   PRODUCTION_REQUEST_STATUSES,
+  WORKSHOP_VISIBLE_PRODUCTION_REQUEST_STATUSES,
 } from '../../../common/constants/production-request-status';
 
 const trim = ({ value }: { value: unknown }) =>
@@ -188,4 +190,76 @@ export class QueryProductionListDto extends PaginationQueryDto {
   )
   @IsBoolean()
   hasOpenRequest?: boolean;
+}
+
+// ─── Workshop staff & delivery notes (2026-10-09) ─────────────────────────────
+
+export class ProductionDeliveryLineDto {
+  @IsUUID()
+  productionRequestItemId: string;
+
+  /** How many the workshop is delivering on this line this time. A short delivery is fine - the rest can follow on another note. */
+  @Type(() => Number)
+  @IsInt({ message: 'Số lượng giao phải là số nguyên' })
+  @Min(1, { message: 'Số lượng giao phải lớn hơn 0' })
+  quantity: number;
+}
+
+/** Written by workshop staff. Touches no stock: the receiving location counts the goods and confirms (`POST /production-deliveries/:id/receive`). `code`, `status` and the people are the server's. */
+export class CreateProductionDeliveryDto {
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Phiếu giao phải có ít nhất một mặt hàng' })
+  @ValidateNested({ each: true })
+  @Type(() => ProductionDeliveryLineDto)
+  items: ProductionDeliveryLineDto[];
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class CancelProductionDeliveryDto {
+  /** Why the note is withdrawn (workshop) or refused (location) - the only record of it. */
+  @IsString()
+  @Transform(trim)
+  @Matches(/\S/, { message: 'Phải nhập lý do hủy phiếu giao' })
+  reason: string;
+}
+
+/** The workshop's view of the requests sent to it, at every location. */
+export class QueryWorkshopProductionRequestDto extends PaginationQueryDto {
+  /** Partial match on the YCSX code. */
+  @IsOptional()
+  @IsString()
+  @Transform(trim)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(WORKSHOP_VISIBLE_PRODUCTION_REQUEST_STATUSES)
+  status?: string;
+
+  @IsOptional()
+  @IsUUID()
+  locationId?: string;
+}
+
+export class QueryProductionDeliveryDto extends PaginationQueryDto {
+  /** Partial match on the delivery code or the YCSX code. */
+  @IsOptional()
+  @IsString()
+  @Transform(trim)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(PRODUCTION_DELIVERY_STATUSES)
+  status?: string;
+
+  /** The receiving location. */
+  @IsOptional()
+  @IsUUID()
+  locationId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  productionRequestId?: string;
 }

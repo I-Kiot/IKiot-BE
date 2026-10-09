@@ -16,6 +16,7 @@ import { withNamedPosting } from '../../common/dto/location-ref.dto';
 import { StaffNotificationTemplates } from '../notifications/templates/staff.templates';
 import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
+import { SupplierType } from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -44,6 +45,8 @@ const SELECT_SAFE = {
   status: true,
   // Answered as `branchId`/`warehouseId` + `branch`/`warehouse` by `toUserResponse` - see there.
   location: { select: { id: true, type: true, name: true } },
+  workshopId: true,
+  workshop: { select: { id: true, supplierName: true } },
   profileFirstName: true,
   profileLastName: true,
   profileAvatarUrl: true,
@@ -148,6 +151,7 @@ export class UserService {
       dto.branchId,
       dto.warehouseId,
     );
+    await this.assertWorkshopBelongsToTenant(tenantId, dto.workshopId);
 
     // Seats are what a plan sells, so this is checked before the row is written rather than when the login is switched on - and it counts the same population the list screen shows.
     await this.subscriptions.assertQuota(
@@ -199,6 +203,7 @@ export class UserService {
         systemRole: SystemRole.STAFF,
         roleId: dto.roleId,
         ...posting,
+        workshopId: dto.workshopId,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
         // Flat wins over nested when both are sent - the old `StaffDTO` spelled the name flat and the form still does, while everything else about a person is nested.
         profileFirstName: dto.firstName ?? dto.profile?.firstName,
@@ -236,6 +241,7 @@ export class UserService {
       dto.branchId ?? undefined,
       dto.warehouseId ?? undefined,
     );
+    await this.assertWorkshopBelongsToTenant(tenantId, dto.workshopId);
 
     const identificationId = this.resolveIdentificationId(current, dto);
     await this.assertContactDetailsAreFree(tenantId, id, {
@@ -251,6 +257,7 @@ export class UserService {
         email: dto.email,
         roleId: dto.roleId,
         ...posting,
+        workshopId: dto.workshopId,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
         accountNote: dto.accountNote,
         profileFirstName: dto.profile?.firstName,
@@ -624,6 +631,23 @@ export class UserService {
       throw new BadRequestException({
         code: ErrorCode.ROLE_NOT_IN_TENANT,
         message: 'roleId does not belong to this tenant',
+      });
+  }
+
+  /** A workshop staff account names a WORKSHOP supplier of its own shop - `users.workshop_id` is a plain FK, so neither the tenant nor the supplier's type is checked by the database. */
+  private async assertWorkshopBelongsToTenant(
+    tenantId: string,
+    workshopId: string | null | undefined,
+  ) {
+    if (!workshopId) return;
+    const workshop = await this.prisma.supplier.findFirst({
+      where: { id: workshopId, tenantId, type: SupplierType.WORKSHOP },
+      select: { id: true },
+    });
+    if (!workshop)
+      throw new BadRequestException({
+        code: ErrorCode.USER_WORKSHOP_INVALID,
+        message: 'workshopId is not a workshop supplier of this tenant',
       });
   }
 

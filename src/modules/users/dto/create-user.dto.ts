@@ -30,6 +30,11 @@ export class CreateUserDto {
   @IsUUID()
   warehouseId?: string;
 
+  /** Workshop staff: the WORKSHOP supplier this person works for. They then see that workshop's production requests at every location and can write delivery notes (with `production:deliver`). */
+  @IsOptional()
+  @IsUUID()
+  workshopId?: string;
+
   @IsOptional()
   @IsString()
   firstName?: string;

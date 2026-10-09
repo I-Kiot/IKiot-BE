@@ -353,7 +353,9 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   production: {
     // The production list (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4): entering the quantity
     // produced is what raises stock, so it is its own right (2026-10-04, contract §6).
-    actions: ['receive'],
+    // 'deliver' (2026-10-09) is the workshop staff's: see their workshop's requests and write a
+    // delivery note. It raises nothing - the location's 'receive' on that note does.
+    actions: ['receive', 'deliver'],
     label: 'Nhập hàng sản xuất',
   },
   fulfillments: {
