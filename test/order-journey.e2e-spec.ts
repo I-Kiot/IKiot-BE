@@ -117,6 +117,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       where: { productionRequest: { tenantId: t } },
     });
     await prisma.productionRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.invoice.deleteMany({ where: { tenantId: tenantId } });
     await prisma.orderItem.deleteMany({
       where: { order: { tenantId: t }, parentItemId: { not: null } },
     });

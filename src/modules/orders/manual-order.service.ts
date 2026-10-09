@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { InvoiceService } from '../invoices/invoices.service';
 import {
   BadRequestException,
   ForbiddenException,
@@ -118,6 +119,7 @@ export class ManualOrderService {
     private readonly customers: CustomerService,
     private readonly customizations: OrderCustomizationService,
     private readonly shortages: OrderShortageAlerts,
+    private readonly invoices: InvoiceService,
   ) {}
 
   async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
@@ -276,6 +278,8 @@ export class ManualOrderService {
           item.customization,
         );
       }
+      // Issued when the order is COMPLETED (delivered and paid); until then it is a PENDING invoice.
+      await this.invoices.ensurePending(tx, created.id);
       return created.id;
     });
 

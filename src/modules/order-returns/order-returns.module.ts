@@ -3,10 +3,11 @@ import { OrderReturnController } from './order-returns.controller';
 import { OrderReturnService } from './order-returns.service';
 import { InventoryModule } from '../inventories/inventories.module';
 import { OrderModule } from '../orders/orders.module';
+import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
   // InventoryModule for `returnDrawn`, OrderModule for the branch scope every order-side read shares.
-  imports: [InventoryModule, OrderModule],
+  imports: [InventoryModule, OrderModule, InvoiceModule],
   controllers: [OrderReturnController],
   providers: [OrderReturnService],
   exports: [OrderReturnService],

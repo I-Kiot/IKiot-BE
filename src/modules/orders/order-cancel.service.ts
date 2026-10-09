@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InvoiceService } from '../invoices/invoices.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from './orders.service';
@@ -137,6 +138,7 @@ export class OrderCancelService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly orders: OrderService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   async cancel(
@@ -225,6 +227,9 @@ export class OrderCancelService {
           message: 'The order status has just changed, please reload',
         });
       }
+
+      // A cancellable order was never COMPLETED, so its invoice was never issued: withdraw it.
+      await this.invoices.voidPending(tx, id);
 
       for (const fulfillment of order.fulfillments) {
         for (const item of fulfillment.items) {
