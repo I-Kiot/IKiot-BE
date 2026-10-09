@@ -18,6 +18,8 @@ export interface AuthUser {
   roleId: string | null;
   branchId: string | null;
   warehouseId: string | null;
+  /** Workshop staff: the WORKSHOP supplier this account belongs to (`users.workshop_id`). Null or absent for everyone else - JwtStrategy always sets it; hand-built test users may leave it out. */
+  workshopId?: string | null;
   /** `"<resource>:<action>"` set, empty for ADMIN/TENANT_OWNER (they short-circuit); includes anything a live shift supervision adds. */
   permissions: ReadonlySet<string>;
   /** Non-null only while this account is running a shift: `permissions` says what it allows, this says where. */

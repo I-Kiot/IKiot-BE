@@ -94,6 +94,7 @@ model Tenant {
   orders                  Order[]
   orderItemCustomizations OrderItemCustomization[]
   productionRequests      ProductionRequest[]
+  productionDeliveries    ProductionDelivery[]
   orderReturns            OrderReturn[]
   promotions              Promotion[]
   promotionLogs           PromotionLog[]
@@ -142,6 +143,8 @@ model User {
   hireDate       DateTime? @map("hire_date") @db.Timestamptz(6)
   locationId     String?   @map("location_id") // nơi làm việc (một chi nhánh hoặc kho)
   location       Location? @relation(fields: [locationId], references: [id])
+  workshopId     String?   @map("workshop_id") // nhân viên xưởng: xưởng (Supplier type WORKSHOP) mình thuộc về - thấy YCSX của xưởng đó ở mọi location
+  workshop       Supplier? @relation("WorkshopStaff", fields: [workshopId], references: [id])
   accountNote    String?   @map("account_note")
 
   profileFirstName        String?   @map("profile_first_name")
@@ -156,52 +159,56 @@ model User {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  fcmTokens                   UserFcmToken[]
-  ownedTenants                Tenant[]                 @relation("TenantOwner")
-  subscriptionChanges         SubscriptionHistoryLog[] @relation("SubscriptionHistoryChangedBy")
-  managedLocations            Location[]               @relation("LocationManager")
-  managedWorkingSchedules     WorkingSchedule[]        @relation("WorkingScheduleManagedBy")
-  createdWorkingSchedules     WorkingSchedule[]        @relation("WorkingScheduleCreatedBy")
-  scheduleAssignments         WorkingScheduleUser[]
-  ordersCreated               Order[]                  @relation("OrderCreatedBy")
-  ordersAssigned              Order[]                  @relation("OrderAssignee")
-  ordersConfirmed             Order[]                  @relation("OrderConfirmedBy")
-  productionRequestsCreated   ProductionRequest[]      @relation("ProductionRequestCreatedBy")
-  productionRequestsUpdated   ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
-  orderReturnsCreated         OrderReturn[]            @relation("OrderReturnCreatedBy")
-  orderReturnsInspected       OrderReturn[]            @relation("OrderReturnInspectedBy")
-  cashDrawerSessionsOpened    CashDrawerSession[]      @relation("CashDrawerOpenedBy")
-  cashDrawerSessionsCurrent   CashDrawerSession[]      @relation("CashDrawerCurrentStaff")
-  cashDrawerShiftLogsAsStaff  CashDrawerShiftLog[]     @relation("ShiftLogStaff")
-  cashDrawerShiftLogsAsNext   CashDrawerShiftLog[]     @relation("ShiftLogNextStaff")
-  cashDrawerFinalizedSessions CashDrawerSession[]      @relation("CashDrawerFinalLogManager")
-  cashFlowsCreated            CashFlow[]
-  promotionLogsCreated        PromotionLog[]
-  notificationsReceived       Notification[]           @relation("NotificationRecipient")
-  notificationsCreated        Notification[]           @relation("NotificationCreatedBy")
-  ticketsCreated              Ticket[]
-  ticketMessages              TicketMessage[]
-  aiChatHistories             AIChatHistory[]
-  auditLogs                   AuditLog[]
-  inventoryTransactions       InventoryTransaction[]
-  stockMovementsCreated       StockMovementRequest[]   @relation("StockMovementCreatedBy")
-  stockMovementsShipped       StockMovementRequest[]   @relation("StockMovementShippedBy")
-  stockMovementsReceived      StockMovementRequest[]   @relation("StockMovementReceivedBy")
-  stockMovementsApproved      StockMovementRequest[]   @relation("StockMovementApprovedBy")
-  fulfillmentsAssigned        Fulfillment[]            @relation("FulfillmentAssignee")
-  fulfillmentsVerified        Fulfillment[]            @relation("FulfillmentVerifiedBy")
-  packagesPacked              FulfillmentPackage[]
-  shipmentsDriven             Shipment[]               @relation("ShipmentDriver")
-  shipmentEventsCreated       ShipmentEvent[]
-  operationEvents             OperationEvent[]
-  paymentsCreated             Payment[]                @relation("PaymentCreatedBy")
-  paymentsCollected           Payment[]                @relation("PaymentCollectedBy")
-  paymentsRemittanceConfirmed Payment[]                @relation("PaymentRemittanceConfirmedBy")
-  ordersShipped               Order[]                  @relation("OrderShippedBy")
-  ordersCancelled             Order[]                  @relation("OrderCancelledBy")
-  orderReturnsReceived        OrderReturn[]            @relation("OrderReturnReceivedBy")
-  invoicesCreated             Invoice[]
+  fcmTokens                     UserFcmToken[]
+  ownedTenants                  Tenant[]                 @relation("TenantOwner")
+  subscriptionChanges           SubscriptionHistoryLog[] @relation("SubscriptionHistoryChangedBy")
+  managedLocations              Location[]               @relation("LocationManager")
+  managedWorkingSchedules       WorkingSchedule[]        @relation("WorkingScheduleManagedBy")
+  createdWorkingSchedules       WorkingSchedule[]        @relation("WorkingScheduleCreatedBy")
+  scheduleAssignments           WorkingScheduleUser[]
+  ordersCreated                 Order[]                  @relation("OrderCreatedBy")
+  ordersAssigned                Order[]                  @relation("OrderAssignee")
+  ordersConfirmed               Order[]                  @relation("OrderConfirmedBy")
+  productionRequestsCreated     ProductionRequest[]      @relation("ProductionRequestCreatedBy")
+  productionRequestsUpdated     ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
+  orderReturnsCreated           OrderReturn[]            @relation("OrderReturnCreatedBy")
+  orderReturnsInspected         OrderReturn[]            @relation("OrderReturnInspectedBy")
+  cashDrawerSessionsOpened      CashDrawerSession[]      @relation("CashDrawerOpenedBy")
+  cashDrawerSessionsCurrent     CashDrawerSession[]      @relation("CashDrawerCurrentStaff")
+  cashDrawerShiftLogsAsStaff    CashDrawerShiftLog[]     @relation("ShiftLogStaff")
+  cashDrawerShiftLogsAsNext     CashDrawerShiftLog[]     @relation("ShiftLogNextStaff")
+  cashDrawerFinalizedSessions   CashDrawerSession[]      @relation("CashDrawerFinalLogManager")
+  cashFlowsCreated              CashFlow[]
+  promotionLogsCreated          PromotionLog[]
+  notificationsReceived         Notification[]           @relation("NotificationRecipient")
+  notificationsCreated          Notification[]           @relation("NotificationCreatedBy")
+  ticketsCreated                Ticket[]
+  ticketMessages                TicketMessage[]
+  aiChatHistories               AIChatHistory[]
+  auditLogs                     AuditLog[]
+  inventoryTransactions         InventoryTransaction[]
+  stockMovementsCreated         StockMovementRequest[]   @relation("StockMovementCreatedBy")
+  stockMovementsShipped         StockMovementRequest[]   @relation("StockMovementShippedBy")
+  stockMovementsReceived        StockMovementRequest[]   @relation("StockMovementReceivedBy")
+  stockMovementsApproved        StockMovementRequest[]   @relation("StockMovementApprovedBy")
+  fulfillmentsAssigned          Fulfillment[]            @relation("FulfillmentAssignee")
+  fulfillmentsVerified          Fulfillment[]            @relation("FulfillmentVerifiedBy")
+  packagesPacked                FulfillmentPackage[]
+  shipmentsDriven               Shipment[]               @relation("ShipmentDriver")
+  shipmentEventsCreated         ShipmentEvent[]
+  operationEvents               OperationEvent[]
+  paymentsCreated               Payment[]                @relation("PaymentCreatedBy")
+  paymentsCollected             Payment[]                @relation("PaymentCollectedBy")
+  paymentsRemittanceConfirmed   Payment[]                @relation("PaymentRemittanceConfirmedBy")
+  ordersShipped                 Order[]                  @relation("OrderShippedBy")
+  ordersCancelled               Order[]                  @relation("OrderCancelledBy")
+  orderReturnsReceived          OrderReturn[]            @relation("OrderReturnReceivedBy")
+  invoicesCreated               Invoice[]
+  productionDeliveriesCreated   ProductionDelivery[]     @relation("ProductionDeliveryCreatedBy")
+  productionDeliveriesReceived  ProductionDelivery[]     @relation("ProductionDeliveryReceivedBy")
+  productionDeliveriesCancelled ProductionDelivery[]     @relation("ProductionDeliveryCancelledBy")
 
+  @@index([tenantId, workshopId])
   @@map("users")
 }
 
@@ -535,6 +542,7 @@ model Supplier {
   cashFlows             CashFlow[]
   productionRequests    ProductionRequest[]
   inventoryLots         InventoryLot[]
+  workshopStaff         User[]                 @relation("WorkshopStaff")
 
   @@map("suppliers")
 }
@@ -931,7 +939,8 @@ model StockMovementRequest {
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  details StockMovementRequestItem[]
+  details            StockMovementRequestItem[]
+  productionDelivery ProductionDelivery?
 
   @@index([tenantId, fromLocationId])
   @@index([tenantId, toLocationId])
@@ -1285,7 +1294,8 @@ model ProductionRequest {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  items ProductionRequestItem[]
+  items      ProductionRequestItem[]
+  deliveries ProductionDelivery[]
 
   @@unique([tenantId, code])
   @@index([tenantId, status, expectedReadyDate])
@@ -1306,13 +1316,66 @@ model ProductionRequestItem {
   receivedQuantity    Int               @default(0) @map("received_quantity") // số đã nhận
   note                String?
 
-  importLines StockMovementRequestItem[]
-  lots        InventoryLot[]
+  importLines   StockMovementRequestItem[]
+  deliveryLines ProductionDeliveryItem[]
+  lots          InventoryLot[]
 
   @@index([productionRequestId])
   @@index([productItemId])
   @@index([orderItemId])
   @@map("production_request_items")
+}
+
+/// Phiếu giao của xưởng (nhân viên xưởng tạo theo một YCSX đã gửi). Chưa đụng tồn kho: tồn kho và
+/// công nợ xưởng chỉ tăng khi nơi nhận xác nhận (`receive`), lúc đó mới ghi phiếu nhập WORKSHOP
+/// đã nhận (`stockMovementId`). Giao thiếu được - nhiều phiếu cho một YCSX.
+model ProductionDelivery {
+  id                  String            @id @default(uuid())
+  tenantId            String            @map("tenant_id")
+  tenant              Tenant            @relation(fields: [tenantId], references: [id])
+  code                String // mã phiếu giao, vd. PGX000123
+  productionRequestId String            @map("production_request_id")
+  productionRequest   ProductionRequest @relation(fields: [productionRequestId], references: [id])
+  status              String            @default("PENDING") // PENDING (chờ nhận) | RECEIVED | CANCELLED
+  note                String?
+
+  createdById   String    @map("created_by")
+  createdBy     User      @relation("ProductionDeliveryCreatedBy", fields: [createdById], references: [id])
+  receivedById  String?   @map("received_by")
+  receivedBy    User?     @relation("ProductionDeliveryReceivedBy", fields: [receivedById], references: [id])
+  receivedAt    DateTime? @map("received_at") @db.Timestamptz(6)
+  cancelledById String?   @map("cancelled_by")
+  cancelledBy   User?     @relation("ProductionDeliveryCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt   DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason  String?   @map("cancel_reason")
+
+  stockMovementId String?               @unique @map("stock_movement_id") // phiếu nhập ghi lúc nơi nhận xác nhận
+  stockMovement   StockMovementRequest? @relation(fields: [stockMovementId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items ProductionDeliveryItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@index([productionRequestId, status])
+  @@map("production_deliveries")
+}
+
+model ProductionDeliveryItem {
+  id                      String                @id @default(uuid())
+  deliveryId              String                @map("delivery_id")
+  delivery                ProductionDelivery    @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  productionRequestItemId String                @map("production_request_item_id")
+  productionRequestItem   ProductionRequestItem @relation(fields: [productionRequestItemId], references: [id])
+  quantity                Int // số xưởng ghi là giao
+  receivedQuantity        Int?                  @map("received_quantity") // số nơi nhận đếm được (gồm lỗi); null tới khi nhận
+  defectQuantity          Int?                  @map("defect_quantity") // trong đó lỗi
+
+  @@unique([deliveryId, productionRequestItemId])
+  @@index([productionRequestItemId])
+  @@map("production_delivery_items")
 }
 
 /// Thiết kế riêng của một dòng đơn custom (kích thước, chất liệu, màu...). Khoá khi YCSX đã gửi xưởng.

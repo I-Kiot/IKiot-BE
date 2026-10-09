@@ -41,7 +41,11 @@ const BCRYPT_COST = 10;
 
 // Nơi làm việc của tài khoản, kèm vào mọi user trả về cho phiên đăng nhập.
 // `locationId` alone does not say whether the posting is a branch or a warehouse, and the dashboard scopes every screen by that - its location switcher showed "the whole chain" to every STAFF account until this was added. The shape is the schema's own `{ id, type, name }`; the client maps it, the API does not grow `branchId`/`warehouseId` back.
-const SESSION_USER_INCLUDE = { location: LOCATION_SELECT } as const;
+const SESSION_USER_INCLUDE = {
+  location: LOCATION_SELECT,
+  // Workshop staff (2026-10-09): the dashboard routes them to the workshop screen and names it.
+  workshop: { select: { id: true, supplierName: true } },
+} as const;
 
 // Stamped into the reset token and checked again when it is redeemed, so an ordinary access token posted to /auth/reset-password is not mistaken for permission.
 const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';

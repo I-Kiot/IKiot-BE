@@ -44,3 +44,25 @@ export const FINAL_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.COMPLETED,
   ProductionRequestStatus.CANCELLED,
 ];
+
+/** A workshop's delivery note against a SENT / PARTIALLY_RECEIVED request (2026-10-09). PENDING touches no stock; RECEIVED is set only by the receiving location confirming it, which is when stock and the workshop's debt rise. */
+export const ProductionDeliveryStatus = {
+  PENDING: 'PENDING',
+  RECEIVED: 'RECEIVED',
+  CANCELLED: 'CANCELLED',
+} as const;
+
+export type ProductionDeliveryStatus =
+  (typeof ProductionDeliveryStatus)[keyof typeof ProductionDeliveryStatus];
+
+export const PRODUCTION_DELIVERY_STATUSES: readonly string[] = Object.values(
+  ProductionDeliveryStatus,
+);
+
+/** What a workshop's staff see: everything already sent to their workshop. A DRAFT has not been sent, so it is still the shop's business. */
+export const WORKSHOP_VISIBLE_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
+  ProductionRequestStatus.SENT,
+  ProductionRequestStatus.PARTIALLY_RECEIVED,
+  ProductionRequestStatus.COMPLETED,
+  ProductionRequestStatus.CANCELLED,
+];

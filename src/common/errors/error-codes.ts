@@ -306,6 +306,25 @@ export const ErrorCode = {
   PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
     'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',
 
+  // --- Workshop staff & delivery notes (2026-10-09) -------------------------
+  /** The workshop routes need an account linked to a workshop (`users.workshop_id`). */
+  WORKSHOP_STAFF_NOT_LINKED: 'WORKSHOP_STAFF_NOT_LINKED',
+  /** The workshop named for a staff account is not a WORKSHOP supplier of this shop. */
+  USER_WORKSHOP_INVALID: 'USER_WORKSHOP_INVALID',
+  PRODUCTION_DELIVERY_NOT_FOUND: 'PRODUCTION_DELIVERY_NOT_FOUND',
+  /** The delivery note is no longer PENDING (already received or cancelled), or its request no longer expects goods. */
+  PRODUCTION_DELIVERY_STATUS_INVALID: 'PRODUCTION_DELIVERY_STATUS_INVALID',
+  /** A delivery note with no line above 0. */
+  PRODUCTION_DELIVERY_EMPTY: 'PRODUCTION_DELIVERY_EMPTY',
+  /** Delivered + still pending on other notes + already received would pass what was ordered. */
+  PRODUCTION_DELIVERY_QTY_EXCEEDS: 'PRODUCTION_DELIVERY_QTY_EXCEEDS',
+  /** The location counted more than the workshop said it delivered on that line. */
+  PRODUCTION_DELIVERY_RECEIVE_EXCEEDS: 'PRODUCTION_DELIVERY_RECEIVE_EXCEEDS',
+  /** A line named on the confirmation is not on this delivery note. */
+  PRODUCTION_DELIVERY_ITEM_MISMATCH: 'PRODUCTION_DELIVERY_ITEM_MISMATCH',
+  /** Could not allocate the next delivery code after several attempts. */
+  PRODUCTION_DELIVERY_CODE_UNAVAILABLE: 'PRODUCTION_DELIVERY_CODE_UNAVAILABLE',
+
   // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
   /** No longer raised: packing now answers ORDER_STEP_DENIED, the one refusal every journey step shares. Kept because codes are append-only. */

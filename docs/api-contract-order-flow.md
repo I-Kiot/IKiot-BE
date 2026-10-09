@@ -5,7 +5,7 @@
 >
 > **Thứ tự nguồn:**
 > 1. [`hanh-trinh-don-hang.md`](../../docs/hanh-trinh-don-hang.md) (workspace) – nghiệp vụ.
-> 2. Notion **"Task – Hành trình đơn hàng (v2 – map flow)"** – task, phạm vi, chi tiết kỹ thuật đã chốt.
+> 2. Notion **["Task – Hành trình đơn hàng (v2 – map flow)"](https://app.notion.com/p/cba1af7cad544aaa8873422884cd3752)** – task, phạm vi, chi tiết kỹ thuật đã chốt.
 > 3. File này – route, DTO, mã lỗi.
 >
 > Bên đứng sau lệch bên đứng trước thì bên đứng sau sai. Mã task trong file này là cột **Mã** của
@@ -376,7 +376,45 @@ không làm hỏng đơn. Hủy đơn / ship chỉ làm giảm nhu cầu nên kh
 
 `Supplier.type` GOODS (NCC) / WORKSHOP (xưởng) (B-1). Phiếu nhập NCC trên `/stock-movements` không đổi
 (`importSource: SUPPLIER`, hàng lỗi `defectQuantity` → `defectLocationId`). Phiếu nhập `WORKSHOP` chỉ sinh ra
-từ `POST /production-requests/:id/receive`. Không gọi `allocateArrivals`.
+từ `POST /production-requests/:id/receive` hoặc khi nơi nhận xác nhận một phiếu giao của xưởng (dưới). Không
+gọi `allocateArrivals`.
+
+### Nhân viên xưởng và phiếu giao xưởng (2026-10-09)
+
+**Nhân viên xưởng** = tài khoản STAFF của shop có `users.workshop_id` trỏ tới một `Supplier` `type = WORKSHOP`
+(gán qua `POST/PATCH /users` field `workshopId`; `null` = bỏ gán; sai loại / khác tenant → `USER_WORKSHOP_INVALID`).
+`/auth/me` trả thêm `workshopId` + `workshop: { id, supplierName }`. Quyền riêng **`production:deliver`**.
+Không cần nơi làm việc (`locationId`): họ thấy YCSX của **xưởng mình ở mọi location**, không thấy YCSX `DRAFT`
+và không thấy YCSX của xưởng khác (→ 404, như không tồn tại).
+
+**Phiếu giao xưởng** (`ProductionDelivery`, mã `PGX000123`): xưởng ghi số giao theo từng dòng YCSX, **giao thiếu
+được**. Phiếu `PENDING` **không đụng tồn kho, không ghi công nợ**. Chỉ khi **nơi nhận đếm hàng và xác nhận** thì
+mới chạy đúng đường `receive` ở trên (mở lô, hàng lỗi vào kho hỏng, công nợ xưởng, YCSX → `PARTIALLY_RECEIVED` /
+`COMPLETED`) và phiếu → `RECEIVED` kèm `stockMovementId`. Lý do: xưởng cũng là bên được trả tiền theo số đạt,
+nên không tự tăng tồn / công nợ của mình được.
+
+```
+PENDING ──nơi nhận xác nhận (receive)──▶ RECEIVED
+   └──xưởng rút lại / nơi nhận từ chối (cancel, bắt buộc lý do)──▶ CANCELLED
+```
+
+| Route | Quyền | Body / ghi chú |
+|---|---|---|
+| `GET /workshop/production-requests` | `production:deliver` + tài khoản có xưởng (`WORKSHOP_STAFF_NOT_LINKED`) | `page, limit, search` (mã YCSX), `status` (`SENT` / `PARTIALLY_RECEIVED` / `COMPLETED` / `CANCELLED`), `locationId`. Trả `ProductionRequest` như `GET /production-requests` |
+| `GET /workshop/production-requests/:id` | như trên | |
+| `POST /workshop/production-requests/:id/deliveries` | như trên | `{ items: [{ productionRequestItemId, quantity ≥ 1 }], note? }` – YCSX phải `SENT` / `PARTIALLY_RECEIVED` (`PRODUCTION_REQUEST_STATUS_INVALID`). Mỗi dòng: **đã nhận + đang chờ ở phiếu khác + lần này ≤ số đặt** (`PRODUCTION_DELIVERY_QTY_EXCEEDS`, `errors: [{ lineId, room }]`). Khoá dòng YCSX khi kiểm nên hai phiếu cùng lúc không vượt. Sau commit báo quản lý nơi nhận + người lập YCSX. Trả `ProductionRequest` |
+| `GET /workshop/deliveries` | như trên | như `GET /production-deliveries`, chỉ phiếu của xưởng mình |
+| `POST /workshop/deliveries/:id/cancel` | như trên | `{ reason }` – chỉ `PENDING`; phiếu xưởng khác → 404 |
+| `GET /production-deliveries` | `production_requests:read` | `page, limit, search` (mã phiếu / mã YCSX), `status`, `locationId`, `productionRequestId`. Nhân viên kho chỉ thấy phiếu tới nơi mình làm; chủ thấy hết. Màn "phiếu xưởng giao chờ nhận" = `status=PENDING` |
+| `GET /production-deliveries/:id` | `production_requests:read` | |
+| `POST /production-deliveries/:id/receive` | `production:receive` + đứng ở nơi nhận | `ReceiveProductionDto` như `POST /production-requests/:id/receive`. Dòng phải có trên phiếu (`PRODUCTION_DELIVERY_ITEM_MISMATCH`), số đếm ≤ số xưởng ghi (`PRODUCTION_DELIVERY_RECEIVE_EXCEEDS`); dòng không gửi = nhận 0. Phiếu đã nhận / đã hủy → `PRODUCTION_DELIVERY_STATUS_INVALID`. Sau commit báo nhân viên xưởng. Trả `ProductionRequest` + `stockMovementId` |
+| `POST /production-deliveries/:id/cancel` | `production:receive` + đứng ở nơi nhận | `{ reason }` – từ chối phiếu (sai hàng, không có hàng). Báo nhân viên xưởng |
+
+`ProductionRequest` trả thêm: mỗi dòng `pendingDeliveryQuantity` (đã báo giao, chưa đếm) và `deliveries:
+{ id, code, status, note, createdAt, createdBy, receivedAt, receivedBy, cancelledAt, cancelReason, stockMovementId,
+items: [{ productionRequestItemId, quantity, receivedQuantity, defectQuantity }] }[]`. Hủy hoặc đóng thiếu YCSX khi
+còn phiếu `PENDING` → `PRODUCTION_DELIVERY_STATUS_INVALID` (nhận hoặc hủy phiếu trước). Nơi nhận vẫn nhận trực
+tiếp được qua `POST /production-requests/:id/receive` cho xưởng không có tài khoản.
 
 ### Kho hàng hỏng (D-4) – giữ nguyên
 

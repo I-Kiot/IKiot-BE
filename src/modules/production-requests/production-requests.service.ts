@@ -28,9 +28,12 @@ import {
 } from '../../common/constants/order-status';
 import { ProductItemType } from '../../common/constants/product-status';
 import {
+  ProductionDeliveryStatus,
   ProductionRequestStatus,
   RECEIVABLE_PRODUCTION_REQUEST_STATUSES,
 } from '../../common/constants/production-request-status';
+import { SystemRole } from '../../common/constants/system-role';
+import { UserStatus } from '../../common/constants/user-status';
 import {
   LOCATION_SELECT,
   resolveLocations,
@@ -83,7 +86,7 @@ function thumbnailOf(item: ImageRow[], product: ImageRow[]): string | null {
   return pick(item) ?? pick(product) ?? null;
 }
 
-const DETAIL_INCLUDE = {
+export const DETAIL_INCLUDE = {
   supplier: { select: { id: true, supplierName: true, phoneNumber: true } },
   location: LOCATION_SELECT,
   createdBy: PERSON_SELECT,
@@ -127,11 +130,44 @@ const DETAIL_INCLUDE = {
       },
     },
   },
+  // The workshop's delivery notes (2026-10-09); a PENDING one is goods announced but not yet counted.
+  deliveries: {
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      code: true,
+      status: true,
+      note: true,
+      createdAt: true,
+      createdBy: PERSON_SELECT,
+      receivedAt: true,
+      receivedBy: PERSON_SELECT,
+      cancelledAt: true,
+      cancelReason: true,
+      stockMovementId: true,
+      items: {
+        select: {
+          productionRequestItemId: true,
+          quantity: true,
+          receivedQuantity: true,
+          defectQuantity: true,
+        },
+      },
+    },
+  },
 } as const satisfies Prisma.ProductionRequestInclude;
 
-type RequestRow = Prisma.ProductionRequestGetPayload<{
+export type RequestRow = Prisma.ProductionRequestGetPayload<{
   include: typeof DETAIL_INCLUDE;
 }>;
+
+/** A workshop delivery note being confirmed through `receiveGoods`: which lines it carries and how many the workshop said it sent on each. */
+export interface DeliveryClaim {
+  id: string;
+  code: string;
+  createdById: string;
+  delivered: Map<string, number>;
+}
 
 /** A validated line ready to write. */
 interface PreparedLine {
@@ -362,6 +398,21 @@ export class ProductionRequestService {
     const request = await this.findRow(tenantId, id);
     this.assertCanWrite(user, request);
 
+    // A delivery note still waiting means goods may be standing at the door: cancelling or closing short now would leave it unreceivable.
+    if (
+      (dto.status === ProductionRequestStatus.CANCELLED ||
+        dto.status === ProductionRequestStatus.COMPLETED) &&
+      request.deliveries.some(
+        (d) => d.status === ProductionDeliveryStatus.PENDING,
+      )
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.PRODUCTION_DELIVERY_STATUS_INVALID,
+        message:
+          'A workshop delivery note is still waiting to be received; receive or cancel it first',
+      });
+    }
+
     const receivedAny = request.items.some((line) => line.receivedQuantity > 0);
     const violation = manualTransitionViolation(
       request.status,
@@ -444,10 +495,27 @@ export class ProductionRequestService {
 
   // ─── Receiving ─────────────────────────────────────────────────────────────
 
+  /** The location receives goods straight off the request - the path for a workshop without accounts. */
   async receive(user: AuthUser, id: string, dto: ReceiveProductionDto) {
-    const tenantId = requireTenantId(user);
-    const request = await this.findRow(tenantId, id);
+    const request = await this.findRow(requireTenantId(user), id);
     this.assertCanWrite(user, request);
+    return this.receiveGoods(user, request, dto, null);
+  }
+
+  /**
+   * The one place a workshop's goods enter stock. With a `delivery`, the receipt confirms that
+   * delivery note: every line must be on it, no more than the workshop said it sent, and the note
+   * is claimed inside the same transaction so two people confirming it cannot both receive.
+   * Access to the location is the caller's job.
+   */
+  async receiveGoods(
+    user: AuthUser,
+    request: RequestRow,
+    dto: ReceiveProductionDto,
+    delivery: DeliveryClaim | null,
+  ) {
+    const tenantId = requireTenantId(user);
+    const id = request.id;
     if (!RECEIVABLE_PRODUCTION_REQUEST_STATUSES.includes(request.status)) {
       throw new ConflictException({
         code: ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID,
@@ -477,6 +545,21 @@ export class ProductionRequestService {
           code: ErrorCode.STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS,
           message: `The defective quantity cannot exceed the received quantity for ${line.productItem.sku ?? line.productItemId}`,
         });
+      }
+      if (delivery) {
+        const sent = delivery.delivered.get(line.id);
+        if (sent === undefined) {
+          throw new BadRequestException({
+            code: ErrorCode.PRODUCTION_DELIVERY_ITEM_MISMATCH,
+            message: `${line.productItem.sku ?? line.productItemId} is not on delivery note ${delivery.code}`,
+          });
+        }
+        if (entry.receivedQuantity > sent) {
+          throw new BadRequestException({
+            code: ErrorCode.PRODUCTION_DELIVERY_RECEIVE_EXCEEDS,
+            message: `${entry.receivedQuantity} counted for ${line.productItem.sku ?? line.productItemId}, but the workshop delivered ${sent}`,
+          });
+        }
       }
       // Advisory - the conditional increment inside the transaction is what enforces it.
       if (line.receivedQuantity + entry.receivedQuantity > line.quantity) {
@@ -527,6 +610,17 @@ export class ProductionRequestService {
     const now = new Date();
     const { movementId, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
+        if (delivery) {
+          // Row-locks the note until commit; a second confirmation waits here, then finds it no longer PENDING.
+          const claimed = await tx.productionDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: ProductionDeliveryStatus.PENDING,
+            },
+            data: { receivedById: user.userId },
+          });
+          if (claimed.count === 0) throw this.deliveryNotPending();
+        }
         for (const p of priced) {
           // The ceiling is in the WHERE, so two people receiving the same line at once cannot overshoot it.
           const bumped = await tx.productionRequestItem.updateMany({
@@ -553,7 +647,11 @@ export class ProductionRequestService {
             receivedById: user.userId,
             receivedAt: now,
             totalPrice: amount,
-            note: dto.note ?? `Nhận hàng xưởng theo ${request.code}`,
+            note:
+              dto.note ??
+              (delivery
+                ? `Nhận phiếu giao ${delivery.code} theo ${request.code}`
+                : `Nhận hàng xưởng theo ${request.code}`),
             details: {
               create: priced.map((p) => ({
                 productItemId: p.line.productItemId,
@@ -614,6 +712,33 @@ export class ProductionRequestService {
           }
         }
 
+        if (delivery) {
+          const counted = new Map(
+            dto.items.map((e) => [e.productionRequestItemId, e]),
+          );
+          for (const lineId of delivery.delivered.keys()) {
+            const entry = counted.get(lineId);
+            await tx.productionDeliveryItem.updateMany({
+              where: {
+                deliveryId: delivery.id,
+                productionRequestItemId: lineId,
+              },
+              data: {
+                receivedQuantity: entry?.receivedQuantity ?? 0,
+                defectQuantity: entry?.defectQuantity ?? 0,
+              },
+            });
+          }
+          await tx.productionDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: ProductionDeliveryStatus.RECEIVED,
+              receivedAt: now,
+              stockMovementId: movement.id,
+            },
+          });
+        }
+
         const lines = await tx.productionRequestItem.findMany({
           where: { productionRequestId: id },
           select: { quantity: true, receivedQuantity: true },
@@ -650,6 +775,29 @@ export class ProductionRequestService {
     );
     // No low-stock check: arriving goods only raise stock, so nothing here can cross the threshold (contract §3 step 5 lists it, but the edge-triggered rule can never fire on an increase).
     await this.notifyWaitingOrders(tenantId, request, priced, user.userId);
+    if (delivery) {
+      const recipients = await this.workshopStaffOf(
+        tenantId,
+        request.supplierId,
+      );
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [...recipients, delivery.createdById].filter(
+          (rid) => rid !== user.userId,
+        ),
+        referenceId: id,
+        ...ProductionRequestNotificationTemplates.deliveryReceived({
+          deliveryCode: delivery.code,
+          requestCode: request.code,
+          locationName: request.location.name,
+          receivedQuantity: priced.reduce(
+            (sum, p) => sum + p.entry.receivedQuantity,
+            0,
+          ),
+          defectQuantity: priced.reduce((sum, p) => sum + p.defect, 0),
+        }),
+      });
+    }
 
     const received = await this.findRow(tenantId, id);
     return { ...this.toResponse(received), stockMovementId: movementId };
@@ -863,8 +1011,33 @@ export class ProductionRequestService {
     }
   }
 
-  private assertCanWrite(user: AuthUser, request: RequestRow): void {
+  assertCanWrite(user: AuthUser, request: RequestRow): void {
     if (!canActAt(user, request.location)) throw this.locationDenied();
+  }
+
+  /** The active staff accounts linked to a workshop - who hears about their delivery notes. */
+  async workshopStaffOf(
+    tenantId: string,
+    workshopId: string,
+  ): Promise<string[]> {
+    const staff = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        workshopId,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+      },
+      select: { id: true },
+    });
+    return staff.map((row) => row.id);
+  }
+
+  deliveryNotPending() {
+    return new ConflictException({
+      code: ErrorCode.PRODUCTION_DELIVERY_STATUS_INVALID,
+      message:
+        'This delivery note is no longer waiting to be received (already received or cancelled)',
+    });
   }
 
   private assertDraft(request: RequestRow): void {
@@ -904,7 +1077,7 @@ export class ProductionRequestService {
 
   // ─── Plumbing ──────────────────────────────────────────────────────────────
 
-  private async findRow(tenantId: string, id: string): Promise<RequestRow> {
+  async findRow(tenantId: string, id: string): Promise<RequestRow> {
     const request = await this.prisma.productionRequest.findFirst({
       where: { id, tenantId },
       include: DETAIL_INCLUDE,
@@ -932,7 +1105,7 @@ export class ProductionRequestService {
   }
 
   /** The contract's `ProductionRequest` shape: supplier and location named once, people nested, and the receipts (the WORKSHOP imports) gathered off the lines. */
-  private toResponse(request: RequestRow) {
+  toResponse(request: RequestRow) {
     const {
       supplierId,
       locationId,
@@ -942,8 +1115,22 @@ export class ProductionRequestService {
       createdBy,
       statusUpdatedBy,
       items,
+      deliveries,
       ...rest
     } = request;
+
+    // Announced by the workshop but not counted yet - what the next delivery note must leave room for.
+    const pendingByLine = new Map<string, number>();
+    for (const delivery of deliveries) {
+      if (delivery.status !== ProductionDeliveryStatus.PENDING) continue;
+      for (const line of delivery.items) {
+        pendingByLine.set(
+          line.productionRequestItemId,
+          (pendingByLine.get(line.productionRequestItemId) ?? 0) +
+            line.quantity,
+        );
+      }
+    }
 
     const receipts = new Map<
       string,
@@ -986,6 +1173,7 @@ export class ProductionRequestService {
         ),
         quantity: line.quantity,
         receivedQuantity: line.receivedQuantity,
+        pendingDeliveryQuantity: pendingByLine.get(line.id) ?? 0,
         note: line.note,
         orderItem: line.orderItem
           ? {
@@ -1000,6 +1188,11 @@ export class ProductionRequestService {
         (a, b) =>
           (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0),
       ),
+      deliveries: deliveries.map(({ createdBy: by, receivedBy, ...d }) => ({
+        ...d,
+        createdBy: withNestedProfile(by),
+        receivedBy: receivedBy ? withNestedProfile(receivedBy) : null,
+      })),
     };
   }
 }
