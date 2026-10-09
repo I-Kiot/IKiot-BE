@@ -215,6 +215,10 @@ describe('workshop staff delivery notes', () => {
     await prisma.inventory.deleteMany({ where });
     await prisma.notification.deleteMany({ where });
     await prisma.user.deleteMany({ where });
+    // Receiving links the SKU to the workshop (`SupplierService.charge`).
+    await prisma.productItemSupplier.deleteMany({
+      where: { supplierId: { in: [workshopId, otherWorkshopId] } },
+    });
     await prisma.supplier.deleteMany({ where });
     await prisma.productItem.deleteMany({ where });
     await prisma.product.deleteMany({ where });
