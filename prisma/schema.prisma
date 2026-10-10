@@ -1919,19 +1919,20 @@ model VoucherCode {
   @@map("voucher_codes")
 }
 
-/// Hoá đơn bán hàng. Đã phát hành thì không sửa; hoàn tiền thì phát hoá đơn điều chỉnh. Chưa dùng ở Phase 1.
+/// Hoá đơn bán hàng. Mỗi đơn (kể cả đơn POS) có một hoá đơn SALE: PENDING từ lúc tạo đơn, ISSUED khi đơn COMPLETED.
+/// Đã phát hành thì không sửa; trả hàng thì phát hoá đơn ADJUSTMENT (số tiền âm).
 model Invoice {
   id                String    @id @default(uuid())
   tenantId          String    @map("tenant_id")
   tenant            Tenant    @relation(fields: [tenantId], references: [id])
   orderId           String    @map("order_id")
   order             Order     @relation(fields: [orderId], references: [id])
-  invoiceNumber     String    @map("invoice_number") // số hoá đơn
+  invoiceNumber     String?   @map("invoice_number") // số hoá đơn; chỉ cấp khi ISSUED (PENDING/CANCELLED chưa có số)
   type              String    @default("SALE") // SALE (bán) | ADJUSTMENT (điều chỉnh)
   originalInvoiceId String?   @map("original_invoice_id") // hoá đơn gốc của hoá đơn điều chỉnh
   originalInvoice   Invoice?  @relation("InvoiceAdjustment", fields: [originalInvoiceId], references: [id])
   adjustments       Invoice[] @relation("InvoiceAdjustment")
-  status            String    @default("ISSUED") // DRAFT | ISSUED | CANCELLED
+  status            String    @default("PENDING") // PENDING (chờ đơn COMPLETED) | ISSUED | CANCELLED (đơn bị hủy khi chưa xuất)
 
   // Thông tin người mua để xuất VAT
   buyerName    String? @map("buyer_name")
@@ -1958,6 +1959,7 @@ model Invoice {
 
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, orderId])
+  @@index([tenantId, status, createdAt])
   @@map("invoices")
 }
 

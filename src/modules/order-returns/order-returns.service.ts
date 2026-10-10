@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InvoiceService } from '../invoices/invoices.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from '../orders/orders.service';
@@ -149,6 +150,7 @@ export class OrderReturnService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly orders: OrderService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   async findAll(user: AuthUser, tenantId: string, query: QueryOrderReturnDto) {
@@ -460,6 +462,17 @@ export class OrderReturnService {
       }
 
       await this.settleOrder(tx, tenantId, orderReturn.order.id);
+      // Once the sale invoice is issued, returned goods are an ADJUSTMENT for their value (a PENDING invoice nets them out when it issues).
+      await this.invoices.adjustForReturn(
+        tx,
+        orderReturn.order.id,
+        `Hoàn hàng ${orderReturn.code}`,
+        user.userId,
+        orderReturn.items.map((line) => ({
+          orderItemId: line.orderItemId,
+          quantity: line.quantity,
+        })),
+      );
     });
 
     return this.findOne(user, tenantId, id);
@@ -621,6 +634,8 @@ export class OrderReturnService {
         where: { id: orderId, tenantId, status: order.status },
         data: { status: OrderStatus.RETURNED },
       });
+      // Back whole before it was ever completed: nothing was invoiced, so the PENDING invoice is withdrawn.
+      await this.invoices.voidPending(tx, orderId);
     }
   }
 }

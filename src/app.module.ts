@@ -31,6 +31,7 @@ import { HolidayModule } from './modules/holidays/holidays.module';
 import { InventoryModule } from './modules/inventories/inventories.module';
 import { NotificationModule } from './modules/notifications/notifications.module';
 import { OrderModule } from './modules/orders/orders.module';
+import { InvoiceModule } from './modules/invoices/invoices.module';
 import { PlanModule } from './modules/plans/plans.module';
 import { ProductModule } from './modules/products/products.module';
 import { PromotionModule } from './modules/promotions/promotions.module';
@@ -77,6 +78,7 @@ import { SentryModule } from '@sentry/nestjs/setup';
     InventoryModule,
     NotificationModule,
     OrderModule,
+    InvoiceModule,
     PlanModule,
     ProductModule,
     PromotionModule,

@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InvoiceService } from '../invoices/invoices.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
@@ -87,6 +88,7 @@ export class ShipmentDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   // ─── Đơn cần giao của tôi ───────────────────────────────────────────────────
@@ -211,6 +213,10 @@ export class ShipmentDeliveryService {
           code: ErrorCode.ORDER_STATUS_CONFLICT,
           message: 'The order has just changed, please reload',
         });
+      }
+      // Đã cọc đủ thì đơn COMPLETED ngay ở đây, nên hoá đơn cũng xuất ngay.
+      if (nextOrderStatus === OrderStatus.COMPLETED) {
+        await this.invoices.issueForOrder(tx, shipment.order.id, user.userId);
       }
 
       // 3. Khoản thu khi giao.
@@ -420,6 +426,9 @@ export class ShipmentDeliveryService {
           paymentStatus: OrderPaymentStatus.PAID,
         },
       });
+      if (completed.count === 1) {
+        await this.invoices.issueForOrder(tx, payment.order.id, null);
+      }
       if (completed.count !== 1) {
         this.logger.warn(
           `SePay transfer for ${paymentReference} was recorded, but order ${payment.order.code} is no longer RECEIVED and was not completed.`,

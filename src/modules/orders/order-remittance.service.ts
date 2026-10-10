@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InvoiceService } from '../invoices/invoices.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderService } from './orders.service';
 import { OrderReadService } from './order-read.service';
@@ -36,6 +37,7 @@ export class OrderRemittanceService {
     private readonly prisma: PrismaService,
     private readonly orders: OrderService,
     private readonly reads: OrderReadService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   async confirm(
@@ -105,6 +107,7 @@ export class OrderRemittanceService {
           message: 'The order status has just changed, please reload',
         });
       }
+      await this.invoices.issueForOrder(tx, id, user.userId);
       for (const payment of order.payments) {
         const settled = await tx.payment.updateMany({
           where: {
