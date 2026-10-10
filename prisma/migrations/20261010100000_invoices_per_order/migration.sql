@@ -3,11 +3,8 @@
 ALTER TABLE "invoices" ALTER COLUMN "invoice_number" DROP NOT NULL;
 ALTER TABLE "invoices" ALTER COLUMN "status" SET DEFAULT 'PENDING';
 
--- One live (PENDING or ISSUED) SALE invoice per order. Prisma cannot express a partial index, so
--- a future migrate dev will propose dropping it - edit this migration instead of applying that.
-CREATE UNIQUE INDEX "invoices_one_live_sale_per_order"
-  ON "invoices" ("order_id")
-  WHERE "type" = 'SALE' AND "status" <> 'CANCELLED';
+-- The one-live-SALE-invoice-per-order partial index ("invoices_one_live_sale_per_order") already
+-- exists: 20261002120000_order_flow_furniture creates it. Creating it again here fails with 42P07.
 
 CREATE INDEX "invoices_tenant_id_status_created_at_idx" ON "invoices" ("tenant_id", "status", "created_at");
 
