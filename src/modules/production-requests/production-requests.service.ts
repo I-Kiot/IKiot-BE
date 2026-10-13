@@ -313,8 +313,12 @@ export class ProductionRequestService {
     if (dto.locationId && dto.locationId !== request.locationId) {
       await this.requireReceivingLocation(user, tenantId, dto.locationId);
     }
+    // Sửa nháp là gửi lại toàn bộ dòng, nên SKU đã có trên nháp này được giữ dù sản phẩm vừa bị tắt isManufacturable.
+    const skusAlreadyOnRequest = new Set(
+      request.items.map((item) => item.productItemId),
+    );
     const lines = dto.items
-      ? await this.prepareLines(tenantId, dto.items)
+      ? await this.prepareLines(tenantId, dto.items, skusAlreadyOnRequest)
       : null;
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -805,10 +809,11 @@ export class ProductionRequestService {
 
   // ─── Rules ─────────────────────────────────────────────────────────────────
 
-  /** Lines must name real, producible SKUs of this shop, at most once per (SKU, order line); a line tied to an order line must match that line's SKU and the order must still be waiting to ship. One query for the SKUs, one for the order lines (coding rule 19). */
+  /** Lines must name real, producible SKUs of this shop whose product is marked `isManufacturable`, at most once per (SKU, order line); a line tied to an order line must match that line's SKU and the order must still be waiting to ship. One query for the SKUs, one for the order lines (coding rule 19). */
   private async prepareLines(
     tenantId: string,
     lines: ProductionRequestLineDto[],
+    skusAlreadyOnRequest: ReadonlySet<string> = new Set(),
   ): Promise<PreparedLine[]> {
     if (lines.length === 0) {
       throw new BadRequestException({
@@ -839,7 +844,12 @@ export class ProductionRequestService {
     const [items, orderItems] = await Promise.all([
       this.prisma.productItem.findMany({
         where: { tenantId, id: { in: itemIds } },
-        select: { id: true, sku: true, itemType: true },
+        select: {
+          id: true,
+          sku: true,
+          itemType: true,
+          product: { select: { isManufacturable: true } },
+        },
       }),
       orderItemIds.length === 0
         ? Promise.resolve<{ id: string; productItemId: string }[]>([])
@@ -871,6 +881,14 @@ export class ProductionRequestService {
         throw new BadRequestException({
           code: ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE,
           message: `${item.sku ?? item.id} is a ${item.itemType}; only a product can be made (order a combo's components instead)`,
+        });
+      }
+      // Chỉ chặn dòng mới: dòng đã nằm trong YCSX trước khi cờ bị tắt vẫn được giữ và nhận hàng.
+      const isNewLine = !skusAlreadyOnRequest.has(item.id);
+      if (isNewLine && !item.product.isManufacturable) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE,
+          message: `${item.sku ?? item.id} is not manufacturable; order it from a supplier instead`,
         });
       }
       if (line.orderItemId) {

@@ -180,7 +180,7 @@ describe('workshop staff delivery notes', () => {
       ],
     });
     await prisma.product.create({
-      data: { id: productId, tenantId, name: 'Tủ' },
+      data: { id: productId, tenantId, name: 'Tủ', isManufacturable: true },
     });
     await prisma.productItem.create({
       data: {

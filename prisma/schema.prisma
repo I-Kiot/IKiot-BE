@@ -585,18 +585,20 @@ model Customer {
 
 /// Sản phẩm (mục trong danh mục), gom nhiều phiên bản ProductItem.
 model Product {
-  id           String    @id @default(uuid())
-  tenantId     String    @map("tenant_id")
-  tenant       Tenant    @relation(fields: [tenantId], references: [id])
-  brandId      String?   @map("brand_id")
-  brand        Brand?    @relation(fields: [brandId], references: [id])
-  categoryId   String?   @map("category_id")
-  category     Category? @relation(fields: [categoryId], references: [id])
-  name         String
-  status       String    @default("ACTIVE") // ACTIVE | INACTIVE | DISCONTINUED
-  categoryName String?   @map("category_name") // bản sao tên danh mục, cập nhật khi đổi tên
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  brandId          String?   @map("brand_id")
+  brand            Brand?    @relation(fields: [brandId], references: [id])
+  categoryId       String?   @map("category_id")
+  category         Category? @relation(fields: [categoryId], references: [id])
+  name             String
+  status           String    @default("ACTIVE") // ACTIVE | INACTIVE | DISCONTINUED
+  categoryName     String?   @map("category_name") // bản sao tên danh mục, cập nhật khi đổi tên
+  /// true = đặt xưởng sản xuất được (YCSX); false = chỉ nhập từ NCC. Áp cho mọi SKU của sản phẩm.
+  isManufacturable Boolean   @default(false) @map("is_manufacturable")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   images       ProductImage[]
   productItems ProductItem[]

@@ -135,6 +135,7 @@ export class ProductService {
           categoryId: dto.categoryId,
           categoryName,
           status: dto.status ?? ProductStatus.ACTIVE,
+          isManufacturable: dto.isManufacturable ?? false,
           images: { create: this.imageRows(dto.images) },
         },
         select: { id: true },
@@ -384,6 +385,7 @@ export class ProductService {
           categoryId: dto.categoryId,
           categoryName,
           status: dto.status,
+          isManufacturable: dto.isManufacturable,
         },
       });
 
@@ -734,11 +736,15 @@ export class ProductService {
       status?: string;
       categoryId?: string;
       supplierId?: string;
+      isManufacturable?: boolean;
     } & LocationRefQueryDto,
   ): Prisma.ProductWhereInput {
     const where: Prisma.ProductWhereInput = { tenantId };
     if (query.status) where.status = query.status;
     if (query.categoryId) where.categoryId = query.categoryId;
+    if (query.isManufacturable !== undefined) {
+      where.isManufacturable = query.isManufacturable;
+    }
 
     // "Products this supplier supplies" is a fact about the variants, so it is a relation filter rather than the old fetch-ids-then-intersect dance.
     if (query.supplierId) {
