@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -25,6 +26,11 @@ export class CreateProductDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
+
+  /** Đặt xưởng sản xuất được hay không. Bỏ trống = false: sản phẩm chỉ nhập từ NCC. */
+  @IsOptional()
+  @IsBoolean()
+  isManufacturable?: boolean;
 
   @IsOptional()
   @IsIn(SETTABLE_PRODUCT_STATUSES, {

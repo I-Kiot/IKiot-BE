@@ -228,6 +228,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send({
         name: 'Sofa băng',
+        isManufacturable: true,
         items: [
           {
             productName: 'Sofa băng 1m8',

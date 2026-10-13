@@ -36,6 +36,11 @@ describe('production list, production requests and workshop receipts', () => {
   const productId = randomUUID();
   const cabinetId = randomUUID();
   const comboId = randomUUID();
+  // Bought from suppliers only (isManufacturable false), and one whose flag is switched off mid-test.
+  const boughtProductId = randomUUID();
+  const chairId = randomUUID();
+  const flippedProductId = randomUUID();
+  const shelfId = randomUUID();
   const orderId = randomUUID();
   const orderItemId = randomUUID();
 
@@ -172,8 +177,17 @@ describe('production list, production requests and workshop receipts', () => {
         { id: goodsSupplierId, tenantId, supplierName: 'NCC thường' },
       ],
     });
-    await prisma.product.create({
-      data: { id: productId, tenantId, name: 'Tủ' },
+    await prisma.product.createMany({
+      data: [
+        { id: productId, tenantId, name: 'Tủ', isManufacturable: true },
+        { id: boughtProductId, tenantId, name: 'Ghế nhựa' },
+        {
+          id: flippedProductId,
+          tenantId,
+          name: 'Kệ sách',
+          isManufacturable: true,
+        },
+      ],
     });
     await prisma.productItem.createMany({
       data: [
@@ -197,6 +211,26 @@ describe('production list, production requests and workshop receipts', () => {
           retailPrice: 9000,
           costPrice: 0,
           itemType: 'COMBO',
+        },
+        {
+          id: chairId,
+          tenantId,
+          productId: boughtProductId,
+          productName: 'Ghế nhựa',
+          productCode: `PRG-${chairId}`,
+          sku: `PRG-${chairId}`,
+          retailPrice: 300,
+          costPrice: 100,
+        },
+        {
+          id: shelfId,
+          tenantId,
+          productId: flippedProductId,
+          productName: 'Kệ sách',
+          productCode: `PRK-${shelfId}`,
+          sku: `PRK-${shelfId}`,
+          retailPrice: 2000,
+          costPrice: 800,
         },
       ],
     });
@@ -310,6 +344,11 @@ describe('production list, production requests and workshop receipts', () => {
     ).toMatchObject({ demandQuantity: 0, shortQuantity: 0 });
     // A combo is ordered through its components, and the damaged-goods location never takes deliveries.
     expect(rows.some((row) => row.productItemId === comboId)).toBe(false);
+    // Bought from suppliers only: nothing to order from a workshop, so not in the catalogue view.
+    expect(rows.some((row) => row.productItemId === chairId)).toBe(false);
+    expect(
+      rows.find((row) => row.productItemId === cabinetId)?.isManufacturable,
+    ).toBe(true);
     expect(rows.some((row) => row.location?.id === damagedId)).toBe(false);
     // Short rows first.
     expect(rows[0]).toMatchObject({
@@ -363,6 +402,47 @@ describe('production list, production requests and workshop receipts', () => {
         }),
       ),
     ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE);
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: workshopId,
+          locationId: branchId,
+          items: [{ productItemId: chairId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE);
+  });
+
+  it('keeps a line already on a draft when its product stops being manufacturable, but takes no new one', async () => {
+    const draft = await requests.create(owner, {
+      supplierId: workshopId,
+      locationId: branchId,
+      items: [{ productItemId: shelfId, quantity: 2 }],
+    });
+    await prisma.product.update({
+      where: { id: flippedProductId },
+      data: { isManufacturable: false },
+    });
+
+    // Editing the draft re-sends its lines: the shelf was already on it, so it stays.
+    const edited = await requests.update(owner, draft.id, {
+      items: [{ productItemId: shelfId, quantity: 3 }],
+    });
+    expect(edited.items).toEqual([
+      expect.objectContaining({ productItemId: shelfId, quantity: 3 }),
+    ]);
+    // A new request for it is refused.
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: workshopId,
+          locationId: branchId,
+          items: [{ productItemId: shelfId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE);
+
+    await requests.remove(owner, draft.id);
   });
 
   it('refuses a workshop on a plain supplier import', async () => {

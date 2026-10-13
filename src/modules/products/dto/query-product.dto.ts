@@ -1,6 +1,7 @@
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -33,6 +34,16 @@ export class ProductFilterDto extends IntersectionType(
     message: `status phải là ${FILTERABLE_PRODUCT_STATUSES.join(', ')}`,
   })
   status?: string;
+
+  /** `isManufacturable=true` chỉ lấy sản phẩm đặt xưởng được - ô tìm hàng của form YCSX dùng nó. Bỏ trống = không lọc. */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  isManufacturable?: boolean;
 }
 
 /** Ported from iKiotMS-BE's ProductQueryDTO. */

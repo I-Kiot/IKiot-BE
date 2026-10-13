@@ -302,6 +302,9 @@ export const ErrorCode = {
   /** Only a PRODUCT variant can be made - a COMBO is ordered through its components, a SERVICE needs no goods. */
   PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE:
     'PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE',
+  /** The product is not marked `isManufacturable` - it is bought from a supplier, never ordered from a workshop. */
+  PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE:
+    'PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE',
   /** Closing a partly delivered request short needs a reason - it is the record of why ordered goods will never arrive. */
   PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
     'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',

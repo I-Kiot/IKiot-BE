@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -25,6 +26,11 @@ export class UpdateProductDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
+
+  // Tắt cờ không đụng tới YCSX đang mở: dòng đã đặt vẫn nhận hàng bình thường, chỉ chặn dòng mới.
+  @IsOptional()
+  @IsBoolean()
+  isManufacturable?: boolean;
 
   @IsOptional()
   @IsIn(SETTABLE_PRODUCT_STATUSES, {
