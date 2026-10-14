@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsNotEmpty,
@@ -88,6 +89,8 @@ export class CreateProductItemDto {
 
   @IsOptional()
   @IsArray()
+  // Matches MAX_ITEM_IMAGES on the dashboard; without a cap a client could attach any number of rows.
+  @ArrayMaxSize(10, { message: 'Mỗi phiên bản tối đa 10 ảnh' })
   @ValidateNested({ each: true })
   @Type(() => ProductImageDto)
   images?: ProductImageDto[];
