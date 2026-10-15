@@ -24,6 +24,7 @@ import {
   toSummary,
 } from './shipment-view';
 import {
+  deliveryActorAccess,
   ON_THE_ROAD_STATUSES,
   onTheRoadWhere,
   trackingActorAccess,
@@ -31,6 +32,7 @@ import {
 } from './shipment-actor';
 import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
+import { PickUpShipmentDto } from './dto/pick-up-shipment.dto';
 import { ChangeDriverDto } from './dto/change-driver.dto';
 import { ShipOrderDto } from './dto/ship-order.dto';
 import { QueryShipmentDto } from './dto/query-shipment.dto';
@@ -44,6 +46,7 @@ import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
   CarrierType,
   DRIVER_CHANGEABLE_STATUSES,
+  FINAL_SHIPMENT_STATUSES,
   ShipmentEventSource,
   ShipmentStatus,
 } from '../../common/constants/shipment-status';
@@ -77,7 +80,14 @@ export class ShipmentService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** PACKED → PICKED_UP (GĐ1–B6.1): tạo shipment, fulfillment sang HANDED_OVER. Tồn kho không đổi – hàng vẫn đang khoá. */
+  /**
+   * "Giao cho vận chuyển" (GĐ1–B6.1). Tồn kho không đổi – hàng vẫn đang khoá.
+   * - EXTERNAL: ĐVVC không đăng nhập hệ thống để tự xác nhận, nên nhân viên ghi nhận là xong: đơn
+   *   PACKED → PICKED_UP, fulfillment → HANDED_OVER, shipment tạo ở PICKED_UP.
+   * - INTERNAL (chốt 2026-10-15): chỉ là **gán shipper** – shipment tạo ở CREATED, đơn và fulfillment
+   *   vẫn PACKED. Shipper còn phải tới kho lấy hàng rồi bấm `pickUp`; gán xong chưa ai cầm hàng. Kể cả
+   *   khi tự gán chính mình: thực tế vẫn có quãng đi lấy hàng.
+   */
   async create(user: AuthUser, tenantId: string, dto: CreateShipmentDto) {
     const order = await this.prisma.order.findFirst({
       where: { id: dto.orderId, tenantId },
@@ -132,9 +142,15 @@ export class ShipmentService {
     }
     await this.assertTrackingFree(dto.carrierName, dto.trackingCode);
 
+    const pickedUpNow = dto.carrierType === CarrierType.EXTERNAL;
+    const shipmentStatus = pickedUpNow
+      ? ShipmentStatus.PICKED_UP
+      : ShipmentStatus.CREATED;
     const now = new Date();
     const shipmentId = await this.prisma.$transaction(async (tx) => {
-      // Nhận đơn theo trạng thái đã đọc: hai người cùng bấm thì một người nhận 409, không có hai shipment.
+      // Nhận đơn theo trạng thái đã đọc. EXTERNAL đẩy đơn sang PICKED_UP; INTERNAL để đơn ở PACKED nhưng
+      // vẫn ghi vào dòng đơn (updatedAt) để giữ khoá dòng tới hết transaction: người bấm thứ hai phải chờ ở
+      // đây, rồi câu kiểm tra "đã có lần giao đang mở" bên dưới mới thấy lần giao của người thứ nhất.
       const claimed = await tx.order.updateMany({
         where: {
           id: order.id,
@@ -142,7 +158,9 @@ export class ShipmentService {
           status: OrderStatus.PACKED,
           ...assigneeClaim(access, user),
         },
-        data: { status: OrderStatus.PICKED_UP },
+        data: pickedUpNow
+          ? { status: OrderStatus.PICKED_UP }
+          : { updatedAt: now },
       });
       if (claimed.count !== 1) {
         throw new ConflictException({
@@ -150,10 +168,26 @@ export class ShipmentService {
           message: 'The order has just changed, please reload',
         });
       }
-      await tx.fulfillment.updateMany({
-        where: { id: fulfillment.id, status: FulfillmentStatus.PACKED },
-        data: { status: FulfillmentStatus.HANDED_OVER, handedOverAt: now },
+      // Index một phần `shipments_one_open_per_order` là chốt chặn cuối; câu này cho người thua một mã lỗi rõ ràng.
+      const open = await tx.shipment.findFirst({
+        where: {
+          orderId: order.id,
+          status: { notIn: [...FINAL_SHIPMENT_STATUSES] },
+        },
+        select: { id: true },
       });
+      if (open) {
+        throw new ConflictException({
+          code: ErrorCode.SHIPMENT_ALREADY_OPEN,
+          message: 'The order already has an open shipment, please reload',
+        });
+      }
+      if (pickedUpNow) {
+        await tx.fulfillment.updateMany({
+          where: { id: fulfillment.id, status: FulfillmentStatus.PACKED },
+          data: { status: FulfillmentStatus.HANDED_OVER, handedOverAt: now },
+        });
+      }
       const shipment = await tx.shipment.create({
         data: {
           tenantId,
@@ -163,7 +197,7 @@ export class ShipmentService {
           carrierName: dto.carrierName ?? null,
           trackingCode: dto.trackingCode ?? null,
           driverId: dto.driverId ?? null,
-          status: ShipmentStatus.PICKED_UP,
+          status: shipmentStatus,
           recipientName: order.recipientName,
           recipientPhone: order.recipientPhone,
           deliveryAddress: order.deliveryAddress,
@@ -176,7 +210,7 @@ export class ShipmentService {
           note: dto.note ?? null,
           events: {
             create: {
-              status: ShipmentStatus.PICKED_UP,
+              status: shipmentStatus,
               source: ShipmentEventSource.MANUAL,
               note: dto.note ?? null,
               createdById: user.userId,
@@ -197,6 +231,115 @@ export class ShipmentService {
       order.code,
     );
     return this.findDetail(tenantId, shipmentId);
+  }
+
+  /**
+   * POST /shipments/:id/pick-up (chốt 2026-10-15): shipper xác nhận đã lấy hàng – shipment CREATED →
+   * PICKED_UP, đơn PACKED → PICKED_UP, fulfillment → HANDED_OVER. Cùng nhóm người như xác nhận giao
+   * (`deliveryActorAccess`): shipper của lần giao, người phụ trách đơn, chủ shop bấm hộ.
+   */
+  async pickUp(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: PickUpShipmentDto,
+  ) {
+    const shipment = await this.prisma.shipment.findFirst({
+      where: { id, tenantId },
+      select: {
+        id: true,
+        status: true,
+        driverId: true,
+        fulfillmentId: true,
+        fulfillment: { select: { locationId: true } },
+        order: {
+          select: { id: true, code: true, status: true, assigneeId: true },
+        },
+      },
+    });
+    if (!shipment) {
+      throw new NotFoundException({
+        code: ErrorCode.SHIPMENT_NOT_FOUND,
+        message: 'Shipment not found',
+      });
+    }
+    const access = deliveryActorAccess(user, shipment);
+    // Chỉ báo sớm; chỗ chặn thật là hai câu ghi có điều kiện trong transaction.
+    if (shipment.status !== ShipmentStatus.CREATED) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_STATUS_INVALID,
+        message: `A ${shipment.status} shipment cannot be picked up`,
+      });
+    }
+    assertTransition(shipment.order.status, OrderStatus.PICKED_UP);
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      // Nhận lần giao: vẫn chờ lấy, và người được phép nhờ là shipper / người phụ trách thì vẫn còn là người
+      // đó – bị đổi shipper đúng lúc bấm thì người cũ không ghi được gì.
+      const shipmentClaim: Prisma.ShipmentWhereInput = {
+        id,
+        tenantId,
+        status: ShipmentStatus.CREATED,
+      };
+      if (access === 'DRIVER') {
+        shipmentClaim.driverId = user.userId;
+      }
+      const claimedShipment = await tx.shipment.updateMany({
+        where: shipmentClaim,
+        data: { status: ShipmentStatus.PICKED_UP },
+      });
+      if (claimedShipment.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.SHIPMENT_STATUS_INVALID,
+          message: 'The shipment has just changed, please reload',
+        });
+      }
+      // Nhận đơn: đơn vừa bị huỷ (hoặc người gọi vừa thôi phụ trách) thì cả transaction rollback.
+      const claimedOrder = await tx.order.updateMany({
+        where: {
+          id: shipment.order.id,
+          tenantId,
+          status: OrderStatus.PACKED,
+          ...(access === 'ASSIGNEE' ? { assigneeId: user.userId } : {}),
+        },
+        data: { status: OrderStatus.PICKED_UP },
+      });
+      if (claimedOrder.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order has just changed, please reload',
+        });
+      }
+      await tx.fulfillment.updateMany({
+        where: {
+          id: shipment.fulfillmentId,
+          status: FulfillmentStatus.PACKED,
+        },
+        data: { status: FulfillmentStatus.HANDED_OVER, handedOverAt: now },
+      });
+      await tx.shipmentEvent.create({
+        data: {
+          shipmentId: id,
+          status: ShipmentStatus.PICKED_UP,
+          source: ShipmentEventSource.MANUAL,
+          note: dto.note ?? null,
+          createdById: user.userId,
+        },
+      });
+    });
+
+    // Sau commit: người phụ trách cần biết hàng đã rời tay kho để xác nhận Đang vận chuyển. Tự bấm thì không tự báo.
+    const { assigneeId, code } = shipment.order;
+    if (assigneeId && assigneeId !== user.userId) {
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [assigneeId],
+        referenceId: id,
+        ...ShipmentNotificationTemplates.pickedUp(id, code),
+      });
+    }
+    return this.findDetail(tenantId, id);
   }
 
   /** Đổi shipper / thợ của shipment INTERNAL chưa kết thúc (C-8). */

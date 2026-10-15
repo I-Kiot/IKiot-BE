@@ -33,6 +33,7 @@
 //   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
 //   - payments: CHECK (amount > 0)
 //   - invoices: mỗi đơn tối đa một hoá đơn SALE chưa huỷ (index một phần)
+//   - shipments: mỗi đơn tối đa một lần giao chưa kết thúc (index một phần shipments_one_open_per_order)
 
 generator client {
   provider     = "prisma-client"
@@ -1806,7 +1807,8 @@ model Shipment {
   driver       User?   @relation("ShipmentDriver", fields: [driverId], references: [id])
 
   // CREATED | PICKED_UP | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED | RETURNED | CANCELLED
-  // Phase 1: tạo ở PICKED_UP (ĐVVC đã lấy hàng), sang IN_TRANSIT khi đơn SHIPPING.
+  // Phase 1: INTERNAL tạo ở CREATED (đã gán shipper, chờ lấy) → PICKED_UP khi shipper xác nhận lấy hàng;
+  // EXTERNAL tạo thẳng ở PICKED_UP. Sang IN_TRANSIT khi đơn SHIPPING.
   status String @default("CREATED")
 
   // Người nhận, chép từ đơn

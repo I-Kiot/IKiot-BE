@@ -102,6 +102,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
       carrierType: CarrierType.INTERNAL,
       driverId: ownerId,
     });
+    await shipments.pickUp(owner, tenantId, shipment.id, {});
     await shipments.shipOrder(owner, tenantId, id, {});
     return { orderId: id, shipmentId: shipment.id };
   };

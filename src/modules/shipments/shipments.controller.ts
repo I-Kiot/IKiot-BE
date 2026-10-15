@@ -13,6 +13,7 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ShipmentService } from './shipments.service';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
+import { PickUpShipmentDto } from './dto/pick-up-shipment.dto';
 import { ChangeDriverDto } from './dto/change-driver.dto';
 import { QueryShipmentDto } from './dto/query-shipment.dto';
 import { AddShipmentEventDto } from './dto/add-shipment-event.dto';
@@ -30,7 +31,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
  * trách đơn làm được mọi bước của đơn mình mà không cần quyền trong role, shipper xem và ghi nhật trình
  * shipment của mình (chốt 2026-10-06), và guard chạy trước khi biết đơn / shipment là của ai. Quyền được
  * kiểm trong service: `assertOrderStepAccess` cho các bước của đơn, `visibleWhere` cho việc xem,
- * `deliveryActorAccess` cho giao xong / thu tiền.
+ * `deliveryActorAccess` cho lấy hàng / giao xong / thu tiền.
  */
 @ApiTags('shipments')
 @ApiBearerAuth('bearer')
@@ -41,7 +42,7 @@ export class ShipmentController {
     private readonly delivery: ShipmentDeliveryService,
   ) {}
 
-  /** C-2 + C-8: "ĐVVC đã lấy hàng" – đơn PACKED → PICKED_UP, gán shipper nếu giao nội bộ. */
+  /** C-2 + C-8: "Giao cho vận chuyển". EXTERNAL: đơn PACKED → PICKED_UP ngay. INTERNAL: chỉ gán shipper (shipment CREATED), đơn vẫn PACKED tới khi shipper `pick-up`. */
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateShipmentDto) {
     return this.service.create(user, requireTenantId(user), dto);
@@ -63,6 +64,17 @@ export class ShipmentController {
   @Get('mine')
   listMine(@CurrentUser() user: AuthUser) {
     return this.delivery.listMine(user, requireTenantId(user));
+  }
+
+  /** Shipper xác nhận đã lấy hàng (chốt 2026-10-15): shipment CREATED → PICKED_UP, đơn PACKED → PICKED_UP. Shipper, người phụ trách đơn, chủ shop. */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/pick-up')
+  pickUp(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PickUpShipmentDto,
+  ) {
+    return this.service.pickUp(user, requireTenantId(user), id, dto);
   }
 
   /** C-5: giao thành công – ảnh bằng chứng + thu tiền (tiền mặt / QR / đã cọc đủ). Shipper, người phụ trách đơn, chủ shop. */
