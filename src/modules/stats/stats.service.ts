@@ -7,6 +7,7 @@ import { locationScope, orderScope } from './stats-scope';
 import {
   averageOrderValue,
   changePct,
+  comparisonWindows,
   previousPeriod,
   type DateRange,
 } from './stats-math';
@@ -24,8 +25,10 @@ import type {
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
+  RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
   StatsQueryDto,
+  TopCustomersQueryDto,
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
 import {
@@ -265,6 +268,193 @@ export class StatsService {
         quantity: Number(row.quantity),
         revenue: Number(row.revenue),
       })),
+    };
+  }
+
+  /** The five calendar milestones in one answer. Each previous window covers the same elapsed span of the period before, so a month half over is judged against half a month. */
+  async getRevenueComparison(user: AuthUser, query: RevenueComparisonQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    const windows = comparisonWindows(new Date());
+
+    const sum = async (range: DateRange) => {
+      if (scope.impossible) {
+        return { ...range, revenue: 0, orderCount: 0, aov: 0 };
+      }
+      const agg = await this.prisma.order.aggregate({
+        where: this.orderWhere(user, scope, range),
+        _sum: { grandTotal: true },
+        _count: { _all: true },
+      });
+      const revenue = Number(agg._sum.grandTotal ?? 0);
+      const orderCount = agg._count._all;
+      return {
+        ...range,
+        revenue,
+        orderCount,
+        aov: averageOrderValue(revenue, orderCount),
+      };
+    };
+
+    const comparisons = await Promise.all(
+      windows.map(async (w) => {
+        const [current, previous] = await Promise.all([
+          sum(w.current),
+          sum(w.previous),
+        ]);
+        return {
+          key: w.key,
+          current,
+          previous,
+          changePct: {
+            revenue: changePct(current.revenue, previous.revenue),
+            orderCount: changePct(current.orderCount, previous.orderCount),
+            aov: changePct(current.aov, previous.aov),
+          },
+        };
+      }),
+    );
+
+    return { comparisons };
+  }
+
+  /** Every order created in the range whatever its status - the funnel and the cancel rate need the ones revenue leaves out. */
+  async getOrdersByStatus(user: AuthUser, query: StatsQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    if (scope.impossible) return { totalCount: 0, statuses: [] };
+    const { fromDate, toDate } = query.range();
+
+    const rows = await this.prisma.order.groupBy({
+      by: ['status'],
+      where: {
+        tenantId: user.tenantId ?? undefined,
+        ...(scope.branchId ? { branchId: scope.branchId } : {}),
+        createdAt: { gte: fromDate, lte: toDate },
+      },
+      _sum: { grandTotal: true },
+      _count: { _all: true },
+    });
+
+    const statuses = rows
+      .map((row) => ({
+        status: row.status,
+        count: row._count._all,
+        total: Number(row._sum.grandTotal ?? 0),
+      }))
+      .sort((a, b) => b.count - a.count);
+    return {
+      totalCount: statuses.reduce((n, s) => n + s.count, 0),
+      statuses,
+    };
+  }
+
+  async getRevenueByBranch(user: AuthUser, query: StatsQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    if (scope.impossible) return { branches: [] };
+
+    const rows = await this.prisma.order.groupBy({
+      by: ['branchId'],
+      where: this.orderWhere(user, scope, query.range()),
+      _sum: { grandTotal: true },
+      _count: { _all: true },
+    });
+    // Branch.id = Location.id, so the name lives on the location.
+    const locations = await this.prisma.location.findMany({
+      where: { id: { in: rows.map((r) => r.branchId) } },
+      select: { id: true, name: true },
+    });
+    const nameOf = new Map(locations.map((l) => [l.id, l.name]));
+
+    return {
+      branches: rows
+        .map((row) => {
+          const revenue = Number(row._sum.grandTotal ?? 0);
+          const orderCount = row._count._all;
+          return {
+            branchId: row.branchId,
+            branchName: nameOf.get(row.branchId) ?? null,
+            revenue,
+            orderCount,
+            aov: averageOrderValue(revenue, orderCount),
+          };
+        })
+        .sort((a, b) => b.revenue - a.revenue),
+    };
+  }
+
+  /** Sparse cells (only weekday/hour pairs that have sales); `weekday` is 0 = Sunday .. 6, `hour` 0-23, both in the shop's local time. */
+  async getSalesHeatmap(user: AuthUser, query: StatsQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    if (scope.impossible) return { cells: [] };
+    const { fromDate, toDate } = query.range();
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        weekday: number;
+        hour: number;
+        revenue: Prisma.Decimal;
+        orderCount: number;
+      }[]
+    >`
+      SELECT EXTRACT(DOW  FROM created_at AT TIME ZONE ${TZ_NAME})::int AS "weekday",
+             EXTRACT(HOUR FROM created_at AT TIME ZONE ${TZ_NAME})::int AS "hour",
+             COALESCE(SUM(grand_total), 0) AS "revenue",
+             COUNT(*)::int                 AS "orderCount"
+      FROM orders
+      WHERE tenant_id = ${user.tenantId}
+        AND status = ${REVENUE_STATUS}
+        AND created_at >= ${fromDate}
+        AND created_at <= ${toDate}
+        ${scope.branchId ? Prisma.sql`AND branch_id = ${scope.branchId}` : Prisma.empty}
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    `;
+
+    return {
+      cells: rows.map((r) => ({
+        weekday: r.weekday,
+        hour: r.hour,
+        revenue: Number(r.revenue),
+        orderCount: r.orderCount,
+      })),
+    };
+  }
+
+  /** Named customers only: the tenant's `KH_VANGLAI` walk-in row aggregates every anonymous sale and would top any list. */
+  async getTopCustomers(user: AuthUser, query: TopCustomersQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    if (scope.impossible) return { customers: [] };
+
+    const rows = await this.prisma.order.groupBy({
+      by: ['customerId'],
+      where: {
+        ...this.orderWhere(user, scope, query.range()),
+        customer: { customerCode: { not: 'KH_VANGLAI' } },
+      },
+      _sum: { grandTotal: true },
+      _count: { _all: true },
+      orderBy: { _sum: { grandTotal: 'desc' } },
+      take: query.limit,
+    });
+    const customers = await this.prisma.customer.findMany({
+      where: { id: { in: rows.map((r) => r.customerId) } },
+      select: { id: true, name: true, phone: true },
+    });
+    const byId = new Map(customers.map((c) => [c.id, c]));
+
+    return {
+      customers: rows.map((row) => {
+        const revenue = Number(row._sum.grandTotal ?? 0);
+        const orderCount = row._count._all;
+        const c = byId.get(row.customerId);
+        return {
+          customerId: row.customerId,
+          name: c?.name ?? null,
+          phone: c?.phone ?? null,
+          revenue,
+          orderCount,
+          aov: averageOrderValue(revenue, orderCount),
+        };
+      }),
     };
   }
 

@@ -129,6 +129,22 @@ export class TopProductsQueryDto extends StatsQueryDto {
   limit: number = 10;
 }
 
+export class TopCustomersQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit: number = 5;
+}
+
+/** Only a location filter: the comparison windows are fixed calendar milestones, not a range the caller picks. */
+export class RevenueComparisonQueryDto {
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
 /** No date range: stock is a level, not a flow - it is only ever "right now". */
 export class InventoryStatsQueryDto {
   @IsOptional()
