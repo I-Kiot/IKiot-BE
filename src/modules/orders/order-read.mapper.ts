@@ -188,6 +188,7 @@ function toOrderBase(row: OrderListRow) {
     shippedBy,
     payments: _payments,
     items: _items,
+    shipments: _shipments,
     appliedPromotions,
     subtotal,
     shippingFee,
@@ -245,6 +246,8 @@ export function toOrderListItem(
   return {
     ...toOrderBase(row),
     items,
+    // The newest shipment's driver; null until one is assigned.
+    driver: toUserRef(row.shipments[0]?.driver ?? null),
     // Top-level lines: a combo counts once, not once per component.
     itemCount: row.items.filter((item) => item.parentItemId === null).length,
     stockSummary: summarizeStock(items.map((item) => item.stockCheck)),
