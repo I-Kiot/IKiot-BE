@@ -64,3 +64,63 @@ export function countByKey<K extends string>(
   }
   return out;
 }
+
+export const COMPARISON_KEYS = [
+  'today',
+  'week',
+  'month',
+  'quarter',
+  'year',
+] as const;
+export type ComparisonKey = (typeof COMPARISON_KEYS)[number];
+
+export interface ComparisonWindow {
+  key: ComparisonKey;
+  current: DateRange;
+  previous: DateRange;
+}
+
+const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/** Midnight of a local (UTC+7) calendar day as an instant; `Date.UTC` normalises month/day overflow, so `m - 3` or `d - 7` need no special-casing. */
+function localMidnight(y: number, m: number, d: number): Date {
+  return new Date(Date.UTC(y, m, d) - TZ_OFFSET_MS);
+}
+
+/** Today, this week (Mon-start), month, quarter and year against the period before, in the shop's local calendar. The previous window is the *same elapsed span* of the previous period (1–15 Oct against 1–15 Sep), capped at that period's end, so a half-finished month is never judged against a whole one. */
+export function comparisonWindows(now: Date): ComparisonWindow[] {
+  const local = new Date(now.getTime() + TZ_OFFSET_MS);
+  const y = local.getUTCFullYear();
+  const m = local.getUTCMonth();
+  const d = local.getUTCDate();
+  const sinceMonday = (local.getUTCDay() + 6) % 7;
+  const quarterStart = Math.floor(m / 3) * 3;
+
+  const starts: Record<ComparisonKey, [Date, Date]> = {
+    today: [localMidnight(y, m, d), localMidnight(y, m, d - 1)],
+    week: [
+      localMidnight(y, m, d - sinceMonday),
+      localMidnight(y, m, d - sinceMonday - 7),
+    ],
+    month: [localMidnight(y, m, 1), localMidnight(y, m - 1, 1)],
+    quarter: [
+      localMidnight(y, quarterStart, 1),
+      localMidnight(y, quarterStart - 3, 1),
+    ],
+    year: [localMidnight(y, 0, 1), localMidnight(y - 1, 0, 1)],
+  };
+
+  return COMPARISON_KEYS.map((key) => {
+    const [curFrom, prevFrom] = starts[key];
+    const elapsed = now.getTime() - curFrom.getTime();
+    const prevTo = Math.min(
+      prevFrom.getTime() + elapsed,
+      curFrom.getTime() - 1,
+    );
+    return {
+      key,
+      current: { fromDate: curFrom, toDate: now },
+      previous: { fromDate: prevFrom, toDate: new Date(prevTo) },
+    };
+  });
+}
