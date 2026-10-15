@@ -179,6 +179,12 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     driverId: driver,
   });
 
+  /** Gán shipper rồi shipper xác nhận đã lấy hàng (chốt 2026-10-15): đơn PICKED_UP, sẵn sàng chuyển Đang vận chuyển. */
+  async function handedOver(orderId: string) {
+    const created = await shipments.create(owner, tenantId, internal(orderId));
+    return shipments.pickUp(driver, tenantId, created.id, {});
+  }
+
   const tableStock = () =>
     prisma.inventory.findFirstOrThrow({
       where: { tenantId, locationId: warehouseId, productItemId: tableId },
@@ -279,13 +285,13 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.customer.create({
       data: { id: customerId, tenantId, name: 'Khách' },
     });
-    // 50 bàn ở kho (đủ cho mọi đơn các ca đóng gói), giá vốn lô 100.
+    // 100 bàn ở kho (đủ cho mọi đơn các ca đóng gói), giá vốn lô 100.
     await prisma.$transaction((tx) =>
       inventory.openLot(tx, {
         tenantId,
         locationId: warehouseId,
         productItemId: tableId,
-        quantity: 50,
+        quantity: 100,
         unitCost: 100,
         sourceType: LotSourceType.SUPPLIER,
         ledger: {
@@ -388,7 +394,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       });
     });
 
-    it('hands over: order PICKED_UP, fulfillment HANDED_OVER, shipment copies the recipient, stock still locked', async () => {
+    it('internal: only assigns the driver - shipment CREATED, order and fulfillment still PACKED, shipment copies the recipient', async () => {
       const orderId = await packedOrder(2);
       const before = await tableStock();
 
@@ -401,7 +407,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       });
 
       expect(shipment).toMatchObject({
-        status: ShipmentStatus.PICKED_UP,
+        status: ShipmentStatus.CREATED,
         carrierType: CarrierType.INTERNAL,
         recipientName: 'Anh Nam',
         recipientPhone: '0912345678',
@@ -410,7 +416,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         shippingCost: 50000,
         order: {
           id: orderId,
-          status: OrderStatus.PICKED_UP,
+          status: OrderStatus.PACKED,
           customerName: 'Khách',
           amountDue: 1700, // 2000 − cọc 300
         },
@@ -418,16 +424,15 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       });
       expect(shipment.events).toHaveLength(1);
       expect(shipment.events[0]).toMatchObject({
-        status: ShipmentStatus.PICKED_UP,
+        status: ShipmentStatus.CREATED,
         createdBy: { id: storekeeperId },
       });
 
       const fulfillment = await prisma.fulfillment.findFirstOrThrow({
         where: { orderId },
       });
-      expect(fulfillment.status).toBe(FulfillmentStatus.HANDED_OVER);
-      expect(fulfillment.handedOverAt).not.toBeNull();
-      // Lấy hàng không đụng tồn kho – hàng vẫn đang khoá.
+      expect(fulfillment.status).toBe(FulfillmentStatus.PACKED);
+      expect(fulfillment.handedOverAt).toBeNull();
       expect(await tableStock()).toMatchObject({
         stock: before.stock,
         lockedStock: before.lockedStock,
@@ -440,6 +445,46 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       );
     });
 
+    it('external: the carrier took it - order PICKED_UP and fulfillment HANDED_OVER at once, stock still locked', async () => {
+      const orderId = await packedOrder();
+      const before = await tableStock();
+      const shipment = await shipments.create(storekeeper, tenantId, {
+        orderId,
+        carrierType: CarrierType.EXTERNAL,
+        carrierName: 'GHN',
+        trackingCode: `GHN-HANDOVER-${orderId}`,
+      });
+      expect(shipment).toMatchObject({
+        status: ShipmentStatus.PICKED_UP,
+        order: { status: OrderStatus.PICKED_UP },
+      });
+      const fulfillment = await prisma.fulfillment.findFirstOrThrow({
+        where: { orderId },
+      });
+      expect(fulfillment.status).toBe(FulfillmentStatus.HANDED_OVER);
+      expect(fulfillment.handedOverAt).not.toBeNull();
+      expect(await tableStock()).toMatchObject({
+        stock: before.stock,
+        lockedStock: before.lockedStock,
+      });
+    });
+
+    it('refuses a second hand-over while a driver is still on the way to pick up', async () => {
+      const orderId = await packedOrder();
+      await shipments.create(owner, tenantId, internal(orderId));
+      await expect(
+        shipments.create(owner, tenantId, {
+          orderId,
+          carrierType: CarrierType.EXTERNAL,
+          carrierName: 'GHN',
+          trackingCode: `GHN-SECOND-${orderId}`,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_ALREADY_OPEN },
+      });
+      expect(await statusOf(orderId)).toBe(OrderStatus.PACKED);
+    });
+
     it('creates one shipment when two people hand over the same order at once', async () => {
       const orderId = await packedOrder();
       const attempts = await Promise.allSettled([
@@ -448,9 +493,10 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       ]);
       expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
       const loser = attempts.find((a) => a.status === 'rejected');
+      // Đơn vẫn PACKED sau khi gán: người thua bị chặn bởi "đã có lần giao đang mở", không phải trạng thái đơn.
       expect([
+        ErrorCode.SHIPMENT_ALREADY_OPEN,
         ErrorCode.ORDER_STATUS_CONFLICT,
-        ErrorCode.SHIPMENT_ORDER_NOT_PACKED,
       ]).toContain(loser?.reason?.response?.code);
       expect(await prisma.shipment.count({ where: { orderId } })).toBe(1);
     });
@@ -484,6 +530,157 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       ).rejects.toMatchObject({
         response: { code: ErrorCode.ORDER_STEP_DENIED },
       });
+    });
+  });
+
+  describe('POST /shipments/:id/pick-up – shipper xác nhận đã lấy hàng', () => {
+    it('moves shipment and order to PICKED_UP, the fulfillment to HANDED_OVER, and tells the person in charge', async () => {
+      const orderId = await packedOrder();
+      const before = await tableStock();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      notify.mockClear();
+
+      const picked = await shipments.pickUp(driver, tenantId, created.id, {
+        note: 'đã bốc lên xe',
+      });
+
+      expect(picked).toMatchObject({
+        status: ShipmentStatus.PICKED_UP,
+        order: { status: OrderStatus.PICKED_UP },
+      });
+      expect(picked.events.map((e) => e.status)).toEqual([
+        ShipmentStatus.CREATED,
+        ShipmentStatus.PICKED_UP,
+      ]);
+      expect(picked.events[1]).toMatchObject({
+        note: 'đã bốc lên xe',
+        createdBy: { id: driverId },
+      });
+      const fulfillment = await prisma.fulfillment.findFirstOrThrow({
+        where: { orderId },
+      });
+      expect(fulfillment.status).toBe(FulfillmentStatus.HANDED_OVER);
+      expect(fulfillment.handedOverAt).not.toBeNull();
+      // Lấy hàng không đụng tồn kho – hàng vẫn đang khoá.
+      expect(await tableStock()).toMatchObject({
+        stock: before.stock,
+        lockedStock: before.lockedStock,
+      });
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientIds: [assigneeId],
+          type: 'SHIPMENT_PICKED_UP',
+        }),
+      );
+    });
+
+    it('lets the person in charge and the owner confirm on the driver’s behalf', async () => {
+      for (const actor of [assignee, owner]) {
+        const orderId = await packedOrder();
+        const created = await shipments.create(
+          owner,
+          tenantId,
+          internal(orderId),
+        );
+        const picked = await shipments.pickUp(actor, tenantId, created.id, {});
+        expect(picked.status).toBe(ShipmentStatus.PICKED_UP);
+      }
+    });
+
+    it('refuses anyone else - even holding every shipping permission at the packing warehouse', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      for (const actor of [storekeeper, outsider]) {
+        await expect(
+          shipments.pickUp(actor, tenantId, created.id, {}),
+        ).rejects.toMatchObject({
+          response: { code: ErrorCode.ORDER_STEP_DENIED },
+        });
+      }
+      expect(await statusOf(orderId)).toBe(OrderStatus.PACKED);
+    });
+
+    it('stops a driver who has just been replaced, and a carrier shipment that was picked up already', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      await shipments.changeDriver(owner, tenantId, created.id, {
+        driverId: ownerId,
+      });
+      await expect(
+        shipments.pickUp(driver, tenantId, created.id, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STEP_DENIED },
+      });
+
+      const carrierOrder = await packedOrder();
+      const carrier = await shipments.create(owner, tenantId, {
+        orderId: carrierOrder,
+        carrierType: CarrierType.EXTERNAL,
+        carrierName: 'GHN',
+        trackingCode: `GHN-PICKUP-${carrierOrder}`,
+      });
+      await expect(
+        shipments.pickUp(owner, tenantId, carrier.id, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_STATUS_INVALID },
+      });
+    });
+
+    it('refuses an order cancelled while the driver was on the way', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.CANCELLED },
+      });
+      await expect(
+        shipments.pickUp(driver, tenantId, created.id, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STATUS_TRANSITION_INVALID },
+      });
+      const shipment = await prisma.shipment.findUniqueOrThrow({
+        where: { id: created.id },
+      });
+      expect(shipment.status).toBe(ShipmentStatus.CREATED);
+    });
+
+    it('picks up once when confirmed twice at the same moment', async () => {
+      const orderId = await packedOrder();
+      const created = await shipments.create(
+        owner,
+        tenantId,
+        internal(orderId),
+      );
+      const attempts = await Promise.allSettled([
+        shipments.pickUp(driver, tenantId, created.id, {}),
+        shipments.pickUp(owner, tenantId, created.id, {}),
+      ]);
+      expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+      const loser = attempts.find((a) => a.status === 'rejected');
+      expect([
+        ErrorCode.SHIPMENT_STATUS_INVALID,
+        ErrorCode.ORDER_STATUS_CONFLICT,
+      ]).toContain(loser?.reason?.response?.code);
+      const events = await prisma.shipmentEvent.count({
+        where: { shipmentId: created.id, status: ShipmentStatus.PICKED_UP },
+      });
+      expect(events).toBe(1);
     });
   });
 
@@ -599,7 +796,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
 
     it('refuses a permission holder posted somewhere other than the packing location', async () => {
       const orderId = await packedOrder();
-      await shipments.create(owner, tenantId, internal(orderId));
+      await handedOver(orderId);
       await expect(
         shipments.shipOrder(managerAtBranch, tenantId, orderId, {}),
       ).rejects.toMatchObject({
@@ -610,7 +807,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
 
     it('ships: stock and lock both drop by the packed quantity, lines SHIPPED with their cost, shipment IN_TRANSIT', async () => {
       const orderId = await packedOrder(3);
-      await shipments.create(owner, tenantId, internal(orderId));
+      await handedOver(orderId);
       const before = await tableStock();
 
       const shipment = await shipments.shipOrder(
@@ -625,6 +822,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       expect(shipment.status).toBe(ShipmentStatus.IN_TRANSIT);
       expect(shipment.order.status).toBe(OrderStatus.SHIPPING);
       expect(shipment.events.map((e) => e.status)).toEqual([
+        ShipmentStatus.CREATED,
         ShipmentStatus.PICKED_UP,
         ShipmentStatus.IN_TRANSIT,
       ]);
@@ -653,7 +851,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
 
     it('deducts once when the button is pressed twice at the same moment', async () => {
       const orderId = await packedOrder(2);
-      await shipments.create(owner, tenantId, internal(orderId));
+      await handedOver(orderId);
       const before = await tableStock();
 
       const attempts = await Promise.allSettled([
@@ -674,7 +872,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
 
     it('lets the person in charge ship their own order with no permission', async () => {
       const orderId = await packedOrder();
-      await shipments.create(owner, tenantId, internal(orderId));
+      await handedOver(orderId);
       const shipment = await shipments.shipOrder(
         assignee,
         tenantId,
@@ -685,10 +883,10 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     });
   });
 
-  /** Đơn đã đóng gói, đã giao cho shipper `driverId`, đã chuyển Đang vận chuyển. Còn phải thu = 1000 − cọc. */
+  /** Đơn đã đóng gói, đã giao cho shipper `driverId` (shipper đã lấy hàng), đã chuyển Đang vận chuyển. Còn phải thu = 1000 − cọc. */
   async function shippedShipment(inCharge = assigneeId, deposit = 300) {
     const orderId = await packedOrder(1, inCharge, deposit);
-    const created = await shipments.create(owner, tenantId, internal(orderId));
+    const created = await handedOver(orderId);
     await shipments.shipOrder(owner, tenantId, orderId, {});
     return { orderId, shipmentId: created.id };
   }

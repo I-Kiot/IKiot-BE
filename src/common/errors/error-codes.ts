@@ -450,6 +450,8 @@ export const ErrorCode = {
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
   /** Confirming a delivery is for our own shippers only; a third-party carrier's delivery is reported automatically (C-4, later). */
   SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
+  /** The order already has a shipment that has not ended (waiting for pickup or on the road) - hand-over is a one-at-a-time step; reload. Backed by the partial index `shipments_one_open_per_order`. */
+  SHIPMENT_ALREADY_OPEN: 'SHIPMENT_ALREADY_OPEN',
   /** "The customer paid cash instead" needs a QR balance still waiting for its transfer - there is none, or the money has just arrived. */
   ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
