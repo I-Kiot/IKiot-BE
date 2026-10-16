@@ -11,7 +11,11 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { SETTABLE_PRODUCT_STATUSES } from '../../../common/constants/product-status';
-import { CreateProductItemDto, ProductImageDto } from './product-item.dto';
+import {
+  CreateProductItemDto,
+  ProductAttributeDto,
+  ProductImageDto,
+} from './product-item.dto';
 
 /** Ported from CreateProductRequestDTO. `categoryName` is deliberately absent: it is a denormalized copy the server fills in from `categoryId`, and taking it from the client let a product claim a category it wasn't in. */
 export class CreateProductDto {
@@ -43,6 +47,13 @@ export class CreateProductDto {
   @ValidateNested({ each: true })
   @Type(() => ProductImageDto)
   images?: ProductImageDto[];
+
+  /** The product's attributes with their units (2026-10-16). The first SKU's `productDetails` give the values. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductAttributeDto)
+  attributes?: ProductAttributeDto[];
 
   // A product with no variants has no price and nothing sellable, so it is rejected as the old API rejected it.
   @IsArray()

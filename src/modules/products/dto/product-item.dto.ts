@@ -23,7 +23,22 @@ export class ProductImageDto {
   isThumbnail?: boolean;
 }
 
-/** One spec row on a variant ("Màu" / "Đỏ"). `productDetails` in the old API. */
+/** One attribute of a product ("Màu", "Kích thước" in cm). `id` keeps an existing one on update (rename / new unit); without it a new attribute is added. */
+export class ProductAttributeDto {
+  @IsOptional()
+  @IsUUID()
+  id?: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Tên thuộc tính không được để trống' })
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  unit?: string;
+}
+
+/** One spec row on a variant ("Màu" / "Đỏ"). `productDetails` in the old API. The name is matched to the product's attribute of that name (created when new). */
 export class ProductItemDetailDto {
   @IsOptional()
   @IsString()

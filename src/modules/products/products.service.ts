@@ -32,6 +32,11 @@ import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movemen
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { LocationType } from '../../common/constants/location-type';
+import {
+  replaceAttributes,
+  upsertAttributeUnits,
+  writeItemDetails,
+} from './product-attributes';
 
 /** Prefix of auto-allocated product codes (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
@@ -50,7 +55,13 @@ const IMAGES_INCLUDE = {
 const ITEM_INCLUDE = {
   images: IMAGES_INCLUDE,
   details: {
-    select: { id: true, name: true, value: true, position: true },
+    select: {
+      id: true,
+      attributeId: true,
+      name: true,
+      value: true,
+      position: true,
+    },
     orderBy: { position: 'asc' },
   },
   suppliers: {
@@ -141,6 +152,10 @@ export class ProductService {
         select: { id: true },
       });
 
+      // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
+      if (dto.attributes) {
+        await upsertAttributeUnits(tx, tenantId, product.id, dto.attributes);
+      }
       for (const item of items) {
         await this.insertItem(tx, tenantId, product.id, item);
       }
@@ -322,6 +337,10 @@ export class ProductService {
         brand: { select: { id: true, name: true } },
         category: { select: { id: true, name: true } },
         images: IMAGES_INCLUDE,
+        attributes: {
+          select: { id: true, name: true, unit: true, position: true },
+          orderBy: { position: 'asc' },
+        },
       },
     });
     if (!product)
@@ -389,6 +408,10 @@ export class ProductService {
         },
       });
 
+      if (dto.attributes) {
+        await replaceAttributes(tx, tenantId, id, dto.attributes);
+      }
+
       if (dto.images) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         await tx.productImage.createMany({
@@ -409,6 +432,58 @@ export class ProductService {
     });
 
     return this.findOne(tenantId, id, {});
+  }
+
+  /** Thêm một thuộc tính (đứng cuối); trùng tên (không phân biệt hoa thường) thì trả thuộc tính đã có, chỉ cập nhật đơn vị nếu vừa gửi. */
+  async addAttribute(
+    tenantId: string,
+    productId: string,
+    dto: { name: string; unit?: string },
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      select: {
+        id: true,
+        attributes: { select: { id: true, name: true, position: true } },
+      },
+    });
+    if (!product)
+      throw new NotFoundException({
+        code: ErrorCode.PRODUCT_NOT_FOUND,
+        message: 'Product not found',
+      });
+    const name = dto.name.normalize('NFC').trim();
+    const unit = dto.unit?.trim() || null;
+    const select = {
+      id: true,
+      name: true,
+      unit: true,
+      position: true,
+    } as const;
+    const same = product.attributes.find(
+      (attr) =>
+        attr.name.toLocaleLowerCase('vi') === name.toLocaleLowerCase('vi'),
+    );
+    if (same) {
+      return unit
+        ? this.prisma.productAttribute.update({
+            where: { id: same.id },
+            data: { unit },
+            select,
+          })
+        : this.prisma.productAttribute.findUniqueOrThrow({
+            where: { id: same.id },
+            select,
+          });
+    }
+    const position = product.attributes.reduce(
+      (max, attr) => Math.max(max, attr.position + 1),
+      0,
+    );
+    return this.prisma.productAttribute.create({
+      data: { tenantId, productId, name, unit, position },
+      select,
+    });
   }
 
   /** Soft delete to DISCONTINUED - order items, stock movements and inventory all hold a foreign key to this product's variants - refused while stock, an unfinished transfer or an unpaid order still makes the product live. */
@@ -524,7 +599,7 @@ export class ProductService {
   ) {
     const existing = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
-      select: { id: true },
+      select: { id: true, productId: true },
     });
     if (!existing)
       throw new NotFoundException({
@@ -563,17 +638,13 @@ export class ProductService {
         });
       }
       if (dto.productDetails) {
-        await tx.productItemDetail.deleteMany({
-          where: { productItemId: itemId },
-        });
-        await tx.productItemDetail.createMany({
-          data: dto.productDetails.map((detail, position) => ({
-            productItemId: itemId,
-            name: detail.name,
-            value: detail.value,
-            position,
-          })),
-        });
+        await writeItemDetails(
+          tx,
+          tenantId,
+          existing.productId,
+          itemId,
+          dto.productDetails,
+        );
       }
     });
 
@@ -705,19 +776,19 @@ export class ProductService {
         warrantyPeriod: dto.warrantyPeriod,
         vat: dto.vat,
         images: { create: this.imageRows(dto.images) },
-        details: {
-          create: (dto.productDetails ?? []).map((detail, position) => ({
-            name: detail.name,
-            value: detail.value,
-            position,
-          })),
-        },
         suppliers: {
           create: (dto.supplierIds ?? []).map((supplierId) => ({ supplierId })),
         },
       },
       select: { id: true },
     });
+    await writeItemDetails(
+      tx,
+      tenantId,
+      productId,
+      item.id,
+      dto.productDetails ?? [],
+    );
 
     return item.id;
   }

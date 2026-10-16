@@ -61,6 +61,7 @@ import {
   statusAfterReceipt,
   type RuleViolation,
 } from './production-request-rules';
+import { ProductVariantService } from '../products/product-variant.service';
 
 const PERSON_SELECT = {
   select: {
@@ -99,13 +100,21 @@ export const DETAIL_INCLUDE = {
       quantity: true,
       receivedQuantity: true,
       note: true,
+      attachmentUrls: true,
       productItem: {
         select: {
+          productId: true,
           sku: true,
           productName: true,
           costPrice: true,
+          retailPrice: true,
           images: IMAGE_SELECT,
           product: { select: { images: IMAGE_SELECT } },
+          // Thuộc tính của SKU (2026-10-16) - xưởng đọc từ đây là làm bản nào.
+          details: {
+            select: { attributeId: true, name: true, value: true },
+            orderBy: { position: 'asc' },
+          },
         },
       },
       orderItem: {
@@ -114,6 +123,23 @@ export const DETAIL_INCLUDE = {
           orderId: true,
           isCustom: true,
           order: { select: { code: true } },
+          // Thứ khách đặt riêng cho dòng đơn (2026-10-16): xưởng đọc ngay trên YCSX - đổi gì so với mẫu, ảnh, ghi chú.
+          customization: {
+            select: {
+              note: true,
+              attachmentUrls: true,
+              specs: {
+                select: {
+                  attributeId: true,
+                  name: true,
+                  value: true,
+                  unit: true,
+                  baseValue: true,
+                },
+                orderBy: { position: 'asc' },
+              },
+            },
+          },
         },
       },
       // Every receipt is one WORKSHOP import whose lines point back here.
@@ -196,6 +222,7 @@ export class ProductionRequestService {
     private readonly notifications: NotificationService,
     private readonly suppliers: SupplierService,
     private readonly productionList: ProductionListService,
+    private readonly variants: ProductVariantService,
   ) {}
 
   // ─── Reads ─────────────────────────────────────────────────────────────────
@@ -257,7 +284,12 @@ export class ProductionRequestService {
       ImportSource.WORKSHOP,
     );
     await this.requireReceivingLocation(user, tenantId, dto.locationId);
-    const lines = await this.prepareLines(tenantId, dto.items);
+    const lines = await this.applyVariants(
+      user,
+      tenantId,
+      dto.items,
+      await this.prepareLines(tenantId, dto.items),
+    );
 
     const data = {
       tenantId,
@@ -318,7 +350,12 @@ export class ProductionRequestService {
       request.items.map((item) => item.productItemId),
     );
     const lines = dto.items
-      ? await this.prepareLines(tenantId, dto.items, skusAlreadyOnRequest)
+      ? await this.applyVariants(
+          user,
+          tenantId,
+          dto.items,
+          await this.prepareLines(tenantId, dto.items, skusAlreadyOnRequest),
+        )
       : null;
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -358,7 +395,12 @@ export class ProductionRequestService {
     const request = await this.findRow(tenantId, id);
     this.assertCanWrite(user, request);
     this.assertDraft(request);
-    const [line] = await this.prepareLines(tenantId, [dto]);
+    const [line] = await this.applyVariants(
+      user,
+      tenantId,
+      [dto],
+      await this.prepareLines(tenantId, [dto]),
+    );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const guard = await tx.productionRequest.updateMany({
@@ -906,8 +948,49 @@ export class ProductionRequestService {
         quantity: line.quantity,
         orderItemId: line.orderItemId ?? null,
         note: line.note ?? null,
+        attachmentUrls: line.attachmentUrls ?? [],
       };
     });
+  }
+
+  /**
+   * Dòng có đổi thuộc tính hoặc giá (2026-10-16): chuyển dòng sang SKU đúng bộ thuộc tính (`ProductVariantService`),
+   * có thể tạo SKU mới. Chạy sau `prepareLines`, nên SKU gốc đã được kiểm (làm được, đúng loại) trước khi tạo gì.
+   * Dòng làm cho một dòng đơn không được đổi: thứ được làm là do phần chỉnh sửa của dòng đơn quyết định.
+   */
+  private async applyVariants(
+    user: AuthUser,
+    tenantId: string,
+    lines: ProductionRequestLineDto[],
+    prepared: PreparedLine[],
+  ): Promise<PreparedLine[]> {
+    const result: PreparedLine[] = [];
+    for (const [index, line] of lines.entries()) {
+      const changes = line.attributeValues ?? [];
+      if (changes.length === 0 && line.retailPrice === undefined) {
+        result.push(prepared[index]);
+        continue;
+      }
+      if (line.orderItemId) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER,
+          message:
+            "A line made for an order line follows that line's customization; its attributes and price cannot be changed here",
+        });
+      }
+      const resolved = await this.variants.resolve(
+        user,
+        tenantId,
+        line.productItemId,
+        changes,
+        line.retailPrice,
+      );
+      result.push({
+        ...prepared[index],
+        productItemId: resolved.productItemId,
+      });
+    }
+    return result;
   }
 
   /** Where the workshop delivers: a live, sellable location of this shop, and one the actor may act at. */
@@ -1183,8 +1266,17 @@ export class ProductionRequestService {
       items: items.map((line) => ({
         id: line.id,
         productItemId: line.productItemId,
+        productId: line.productItem.productId,
         sku: line.productItem.sku,
         productName: line.productItem.productName,
+        retailPrice: Number(line.productItem.retailPrice),
+        attributes: line.productItem.details.map(
+          ({ attributeId, name, value }) => ({
+            attributeId,
+            name,
+            value,
+          }),
+        ),
         imageUrl: thumbnailOf(
           line.productItem.images,
           line.productItem.product.images,
@@ -1193,12 +1285,14 @@ export class ProductionRequestService {
         receivedQuantity: line.receivedQuantity,
         pendingDeliveryQuantity: pendingByLine.get(line.id) ?? 0,
         note: line.note,
+        attachmentUrls: line.attachmentUrls,
         orderItem: line.orderItem
           ? {
               id: line.orderItem.id,
               orderId: line.orderItem.orderId,
               orderCode: line.orderItem.order.code,
               isCustom: line.orderItem.isCustom,
+              customization: line.orderItem.customization,
             }
           : null,
       })),

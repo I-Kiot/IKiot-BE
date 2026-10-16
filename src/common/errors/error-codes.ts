@@ -468,6 +468,17 @@ export const ErrorCode = {
   // --- Health (2026-10-07) --------------------------------------------------
   /** `GET /health/ready`: the database is unreachable or misses a migration this build ships. */
   SERVICE_NOT_READY: 'SERVICE_NOT_READY',
+
+  // ─── Product attributes & variants from a production request (2026-10-16) ───
+  /** Two attributes of one product share a name. */
+  PRODUCT_ATTRIBUTE_DUPLICATE: 'PRODUCT_ATTRIBUTE_DUPLICATE',
+  /** A changed attribute value names an attribute that is not on the SKU's product. */
+  PRODUCT_ATTRIBUTE_NOT_FOUND: 'PRODUCT_ATTRIBUTE_NOT_FOUND',
+  /** A changed attribute value is blank. */
+  PRODUCT_ATTRIBUTE_VALUE_REQUIRED: 'PRODUCT_ATTRIBUTE_VALUE_REQUIRED',
+  /** A production line made for an order line cannot change attributes or price - the order line's customization decides what is made. */
+  PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER:
+    'PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
