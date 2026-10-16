@@ -244,9 +244,12 @@ model RolePermission {
 
 /// Danh mục quyền cố định do code quy định (seed), tenant chỉ chọn chứ không tạo mới.
 model PermissionCatalog {
-  resource String
-  action   String
-  label    String?
+  resource    String
+  action      String
+  label       String?
+  /// Quyền này mở tính năng gì, viết cho người phân quyền đọc (màn Vai trò hiện dưới ô chọn). Mã
+  /// `resource:action` không đổi được vì `role_permissions` trỏ vào nó, nên nghĩa rõ ràng nằm ở đây.
+  description String?
 
   rolePermissions RolePermission[]
 
