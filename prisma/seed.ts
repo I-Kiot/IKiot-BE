@@ -179,7 +179,15 @@ async function seedPlans() {
   console.log(`Seeded ${PLANS.length} plans.`);
 }
 
-const CATALOG: Record<string, { actions: string[]; label: string }> = {
+/**
+ * `descriptions` (2026-10-16): quyền này mở tính năng gì, hiện dưới ô chọn ở màn Vai trò. Mã
+ * `resource:action` không đổi được - `role_permissions` trỏ vào nó - nên khi tên một quyền khó hiểu,
+ * sửa mô tả ở đây chứ không đổi mã.
+ */
+const CATALOG: Record<
+  string,
+  { actions: string[]; label: string; descriptions?: Record<string, string> }
+> = {
   users: {
     actions: [
       'create',
@@ -257,6 +265,10 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'confirm_cash',
     ],
     label: 'Đơn hàng',
+    descriptions: {
+      // Người phụ trách đơn KHÔNG được miễn ở bước này (ASSIGNEE_MAY_SHIP, order-handler.ts) - chờ khách xác nhận.
+      ship: 'Bấm "Bắt đầu vận chuyển" ở đơn hàng (Đã lấy hàng → Đang vận chuyển), tức xác nhận hàng đã giao cho ĐVVC: trừ tồn kho và gỡ phần hàng đang giữ cho đơn. Chỉ làm được tại kho xuất mình được phân công. Người phụ trách đơn cũng cần quyền này.',
+    },
   },
   inventory: {
     // 'create'/'delete' added for the NestJS port.
@@ -385,8 +397,13 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
 
 async function main() {
   const rows = Object.entries(CATALOG).flatMap(
-    ([resource, { actions, label }]) =>
-      actions.map((action) => ({ resource, action, label })),
+    ([resource, { actions, label, descriptions }]) =>
+      actions.map((action) => ({
+        resource,
+        action,
+        label,
+        description: descriptions?.[action] ?? null,
+      })),
   );
 
   for (const row of rows) {
@@ -394,7 +411,7 @@ async function main() {
       where: {
         resource_action: { resource: row.resource, action: row.action },
       },
-      update: { label: row.label },
+      update: { label: row.label, description: row.description },
       create: row,
     });
   }

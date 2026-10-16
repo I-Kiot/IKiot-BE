@@ -3,6 +3,7 @@ import { SystemRole } from '../../common/constants/system-role';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import {
+  ASSIGNEE_MAY_SHIP,
   assertOrderStepAccess,
   assigneeClaim,
   orderStepAccess,
@@ -46,8 +47,24 @@ describe('orderStepAccess', () => {
   it("lets the order's person in charge act without the permission, at any location", () => {
     const assignee = { ...staff([], 'assignee-1'), warehouseId: OTHER };
     expect(
-      orderStepAccess(assignee, order, OrderStepPermission.SHIP, WAREHOUSE),
+      orderStepAccess(assignee, order, OrderStepPermission.PACK, WAREHOUSE),
     ).toBe('ASSIGNEE');
+  });
+
+  it('makes the person in charge hold orders:ship to confirm the hand-over to the carrier (ASSIGNEE_MAY_SHIP off)', () => {
+    expect(ASSIGNEE_MAY_SHIP).toBe(false);
+    const assignee = staff([], 'assignee-1');
+    expect(
+      orderStepAccess(assignee, order, OrderStepPermission.SHIP, WAREHOUSE),
+    ).toBeNull();
+    expect(
+      orderStepAccess(
+        staff(['orders:ship'], 'assignee-1'),
+        order,
+        OrderStepPermission.SHIP,
+        WAREHOUSE,
+      ),
+    ).toBe('PERMISSION');
   });
 
   it('lets a permission holder act at the location they are posted to', () => {

@@ -870,16 +870,15 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       });
     });
 
-    it('lets the person in charge ship their own order with no permission', async () => {
+    it('refuses the person in charge without orders:ship - the step deducts stock (ASSIGNEE_MAY_SHIP off)', async () => {
       const orderId = await packedOrder();
       await handedOver(orderId);
-      const shipment = await shipments.shipOrder(
-        assignee,
-        tenantId,
-        orderId,
-        {},
-      );
-      expect(shipment.order.status).toBe(OrderStatus.SHIPPING);
+      await expect(
+        shipments.shipOrder(assignee, tenantId, orderId, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_STEP_DENIED },
+      });
+      expect(await statusOf(orderId)).toBe(OrderStatus.PICKED_UP);
     });
   });
 
