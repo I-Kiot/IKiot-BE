@@ -116,6 +116,7 @@ model Tenant {
   vouchers                Voucher[]
   voucherCodes            VoucherCode[]
   invoices                Invoice[]
+  productAttributes       ProductAttribute[]
 
   @@map("tenants")
 }
@@ -606,8 +607,31 @@ model Product {
 
   images       ProductImage[]
   productItems ProductItem[]
+  attributes   ProductAttribute[]
 
   @@map("products")
+}
+
+/// Thuộc tính của sản phẩm (Màu, Chất liệu, Kích thước...) - định nghĩa một lần ở sản phẩm, mỗi SKU chỉ giữ
+/// giá trị (`ProductItemDetail.attributeId`). Thêm 2026-10-16: trước đó tên thuộc tính gõ tự do trên từng SKU,
+/// nên không biết một SKU khác SKU kia ở thuộc tính nào - cần cho YCSX đổi thuộc tính / tạo SKU mới.
+model ProductAttribute {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  productId String   @map("product_id")
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name      String
+  unit      String? // đơn vị của giá trị: cm, kg, ... (bỏ trống với thuộc tính chữ như Màu)
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  values     ProductItemDetail[]
+  orderSpecs OrderItemSpec[]
+
+  @@unique([productId, name])
+  @@index([tenantId])
+  @@map("product_attributes")
 }
 
 /// Ảnh của sản phẩm.
@@ -691,13 +715,17 @@ model ProductItemSupplier {
 
 /// Thuộc tính của phiên bản (Màu, Kích thước...), để hiển thị.
 model ProductItemDetail {
-  id            String      @id @default(uuid())
-  productItemId String      @map("product_item_id")
-  productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
-  name          String?
+  id            String            @id @default(uuid())
+  productItemId String            @map("product_item_id")
+  productItem   ProductItem       @relation(fields: [productItemId], references: [id], onDelete: Cascade)
+  /// Thuộc tính của sản phẩm mà giá trị này thuộc về. Null = dòng ghi tự do (vd. thông số riêng của SKU custom).
+  attributeId   String?           @map("attribute_id")
+  attribute     ProductAttribute? @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  name          String? // bản sao tên thuộc tính
   value         String?
-  position      Int         @default(0)
+  position      Int               @default(0)
 
+  @@index([attributeId])
   @@map("product_item_details")
 }
 
@@ -1321,6 +1349,8 @@ model ProductionRequestItem {
   quantity            Int // số đặt xưởng
   receivedQuantity    Int               @default(0) @map("received_quantity") // số đã nhận
   note                String?
+  /// Ảnh gửi xưởng (bản thiết kế, ảnh mẫu), đã tải qua POST /uploads (2026-10-16).
+  attachmentUrls      String[]          @default([]) @map("attachment_urls")
 
   importLines   StockMovementRequestItem[]
   deliveryLines ProductionDeliveryItem[]
@@ -1414,6 +1444,11 @@ model OrderItemSpec {
   id              String                 @id @default(uuid())
   customizationId String                 @map("customization_id")
   customization   OrderItemCustomization @relation(fields: [customizationId], references: [id], onDelete: Cascade)
+  /// Thuộc tính của sản phẩm mà khách đổi (2026-10-16). Null = thông số ghi tự do.
+  attributeId     String?                @map("attribute_id")
+  attribute       ProductAttribute?      @relation(fields: [attributeId], references: [id], onDelete: SetNull)
+  /// Giá trị của SKU mẫu lúc khách đặt - để biết đổi gì so với bản gốc.
+  baseValue       String?                @map("base_value")
   name            String
   value           String
   unit            String?

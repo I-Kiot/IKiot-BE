@@ -13,7 +13,10 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ProductService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { CreateProductItemDto } from './dto/product-item.dto';
+import {
+  CreateProductItemDto,
+  ProductAttributeDto,
+} from './dto/product-item.dto';
 import { UpdateProductItemDto } from './dto/update-product-item.dto';
 import { AddSupplierToItemDto } from './dto/add-supplier.dto';
 import {
@@ -80,6 +83,17 @@ export class ProductController {
     @Body() dto: UpdateProductDto,
   ) {
     return this.service.update(requireTenantId(user), id, dto);
+  }
+
+  /** Thêm một thuộc tính cho sản phẩm (nút "Thêm thuộc tính" ở màn chỉnh sửa theo đơn và YCSX). Trùng tên thì trả thuộc tính đã có. */
+  @Permissions('products', 'update')
+  @Post(':id/attributes')
+  addAttribute(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ProductAttributeDto,
+  ) {
+    return this.service.addAttribute(requireTenantId(user), id, dto);
   }
 
   /** Soft delete - sets status to DISCONTINUED. See ProductService.discontinue. */

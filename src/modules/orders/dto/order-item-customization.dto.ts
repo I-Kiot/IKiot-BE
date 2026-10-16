@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -14,8 +15,12 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** One free-form measurement or option agreed with the customer ("Chiều cao lưng tựa: 95 cm"). */
+/** One measurement or option agreed with the customer ("Chiều cao lưng tựa: 95 cm"). With `attributeId` it changes that attribute of the product (2026-10-16); without, it is a free-form note. */
 export class OrderItemSpecDto {
+  @IsOptional()
+  @IsUUID()
+  attributeId?: string;
+
   @IsString()
   @IsNotEmpty({ message: 'Tên thông số không được để trống' })
   @Transform(trim)

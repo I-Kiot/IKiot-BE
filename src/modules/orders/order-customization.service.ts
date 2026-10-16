@@ -46,14 +46,23 @@ type CustomizationFields = {
   material?: string | null;
   color?: string | null;
   fabricCode?: string | null;
-  specs?: readonly { name: string; value: string; unit?: string | null }[];
+  specs?: readonly {
+    name: string;
+    value: string;
+    unit?: string | null;
+    attributeId?: string | null;
+  }[];
 };
 
 /** The product details a customization writes: its named fields, then each spec (value and unit together). */
 export function customizationDetails(
   dto: CustomizationFields,
-): { name: string; value: string }[] {
-  const details: { name: string; value: string }[] = [];
+): { name: string; value: string; attributeId?: string | null }[] {
+  const details: {
+    name: string;
+    value: string;
+    attributeId?: string | null;
+  }[] = [];
   for (const key of Object.keys(
     DETAIL_LABELS,
   ) as (keyof typeof DETAIL_LABELS)[]) {
@@ -61,10 +70,15 @@ export function customizationDetails(
     if (value) details.push({ name: DETAIL_LABELS[key], value });
   }
   for (const spec of dto.specs ?? []) {
-    details.push({
-      name: spec.name,
-      value: spec.unit ? `${spec.value} ${spec.unit}` : spec.value,
-    });
+    // Giá trị của một thuộc tính đứng riêng - đơn vị là của thuộc tính, không gộp vào chuỗi.
+    details.push(
+      spec.attributeId
+        ? { name: spec.name, value: spec.value, attributeId: spec.attributeId }
+        : {
+            name: spec.name,
+            value: spec.unit ? `${spec.value} ${spec.unit}` : spec.value,
+          },
+    );
   }
   return details;
 }
@@ -216,9 +230,20 @@ export class OrderCustomizationService {
     };
     const details = customizationDetails(dto);
     const urls = dto.attachmentUrls ?? [];
+    const changedAttributeIds = (dto.specs ?? [])
+      .map((spec) => spec.attributeId)
+      .filter((id): id is string => !!id);
+    const baseValues = await this.baseAttributeValues(
+      tx,
+      item,
+      line,
+      previous,
+      changedAttributeIds,
+    );
 
     if (!line.isCustom) {
       const replaced = new Set(ownedDetailNames(dto));
+      const replacedAttributes = new Set(changedAttributeIds);
       const kept = await tx.productItemDetail.findMany({
         where: { productItemId: item.id },
         orderBy: { position: 'asc' },
@@ -249,8 +274,16 @@ export class OrderCustomizationService {
           details: {
             create: [
               ...kept
-                .filter((d) => !d.name || !replaced.has(d.name))
-                .map(({ name, value }) => ({ name, value })),
+                .filter(
+                  (d) =>
+                    (!d.name || !replaced.has(d.name)) &&
+                    !(d.attributeId && replacedAttributes.has(d.attributeId)),
+                )
+                .map(({ name, value, attributeId }) => ({
+                  name,
+                  value,
+                  attributeId,
+                })),
               ...details,
             ].map((detail, position) => ({ ...detail, position })),
           },
@@ -295,7 +328,13 @@ export class OrderCustomizationService {
         ...ownedDetailNames(dto),
       ]);
       await tx.productItemDetail.deleteMany({
-        where: { productItemId: item.id, name: { in: [...stale] } },
+        where: {
+          productItemId: item.id,
+          OR: [
+            { name: { in: [...stale] } },
+            { attributeId: { in: changedAttributeIds } },
+          ],
+        },
       });
       const position = await tx.productItemDetail.count({
         where: { productItemId: item.id },
@@ -347,6 +386,10 @@ export class OrderCustomizationService {
       name: spec.name,
       value: spec.value,
       unit: spec.unit ?? null,
+      attributeId: spec.attributeId ?? null,
+      baseValue: spec.attributeId
+        ? (baseValues.get(spec.attributeId) ?? null)
+        : null,
       position,
     }));
     await tx.orderItemCustomization.upsert({
@@ -359,6 +402,54 @@ export class OrderCustomizationService {
       },
       update: { ...fields, specs: { deleteMany: {}, create: specs } },
     });
+  }
+
+  /**
+   * Giá trị gốc của từng thuộc tính khách đổi (2026-10-16), để lưu "đổi gì so với bản mẫu". Lần đầu đọc từ SKU mẫu;
+   * dòng đã có SKU custom thì giữ giá trị gốc đã chụp lần trước (SKU custom đã mang giá trị khách đổi). Thuộc tính
+   * không thuộc sản phẩm của dòng là lỗi.
+   */
+  private async baseAttributeValues(
+    tx: Prisma.TransactionClient,
+    item: { id: string; productId: string },
+    line: CustomizableLine,
+    previous: {
+      specs: { attributeId: string | null; baseValue: string | null }[];
+    } | null,
+    attributeIds: string[],
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (attributeIds.length === 0) return result;
+    const known = await tx.productAttribute.count({
+      where: { id: { in: attributeIds }, productId: item.productId },
+    });
+    if (known !== new Set(attributeIds).size) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_ATTRIBUTE_NOT_FOUND,
+        message: 'A changed attribute is not on this product',
+      });
+    }
+    if (line.isCustom) {
+      for (const spec of previous?.specs ?? []) {
+        if (spec.attributeId && spec.baseValue != null) {
+          result.set(spec.attributeId, spec.baseValue);
+        }
+      }
+    }
+    const details = await tx.productItemDetail.findMany({
+      where: { productItemId: item.id, attributeId: { in: attributeIds } },
+      select: { attributeId: true, value: true },
+    });
+    for (const detail of details) {
+      if (
+        detail.attributeId &&
+        !result.has(detail.attributeId) &&
+        detail.value
+      ) {
+        result.set(detail.attributeId, detail.value);
+      }
+    }
+    return result;
   }
 
   /** What a sent production request asked the workshop for can no longer change. */

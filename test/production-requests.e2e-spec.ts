@@ -698,4 +698,108 @@ describe('production list, production requests and workshop receipts', () => {
       await prisma.productionRequest.count({ where: { id: draft.id } }),
     ).toBe(0);
   });
+  describe('attributes changed on a line (2026-10-16)', () => {
+    let colorId: string;
+
+    beforeAll(async () => {
+      const color = await prisma.productAttribute.create({
+        data: { tenantId, productId, name: 'Màu', position: 0 },
+      });
+      colorId = color.id;
+      await prisma.productItemDetail.create({
+        data: {
+          productItemId: cabinetId,
+          attributeId: colorId,
+          name: 'Màu',
+          value: 'Óc chó',
+        },
+      });
+    });
+
+    it('moves the line to a new SKU copied from the base, priced as ticked, base untouched', async () => {
+      const created = await requests.create(owner, {
+        supplierId: workshopId,
+        locationId: branchId,
+        items: [
+          {
+            productItemId: cabinetId,
+            quantity: 1,
+            attributeValues: [{ attributeId: colorId, value: 'Trắng' }],
+            retailPrice: 6000,
+          },
+        ],
+      });
+      const [line] = created.items;
+      expect(line.productItemId).not.toBe(cabinetId);
+      expect(line.sku).toBe(`PR-${cabinetId}-V1`);
+      expect(line.retailPrice).toBe(6000);
+      expect(line.attributes).toEqual([
+        { attributeId: colorId, name: 'Màu', value: 'Trắng' },
+      ]);
+      const variant = await prisma.productItem.findUniqueOrThrow({
+        where: { id: line.productItemId },
+      });
+      expect(Number(variant.costPrice)).toBe(1000);
+      const base = await prisma.productItem.findUniqueOrThrow({
+        where: { id: cabinetId },
+      });
+      expect(Number(base.retailPrice)).toBe(5000);
+    });
+
+    it('reuses the SKU that already carries those values (case and Unicode form do not matter)', async () => {
+      const before = await prisma.productItem.count({ where: { productId } });
+      const created = await requests.create(owner, {
+        supplierId: workshopId,
+        locationId: branchId,
+        items: [
+          {
+            productItemId: cabinetId,
+            quantity: 1,
+            attributeValues: [{ attributeId: colorId, value: 'trắng' }],
+          },
+        ],
+      });
+      expect(created.items[0].sku).toBe(`PR-${cabinetId}-V1`);
+      expect(await prisma.productItem.count({ where: { productId } })).toBe(
+        before,
+      );
+    });
+
+    it('refuses to create a SKU for someone without products:create', async () => {
+      expect(
+        await codeOf(
+          requests.create(warehouseStaff, {
+            supplierId: workshopId,
+            locationId: warehouseId,
+            items: [
+              {
+                productItemId: cabinetId,
+                quantity: 1,
+                attributeValues: [{ attributeId: colorId, value: 'Đen' }],
+              },
+            ],
+          }),
+        ),
+      ).toBe(ErrorCode.PERMISSION_DENIED);
+    });
+
+    it('refuses attribute changes on a line made for an order line', async () => {
+      expect(
+        await codeOf(
+          requests.create(owner, {
+            supplierId: workshopId,
+            locationId: branchId,
+            items: [
+              {
+                productItemId: cabinetId,
+                quantity: 1,
+                orderItemId,
+                attributeValues: [{ attributeId: colorId, value: 'Đen' }],
+              },
+            ],
+          }),
+        ),
+      ).toBe(ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER);
+    });
+  });
 });

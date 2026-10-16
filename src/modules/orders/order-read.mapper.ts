@@ -155,11 +155,15 @@ function toCustomization(customization: DetailLineRow['customization']) {
     fabricCode: customization.fabricCode,
     note: customization.note,
     attachmentUrls: customization.attachmentUrls,
-    specs: customization.specs.map(({ name, value, unit }) => ({
-      name,
-      value,
-      unit,
-    })),
+    specs: customization.specs.map(
+      ({ name, value, unit, attributeId, baseValue }) => ({
+        name,
+        value,
+        unit,
+        attributeId,
+        baseValue,
+      }),
+    ),
   };
 }
 

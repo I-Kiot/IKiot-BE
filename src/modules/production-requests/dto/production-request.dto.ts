@@ -3,6 +3,8 @@ import { Transform, Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
+  IsUrl,
+  ArrayMaxSize,
   IsBoolean,
   IsIn,
   IsInt,
@@ -26,6 +28,15 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
+/** An attribute of the SKU's product set to a different value on a production line. */
+export class ProductionLineAttributeDto {
+  @IsUUID()
+  attributeId: string;
+
+  @IsString()
+  value: string;
+}
+
 /** One line of a production request: a SKU and how many to have made. `orderItemId` ties the line to the order line it is made for - required in practice for a custom piece (the production list hands it over), optional for standard stock. */
 export class ProductionRequestLineDto {
   @IsUUID()
@@ -43,6 +54,27 @@ export class ProductionRequestLineDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  /** Attributes changed from the SKU's own (2026-10-16). The line is then for the SKU carrying exactly those values - an existing sibling, or a new one copied from this SKU. Not allowed on a line made for an order line. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductionLineAttributeDto)
+  attributeValues?: ProductionLineAttributeDto[];
+
+  /** Images for the workshop - a design drawing, a sample photo - already uploaded through `POST /uploads` (2026-10-16). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUrl({ require_tld: false }, { each: true })
+  attachmentUrls?: string[];
+
+  /** Sent only when the user ticked "update the price": the resulting SKU's retail price becomes this. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0, { message: 'Giá bán không được âm' })
+  retailPrice?: number;
 }
 
 /** `code`, `status`, `sentAt`, `createdBy` and every received figure are the server's (coding rule 4). */

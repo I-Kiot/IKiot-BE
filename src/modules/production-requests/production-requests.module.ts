@@ -13,10 +13,11 @@ import { ProductionDeliveryService } from './production-deliveries.service';
 import { InventoryModule } from '../inventories/inventories.module';
 import { NotificationModule } from '../notifications/notifications.module';
 import { SupplierModule } from '../suppliers/suppliers.module';
+import { ProductModule } from '../products/products.module';
 
 @Module({
   // InventoryModule for `openLot` (receiving), SupplierModule for the workshop's payables, NotificationModule for the shortage / goods-arrived / delivery messages.
-  imports: [InventoryModule, NotificationModule, SupplierModule],
+  imports: [InventoryModule, NotificationModule, SupplierModule, ProductModule],
   controllers: [
     ProductionRequestController,
     ProductionListController,
