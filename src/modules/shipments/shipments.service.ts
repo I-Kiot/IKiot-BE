@@ -19,7 +19,9 @@ import {
 } from '../orders/order-handler';
 import {
   loadShipmentDetail,
+  localDayWindow,
   PERSON_SELECT,
+  shipmentSearchWhere,
   SHIPMENT_SUMMARY_INCLUDE,
   toSummary,
 } from './shipment-view';
@@ -30,7 +32,6 @@ import {
   trackingActorAccess,
   type ShipmentActorAccess,
 } from './shipment-actor';
-import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { PickUpShipmentDto } from './dto/pick-up-shipment.dto';
 import { ChangeDriverDto } from './dto/change-driver.dto';
@@ -56,7 +57,6 @@ import {
 } from '../../common/constants/inventory-ledger';
 import { SystemRole } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
-import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { can } from '../../common/utils/permission';
 import { paginate } from '../../common/utils/pagination';
@@ -688,7 +688,7 @@ export class ShipmentService {
           ...(query.driverId ? { driverId: query.driverId } : {}),
           ...createdWithin(query.from, query.to),
         },
-        query.search ? searchWhere(query.search) : {},
+        query.search ? shipmentSearchWhere(query.search) : {},
       ],
     };
     const [total, rows] = await Promise.all([
@@ -899,26 +899,6 @@ function createdWithin(
   from: string | undefined,
   to: string | undefined,
 ): Prisma.ShipmentWhereInput {
-  if (!from && !to) return {};
-  const day = (value: string) =>
-    businessDayRange(new Date(`${value}T00:00:00Z`), VIETNAM_TIMEZONE);
-  return {
-    createdAt: {
-      ...(from ? { gte: day(from).start } : {}),
-      ...(to ? { lt: day(to).end } : {}),
-    },
-  };
-}
-
-/** Tìm theo mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
-function searchWhere(search: string): Prisma.ShipmentWhereInput {
-  const contains = { contains: search, mode: 'insensitive' as const };
-  return {
-    OR: [
-      { order: { code: contains } },
-      { trackingCode: contains },
-      { recipientName: contains },
-      { recipientPhone: contains },
-    ],
-  };
+  const window = localDayWindow(from, to);
+  return window ? { createdAt: window } : {};
 }

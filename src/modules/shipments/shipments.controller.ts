@@ -19,6 +19,7 @@ import { QueryShipmentDto } from './dto/query-shipment.dto';
 import { AddShipmentEventDto } from './dto/add-shipment-event.dto';
 import { FailShipmentDto } from './dto/fail-shipment.dto';
 import { QueryDriversDto } from './dto/query-drivers.dto';
+import { QueryMyHistoryDto } from './dto/query-my-history.dto';
 import { DeliverShipmentDto } from './dto/deliver-shipment.dto';
 import { PayCashDto } from './dto/pay-cash.dto';
 import { ShipmentDeliveryService } from './shipment-delivery.service';
@@ -64,6 +65,15 @@ export class ShipmentController {
   @Get('mine')
   listMine(@CurrentUser() user: AuthUser) {
     return this.delivery.listMine(user, requireTenantId(user));
+  }
+
+  /** Lịch sử giao của tôi: mọi trạng thái, lọc theo ngày giao, kèm số liệu từng trạng thái và tiền đã thu. Phải khai báo TRÊN `GET :id`. */
+  @Get('mine/history')
+  listMyHistory(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryMyHistoryDto,
+  ) {
+    return this.delivery.listMyHistory(user, requireTenantId(user), query);
   }
 
   /** Shipper xác nhận đã lấy hàng (chốt 2026-10-15): shipment CREATED → PICKED_UP, đơn PACKED → PICKED_UP. Shipper, người phụ trách đơn, chủ shop. */
