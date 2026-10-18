@@ -7,6 +7,8 @@ import {
 } from '../../common/constants/payment-method';
 import { withNestedProfile } from '../../common/utils/user-profile';
 import { buildSepayQrUrl } from '../orders/tenant-banking';
+import { businessDayRange } from '../cash-drawer-sessions/business-date';
+import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 
 // Lần giao trả về cho client theo đúng hình dạng `Shipment` của contract §4. Dùng chung cho
 // ShipmentService (lấy hàng, đổi shipper, ship, xem, nhật trình) và ShipmentDeliveryService (giao xong,
@@ -140,5 +142,36 @@ export async function loadShipmentDetail(
       createdBy: createdBy ? withNestedProfile(createdBy) : null,
     })),
     payment,
+  };
+}
+
+/**
+ * `from` / `to` (YYYY-MM-DD) as a half-open instant window in Vietnam time, whole days: a row stamped
+ * 23:30 belongs to that day and is not pushed to the next. One definition, used by the list and by the
+ * shipper's history, so the two cannot disagree about where a day ends.
+ */
+export function localDayWindow(
+  from: string | undefined,
+  to: string | undefined,
+): { gte?: Date; lt?: Date } | undefined {
+  if (!from && !to) return undefined;
+  const day = (value: string) =>
+    businessDayRange(new Date(`${value}T00:00:00Z`), VIETNAM_TIMEZONE);
+  return {
+    ...(from ? { gte: day(from).start } : {}),
+    ...(to ? { lt: day(to).end } : {}),
+  };
+}
+
+/** Tìm theo mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
+export function shipmentSearchWhere(search: string): Prisma.ShipmentWhereInput {
+  const contains = { contains: search, mode: 'insensitive' as const };
+  return {
+    OR: [
+      { order: { code: contains } },
+      { trackingCode: contains },
+      { recipientName: contains },
+      { recipientPhone: contains },
+    ],
   };
 }
