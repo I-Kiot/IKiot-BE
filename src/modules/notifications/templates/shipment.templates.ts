@@ -20,11 +20,11 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
-  /** Báo người phụ trách đơn: giao không thành, hàng phải đi đường hoàn hàng. */
+  /** Báo người phụ trách đơn và chủ shop: giao không thành. Hàng còn ở shipper - giao lại được, hoặc xác nhận hàng đã hoàn về shop. */
   failed: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_FAILED',
     title: 'Giao hàng không thành',
-    description: `Đơn ${orderCode} giao không thành, cần tạo phiếu hoàn hàng.`,
+    description: `Đơn ${orderCode} giao không thành, hàng chưa về shop. Shipper có thể giao lại; khi hàng đã hoàn về, hãy xác nhận trong chi tiết đơn.`,
     link: link(shipmentId),
   }),
 };
