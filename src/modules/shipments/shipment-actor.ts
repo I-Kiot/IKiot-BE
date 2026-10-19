@@ -18,6 +18,9 @@ import {
 export const ON_THE_ROAD_STATUSES: readonly string[] = [
   ShipmentStatus.IN_TRANSIT,
   ShipmentStatus.OUT_FOR_DELIVERY,
+  // A failed attempt is still on the road: the goods have not come back, so the shipper may log a new
+  // attempt or deliver after all. Only the shop confirming the return ends it.
+  ShipmentStatus.FAILED,
 ];
 
 /** Vì sao người gọi được thao tác: như các bước của đơn, cộng thêm "là shipper của lần giao này". */

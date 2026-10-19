@@ -16,10 +16,13 @@ export type ShipmentStatus =
 export const SHIPMENT_STATUSES: readonly string[] =
   Object.values(ShipmentStatus);
 
-/** Nothing moves a shipment out of these. */
+/**
+ * Nothing moves a shipment out of these. FAILED is deliberately not here: a failed attempt leaves the goods
+ * with the shipper, who may try again (-> DELIVERED) until someone confirms they are back at the shop
+ * (-> RETURNED, `OrderReturnService.confirmFailedDelivery`).
+ */
 export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.DELIVERED,
-  ShipmentStatus.FAILED,
   ShipmentStatus.RETURNED,
   ShipmentStatus.CANCELLED,
 ];

@@ -746,7 +746,11 @@ export class ShipmentService {
     return this.findDetail(tenantId, id);
   }
 
-  /** POST /shipments/:id/fail: shipment → FAILED, đơn giữ SHIPPING (hàng đã rời kho, quay về qua phiếu hoàn hàng DELIVERY_FAILED). */
+  /**
+   * POST /shipments/:id/fail: shipment → FAILED, đơn giữ SHIPPING. Hàng chưa về shop nên shipper vẫn giao lại
+   * được (`deliver` nhận cả FAILED); chỉ khi người phụ trách / người xem được đơn xác nhận hàng đã về
+   * (`POST /order-returns/confirm-failed-delivery`) thì shipment → RETURNED và đơn → RETURNED.
+   */
   async fail(
     user: AuthUser,
     tenantId: string,
@@ -754,10 +758,20 @@ export class ShipmentService {
     dto: FailShipmentDto,
   ) {
     const shipment = await this.loadOnTheRoad(user, tenantId, id);
-    await this.prisma.$transaction(async (tx) => {
-      await this.claimOnTheRoad(tx, shipment, user, {
-        status: ShipmentStatus.FAILED,
+    if (shipment.status === ShipmentStatus.FAILED) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_STATUS_INVALID,
+        message: 'This delivery is already reported as failed',
       });
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.claimOnTheRoad(
+        tx,
+        shipment,
+        user,
+        { status: ShipmentStatus.FAILED },
+        [ShipmentStatus.IN_TRANSIT, ShipmentStatus.OUT_FOR_DELIVERY],
+      );
       await tx.shipmentEvent.create({
         data: {
           shipmentId: id,
@@ -769,12 +783,16 @@ export class ShipmentService {
       });
     });
 
-    // Sau commit: người phụ trách là người lo phiếu hoàn hàng. Tự báo thất bại thì không tự báo cho mình.
+    // Sau commit: người phụ trách và chủ shop cùng biết (một người nhận hai lần thì gộp), trừ chính người báo.
     const { assigneeId, code } = shipment.order;
-    if (assigneeId && assigneeId !== user.userId) {
+    const owners = await this.notifications.tenantOwners(tenantId);
+    const recipientIds = [
+      ...new Set([...(assigneeId ? [assigneeId] : []), ...owners]),
+    ].filter((recipient) => recipient !== user.userId);
+    if (recipientIds.length > 0) {
       await this.notifications.notify({
         tenantId,
-        recipientIds: [assigneeId],
+        recipientIds,
         referenceId: id,
         ...ShipmentNotificationTemplates.failed(id, code),
       });
@@ -855,9 +873,14 @@ export class ShipmentService {
     shipment: { id: string; access: ShipmentActorAccess },
     user: AuthUser,
     data: { status: string },
+    /** Narrow "on the road" further, e.g. a failure may not be reported twice. */
+    from?: readonly string[],
   ) {
     const updated = await tx.shipment.updateMany({
-      where: onTheRoadWhere(shipment.id, shipment.access, user),
+      where: {
+        ...onTheRoadWhere(shipment.id, shipment.access, user),
+        ...(from ? { status: { in: [...from] } } : {}),
+      },
       data,
     });
     if (updated.count !== 1) {

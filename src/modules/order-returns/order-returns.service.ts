@@ -11,6 +11,7 @@ import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from '../orders/orders.service';
 import { canTransition } from '../orders/order-status';
 import {
+  ConfirmFailedDeliveryDto,
   CreateOrderReturnDto,
   InspectOrderReturnDto,
   QueryOrderReturnDto,
@@ -20,6 +21,7 @@ import {
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
+import { ShipmentStatus } from '../../common/constants/shipment-status';
 import {
   OrderReturnStatus,
   ReturnCondition,
@@ -188,7 +190,13 @@ export class OrderReturnService {
   }
 
   /** `POST /order-returns`: `REQUESTED`, stock untouched. */
-  async create(user: AuthUser, tenantId: string, dto: CreateOrderReturnDto) {
+  async create(
+    user: AuthUser,
+    tenantId: string,
+    dto: CreateOrderReturnDto,
+    /** Set by callers that have already decided who may open the return (`confirmFailedDelivery`). */
+    options: { skipPermission?: boolean } = {},
+  ) {
     const order = await this.prisma.order.findFirst({
       where: { id: dto.orderId, tenantId },
       include: {
@@ -217,7 +225,11 @@ export class OrderReturnService {
         message: 'This order does not belong to your branch',
       });
     }
-    if (!can(user, 'returns', 'create') && order.assigneeId !== user.userId) {
+    if (
+      !options.skipPermission &&
+      !can(user, 'returns', 'create') &&
+      order.assigneeId !== user.userId
+    ) {
       throw new ForbiddenException({
         code: ErrorCode.ORDER_RETURN_DENIED,
         message:
@@ -323,6 +335,151 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, id);
   }
 
+  /**
+   * `POST /order-returns/confirm-failed-delivery`: the goods of a failed delivery are back at the shop.
+   * One click opens a DELIVERY_FAILED return for every line still out, receives it and inspects it, so the
+   * stock goes back, the order becomes RETURNED and the shipment RETURNED in one transaction. Until then a
+   * failed shipment is still on the road (the shipper may retry), which is why none of this happens on `fail`.
+   * Lines come back GOOD to where they shipped from unless `items` says otherwise.
+   */
+  async confirmFailedDelivery(
+    user: AuthUser,
+    tenantId: string,
+    dto: ConfirmFailedDeliveryDto,
+  ) {
+    const shipment = await this.prisma.shipment.findFirst({
+      where: { id: dto.shipmentId, tenantId },
+      select: {
+        id: true,
+        status: true,
+        order: {
+          select: {
+            id: true,
+            branchId: true,
+            assigneeId: true,
+            status: true,
+            items: {
+              select: {
+                id: true,
+                status: true,
+                lineType: true,
+                quantity: true,
+                returnedQuantity: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!shipment)
+      throw new NotFoundException({
+        code: ErrorCode.SHIPMENT_NOT_FOUND,
+        message: 'Shipment not found',
+      });
+    const { order } = shipment;
+    const scope = this.orders.branchScope(user);
+    if (scope.branchId !== undefined && order.branchId !== scope.branchId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_BRANCH_DENIED,
+        message: 'This order does not belong to your branch',
+      });
+    }
+    if (!can(user, 'orders', 'read') && order.assigneeId !== user.userId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_RETURN_DENIED,
+        message:
+          'Only the order’s person in charge or someone who can view the order can confirm the goods are back',
+      });
+    }
+    if (
+      shipment.status !== ShipmentStatus.FAILED ||
+      order.status !== OrderStatus.SHIPPING
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.SHIPMENT_STATUS_INVALID,
+        message: `Only a failed delivery of a SHIPPING order can be confirmed returned (shipment ${shipment.status}, order ${order.status})`,
+      });
+    }
+
+    const lines = order.items
+      .filter(
+        (item) =>
+          item.status === OrderItemStatus.SHIPPED &&
+          STOCKED_LINE_TYPES.includes(item.lineType) &&
+          item.quantity - item.returnedQuantity > 0,
+      )
+      .map((item) => ({
+        orderItemId: item.id,
+        quantity: item.quantity - item.returnedQuantity,
+      }));
+    if (lines.length === 0) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_RETURN_ORDER_NOT_RETURNABLE,
+        message: 'There is nothing left on this order to bring back',
+      });
+    }
+
+    const created = await this.create(
+      user,
+      tenantId,
+      {
+        orderId: order.id,
+        reason: 'DELIVERY_FAILED',
+        shipmentId: shipment.id,
+        note: dto.note,
+        items: lines,
+      },
+      { skipPermission: true },
+    );
+    const received = await this.prisma.orderReturn.updateMany({
+      where: { id: created.id, tenantId, status: OrderReturnStatus.REQUESTED },
+      data: {
+        status: OrderReturnStatus.INSPECTING,
+        receivedById: user.userId,
+        receivedAt: new Date(),
+      },
+    });
+    if (received.count !== 1) this.statusInvalid('received', 'REQUESTED');
+
+    const verdicts = new Map(
+      (dto.items ?? []).map((item) => [item.orderItemId, item]),
+    );
+    return this.inspect(
+      user,
+      tenantId,
+      created.id,
+      {
+        items: lines.map((line) => ({
+          ...verdicts.get(line.orderItemId),
+          orderItemId: line.orderItemId,
+          condition:
+            verdicts.get(line.orderItemId)?.condition ?? ReturnCondition.GOOD,
+        })),
+      },
+      async (tx) => {
+        const closed = await tx.shipment.updateMany({
+          where: { id: shipment.id, status: ShipmentStatus.FAILED },
+          data: { status: ShipmentStatus.RETURNED },
+        });
+        if (closed.count !== 1) {
+          throw new ConflictException({
+            code: ErrorCode.SHIPMENT_STATUS_INVALID,
+            message: 'The shipment has just changed, please reload',
+          });
+        }
+        await tx.shipmentEvent.create({
+          data: {
+            shipmentId: shipment.id,
+            status: ShipmentStatus.RETURNED,
+            source: 'MANUAL',
+            note: dto.note ?? null,
+            createdById: user.userId,
+          },
+        });
+      },
+    );
+  }
+
   /** `POST /order-returns/:id/cancel`: only before the goods were put back, so stock was never touched. */
   async cancel(user: AuthUser, tenantId: string, id: string) {
     await this.load(user, tenantId, id);
@@ -345,6 +502,8 @@ export class OrderReturnService {
     tenantId: string,
     id: string,
     dto: InspectOrderReturnDto,
+    /** Runs inside the settling transaction, so a caller's own write lands with it or not at all. */
+    within?: (tx: Prisma.TransactionClient) => Promise<void>,
   ) {
     const orderReturn = await this.load(user, tenantId, id);
     if (orderReturn.status !== OrderReturnStatus.INSPECTING) {
@@ -462,6 +621,7 @@ export class OrderReturnService {
       }
 
       await this.settleOrder(tx, tenantId, orderReturn.order.id);
+      await within?.(tx);
       // Once the sale invoice is issued, returned goods are an ADJUSTMENT for their value (a PENDING invoice nets them out when it issues).
       await this.invoices.adjustForReturn(
         tx,
