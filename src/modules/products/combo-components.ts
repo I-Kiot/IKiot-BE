@@ -72,10 +72,44 @@ export function assertComboGraph(
   }
 }
 
+/** Throws `PRODUCT_COMBO_COMPONENT_DISCONTINUED`, naming the SKUs, when any of `items` belongs to a discontinued product. */
+export function assertNoDiscontinuedComponent(
+  items: { id: string; sku: string | null; productStatus: string }[],
+): void {
+  const dead = items.filter(
+    (item) => item.productStatus === ProductStatus.DISCONTINUED,
+  );
+  if (dead.length === 0) return;
+  throw new BadRequestException({
+    code: ErrorCode.PRODUCT_COMBO_COMPONENT_DISCONTINUED,
+    message: `Combo component of a discontinued product: ${dead
+      .map((item) => item.sku ?? item.id)
+      .join(', ')}`,
+  });
+}
+
 /**
- * Validates and writes a combo's components, replacing what it had. The components must be variants
- * of this tenant whose product is not discontinued, each named once, at least one. A component may
- * itself be a COMBO (nested combo); the whole graph is re-checked with `assertComboGraph`.
+ * Serialises everything that reads and then changes "which combo holds what, and is it still sold"
+ * for one tenant: writing components, discontinuing a product, switching one back on. Each of those
+ * checks the graph or the statuses and then writes, so two of them checked against the same old state
+ * could each pass and together break the rule. Transaction-scoped: released at commit / rollback.
+ */
+export async function lockComboGraph(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`combo-graph:${tenantId}`}::text))`;
+}
+
+/**
+ * Validates and writes a combo's components, replacing what it had. Callers run
+ * `assertComponentsMatchType` first - that is the one place saying a COMBO needs at least one. The
+ * components must be variants of this tenant whose product is not discontinued, each named once. A
+ * component may itself be a COMBO (nested combo); the whole graph is re-checked with
+ * `assertComboGraph`.
+ *
+ * Runs inside the caller's transaction under `lockComboGraph`: two edits checked against the same old
+ * graph (A ← B and B ← A at once) would otherwise each pass and together make a cycle.
  */
 export async function writeComboComponents(
   tx: Prisma.TransactionClient,
@@ -83,9 +117,8 @@ export async function writeComboComponents(
   comboId: string,
   components: ComboComponentInput[],
 ): Promise<void> {
-  if (components.length === 0) {
-    throw invalid('A combo needs at least one component');
-  }
+  await lockComboGraph(tx, tenantId);
+
   const ids = components.map((component) => component.componentItemId);
   if (new Set(ids).size !== ids.length) {
     throw invalid('A component is listed twice in the combo');
@@ -111,11 +144,9 @@ export async function writeComboComponents(
       message: 'A combo component was not found',
     });
   }
-  if (
-    items.some((item) => item.product.status === ProductStatus.DISCONTINUED)
-  ) {
-    throw invalid('A combo component belongs to a discontinued product');
-  }
+  assertNoDiscontinuedComponent(
+    items.map((item) => ({ ...item, productStatus: item.product.status })),
+  );
 
   // Một shop có ít combo; nạp cả đồ thị một lần để kiểm vòng lặp và độ sâu cho mọi combo phía trên.
   const rows = await tx.comboComponent.findMany({
@@ -163,7 +194,7 @@ export async function writeComboComponents(
   });
 }
 
-/** `comboComponents` belongs to a COMBO only: required on one, refused on anything else. */
+/** `comboComponents` belongs to a COMBO only: at least one on a COMBO, none on anything else (an empty list on a non-combo is no components, so it passes). */
 export function assertComponentsMatchType(
   itemType: string,
   components: ComboComponentInput[] | undefined,

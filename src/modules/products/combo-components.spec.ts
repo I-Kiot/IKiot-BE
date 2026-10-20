@@ -3,6 +3,7 @@ import { MAX_COMBO_DEPTH } from '../orders/combo-expansion';
 import {
   assertComboGraph,
   assertComponentsMatchType,
+  assertNoDiscontinuedComponent,
 } from './combo-components';
 
 const item = (id: string, itemType = 'PRODUCT') => ({
@@ -116,5 +117,36 @@ describe('assertComponentsMatchType', () => {
       'PRODUCT_COMBO_INVALID',
     );
     expect(() => assertComponentsMatchType('SERVICE', undefined)).not.toThrow();
+  });
+});
+
+describe('assertNoDiscontinuedComponent', () => {
+  it('names every discontinued component by SKU', () => {
+    let message = '';
+    try {
+      assertNoDiscontinuedComponent([
+        { id: '1', sku: 'GHE-1', productStatus: 'DISCONTINUED' },
+        { id: '2', sku: 'BAN-1', productStatus: 'ACTIVE' },
+        { id: '3', sku: null, productStatus: 'DISCONTINUED' },
+      ]);
+    } catch (error) {
+      const body = (
+        error as { getResponse(): { code: string; message: string } }
+      ).getResponse();
+      expect(body.code).toBe('PRODUCT_COMBO_COMPONENT_DISCONTINUED');
+      message = body.message;
+    }
+    expect(message).toContain('GHE-1');
+    expect(message).toContain('3');
+    expect(message).not.toContain('BAN-1');
+  });
+
+  it('passes live components, inactive ones included', () => {
+    expect(() =>
+      assertNoDiscontinuedComponent([
+        { id: '1', sku: 'A', productStatus: 'ACTIVE' },
+        { id: '2', sku: 'B', productStatus: 'INACTIVE' },
+      ]),
+    ).not.toThrow();
   });
 });

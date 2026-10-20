@@ -74,3 +74,18 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Mới qua `tsc`, `eslint` và unit test hiện có; chưa viết e2e cho luồng fail → deliver lại / fail → confirm-failed-delivery, chưa thử trên dữ liệu thật.
 - Mặc định mọi dòng về kho là GOOD: hàng hỏng trên đường phải khai qua `items` (FE chưa có ô chọn tình trạng).
 - Index `shipments_one_open_per_order` vẫn loại FAILED khỏi "đang mở" (không đổi migration); kiểm tra ở app đã tính FAILED là mở.
+
+## 2026-10-20 - Khai báo combo / combo lồng nhau trong danh mục (BE PR #41) + sửa theo review
+
+**Đã làm**
+- `POST /products`, `POST /products/:id/items` nhận `itemType` (`PRODUCT | COMBO | SERVICE`, chốt lúc tạo - `PATCH` không đổi được) và `comboComponents: [{ componentItemId, quantity }]`; `PATCH /products/items/:id` thay toàn bộ thành phần. Combo bắt buộc ≥ 1 món; danh sách rỗng gửi kèm hàng thường được bỏ qua.
+- `products/combo-components.ts`: kiểm món cùng tenant, không trùng, không chứa chính nó, không thuộc hàng đã ngừng (`PRODUCT_COMBO_COMPONENT_DISCONTINUED`, nêu SKU); nạp đồ thị combo của shop rồi chạy lại `flattenCombo` cho combo đó và mọi combo chứa nó (vòng lặp / quá `MAX_COMBO_DEPTH` → `PRODUCT_COMBO_INVALID`). Ghi dưới **advisory lock theo tenant** (`combo-graph:<tenantId>`) - hai lần sửa đồng thời không cùng qua kiểm tra rồi tạo vòng.
+- Phiên bản trả `comboComponents` (một tầng, thứ tự theo SKU, kèm `productId`, `thumbnailUrl`); `GET /products/items` trả thêm `itemType`, `productStatus`, `thumbnailUrl`.
+- Chặn: xoá phiên bản / ngừng bán sản phẩm đang là món của combo còn bán → `PRODUCT_ITEM_IN_COMBO`; bật lại (`PATCH status`) một combo đã ngừng mà còn món (của **sản phẩm khác**) đã ngừng → `PRODUCT_COMBO_COMPONENT_DISCONTINUED`. Ghi thành phần, ngừng bán và bật lại cùng chạy dưới `lockComboGraph` trong transaction.
+- `GET /products/items?excludeDiscontinued=true` lọc hàng đã ngừng ở BE (bộ chọn món combo dùng, để `limit` áp lên hàng chọn được).
+- **Chỉ PRODUCT có tồn** (`holdsStock`, `inventories/stockable.ts`): phiếu kho (tạo / sửa qua `itemsById`, và lúc **nhận** / **duyệt kiểm kho** cho phiếu tạo trước bản sửa) và `POST /inventory` từ chối COMBO / SERVICE → `PRODUCT_ITEM_NOT_STOCKABLE`; YCSX cũng dùng `holdsStock`. Không chặn trong `openLot` (chạy theo từng dòng khi nhận, thêm query mỗi lần).
+- Test: `combo-components.spec.ts`, `stockable.spec.ts`, e2e `test/product-combo.e2e-spec.ts` (13/13).
+
+**Chưa kiểm chứng / còn lại**
+- Thứ tự thành phần là theo SKU, không phải thứ tự nhập - giữ thứ tự nhập cần cột `position` (migration).
+- Toàn bộ e2e: 282/283 - `order-ship.e2e-spec.ts` (fail báo thêm chủ shop, mục 2026-10-19) đỏ cả trên `dev` sạch, test chưa cập nhật theo hành vi mới.

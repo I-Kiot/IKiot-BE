@@ -86,7 +86,14 @@ describe('ProductService – combo components', () => {
         { id: foreignProductId, tenantId: otherTenantId, name: 'Ghế lạ' },
       ],
     });
-    const sku = (id: string) => `PC-${id.slice(0, 8)}`;
+    // Cùng tiền tố + một chữ cái quyết định thứ tự, nên thứ tự SKU giống nhau ở mọi collation của Postgres.
+    const run = tenantId.slice(0, 8).toUpperCase();
+    const skus = {
+      [tableId]: `PC${run}-A`,
+      [chairId]: `PC${run}-B`,
+      [foreignItemId]: `PC${run}-C`,
+    };
+    const sku = (id: string) => skus[id];
     await prisma.productItem.createMany({
       data: [
         {
@@ -247,8 +254,8 @@ describe('ProductService – combo components', () => {
   it('replaces the components on update', async () => {
     const item = await products.updateItem(tenantId, diningSetId, {
       comboComponents: [
-        { componentItemId: tableId, quantity: 1 },
         { componentItemId: chairId, quantity: 6 },
+        { componentItemId: tableId, quantity: 1 },
       ],
     });
     expect(
@@ -268,5 +275,80 @@ describe('ProductService – combo components', () => {
       (await prisma.product.findUnique({ where: { id: chairProductId } }))
         ?.status,
     ).toBe(ProductStatus.ACTIVE);
+  });
+
+  it('ignores an empty component list sent with a plain variant', async () => {
+    const item = await products.updateItem(tenantId, tableId, {
+      comboComponents: [],
+    });
+    expect(item.comboComponents).toEqual([]);
+  });
+
+  it('returns the components in a fixed (SKU) order', async () => {
+    const product = await products.findOne(
+      tenantId,
+      (
+        await prisma.productItem.findUniqueOrThrow({
+          where: { id: diningSetId },
+        })
+      ).productId,
+      {},
+    );
+    // Bàn (…-A) đứng trước ghế (…-B) dù ghế được nhập trước ở lần sửa gần nhất.
+    expect(
+      product.items[0].comboComponents.map((c) => c.componentItem.id),
+    ).toEqual([tableId, chairId]);
+  });
+
+  it('will not switch a combo back on while it holds a discontinued component', async () => {
+    // Một món lẻ trong một combo; ngừng combo trước thì món được ngừng theo.
+    const loose = await products.create(tenantId, {
+      name: 'Đèn bàn',
+      items: [{ productName: 'Đèn bàn', retailPrice: 300_000, costPrice: 0 }],
+    });
+    const lampId = loose.items[0].id;
+    const combo = await createCombo('Bộ đèn', [
+      { componentItemId: lampId, quantity: 2 },
+    ]);
+
+    await products.discontinue(tenantId, combo.id);
+    await products.discontinue(tenantId, loose.id);
+
+    expect(
+      await codeOf(
+        products.update(tenantId, combo.id, { status: ProductStatus.ACTIVE }),
+      ),
+    ).toBe(ErrorCode.PRODUCT_COMBO_COMPONENT_DISCONTINUED);
+    expect(
+      (await prisma.product.findUnique({ where: { id: combo.id } }))?.status,
+    ).toBe(ProductStatus.DISCONTINUED);
+
+    // Và không dùng được món đã ngừng cho combo mới.
+    expect(
+      await codeOf(
+        createCombo('Bộ đèn 2', [{ componentItemId: lampId, quantity: 1 }]),
+      ),
+    ).toBe(ErrorCode.PRODUCT_COMBO_COMPONENT_DISCONTINUED);
+  });
+
+  it('switches back on a product whose combo variant uses its own sibling variant', async () => {
+    // Một sản phẩm: phiên bản lẻ + phiên bản combo "bộ 2 cái" của chính nó.
+    const stool = await products.create(tenantId, {
+      name: 'Đôn gỗ',
+      items: [{ productName: 'Đôn gỗ', retailPrice: 200_000, costPrice: 0 }],
+    });
+    await products.createItem(tenantId, stool.id, {
+      productName: 'Đôn gỗ - bộ 2',
+      retailPrice: 380_000,
+      costPrice: 0,
+      itemType: ProductItemType.COMBO,
+      comboComponents: [{ componentItemId: stool.items[0].id, quantity: 2 }],
+    });
+
+    await products.discontinue(tenantId, stool.id);
+    const back = await products.update(tenantId, stool.id, {
+      status: ProductStatus.ACTIVE,
+    });
+    expect(back.status).toBe(ProductStatus.ACTIVE);
   });
 });

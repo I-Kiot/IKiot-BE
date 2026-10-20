@@ -26,7 +26,7 @@ import {
   OrderItemStatus,
   UNSHIPPED_ORDER_STATUSES,
 } from '../../common/constants/order-status';
-import { ProductItemType } from '../../common/constants/product-status';
+import { holdsStock } from '../../common/constants/product-status';
 import {
   ProductionDeliveryStatus,
   ProductionRequestStatus,
@@ -919,7 +919,7 @@ export class ProductionRequestService {
           message: 'Product variant not found',
         });
       }
-      if (item.itemType !== ProductItemType.PRODUCT) {
+      if (!holdsStock(item.itemType)) {
         throw new BadRequestException({
           code: ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE,
           message: `${item.sku ?? item.id} is a ${item.itemType}; only a product can be made (order a combo's components instead)`,

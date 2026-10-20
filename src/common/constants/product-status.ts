@@ -35,3 +35,8 @@ export const ProductItemType = {
 
 export type ProductItemType =
   (typeof ProductItemType)[keyof typeof ProductItemType];
+
+/** Whether a variant of this type may have stock rows and lots. The one copy of "only a PRODUCT holds stock". */
+export function holdsStock(itemType: string): boolean {
+  return itemType === ProductItemType.PRODUCT;
+}

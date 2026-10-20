@@ -21,6 +21,8 @@ import {
 } from '../../common/constants/product-status';
 import {
   assertComponentsMatchType,
+  assertNoDiscontinuedComponent,
+  lockComboGraph,
   writeComboComponents,
 } from './combo-components';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -109,7 +111,9 @@ const ITEM_INCLUDE = {
     },
   },
   // Một tầng: thành phần là combo thì FE mở tiếp bằng GET /products/:productId của nó.
+  // Thứ tự cố định theo SKU: mỗi lần lưu là xoá rồi ghi lại, bảng không có cột vị trí nên không giữ được thứ tự nhập.
   comboComponents: {
+    orderBy: [{ componentItem: { sku: 'asc' } }, { componentItemId: 'asc' }],
     select: {
       quantity: true,
       componentItem: {
@@ -341,6 +345,9 @@ export class ProductService {
         { productCode: match },
       ];
     }
+    if (query.excludeDiscontinued) {
+      where.product = { status: { not: ProductStatus.DISCONTINUED } };
+    }
 
     const found = await this.prisma.productItem.findMany({
       where,
@@ -451,6 +458,22 @@ export class ProductService {
         : await this.resolveCategoryName(tenantId, dto.categoryId);
 
     await this.prisma.$transaction(async (tx) => {
+      // Ngừng bán combo thì các món của nó được phép ngừng theo (`discontinue` không tính combo đã
+      // ngừng), nên bật combo lại phải kiểm lại. Trạng thái đọc lại sau khoá: đọc trước đó thì một
+      // `discontinue` chen vào giữa làm lệnh này bật combo lên mà không qua kiểm tra.
+      if (
+        dto.status !== undefined &&
+        dto.status !== ProductStatus.DISCONTINUED
+      ) {
+        await lockComboGraph(tx, tenantId);
+        const current = await tx.product.findUniqueOrThrow({
+          where: { id },
+          select: { status: true },
+        });
+        if (current.status === ProductStatus.DISCONTINUED) {
+          await this.assertCombosSellable(tx, tenantId, id);
+        }
+      }
       await tx.product.update({
         where: { id },
         data: {
@@ -567,7 +590,7 @@ export class ProductService {
     ).map((item) => item.id);
 
     if (itemIds.length > 0) {
-      const [stocked, movements, orders, combos] = await Promise.all([
+      const [stocked, movements, orders] = await Promise.all([
         this.prisma.inventory.count({
           where: { tenantId, productItemId: { in: itemIds }, stock: { gt: 0 } },
         }),
@@ -584,16 +607,6 @@ export class ProductService {
             tenantId,
             status: 'PENDING',
             items: { some: { productItemId: { in: itemIds } } },
-          },
-        }),
-        // Combo của sản phẩm khác còn bán mà chứa SKU của sản phẩm này: ngừng nó thì combo bán ra món đã ngừng.
-        this.prisma.comboComponent.count({
-          where: {
-            componentItemId: { in: itemIds },
-            comboItem: {
-              productId: { not: id },
-              product: { status: { not: ProductStatus.DISCONTINUED } },
-            },
           },
         }),
       ]);
@@ -617,6 +630,22 @@ export class ProductService {
           message: 'Cannot discontinue: the product is on an unpaid order.',
         });
       }
+    }
+
+    // Kiểm combo và ghi trạng thái dưới cùng khoá với việc sửa thành phần / bật lại combo: kiểm ngoài
+    // transaction thì một combo vừa thêm món này (chưa commit) không được đếm, rồi cả hai cùng commit.
+    await this.prisma.$transaction(async (tx) => {
+      await lockComboGraph(tx, tenantId);
+      // Combo của sản phẩm khác còn bán mà chứa SKU của sản phẩm này: ngừng nó thì combo bán ra món đã ngừng.
+      const combos = await tx.comboComponent.count({
+        where: {
+          componentItem: { productId: id },
+          comboItem: {
+            productId: { not: id },
+            product: { status: { not: ProductStatus.DISCONTINUED } },
+          },
+        },
+      });
       if (combos > 0) {
         throw new BadRequestException({
           code: ErrorCode.PRODUCT_ITEM_IN_COMBO,
@@ -624,11 +653,10 @@ export class ProductService {
             'Cannot discontinue: a variant is a component of a combo that is still sold.',
         });
       }
-    }
-
-    await this.prisma.product.update({
-      where: { id },
-      data: { status: ProductStatus.DISCONTINUED },
+      await tx.product.update({
+        where: { id },
+        data: { status: ProductStatus.DISCONTINUED },
+      });
     });
     return this.findOne(tenantId, id, {});
   }
@@ -683,6 +711,9 @@ export class ProductService {
     if (dto.comboComponents) {
       assertComponentsMatchType(existing.itemType, dto.comboComponents);
     }
+    // Một danh sách rỗng gửi kèm cho hàng thường nghĩa là "không có thành phần" - bỏ qua, không ghi.
+    const writeComponents =
+      existing.itemType === ProductItemType.COMBO && dto.comboComponents;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.productItem.update({
@@ -722,8 +753,8 @@ export class ProductService {
         );
       }
       // Đơn đã bán giữ các dòng con đã bung lúc bán; sửa thành phần chỉ áp cho đơn sau.
-      if (dto.comboComponents) {
-        await writeComboComponents(tx, tenantId, itemId, dto.comboComponents);
+      if (writeComponents) {
+        await writeComboComponents(tx, tenantId, itemId, writeComponents);
       }
     });
 
@@ -831,6 +862,39 @@ export class ProductService {
 
   // ─── Internals ─────────────────────────────────────────────────────────────
 
+  /**
+   * The combos of `productId` may be sold again only if none of their components belongs to a
+   * discontinued product. Components that are variants of `productId` itself are skipped: they come
+   * back on with it (`discontinue` skips them for the same reason).
+   */
+  private async assertCombosSellable(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    productId: string,
+  ): Promise<void> {
+    const components = await tx.comboComponent.findMany({
+      where: {
+        comboItem: { productId, tenantId },
+        componentItem: { productId: { not: productId } },
+      },
+      select: {
+        componentItem: {
+          select: {
+            id: true,
+            sku: true,
+            product: { select: { status: true } },
+          },
+        },
+      },
+    });
+    assertNoDiscontinuedComponent(
+      components.map(({ componentItem }) => ({
+        ...componentItem,
+        productStatus: componentItem.product.status,
+      })),
+    );
+  }
+
   private async findItem(tenantId: string, itemId: string) {
     const item = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
@@ -876,7 +940,7 @@ export class ProductService {
       },
       select: { id: true },
     });
-    if (dto.comboComponents?.length) {
+    if (itemType === ProductItemType.COMBO && dto.comboComponents) {
       await writeComboComponents(tx, tenantId, item.id, dto.comboComponents);
     }
     await writeItemDetails(

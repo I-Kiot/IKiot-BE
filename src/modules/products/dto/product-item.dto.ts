@@ -53,6 +53,9 @@ export class ProductItemDetailDto {
 }
 
 /** One component of a combo: `quantity` of `componentItemId` in one combo. The component may itself be a COMBO (nested combo). */
+/** Most of one component a combo may hold. The FE combo form caps its input the same way. */
+export const MAX_COMBO_COMPONENT_QUANTITY = 999;
+
 export class ComboComponentDto {
   @IsUUID()
   componentItemId: string;
@@ -60,6 +63,10 @@ export class ComboComponentDto {
   @Type(() => Number)
   @IsInt()
   @Min(1, { message: 'Số lượng trong combo phải từ 1' })
+  // Chặn trước khi tới cột int4 - tràn số ở DB chỉ ra một lỗi chung chung. 999 / món là quá đủ cho một bộ.
+  @Max(MAX_COMBO_COMPONENT_QUANTITY, {
+    message: `Số lượng trong combo tối đa ${MAX_COMBO_COMPONENT_QUANTITY}`,
+  })
   quantity: number;
 }
 
