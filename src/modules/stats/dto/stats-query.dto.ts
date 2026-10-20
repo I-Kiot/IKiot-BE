@@ -15,6 +15,7 @@ import {
 import { CASHFLOW_PREFIXES } from '../../../common/utils/reference-generator';
 import { PAYMENT_METHODS } from '../../../common/constants/payment-method';
 import {
+  ADMIN_GROUP_BY_VALUES,
   DEFAULT_LOW_STOCK_THRESHOLD,
   FLOW_TYPES,
   GROUP_BY_VALUES,
@@ -129,6 +130,22 @@ export class TopProductsQueryDto extends StatsQueryDto {
   limit: number = 10;
 }
 
+export class TopCustomersQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit: number = 5;
+}
+
+/** Only a location filter: the comparison windows are fixed calendar milestones, not a range the caller picks. */
+export class RevenueComparisonQueryDto {
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
 /** No date range: stock is a level, not a flow - it is only ever "right now". */
 export class InventoryStatsQueryDto {
   @IsOptional()
@@ -146,6 +163,25 @@ export class InventoryStatsQueryDto {
   lowStockThreshold: number = DEFAULT_LOW_STOCK_THRESHOLD;
 }
 
+/** Cảnh báo tồn kho: như `/stats/inventory`, là mức tồn "ngay lúc này" nên không có khoảng ngày. */
+export class StockAlertsQueryDto extends InventoryStatsQueryDto {}
+
+/** Tình trạng đơn đang chạy: đếm tại thời điểm gọi, không theo kỳ - một đơn chờ xác nhận từ tuần trước vẫn đang chờ. */
+export class OrderPipelineQueryDto {
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
+export class SlowProductsQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit: number = 5;
+}
+
 /** The platform overview looks across tenants, so it has no location filter at all. */
 export class AdminOverviewQueryDto {
   @IsOptional()
@@ -157,8 +193,8 @@ export class AdminOverviewQueryDto {
   toDate?: string;
 
   @IsOptional()
-  @IsIn(GROUP_BY_VALUES, {
-    message: `groupBy phải là ${GROUP_BY_VALUES.join(' hoặc ')}`,
+  @IsIn(ADMIN_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${ADMIN_GROUP_BY_VALUES.join(' hoặc ')}`,
   })
   groupBy?: GroupBy = GroupBy.DAY;
 
