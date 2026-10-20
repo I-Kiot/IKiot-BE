@@ -14,6 +14,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 import { OrderReturnService } from './order-returns.service';
 import {
+  ConfirmFailedDeliveryDto,
   CreateOrderReturnDto,
   InspectOrderReturnDto,
   QueryOrderReturnDto,
@@ -54,6 +55,16 @@ export class OrderReturnController {
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderReturnDto) {
     return this.service.create(user, requireTenantId(user), dto);
+  }
+
+  /** No @Permissions on purpose, like `create`: the order's person in charge OR anyone who can read the order - the service checks it. */
+  @HttpCode(HttpStatus.OK)
+  @Post('confirm-failed-delivery')
+  confirmFailedDelivery(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ConfirmFailedDeliveryDto,
+  ) {
+    return this.service.confirmFailedDelivery(user, requireTenantId(user), dto);
   }
 
   @Permissions('returns', 'inspect')

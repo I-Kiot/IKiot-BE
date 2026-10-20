@@ -20,6 +20,7 @@ import { NotificationModule } from '../notifications/notifications.module';
 import { PromotionModule } from '../promotions/promotions.module';
 import { FulfillmentModule } from '../fulfillments/fulfillments.module';
 import { ShipmentModule } from '../shipments/shipments.module';
+import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
   // InventoryModule for the stock decrement and low-stock rule, NotificationModule for the "customer paid" push, PromotionModule so an order prices its discounts through the same engine /promotions/calculate uses, FulfillmentModule for POST /orders/:id/pack (C-1), ShipmentModule for POST /orders/:id/ship (C-2), CustomerModule for the customer a manual order types in (A-2).
@@ -30,6 +31,8 @@ import { ShipmentModule } from '../shipments/shipments.module';
     FulfillmentModule,
     ShipmentModule,
     CustomerModule,
+    // InvoiceService: every order has an invoice, issued when the order is COMPLETED.
+    InvoiceModule,
     // ProductionListService, for the shortage alert when an order changes demand (B-3).
     ProductionRequestModule,
   ],

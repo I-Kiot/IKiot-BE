@@ -117,6 +117,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       where: { productionRequest: { tenantId: t } },
     });
     await prisma.productionRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.invoice.deleteMany({ where: { tenantId: tenantId } });
     await prisma.orderItem.deleteMany({
       where: { order: { tenantId: t }, parentItemId: { not: null } },
     });
@@ -227,6 +228,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send({
         name: 'Sofa băng',
+        isManufacturable: true,
         items: [
           {
             productName: 'Sofa băng 1m8',
@@ -367,13 +369,21 @@ describe('F-1 order journey, end to end over HTTP', () => {
     expect(await stockAt(warehouseId)).toEqual({ stock: 2, lockedStock: 2 });
   });
 
-  it('hands it to our own shipper, then ships it - stock leaves here', async () => {
+  it('assigns our own shipper, who picks it up, then ships it - stock leaves here', async () => {
     const shipment = await http()
       .post('/shipments')
       .set(auth())
       .send({ orderId, carrierType: 'INTERNAL', driverId: ownerId })
       .expect(201);
     shipmentId = shipment.body.data.id;
+    // Gán shipper chưa phải lấy hàng (chốt 2026-10-15): đơn chờ shipper xác nhận.
+    expect((await order()).status).toBe('PACKED');
+
+    await http()
+      .post(`/shipments/${shipmentId}/pick-up`)
+      .set(auth())
+      .send({})
+      .expect(200);
     expect((await order()).status).toBe('PICKED_UP');
 
     await http()

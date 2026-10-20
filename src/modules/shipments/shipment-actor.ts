@@ -18,6 +18,9 @@ import {
 export const ON_THE_ROAD_STATUSES: readonly string[] = [
   ShipmentStatus.IN_TRANSIT,
   ShipmentStatus.OUT_FOR_DELIVERY,
+  // A failed attempt is still on the road: the goods have not come back, so the shipper may log a new
+  // attempt or deliver after all. Only the shop confirming the return ends it.
+  ShipmentStatus.FAILED,
 ];
 
 /** Vì sao người gọi được thao tác: như các bước của đơn, cộng thêm "là shipper của lần giao này". */
@@ -54,7 +57,8 @@ export function trackingActorAccess(
 }
 
 /**
- * Giao xong và thu tiền (C-5, chốt 2026-10-06): theo hành trình, shipper của lần giao xác nhận đã giao;
+ * Shipper lấy hàng (chốt 2026-10-15), giao xong và thu tiền (C-5, chốt 2026-10-06): theo hành trình,
+ * shipper của lần giao xác nhận đã lấy / đã giao;
  * người phụ trách đơn (toàn quyền với đơn của mình) và chủ shop cũng được. **Không** có đường "có quyền
  * trong role" – người khác không xác nhận hộ shipper được việc khách đã nhận hàng và trả tiền.
  */
@@ -80,7 +84,7 @@ export function deliveryActorAccess(
   throw new ForbiddenException({
     code: ErrorCode.ORDER_STEP_DENIED,
     message:
-      "Only the shipment's driver, the order's person in charge, or the shop owner can confirm a delivery",
+      "Only the shipment's driver, the order's person in charge, or the shop owner can confirm a pickup or a delivery",
   });
 }
 

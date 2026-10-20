@@ -74,6 +74,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       roleId: user.roleId,
       branchId,
       warehouseId,
+      workshopId: user.workshopId,
       permissions: new Set([
         ...(user.systemRole === SystemRole.STAFF ? STAFF_BASE_PERMISSIONS : []),
         ...(user.role?.permissions.map((p) => `${p.resource}:${p.action}`) ??

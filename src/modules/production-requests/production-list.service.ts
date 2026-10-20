@@ -177,7 +177,7 @@ export class ProductionListService {
     };
   }
 
-  /** Every producible SKU (a PRODUCT not discontinued) at every sellable location in scope - what "order anything" lists. */
+  /** Every producible SKU (a PRODUCT not discontinued, of a product marked `isManufacturable`) at every sellable location in scope - what "order anything" lists. */
   private async cataloguePairs(
     tenantId: string,
     locationIds: string[] | null,
@@ -197,7 +197,10 @@ export class ProductionListService {
         where: {
           tenantId,
           itemType: ProductItemType.PRODUCT,
-          product: { status: { not: ProductStatus.DISCONTINUED } },
+          product: {
+            status: { not: ProductStatus.DISCONTINUED },
+            isManufacturable: true,
+          },
           ...(productItemIds ? { id: { in: productItemIds } } : {}),
         },
         select: { id: true },
@@ -483,6 +486,7 @@ export class ProductionListService {
           id: true,
           sku: true,
           productName: true,
+          product: { select: { isManufacturable: true } },
           details: {
             select: { value: true, position: true },
             orderBy: { position: 'asc' },
@@ -534,6 +538,8 @@ export class ProductionListService {
         sku: item?.sku ?? null,
         productName: item?.productName ?? '',
         variantLabel: variantValues?.length ? variantValues.join(' / ') : null,
+        // false = chỉ nhập từ NCC; dashboard ẩn "Thêm vào yêu cầu" cho row này.
+        isManufacturable: item?.product.isManufacturable ?? false,
         isCustom: row.customOrderItemId !== null,
         customOrderItemId: row.customOrderItemId,
         customization: row.customOrderItemId

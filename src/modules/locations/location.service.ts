@@ -11,6 +11,8 @@ import {
   assertDamagedLocationTarget,
 } from './damaged-location';
 import type { LocationConfig, LocationRow } from './location.types';
+import { locationReadScope } from './location-read-scope';
+import type { AuthUser } from '../../common/types/auth-user.type';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { Prisma } from '../../../generated/prisma/client';
 
@@ -53,13 +55,22 @@ export abstract class LocationService {
     return rest;
   }
 
-  async findAll(tenantId: string, query: LocationQuery) {
+  /** `read_own` narrows the list to the caller's own posting (see `locationReadScope`); posted to none of this kind, the list is empty rather than an error, so a picker simply has nothing to offer. */
+  async findAll(user: AuthUser, tenantId: string, query: LocationQuery) {
     const where: Prisma.LocationWhereInput = {
       tenantId,
       type: this.config.kind,
       // Without an explicit filter the recycle bin stays hidden.
       status: query.status ?? { not: LocationStatus.DELETED },
     };
+
+    const readScope = locationReadScope(user, this.config.kind);
+    if (readScope.scope === 'OWN') {
+      if (readScope.ownLocationId === null) {
+        return paginate([], 0, query.page, query.limit);
+      }
+      where.id = readScope.ownLocationId;
+    }
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
@@ -89,15 +100,23 @@ export abstract class LocationService {
       where: { id, tenantId, type: this.config.kind },
       include: LOCATION_INCLUDE,
     });
-    if (!row)
-      throw new NotFoundException({
-        code: ErrorCode.LOCATION_NOT_FOUND,
-        message: this.config.messages.notFound,
-      });
+    if (!row) throw this.notFound();
     return row;
   }
 
-  async findOne(tenantId: string, id: string) {
+  private notFound() {
+    return new NotFoundException({
+      code: ErrorCode.LOCATION_NOT_FOUND,
+      message: this.config.messages.notFound,
+    });
+  }
+
+  /** With only `read_own`, any location but the caller's own posting is a 404 - the same answer as one that does not exist, as for every other row out of reach. */
+  async findOne(user: AuthUser, tenantId: string, id: string) {
+    const readScope = locationReadScope(user, this.config.kind);
+    if (readScope.scope === 'OWN' && readScope.ownLocationId !== id) {
+      throw this.notFound();
+    }
     return this.toResponse(await this.findRow(tenantId, id));
   }
 

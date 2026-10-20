@@ -6,6 +6,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
@@ -68,6 +69,12 @@ export class UpdateUserDto {
   @IsOptional()
   @IsUUID()
   warehouseId?: string;
+
+  /** The workshop this person works for; `null` unlinks them. */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  workshopId?: string | null;
 
   @IsOptional()
   @IsDateString()

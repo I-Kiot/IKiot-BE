@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InvoiceService } from '../invoices/invoices.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
@@ -14,9 +15,17 @@ import { PayCashDto } from './dto/pay-cash.dto';
 import {
   amountDueOf,
   loadShipmentDetail,
+  localDayWindow,
   SHIPMENT_SUMMARY_INCLUDE,
+  shipmentSearchWhere,
   toSummary,
 } from './shipment-view';
+import {
+  MY_HISTORY_ACTIVE,
+  QueryMyHistoryDto,
+} from './dto/query-my-history.dto';
+import { paginate } from '../../common/utils/pagination';
+import type { Prisma } from '../../../generated/prisma/client';
 import {
   deliveryActorAccess,
   ON_THE_ROAD_STATUSES,
@@ -87,6 +96,7 @@ export class ShipmentDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   // ─── Đơn cần giao của tôi ───────────────────────────────────────────────────
@@ -106,6 +116,122 @@ export class ShipmentDeliveryService {
       ],
     });
     return rows.map(toSummary);
+  }
+
+  /**
+   * GET /shipments/mine/history: every shipment of mine, finished or not, with the counts the screen's
+   * cards show and what I collected.
+   *
+   * The date window applies to when a shipment ended - `deliveredAt`, or `updatedAt` for one that never
+   * delivered (failed / returned / cancelled) - and **never hides one still open**: a delivery assigned
+   * six weeks ago and not done is exactly what the "cần giao" card must still count.
+   *
+   * The counts ignore `status` and `search` (they are the filter's choices) but honour the window, so a
+   * card shows what clicking it would list.
+   */
+  async listMyHistory(
+    user: AuthUser,
+    tenantId: string,
+    query: QueryMyHistoryDto,
+  ) {
+    const final = [...FINAL_SHIPMENT_STATUSES];
+    const window = localDayWindow(query.from, query.to);
+    const mine: Prisma.ShipmentWhereInput = {
+      tenantId,
+      driverId: user.userId,
+      ...(window
+        ? {
+            OR: [
+              { status: { notIn: final } },
+              { deliveredAt: window },
+              { deliveredAt: null, updatedAt: window },
+            ],
+          }
+        : {}),
+    };
+    const where: Prisma.ShipmentWhereInput = {
+      AND: [
+        mine,
+        query.status === MY_HISTORY_ACTIVE
+          ? { status: { notIn: final } }
+          : query.status
+            ? { status: query.status }
+            : {},
+        query.search ? shipmentSearchWhere(query.search) : {},
+      ],
+    };
+
+    const [total, rows, counts, collected] = await Promise.all([
+      this.prisma.shipment.count({ where }),
+      this.prisma.shipment.findMany({
+        where,
+        include: SHIPMENT_SUMMARY_INCLUDE,
+        orderBy: [{ updatedAt: 'desc' }],
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.prisma.shipment.groupBy({
+        by: ['status'],
+        where: mine,
+        _count: { _all: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: {
+          tenantId,
+          kind: PaymentKind.BALANCE,
+          status: PaymentRecordStatus.PAID,
+          collectedById: user.userId,
+          ...(window ? { createdAt: window } : {}),
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    // One query for the page's collections, not one per row.
+    const payments = await this.prisma.payment.findMany({
+      where: {
+        tenantId,
+        orderId: { in: rows.map((row) => row.orderId) },
+        kind: PaymentKind.BALANCE,
+        collectedById: user.userId,
+        status: {
+          in: [PaymentRecordStatus.PAID, PaymentRecordStatus.PENDING],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { orderId: true, method: true, amount: true, status: true },
+    });
+    const collectionByOrder = new Map<
+      string,
+      { method: string; amount: number; status: string }
+    >();
+    for (const payment of payments) {
+      if (collectionByOrder.has(payment.orderId)) continue; // newest first
+      collectionByOrder.set(payment.orderId, {
+        method: payment.method,
+        amount: Number(payment.amount),
+        status: payment.status,
+      });
+    }
+
+    const countOf = (status: string) =>
+      counts.find((row) => row.status === status)?._count._all ?? 0;
+    const summary = {
+      active: counts
+        .filter((row) => !FINAL_SHIPMENT_STATUSES.includes(row.status))
+        .reduce((sum, row) => sum + row._count._all, 0),
+      delivered: countOf(ShipmentStatus.DELIVERED),
+      failed: countOf(ShipmentStatus.FAILED),
+      returned: countOf(ShipmentStatus.RETURNED),
+      cancelled: countOf(ShipmentStatus.CANCELLED),
+      collectedTotal: Number(collected._sum.amount ?? 0),
+    };
+
+    const data = rows.map((row) => ({
+      ...toSummary(row),
+      collection: collectionByOrder.get(row.orderId) ?? null,
+    }));
+    return { ...paginate(data, total, query.page, query.limit), summary };
   }
 
   // ─── Giao xong ──────────────────────────────────────────────────────────────
@@ -211,6 +337,10 @@ export class ShipmentDeliveryService {
           code: ErrorCode.ORDER_STATUS_CONFLICT,
           message: 'The order has just changed, please reload',
         });
+      }
+      // Đã cọc đủ thì đơn COMPLETED ngay ở đây, nên hoá đơn cũng xuất ngay.
+      if (nextOrderStatus === OrderStatus.COMPLETED) {
+        await this.invoices.issueForOrder(tx, shipment.order.id, user.userId);
       }
 
       // 3. Khoản thu khi giao.
@@ -420,6 +550,9 @@ export class ShipmentDeliveryService {
           paymentStatus: OrderPaymentStatus.PAID,
         },
       });
+      if (completed.count === 1) {
+        await this.invoices.issueForOrder(tx, payment.order.id, null);
+      }
       if (completed.count !== 1) {
         this.logger.warn(
           `SePay transfer for ${paymentReference} was recorded, but order ${payment.order.code} is no longer RECEIVED and was not completed.`,
@@ -470,7 +603,11 @@ export class ShipmentDeliveryService {
       tenantId,
       recipientIds: [order.assigneeId, ...owners],
       referenceId: order.id,
-      ...OrderNotificationTemplates.cashAwaitingRemittance(order.code, amount),
+      ...OrderNotificationTemplates.cashAwaitingRemittance(
+        order.id,
+        order.code,
+        amount,
+      ),
     });
   }
 }

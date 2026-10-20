@@ -20,4 +20,7 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   'brands:read',
   'schedules:read_own',
   'cash_drawers:read_own',
+  // The branch / warehouse an employee is posted to (2026-10-07). Without it, a role with no `branches:read` had no branch to pick on the order form and the location switcher had no name to show - for the one place the account already works at.
+  'branches:read_own',
+  'warehouses:read_own',
 ]);

@@ -36,6 +36,7 @@ import {
   QueryOrderDto,
 } from './dto/order.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
+import { InvoiceService } from '../invoices/invoices.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
   BRANCH_NAME_SELECT,
@@ -79,6 +80,7 @@ export class OrderService {
     private readonly realtime: RealtimeGateway,
     private readonly sepay: SepayOrderService,
     private readonly pricing: OrderPricingService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   // ─── Create ────────────────────────────────────────────────────────────────
@@ -215,6 +217,12 @@ export class OrderService {
 
       if (status === OrderStatus.COMPLETED) {
         await this.writeSaleCashFlows(tx, created, dto.paymentMethod, userId);
+      }
+
+      // A till sale has its invoice from the start: issued on the spot when it is already paid, PENDING while a SePay transfer is awaited (the webhook issues it).
+      await this.invoices.ensurePending(tx, created.id);
+      if (status === OrderStatus.COMPLETED) {
+        await this.invoices.issueForOrder(tx, created.id, userId);
       }
 
       return { order: created, crossings: lowStock };
@@ -371,6 +379,20 @@ export class OrderService {
           order.paymentMethod,
           order.userId,
         );
+        await this.invoices.issueForOrder(tx, order.id, user.userId);
+      }
+
+      if (newStatus === OrderStatus.CANCELLED) {
+        await this.invoices.voidPending(tx, order.id);
+      }
+
+      if (newStatus === OrderStatus.RETURNED) {
+        await this.invoices.adjustForReturn(
+          tx,
+          order.id,
+          `Trả hàng đơn ${order.code}`,
+          user.userId,
+        );
       }
 
       if (newStatus === OrderStatus.RETURNED) {
@@ -455,6 +477,7 @@ export class OrderService {
         include: ORDER_INCLUDE,
       });
       await this.writeSaleCashFlows(tx, settled, paymentMethod, userId);
+      await this.invoices.issueForOrder(tx, settled.id, userId);
       return settled;
     });
 
@@ -527,6 +550,7 @@ export class OrderService {
           description: `SePay - ${settled.paymentReference}`,
         },
       });
+      await this.invoices.issueForOrder(tx, settled.id, settled.userId);
       return settled;
     });
 

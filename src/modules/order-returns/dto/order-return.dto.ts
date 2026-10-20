@@ -89,6 +89,24 @@ export class InspectOrderReturnDto {
   items: InspectOrderReturnItemDto[];
 }
 
+/** Body of POST /order-returns/confirm-failed-delivery: the goods of a failed delivery are back at the shop. */
+export class ConfirmFailedDeliveryDto {
+  @IsUUID()
+  shipmentId: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+
+  /** Verdicts per line; a line left out (or the whole list) comes back GOOD to the location it shipped from. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InspectOrderReturnItemDto)
+  items?: InspectOrderReturnItemDto[];
+}
+
 export class QueryOrderReturnDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(ORDER_RETURN_STATUSES)

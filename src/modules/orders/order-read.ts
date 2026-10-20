@@ -46,6 +46,11 @@ export const ORDER_LIST_INCLUDE = {
   },
   appliedPromotions: true,
   payments: BALANCE_PAYMENT_INCLUDE,
+  shipments: {
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+    select: { status: true, driver: USER_REF_SELECT },
+  },
 } as const satisfies Prisma.OrderInclude;
 
 /** One order opened in full: the list row plus each line's customization and source location, its shipments and its returns. */

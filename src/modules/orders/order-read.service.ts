@@ -15,6 +15,7 @@ import { paginate, skipFor } from '../../common/utils/pagination';
 import { can } from '../../common/utils/permission';
 import { narrowToScope } from '../../common/utils/scope-filter';
 import type { Prisma } from '../../../generated/prisma/client';
+import { businessDate } from '../cash-drawer-sessions/business-date';
 import { QueryOrderJourneyDto } from './dto/query-order-journey.dto';
 import {
   ORDER_DETAIL_INCLUDE,
@@ -24,8 +25,10 @@ import {
 } from './order-read';
 import { toOrderDetail, toOrderListItem } from './order-read.mapper';
 import {
+  DUE_SOON_DAYS,
   PaymentKind,
   PRIORITY_SORT_ORDER,
+  StockCheckStatus,
   type OrderSort,
 } from './order-read.constants';
 import {
@@ -97,6 +100,44 @@ export class OrderReadService {
     );
   }
 
+  /**
+   * `GET /orders/alerts`: how many orders still waiting to leave need attention, for the sidebar
+   * badge and the banner over the list. Counted under the same scope and the same rules as the
+   * list's `attention` filter, so the number on the badge is the number of rows the click shows.
+   */
+  async alerts(user: AuthUser, tenantId: string, branchId?: string) {
+    const base = Object.assign(new QueryOrderJourneyDto(), {
+      excludePos: true,
+      branchId,
+    });
+    const shortWhere = this.listWhere(user, tenantId, {
+      ...base,
+      attention: 'SHORT',
+    });
+    const dueWhere = this.listWhere(user, tenantId, {
+      ...base,
+      attention: 'DUE_SOON',
+    });
+
+    const [candidates, dueSoon] = await Promise.all([
+      this.prisma.order.findMany({
+        where: shortWhere,
+        select: STOCK_SUMMARY_CANDIDATE_SELECT,
+      }),
+      this.prisma.order.count({ where: dueWhere }),
+    ]);
+    const stockChecks = await computeStockChecks(
+      this.prisma,
+      tenantId,
+      candidates,
+    );
+    const short = candidates.filter((order) =>
+      isShort(summarizeStock(order.items.map((l) => stockChecks.get(l.id)))),
+    ).length;
+
+    return { short, dueSoon, dueSoonDays: DUE_SOON_DAYS };
+  }
+
   /** `GET /orders/:id`: `OrderDetail`. */
   async findOne(user: AuthUser, tenantId: string, id: string) {
     const { row, stockChecks } = await this.findRow(user, tenantId, id);
@@ -111,7 +152,7 @@ export class OrderReadService {
     query: QueryOrderJourneyDto,
   ): Promise<OrderListResult> {
     const where = this.listWhere(user, tenantId, query);
-    if (query.stockSummary) {
+    if (query.stockSummary || query.attention === 'SHORT') {
       return this.listByStockSummary(tenantId, where, query);
     }
 
@@ -215,9 +256,17 @@ export class OrderReadService {
       and.push(remittanceWhere(query.cashRemittanceStatus));
     }
 
-    // stockCheck only exists until an order ships, so neither does a stockSummary to match.
-    if (query.stockSummary) {
+    // stockCheck only exists until an order ships, so neither does a stockSummary to match. The
+    // same goes for both attention kinds: a shipped order can no longer be short or late.
+    if (query.stockSummary || query.attention) {
       and.push({ status: { in: [...UNSHIPPED_ORDER_STATUSES] } });
+    }
+
+    // Days are counted between local midnights (the column is a `date`, i.e. a calendar day).
+    if (query.attention === 'DUE_SOON') {
+      const cutoff = businessDate();
+      cutoff.setUTCDate(cutoff.getUTCDate() + DUE_SOON_DAYS);
+      and.push({ requestedDeliveryDate: { not: null, lte: cutoff } });
     }
 
     return { AND: and };
@@ -292,12 +341,13 @@ export class OrderReadService {
       candidates,
     );
     const matched = candidates
-      .filter(
-        (order) =>
-          summarizeStock(
-            order.items.map((line) => stockChecks.get(line.id)),
-          ) === query.stockSummary,
-      )
+      .filter((order) => {
+        const summary = summarizeStock(
+          order.items.map((line) => stockChecks.get(line.id)),
+        );
+        if (query.stockSummary && summary !== query.stockSummary) return false;
+        return query.attention !== 'SHORT' || isShort(summary);
+      })
       .sort(compareFor(query.sort));
 
     const skip = skipFor(query.page, query.limit);
@@ -313,6 +363,13 @@ export class OrderReadService {
 
     return { rows, total: matched.length, stockChecks };
   }
+}
+
+/** An order's worst line is partly or wholly out on the shelf. */
+function isShort(summary: string | null | undefined): boolean {
+  return (
+    summary === StockCheckStatus.PARTIAL || summary === StockCheckStatus.OUT
+  );
 }
 
 /** Database sort for every `sort` but `priority` (see `pageByPriority`). */

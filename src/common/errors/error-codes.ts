@@ -302,9 +302,31 @@ export const ErrorCode = {
   /** Only a PRODUCT variant can be made - a COMBO is ordered through its components, a SERVICE needs no goods. */
   PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE:
     'PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE',
+  /** The product is not marked `isManufacturable` - it is bought from a supplier, never ordered from a workshop. */
+  PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE:
+    'PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE',
   /** Closing a partly delivered request short needs a reason - it is the record of why ordered goods will never arrive. */
   PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
     'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',
+
+  // --- Workshop staff & delivery notes (2026-10-09) -------------------------
+  /** The workshop routes need an account linked to a workshop (`users.workshop_id`). */
+  WORKSHOP_STAFF_NOT_LINKED: 'WORKSHOP_STAFF_NOT_LINKED',
+  /** The workshop named for a staff account is not a WORKSHOP supplier of this shop. */
+  USER_WORKSHOP_INVALID: 'USER_WORKSHOP_INVALID',
+  PRODUCTION_DELIVERY_NOT_FOUND: 'PRODUCTION_DELIVERY_NOT_FOUND',
+  /** The delivery note is no longer PENDING (already received or cancelled), or its request no longer expects goods. */
+  PRODUCTION_DELIVERY_STATUS_INVALID: 'PRODUCTION_DELIVERY_STATUS_INVALID',
+  /** A delivery note with no line above 0. */
+  PRODUCTION_DELIVERY_EMPTY: 'PRODUCTION_DELIVERY_EMPTY',
+  /** Delivered + still pending on other notes + already received would pass what was ordered. */
+  PRODUCTION_DELIVERY_QTY_EXCEEDS: 'PRODUCTION_DELIVERY_QTY_EXCEEDS',
+  /** The location counted more than the workshop said it delivered on that line. */
+  PRODUCTION_DELIVERY_RECEIVE_EXCEEDS: 'PRODUCTION_DELIVERY_RECEIVE_EXCEEDS',
+  /** A line named on the confirmation is not on this delivery note. */
+  PRODUCTION_DELIVERY_ITEM_MISMATCH: 'PRODUCTION_DELIVERY_ITEM_MISMATCH',
+  /** Could not allocate the next delivery code after several attempts. */
+  PRODUCTION_DELIVERY_CODE_UNAVAILABLE: 'PRODUCTION_DELIVERY_CODE_UNAVAILABLE',
 
   // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
@@ -429,6 +451,8 @@ export const ErrorCode = {
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
   /** Confirming a delivery is for our own shippers only; a third-party carrier's delivery is reported automatically (C-4, later). */
   SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
+  /** The order already has a shipment that has not ended (waiting for pickup or on the road) - hand-over is a one-at-a-time step; reload. Backed by the partial index `shipments_one_open_per_order`. */
+  SHIPMENT_ALREADY_OPEN: 'SHIPMENT_ALREADY_OPEN',
   /** "The customer paid cash instead" needs a QR balance still waiting for its transfer - there is none, or the money has just arrived. */
   ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
@@ -445,6 +469,17 @@ export const ErrorCode = {
   // --- Health (2026-10-07) --------------------------------------------------
   /** `GET /health/ready`: the database is unreachable or misses a migration this build ships. */
   SERVICE_NOT_READY: 'SERVICE_NOT_READY',
+
+  // ─── Product attributes & variants from a production request (2026-10-16) ───
+  /** Two attributes of one product share a name. */
+  PRODUCT_ATTRIBUTE_DUPLICATE: 'PRODUCT_ATTRIBUTE_DUPLICATE',
+  /** A changed attribute value names an attribute that is not on the SKU's product. */
+  PRODUCT_ATTRIBUTE_NOT_FOUND: 'PRODUCT_ATTRIBUTE_NOT_FOUND',
+  /** A changed attribute value is blank. */
+  PRODUCT_ATTRIBUTE_VALUE_REQUIRED: 'PRODUCT_ATTRIBUTE_VALUE_REQUIRED',
+  /** A production line made for an order line cannot change attributes or price - the order line's customization decides what is made. */
+  PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER:
+    'PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

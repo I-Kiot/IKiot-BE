@@ -5,7 +5,7 @@
 >
 > **Thứ tự nguồn:**
 > 1. [`hanh-trinh-don-hang.md`](../../docs/hanh-trinh-don-hang.md) (workspace) – nghiệp vụ.
-> 2. Notion **"Task – Hành trình đơn hàng (v2 – map flow)"** – task, phạm vi, chi tiết kỹ thuật đã chốt.
+> 2. Notion **["Task – Hành trình đơn hàng (v2 – map flow)"](https://app.notion.com/p/cba1af7cad544aaa8873422884cd3752)** – task, phạm vi, chi tiết kỹ thuật đã chốt.
 > 3. File này – route, DTO, mã lỗi.
 >
 > Bên đứng sau lệch bên đứng trước thì bên đứng sau sai. Mã task trong file này là cột **Mã** của
@@ -122,7 +122,7 @@ Module `orders/` có route của nhiều track. Cột **Task** của từng rout
 PENDING_CONFIRMATION (chỉ Shopee – sau)
         │ POST /orders/:id/confirm                                  (A-3)
         ▼
-CONFIRMED ──POST /orders/:id/pack──▶ PACKED ──POST /shipments──▶ PICKED_UP
+CONFIRMED ──POST /orders/:id/pack──▶ PACKED ──POST /shipments (EXTERNAL) | POST /shipments/:id/pick-up (INTERNAL)──▶ PICKED_UP
 (đơn tay tạo ra ở đây, A-2)  (C-1: khoá hàng, thiếu là chặn)     (C-2)       (ĐVVC đã lấy hàng)
                                                                      │ POST /orders/:id/ship  (C-2) ← trừ tồn kho (đúng phần đã khoá)
                                                                      ▼
@@ -376,7 +376,45 @@ không làm hỏng đơn. Hủy đơn / ship chỉ làm giảm nhu cầu nên kh
 
 `Supplier.type` GOODS (NCC) / WORKSHOP (xưởng) (B-1). Phiếu nhập NCC trên `/stock-movements` không đổi
 (`importSource: SUPPLIER`, hàng lỗi `defectQuantity` → `defectLocationId`). Phiếu nhập `WORKSHOP` chỉ sinh ra
-từ `POST /production-requests/:id/receive`. Không gọi `allocateArrivals`.
+từ `POST /production-requests/:id/receive` hoặc khi nơi nhận xác nhận một phiếu giao của xưởng (dưới). Không
+gọi `allocateArrivals`.
+
+### Nhân viên xưởng và phiếu giao xưởng (2026-10-09)
+
+**Nhân viên xưởng** = tài khoản STAFF của shop có `users.workshop_id` trỏ tới một `Supplier` `type = WORKSHOP`
+(gán qua `POST/PATCH /users` field `workshopId`; `null` = bỏ gán; sai loại / khác tenant → `USER_WORKSHOP_INVALID`).
+`/auth/me` trả thêm `workshopId` + `workshop: { id, supplierName }`. Quyền riêng **`production:deliver`**.
+Không cần nơi làm việc (`locationId`): họ thấy YCSX của **xưởng mình ở mọi location**, không thấy YCSX `DRAFT`
+và không thấy YCSX của xưởng khác (→ 404, như không tồn tại).
+
+**Phiếu giao xưởng** (`ProductionDelivery`, mã `PGX000123`): xưởng ghi số giao theo từng dòng YCSX, **giao thiếu
+được**. Phiếu `PENDING` **không đụng tồn kho, không ghi công nợ**. Chỉ khi **nơi nhận đếm hàng và xác nhận** thì
+mới chạy đúng đường `receive` ở trên (mở lô, hàng lỗi vào kho hỏng, công nợ xưởng, YCSX → `PARTIALLY_RECEIVED` /
+`COMPLETED`) và phiếu → `RECEIVED` kèm `stockMovementId`. Lý do: xưởng cũng là bên được trả tiền theo số đạt,
+nên không tự tăng tồn / công nợ của mình được.
+
+```
+PENDING ──nơi nhận xác nhận (receive)──▶ RECEIVED
+   └──xưởng rút lại / nơi nhận từ chối (cancel, bắt buộc lý do)──▶ CANCELLED
+```
+
+| Route | Quyền | Body / ghi chú |
+|---|---|---|
+| `GET /workshop/production-requests` | `production:deliver` + tài khoản có xưởng (`WORKSHOP_STAFF_NOT_LINKED`) | `page, limit, search` (mã YCSX), `status` (`SENT` / `PARTIALLY_RECEIVED` / `COMPLETED` / `CANCELLED`), `locationId`. Trả `ProductionRequest` như `GET /production-requests` |
+| `GET /workshop/production-requests/:id` | như trên | |
+| `POST /workshop/production-requests/:id/deliveries` | như trên | `{ items: [{ productionRequestItemId, quantity ≥ 1 }], note? }` – YCSX phải `SENT` / `PARTIALLY_RECEIVED` (`PRODUCTION_REQUEST_STATUS_INVALID`). Mỗi dòng: **đã nhận + đang chờ ở phiếu khác + lần này ≤ số đặt** (`PRODUCTION_DELIVERY_QTY_EXCEEDS`, `errors: [{ lineId, room }]`). Khoá dòng YCSX khi kiểm nên hai phiếu cùng lúc không vượt. Sau commit báo quản lý nơi nhận + người lập YCSX. Trả `ProductionRequest` |
+| `GET /workshop/deliveries` | như trên | như `GET /production-deliveries`, chỉ phiếu của xưởng mình |
+| `POST /workshop/deliveries/:id/cancel` | như trên | `{ reason }` – chỉ `PENDING`; phiếu xưởng khác → 404 |
+| `GET /production-deliveries` | `production_requests:read` | `page, limit, search` (mã phiếu / mã YCSX), `status`, `locationId`, `productionRequestId`. Nhân viên kho chỉ thấy phiếu tới nơi mình làm; chủ thấy hết. Màn "phiếu xưởng giao chờ nhận" = `status=PENDING` |
+| `GET /production-deliveries/:id` | `production_requests:read` | |
+| `POST /production-deliveries/:id/receive` | `production:receive` + đứng ở nơi nhận | `ReceiveProductionDto` như `POST /production-requests/:id/receive`. Dòng phải có trên phiếu (`PRODUCTION_DELIVERY_ITEM_MISMATCH`), số đếm ≤ số xưởng ghi (`PRODUCTION_DELIVERY_RECEIVE_EXCEEDS`); dòng không gửi = nhận 0. Phiếu đã nhận / đã hủy → `PRODUCTION_DELIVERY_STATUS_INVALID`. Sau commit báo nhân viên xưởng. Trả `ProductionRequest` + `stockMovementId` |
+| `POST /production-deliveries/:id/cancel` | `production:receive` + đứng ở nơi nhận | `{ reason }` – từ chối phiếu (sai hàng, không có hàng). Báo nhân viên xưởng |
+
+`ProductionRequest` trả thêm: mỗi dòng `pendingDeliveryQuantity` (đã báo giao, chưa đếm) và `deliveries:
+{ id, code, status, note, createdAt, createdBy, receivedAt, receivedBy, cancelledAt, cancelReason, stockMovementId,
+items: [{ productionRequestItemId, quantity, receivedQuantity, defectQuantity }] }[]`. Hủy hoặc đóng thiếu YCSX khi
+còn phiếu `PENDING` → `PRODUCTION_DELIVERY_STATUS_INVALID` (nhận hoặc hủy phiếu trước). Nơi nhận vẫn nhận trực
+tiếp được qua `POST /production-requests/:id/receive` cho xưởng không có tài khoản.
 
 ### Kho hàng hỏng (D-4) – giữ nguyên
 
@@ -410,8 +448,9 @@ cập nhật qua webhook – sau; Phase 1 đánh tay)*.
 | `GET /shipments/mine` | ai cũng gọi được – chỉ trả lần giao của chính mình | các lần giao chưa kết thúc mà người gọi là shipper (`driverId` = mình), **kèm `order.amountDue`**, ngày hẹn gần nhất trước. Không có `@Permissions`: chủ shop / người phụ trách tự làm shipper cũng cần xem. Khai báo trên `GET /shipments/:id` | C-5 · C-7 |
 | `GET /shipments/drivers` | chủ shop · người phụ trách đơn · `shipments:create` hoặc `shipments:update` tại kho của fulfillment | `orderId` → `[{ id, phoneNumber, profile, systemRole, isAssignee }]`: người làm shipper được cho đơn (đúng tập "Ai làm shipper được" dưới bảng – cùng một `where` với bước kiểm lúc ghi), cho ô chọn shipper. Đơn chưa đóng gói → `SHIPMENT_ORDER_NOT_PACKED`. Khai báo trên `GET /shipments/:id` | C-9 |
 | `GET /shipments/:id` | như `GET /shipments` | `Shipment` kèm `events`. Ngoài phạm vi xem → `SHIPMENT_NOT_FOUND` (404, như không tồn tại) | C-3 · C-9, C-7 |
-| `POST /shipments` | chủ shop · người phụ trách đơn · `shipments:create` tại kho của fulfillment (§2 "Ai làm bước nào") | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **đây là bước "ĐVVC đã lấy hàng"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`). Trong **một transaction**: nhận đơn bằng `updateMany(status: PACKED)` → `PICKED_UP` (thua → `ORDER_STATUS_CONFLICT`), fulfillment `PACKED` → `HANDED_OVER` + `handedOverAt`, shipment `PICKED_UP` + event. Tồn kho không đổi (hàng vẫn khoá). `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`); `EXTERNAL` không được có (`SHIPMENT_DRIVER_NOT_ALLOWED`). Người nhận / địa chỉ chép từ đơn. `carrierName` + `trackingCode` đã có ở shipment khác → `SHIPMENT_TRACKING_TAKEN` (ràng buộc `@@unique([carrierName, trackingCode])` toàn hệ thống – mã vận đơn là của ĐVVC). Sau commit báo shipper (trừ khi tự gán mình). Trả về `Shipment`. | C-2, C-8 · C-9 |
+| `POST /shipments` | chủ shop · người phụ trách đơn · `shipments:create` tại kho của fulfillment (§2 "Ai làm bước nào") | `{ orderId, carrierType, carrierName?, trackingCode?, driverId?, scheduledDate?, scheduledSlot?, requiresInstallation?, shippingCost?, note? }` – **"Giao cho vận chuyển"**: đơn phải `PACKED` (`SHIPMENT_ORDER_NOT_PACKED`). **`EXTERNAL`** = bước "ĐVVC đã lấy hàng": trong **một transaction** nhận đơn bằng `updateMany(status: PACKED)` → `PICKED_UP` (thua → `ORDER_STATUS_CONFLICT`), fulfillment `PACKED` → `HANDED_OVER` + `handedOverAt`, shipment `PICKED_UP` + event. **`INTERNAL`** *(chốt 2026-10-15)* = **chỉ gán shipper**: shipment `CREATED` + event, đơn và fulfillment **vẫn `PACKED`** tới khi shipper `pick-up`; transaction vẫn ghi vào dòng đơn (khoá dòng) để hai người bấm cùng lúc không tạo hai lần giao. Đã có lần giao chưa kết thúc → `SHIPMENT_ALREADY_OPEN` (409; chốt chặn cuối là index một phần `shipments_one_open_per_order`). Tồn kho không đổi (hàng vẫn khoá). `INTERNAL` bắt buộc `driverId` (`SHIPMENT_DRIVER_REQUIRED`); `EXTERNAL` không được có (`SHIPMENT_DRIVER_NOT_ALLOWED`). Người nhận / địa chỉ chép từ đơn. `carrierName` + `trackingCode` đã có ở shipment khác → `SHIPMENT_TRACKING_TAKEN` (ràng buộc `@@unique([carrierName, trackingCode])` toàn hệ thống – mã vận đơn là của ĐVVC). Sau commit báo shipper (trừ khi tự gán mình). Trả về `Shipment`. | C-2, C-8 · C-9 |
 | `PATCH /shipments/:id/driver` | chủ shop · người phụ trách đơn · `shipments:update` tại kho của fulfillment | `{ driverId }` – đổi shipper / thợ của shipment `INTERNAL` (`EXTERNAL` → `SHIPMENT_DRIVER_NOT_ALLOWED`) chưa kết thúc (kết thúc, hoặc vừa kết thúc lúc ghi → `SHIPMENT_STATUS_INVALID`); báo shipper mới | C-8 · C-9 |
+| `POST /shipments/:id/pick-up` | **shipper của lần giao** · người phụ trách đơn · chủ shop (như `deliver`, không có đường "có quyền trong role") | `{ note? }` – *chốt 2026-10-15*. **Shipper xác nhận đã lấy hàng**: shipment `CREATED` → `PICKED_UP`, đơn `PACKED` → `PICKED_UP`, fulfillment → `HANDED_OVER` + `handedOverAt`, event `PICKED_UP`, trong một transaction. Shipment không ở `CREATED` (đã lấy, hoặc là lần giao `EXTERNAL`) → `SHIPMENT_STATUS_INVALID`; đơn không còn `PACKED` → `ORDER_STATUS_TRANSITION_INVALID`. Câu ghi có điều kiện "vẫn `CREATED`, vẫn là shipper / người phụ trách đó": bị đổi shipper đúng lúc bấm → `SHIPMENT_STATUS_INVALID`, đơn vừa bị hủy → `ORDER_STATUS_CONFLICT`, cả transaction rollback. Sau commit báo người phụ trách đơn (`SHIPMENT_PICKED_UP`, trừ khi tự bấm). Trả về `Shipment` | – · C-7 |
 | `POST /shipments/:id/events` | chủ shop · người phụ trách đơn · **shipper của shipment** · `shipments:update` tại kho của fulfillment | `{ status, note?, latitude?, longitude? }` – ghi nhật trình. `status` **chỉ được `OUT_FOR_DELIVERY`** (chốt 2026-10-06) và đẩy shipment sang `OUT_FOR_DELIVERY`; không đổi trạng thái đơn. Chỉ khi đơn `SHIPPING` và shipment `IN_TRANSIT` / `OUT_FOR_DELIVERY`, khác → `SHIPMENT_STATUS_INVALID` | C-3 · C-9 |
 | `POST /shipments/:id/deliver` | **shipper của lần giao** · người phụ trách đơn · chủ shop (không có đường "có quyền trong role") | **Giao thành công.** `DeliverDto` dưới. **Chỉ lần giao `INTERNAL`** – `EXTERNAL` → `SHIPMENT_DELIVER_INTERNAL_ONLY` (hãng tự báo về, C-4, Phase 2; chốt 2026-10-06 theo hành trình Bước 7b). Đơn phải `SHIPPING` (`SHIPMENT_ORDER_NOT_SHIPPING`), lần giao đang trên đường (`SHIPMENT_STATUS_INVALID`). Kết quả theo bảng dưới; có khoản QR thì `Shipment` trả kèm `payment: { reference, amount, status, qrUrl }` (cũng có ở `GET /shipments/:id` để mở lại mã QR) | C-5 + A-10 (+ Payment E-5) · C-7, C-9 |
 | `POST /shipments/:id/pay-cash` | như `deliver` | `{ note? }` – **khách không chuyển khoản QR, thu tiền mặt thay**: khoản QR `PENDING` → `CANCELLED`, ghi khoản `BALANCE` `CASH` `PAID` `remittanceStatus = PENDING`, `paymentStatus` → `PAID`; đơn giữ `RECEIVED` (chờ chủ nhận tiền, A-10). Không có khoản QR đang chờ (hoặc tiền vừa về) → `ORDER_QR_PAYMENT_NOT_PENDING` | C-5 · C-7 |

@@ -13,7 +13,9 @@ import {
   REMITTANCE_STATUSES,
 } from '../../../common/constants/order-status';
 import {
+  ORDER_ATTENTION_KINDS,
   ORDER_SORTS,
+  type OrderAttentionKind,
   STOCK_CHECK_STATUSES,
   type OrderSort,
 } from '../order-read.constants';
@@ -61,4 +63,9 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsOptional()
   @IsIn(ORDER_SORTS)
   sort?: OrderSort;
+
+  /** Orders that need someone's eye: `SHORT` - a line is partly or wholly out on the shelf; `DUE_SOON` - the requested delivery date is near or past. Only orders that have not shipped can match. */
+  @IsOptional()
+  @IsIn(ORDER_ATTENTION_KINDS)
+  attention?: OrderAttentionKind;
 }

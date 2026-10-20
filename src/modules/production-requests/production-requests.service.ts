@@ -28,9 +28,12 @@ import {
 } from '../../common/constants/order-status';
 import { ProductItemType } from '../../common/constants/product-status';
 import {
+  ProductionDeliveryStatus,
   ProductionRequestStatus,
   RECEIVABLE_PRODUCTION_REQUEST_STATUSES,
 } from '../../common/constants/production-request-status';
+import { SystemRole } from '../../common/constants/system-role';
+import { UserStatus } from '../../common/constants/user-status';
 import {
   LOCATION_SELECT,
   resolveLocations,
@@ -58,6 +61,7 @@ import {
   statusAfterReceipt,
   type RuleViolation,
 } from './production-request-rules';
+import { ProductVariantService } from '../products/product-variant.service';
 
 const PERSON_SELECT = {
   select: {
@@ -83,7 +87,7 @@ function thumbnailOf(item: ImageRow[], product: ImageRow[]): string | null {
   return pick(item) ?? pick(product) ?? null;
 }
 
-const DETAIL_INCLUDE = {
+export const DETAIL_INCLUDE = {
   supplier: { select: { id: true, supplierName: true, phoneNumber: true } },
   location: LOCATION_SELECT,
   createdBy: PERSON_SELECT,
@@ -96,13 +100,21 @@ const DETAIL_INCLUDE = {
       quantity: true,
       receivedQuantity: true,
       note: true,
+      attachmentUrls: true,
       productItem: {
         select: {
+          productId: true,
           sku: true,
           productName: true,
           costPrice: true,
+          retailPrice: true,
           images: IMAGE_SELECT,
           product: { select: { images: IMAGE_SELECT } },
+          // Thuộc tính của SKU (2026-10-16) - xưởng đọc từ đây là làm bản nào.
+          details: {
+            select: { attributeId: true, name: true, value: true },
+            orderBy: { position: 'asc' },
+          },
         },
       },
       orderItem: {
@@ -111,6 +123,23 @@ const DETAIL_INCLUDE = {
           orderId: true,
           isCustom: true,
           order: { select: { code: true } },
+          // Thứ khách đặt riêng cho dòng đơn (2026-10-16): xưởng đọc ngay trên YCSX - đổi gì so với mẫu, ảnh, ghi chú.
+          customization: {
+            select: {
+              note: true,
+              attachmentUrls: true,
+              specs: {
+                select: {
+                  attributeId: true,
+                  name: true,
+                  value: true,
+                  unit: true,
+                  baseValue: true,
+                },
+                orderBy: { position: 'asc' },
+              },
+            },
+          },
         },
       },
       // Every receipt is one WORKSHOP import whose lines point back here.
@@ -127,11 +156,44 @@ const DETAIL_INCLUDE = {
       },
     },
   },
+  // The workshop's delivery notes (2026-10-09); a PENDING one is goods announced but not yet counted.
+  deliveries: {
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      code: true,
+      status: true,
+      note: true,
+      createdAt: true,
+      createdBy: PERSON_SELECT,
+      receivedAt: true,
+      receivedBy: PERSON_SELECT,
+      cancelledAt: true,
+      cancelReason: true,
+      stockMovementId: true,
+      items: {
+        select: {
+          productionRequestItemId: true,
+          quantity: true,
+          receivedQuantity: true,
+          defectQuantity: true,
+        },
+      },
+    },
+  },
 } as const satisfies Prisma.ProductionRequestInclude;
 
-type RequestRow = Prisma.ProductionRequestGetPayload<{
+export type RequestRow = Prisma.ProductionRequestGetPayload<{
   include: typeof DETAIL_INCLUDE;
 }>;
+
+/** A workshop delivery note being confirmed through `receiveGoods`: which lines it carries and how many the workshop said it sent on each. */
+export interface DeliveryClaim {
+  id: string;
+  code: string;
+  createdById: string;
+  delivered: Map<string, number>;
+}
 
 /** A validated line ready to write. */
 interface PreparedLine {
@@ -160,6 +222,7 @@ export class ProductionRequestService {
     private readonly notifications: NotificationService,
     private readonly suppliers: SupplierService,
     private readonly productionList: ProductionListService,
+    private readonly variants: ProductVariantService,
   ) {}
 
   // ─── Reads ─────────────────────────────────────────────────────────────────
@@ -221,7 +284,12 @@ export class ProductionRequestService {
       ImportSource.WORKSHOP,
     );
     await this.requireReceivingLocation(user, tenantId, dto.locationId);
-    const lines = await this.prepareLines(tenantId, dto.items);
+    const lines = await this.applyVariants(
+      user,
+      tenantId,
+      dto.items,
+      await this.prepareLines(tenantId, dto.items),
+    );
 
     const data = {
       tenantId,
@@ -277,8 +345,17 @@ export class ProductionRequestService {
     if (dto.locationId && dto.locationId !== request.locationId) {
       await this.requireReceivingLocation(user, tenantId, dto.locationId);
     }
+    // Sửa nháp là gửi lại toàn bộ dòng, nên SKU đã có trên nháp này được giữ dù sản phẩm vừa bị tắt isManufacturable.
+    const skusAlreadyOnRequest = new Set(
+      request.items.map((item) => item.productItemId),
+    );
     const lines = dto.items
-      ? await this.prepareLines(tenantId, dto.items)
+      ? await this.applyVariants(
+          user,
+          tenantId,
+          dto.items,
+          await this.prepareLines(tenantId, dto.items, skusAlreadyOnRequest),
+        )
       : null;
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -318,7 +395,12 @@ export class ProductionRequestService {
     const request = await this.findRow(tenantId, id);
     this.assertCanWrite(user, request);
     this.assertDraft(request);
-    const [line] = await this.prepareLines(tenantId, [dto]);
+    const [line] = await this.applyVariants(
+      user,
+      tenantId,
+      [dto],
+      await this.prepareLines(tenantId, [dto]),
+    );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const guard = await tx.productionRequest.updateMany({
@@ -361,6 +443,21 @@ export class ProductionRequestService {
     const tenantId = requireTenantId(user);
     const request = await this.findRow(tenantId, id);
     this.assertCanWrite(user, request);
+
+    // A delivery note still waiting means goods may be standing at the door: cancelling or closing short now would leave it unreceivable.
+    if (
+      (dto.status === ProductionRequestStatus.CANCELLED ||
+        dto.status === ProductionRequestStatus.COMPLETED) &&
+      request.deliveries.some(
+        (d) => d.status === ProductionDeliveryStatus.PENDING,
+      )
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.PRODUCTION_DELIVERY_STATUS_INVALID,
+        message:
+          'A workshop delivery note is still waiting to be received; receive or cancel it first',
+      });
+    }
 
     const receivedAny = request.items.some((line) => line.receivedQuantity > 0);
     const violation = manualTransitionViolation(
@@ -444,10 +541,27 @@ export class ProductionRequestService {
 
   // ─── Receiving ─────────────────────────────────────────────────────────────
 
+  /** The location receives goods straight off the request - the path for a workshop without accounts. */
   async receive(user: AuthUser, id: string, dto: ReceiveProductionDto) {
-    const tenantId = requireTenantId(user);
-    const request = await this.findRow(tenantId, id);
+    const request = await this.findRow(requireTenantId(user), id);
     this.assertCanWrite(user, request);
+    return this.receiveGoods(user, request, dto, null);
+  }
+
+  /**
+   * The one place a workshop's goods enter stock. With a `delivery`, the receipt confirms that
+   * delivery note: every line must be on it, no more than the workshop said it sent, and the note
+   * is claimed inside the same transaction so two people confirming it cannot both receive.
+   * Access to the location is the caller's job.
+   */
+  async receiveGoods(
+    user: AuthUser,
+    request: RequestRow,
+    dto: ReceiveProductionDto,
+    delivery: DeliveryClaim | null,
+  ) {
+    const tenantId = requireTenantId(user);
+    const id = request.id;
     if (!RECEIVABLE_PRODUCTION_REQUEST_STATUSES.includes(request.status)) {
       throw new ConflictException({
         code: ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID,
@@ -477,6 +591,21 @@ export class ProductionRequestService {
           code: ErrorCode.STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS,
           message: `The defective quantity cannot exceed the received quantity for ${line.productItem.sku ?? line.productItemId}`,
         });
+      }
+      if (delivery) {
+        const sent = delivery.delivered.get(line.id);
+        if (sent === undefined) {
+          throw new BadRequestException({
+            code: ErrorCode.PRODUCTION_DELIVERY_ITEM_MISMATCH,
+            message: `${line.productItem.sku ?? line.productItemId} is not on delivery note ${delivery.code}`,
+          });
+        }
+        if (entry.receivedQuantity > sent) {
+          throw new BadRequestException({
+            code: ErrorCode.PRODUCTION_DELIVERY_RECEIVE_EXCEEDS,
+            message: `${entry.receivedQuantity} counted for ${line.productItem.sku ?? line.productItemId}, but the workshop delivered ${sent}`,
+          });
+        }
       }
       // Advisory - the conditional increment inside the transaction is what enforces it.
       if (line.receivedQuantity + entry.receivedQuantity > line.quantity) {
@@ -527,6 +656,17 @@ export class ProductionRequestService {
     const now = new Date();
     const { movementId, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
+        if (delivery) {
+          // Row-locks the note until commit; a second confirmation waits here, then finds it no longer PENDING.
+          const claimed = await tx.productionDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: ProductionDeliveryStatus.PENDING,
+            },
+            data: { receivedById: user.userId },
+          });
+          if (claimed.count === 0) throw this.deliveryNotPending();
+        }
         for (const p of priced) {
           // The ceiling is in the WHERE, so two people receiving the same line at once cannot overshoot it.
           const bumped = await tx.productionRequestItem.updateMany({
@@ -553,7 +693,11 @@ export class ProductionRequestService {
             receivedById: user.userId,
             receivedAt: now,
             totalPrice: amount,
-            note: dto.note ?? `Nhận hàng xưởng theo ${request.code}`,
+            note:
+              dto.note ??
+              (delivery
+                ? `Nhận phiếu giao ${delivery.code} theo ${request.code}`
+                : `Nhận hàng xưởng theo ${request.code}`),
             details: {
               create: priced.map((p) => ({
                 productItemId: p.line.productItemId,
@@ -614,6 +758,33 @@ export class ProductionRequestService {
           }
         }
 
+        if (delivery) {
+          const counted = new Map(
+            dto.items.map((e) => [e.productionRequestItemId, e]),
+          );
+          for (const lineId of delivery.delivered.keys()) {
+            const entry = counted.get(lineId);
+            await tx.productionDeliveryItem.updateMany({
+              where: {
+                deliveryId: delivery.id,
+                productionRequestItemId: lineId,
+              },
+              data: {
+                receivedQuantity: entry?.receivedQuantity ?? 0,
+                defectQuantity: entry?.defectQuantity ?? 0,
+              },
+            });
+          }
+          await tx.productionDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: ProductionDeliveryStatus.RECEIVED,
+              receivedAt: now,
+              stockMovementId: movement.id,
+            },
+          });
+        }
+
         const lines = await tx.productionRequestItem.findMany({
           where: { productionRequestId: id },
           select: { quantity: true, receivedQuantity: true },
@@ -650,6 +821,29 @@ export class ProductionRequestService {
     );
     // No low-stock check: arriving goods only raise stock, so nothing here can cross the threshold (contract §3 step 5 lists it, but the edge-triggered rule can never fire on an increase).
     await this.notifyWaitingOrders(tenantId, request, priced, user.userId);
+    if (delivery) {
+      const recipients = await this.workshopStaffOf(
+        tenantId,
+        request.supplierId,
+      );
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [...recipients, delivery.createdById].filter(
+          (rid) => rid !== user.userId,
+        ),
+        referenceId: id,
+        ...ProductionRequestNotificationTemplates.deliveryReceived({
+          deliveryCode: delivery.code,
+          requestCode: request.code,
+          locationName: request.location.name,
+          receivedQuantity: priced.reduce(
+            (sum, p) => sum + p.entry.receivedQuantity,
+            0,
+          ),
+          defectQuantity: priced.reduce((sum, p) => sum + p.defect, 0),
+        }),
+      });
+    }
 
     const received = await this.findRow(tenantId, id);
     return { ...this.toResponse(received), stockMovementId: movementId };
@@ -657,10 +851,11 @@ export class ProductionRequestService {
 
   // ─── Rules ─────────────────────────────────────────────────────────────────
 
-  /** Lines must name real, producible SKUs of this shop, at most once per (SKU, order line); a line tied to an order line must match that line's SKU and the order must still be waiting to ship. One query for the SKUs, one for the order lines (coding rule 19). */
+  /** Lines must name real, producible SKUs of this shop whose product is marked `isManufacturable`, at most once per (SKU, order line); a line tied to an order line must match that line's SKU and the order must still be waiting to ship. One query for the SKUs, one for the order lines (coding rule 19). */
   private async prepareLines(
     tenantId: string,
     lines: ProductionRequestLineDto[],
+    skusAlreadyOnRequest: ReadonlySet<string> = new Set(),
   ): Promise<PreparedLine[]> {
     if (lines.length === 0) {
       throw new BadRequestException({
@@ -691,7 +886,12 @@ export class ProductionRequestService {
     const [items, orderItems] = await Promise.all([
       this.prisma.productItem.findMany({
         where: { tenantId, id: { in: itemIds } },
-        select: { id: true, sku: true, itemType: true },
+        select: {
+          id: true,
+          sku: true,
+          itemType: true,
+          product: { select: { isManufacturable: true } },
+        },
       }),
       orderItemIds.length === 0
         ? Promise.resolve<{ id: string; productItemId: string }[]>([])
@@ -725,6 +925,14 @@ export class ProductionRequestService {
           message: `${item.sku ?? item.id} is a ${item.itemType}; only a product can be made (order a combo's components instead)`,
         });
       }
+      // Chỉ chặn dòng mới: dòng đã nằm trong YCSX trước khi cờ bị tắt vẫn được giữ và nhận hàng.
+      const isNewLine = !skusAlreadyOnRequest.has(item.id);
+      if (isNewLine && !item.product.isManufacturable) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE,
+          message: `${item.sku ?? item.id} is not manufacturable; order it from a supplier instead`,
+        });
+      }
       if (line.orderItemId) {
         const orderItem = orderItemById.get(line.orderItemId);
         if (!orderItem || orderItem.productItemId !== line.productItemId) {
@@ -740,8 +948,49 @@ export class ProductionRequestService {
         quantity: line.quantity,
         orderItemId: line.orderItemId ?? null,
         note: line.note ?? null,
+        attachmentUrls: line.attachmentUrls ?? [],
       };
     });
+  }
+
+  /**
+   * Dòng có đổi thuộc tính hoặc giá (2026-10-16): chuyển dòng sang SKU đúng bộ thuộc tính (`ProductVariantService`),
+   * có thể tạo SKU mới. Chạy sau `prepareLines`, nên SKU gốc đã được kiểm (làm được, đúng loại) trước khi tạo gì.
+   * Dòng làm cho một dòng đơn không được đổi: thứ được làm là do phần chỉnh sửa của dòng đơn quyết định.
+   */
+  private async applyVariants(
+    user: AuthUser,
+    tenantId: string,
+    lines: ProductionRequestLineDto[],
+    prepared: PreparedLine[],
+  ): Promise<PreparedLine[]> {
+    const result: PreparedLine[] = [];
+    for (const [index, line] of lines.entries()) {
+      const changes = line.attributeValues ?? [];
+      if (changes.length === 0 && line.retailPrice === undefined) {
+        result.push(prepared[index]);
+        continue;
+      }
+      if (line.orderItemId) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER,
+          message:
+            "A line made for an order line follows that line's customization; its attributes and price cannot be changed here",
+        });
+      }
+      const resolved = await this.variants.resolve(
+        user,
+        tenantId,
+        line.productItemId,
+        changes,
+        line.retailPrice,
+      );
+      result.push({
+        ...prepared[index],
+        productItemId: resolved.productItemId,
+      });
+    }
+    return result;
   }
 
   /** Where the workshop delivers: a live, sellable location of this shop, and one the actor may act at. */
@@ -863,8 +1112,33 @@ export class ProductionRequestService {
     }
   }
 
-  private assertCanWrite(user: AuthUser, request: RequestRow): void {
+  assertCanWrite(user: AuthUser, request: RequestRow): void {
     if (!canActAt(user, request.location)) throw this.locationDenied();
+  }
+
+  /** The active staff accounts linked to a workshop - who hears about their delivery notes. */
+  async workshopStaffOf(
+    tenantId: string,
+    workshopId: string,
+  ): Promise<string[]> {
+    const staff = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        workshopId,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+      },
+      select: { id: true },
+    });
+    return staff.map((row) => row.id);
+  }
+
+  deliveryNotPending() {
+    return new ConflictException({
+      code: ErrorCode.PRODUCTION_DELIVERY_STATUS_INVALID,
+      message:
+        'This delivery note is no longer waiting to be received (already received or cancelled)',
+    });
   }
 
   private assertDraft(request: RequestRow): void {
@@ -904,7 +1178,7 @@ export class ProductionRequestService {
 
   // ─── Plumbing ──────────────────────────────────────────────────────────────
 
-  private async findRow(tenantId: string, id: string): Promise<RequestRow> {
+  async findRow(tenantId: string, id: string): Promise<RequestRow> {
     const request = await this.prisma.productionRequest.findFirst({
       where: { id, tenantId },
       include: DETAIL_INCLUDE,
@@ -932,7 +1206,7 @@ export class ProductionRequestService {
   }
 
   /** The contract's `ProductionRequest` shape: supplier and location named once, people nested, and the receipts (the WORKSHOP imports) gathered off the lines. */
-  private toResponse(request: RequestRow) {
+  toResponse(request: RequestRow) {
     const {
       supplierId,
       locationId,
@@ -942,8 +1216,22 @@ export class ProductionRequestService {
       createdBy,
       statusUpdatedBy,
       items,
+      deliveries,
       ...rest
     } = request;
+
+    // Announced by the workshop but not counted yet - what the next delivery note must leave room for.
+    const pendingByLine = new Map<string, number>();
+    for (const delivery of deliveries) {
+      if (delivery.status !== ProductionDeliveryStatus.PENDING) continue;
+      for (const line of delivery.items) {
+        pendingByLine.set(
+          line.productionRequestItemId,
+          (pendingByLine.get(line.productionRequestItemId) ?? 0) +
+            line.quantity,
+        );
+      }
+    }
 
     const receipts = new Map<
       string,
@@ -978,21 +1266,33 @@ export class ProductionRequestService {
       items: items.map((line) => ({
         id: line.id,
         productItemId: line.productItemId,
+        productId: line.productItem.productId,
         sku: line.productItem.sku,
         productName: line.productItem.productName,
+        retailPrice: Number(line.productItem.retailPrice),
+        attributes: line.productItem.details.map(
+          ({ attributeId, name, value }) => ({
+            attributeId,
+            name,
+            value,
+          }),
+        ),
         imageUrl: thumbnailOf(
           line.productItem.images,
           line.productItem.product.images,
         ),
         quantity: line.quantity,
         receivedQuantity: line.receivedQuantity,
+        pendingDeliveryQuantity: pendingByLine.get(line.id) ?? 0,
         note: line.note,
+        attachmentUrls: line.attachmentUrls,
         orderItem: line.orderItem
           ? {
               id: line.orderItem.id,
               orderId: line.orderItem.orderId,
               orderCode: line.orderItem.order.code,
               isCustom: line.orderItem.isCustom,
+              customization: line.orderItem.customization,
             }
           : null,
       })),
@@ -1000,6 +1300,11 @@ export class ProductionRequestService {
         (a, b) =>
           (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0),
       ),
+      deliveries: deliveries.map(({ createdBy: by, receivedBy, ...d }) => ({
+        ...d,
+        createdBy: withNestedProfile(by),
+        receivedBy: receivedBy ? withNestedProfile(receivedBy) : null,
+      })),
     };
   }
 }
