@@ -115,6 +115,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { tenantId: t, refundOfPaymentId: { not: null } },
     });
     await prisma.payment.deleteMany({ where: { tenantId: t } });
+    await prisma.invoice.deleteMany({ where: { tenantId: t } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId: t } } });
     await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.order.deleteMany({ where: { tenantId: t } });

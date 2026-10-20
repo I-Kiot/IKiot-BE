@@ -155,11 +155,15 @@ function toCustomization(customization: DetailLineRow['customization']) {
     fabricCode: customization.fabricCode,
     note: customization.note,
     attachmentUrls: customization.attachmentUrls,
-    specs: customization.specs.map(({ name, value, unit }) => ({
-      name,
-      value,
-      unit,
-    })),
+    specs: customization.specs.map(
+      ({ name, value, unit, attributeId, baseValue }) => ({
+        name,
+        value,
+        unit,
+        attributeId,
+        baseValue,
+      }),
+    ),
   };
 }
 
@@ -188,6 +192,7 @@ function toOrderBase(row: OrderListRow) {
     shippedBy,
     payments: _payments,
     items: _items,
+    shipments: _shipments,
     appliedPromotions,
     subtotal,
     shippingFee,
@@ -245,6 +250,10 @@ export function toOrderListItem(
   return {
     ...toOrderBase(row),
     items,
+    // The newest shipment's driver; null until one is assigned.
+    driver: toUserRef(row.shipments[0]?.driver ?? null),
+    // The order stays SHIPPING when a delivery fails (the goods are still out); this is what lets the list say so.
+    latestShipmentStatus: row.shipments[0]?.status ?? null,
     // Top-level lines: a combo counts once, not once per component.
     itemCount: row.items.filter((item) => item.parentItemId === null).length,
     stockSummary: summarizeStock(items.map((item) => item.stockCheck)),
@@ -265,5 +274,6 @@ export function toOrderDetail(
       driver: toUserRef(driver),
     })),
     returns,
+    latestShipmentStatus: shipments.at(-1)?.status ?? null,
   };
 }

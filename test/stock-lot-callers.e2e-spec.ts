@@ -6,6 +6,7 @@ import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
 import { OrderService } from './../src/modules/orders/orders.service';
+import { InvoiceReadService } from './../src/modules/invoices/invoices-read.service';
 import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
@@ -20,6 +21,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
   let prisma: PrismaService;
   let movements: StockMovementService;
   let orders: OrderService;
+  let invoiceReads: InvoiceReadService;
 
   const tenantId = randomUUID();
   const userId = randomUUID();
@@ -94,6 +96,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     prisma = app.get(PrismaService);
     movements = app.get(StockMovementService);
     orders = app.get(OrderService);
+    invoiceReads = app.get(InvoiceReadService);
 
     await prisma.tenant.create({ data: { id: tenantId, name: 'callers-e2e' } });
     await prisma.user.create({
@@ -158,6 +161,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     });
     await prisma.inventoryLot.deleteMany({ where });
     await prisma.stockMovementRequest.deleteMany({ where });
+    await prisma.invoice.deleteMany({ where });
     await prisma.order.deleteMany({ where });
     await prisma.customer.deleteMany({ where });
     await prisma.inventory.deleteMany({ where });
@@ -242,6 +246,40 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     expect(await stockAt(branchId)).toBe(2);
     expect(order.assigneeId).toBe(userId);
 
+    // A paid till sale is invoiced on the spot.
+    const sale = await prisma.invoice.findFirstOrThrow({
+      where: { orderId: order.id, type: 'SALE' },
+      include: { lines: true },
+    });
+    expect(sale.status).toBe('ISSUED');
+    expect(sale.invoiceNumber).toMatch(/^HD\d{6}$/);
+    expect(sale.lines).toHaveLength(1);
+
+    // GET /invoices: a till sale is a COUNTER invoice, and never shows under ORDERED.
+    const counter = await invoiceReads.findAll(owner, tenantId, {
+      page: 1,
+      limit: 20,
+      kind: 'COUNTER',
+    });
+    const row = counter.data.find((invoice) => invoice.id === sale.id);
+    expect(row).toMatchObject({
+      kind: 'COUNTER',
+      status: 'ISSUED',
+      total: Number(sale.total),
+    });
+    expect(row?.order.code).toBe(order.code);
+    const ordered = await invoiceReads.findAll(owner, tenantId, {
+      page: 1,
+      limit: 20,
+      kind: 'ORDERED',
+    });
+    expect(
+      ordered.data.find((invoice) => invoice.id === sale.id),
+    ).toBeUndefined();
+    expect(
+      (await invoiceReads.findOne(owner, tenantId, sale.id)).lines,
+    ).toHaveLength(1);
+
     const line = await prisma.orderItem.findFirstOrThrow({
       where: { orderId: order.id },
     });
@@ -250,6 +288,14 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     expect(Number(line.unitCostPrice)).toBe(100);
 
     await orders.updateStatus(owner, tenantId, order.id, 'RETURNED');
+    // The issued invoice stands; the return is a negative ADJUSTMENT pointing at it.
+    const adjustment = await prisma.invoice.findFirstOrThrow({
+      where: { orderId: order.id, type: 'ADJUSTMENT' },
+    });
+    expect(adjustment.status).toBe('ISSUED');
+    expect(adjustment.originalInvoiceId).toBe(sale.id);
+    expect(adjustment.invoiceNumber).toMatch(/^DC\d{6}$/);
+    expect(Number(adjustment.total)).toBe(-Number(sale.total));
     expect(await stockAt(branchId)).toBe(4);
     const [back] = await ledgerOf('RETURN_GOOD');
     expect(back.orderItemId).toBe(line.id);

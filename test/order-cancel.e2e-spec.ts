@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { InvoiceService } from './../src/modules/invoices/invoices.service';
 import { randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
@@ -95,6 +96,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule],
       providers: [
+        InvoiceService,
         OrderService,
         OrderPricingService,
         ManualOrderService,
@@ -212,6 +214,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
     await prisma.order.deleteMany({ where: { tenantId } });
     await prisma.inventory.deleteMany({ where: { tenantId } });
@@ -249,6 +252,12 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     expect(row.payments).toHaveLength(0);
     expect(result.refund).toBeNull();
     expect(result.openProductionRequests).toEqual([]);
+    // It was never completed, so its invoice was never issued - it is withdrawn.
+    const invoice = await prisma.invoice.findFirstOrThrow({
+      where: { orderId: id },
+    });
+    expect(invoice.status).toBe('CANCELLED');
+    expect(invoice.invoiceNumber).toBeNull();
   });
 
   it('gives a packed order its locked goods back and cancels the fulfillment and the open shipment', async () => {

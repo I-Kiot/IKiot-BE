@@ -86,6 +86,16 @@ export class OrderController {
     return this.reads.findAll(user, requireTenantId(user), query);
   }
 
+  /** Counts of orders needing attention (short on the shelf, delivery date near). Declared above `:id` or it is read as an order id. */
+  @Permissions('orders', 'read')
+  @Get('alerts')
+  alerts(
+    @CurrentUser() user: AuthUser,
+    @Query('branchId', new ParseUUIDPipe({ optional: true })) branchId?: string,
+  ) {
+    return this.reads.alerts(user, requireTenantId(user), branchId);
+  }
+
   /** A-9: `OrderDetail` (contract §2). */
   @Permissions('orders', 'read')
   @Get(':id')

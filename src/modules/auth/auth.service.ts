@@ -35,8 +35,17 @@ import {
   withNestedProfile,
   type FlatUserProfile,
 } from '../../common/utils/user-profile';
+import { LOCATION_SELECT } from '../../common/dto/location-ref.dto';
 
 const BCRYPT_COST = 10;
+
+// Nơi làm việc của tài khoản, kèm vào mọi user trả về cho phiên đăng nhập.
+// `locationId` alone does not say whether the posting is a branch or a warehouse, and the dashboard scopes every screen by that - its location switcher showed "the whole chain" to every STAFF account until this was added. The shape is the schema's own `{ id, type, name }`; the client maps it, the API does not grow `branchId`/`warehouseId` back.
+const SESSION_USER_INCLUDE = {
+  location: LOCATION_SELECT,
+  // Workshop staff (2026-10-09): the dashboard routes them to the workshop screen and names it.
+  workshop: { select: { id: true, supplierName: true } },
+} as const;
 
 // Stamped into the reset token and checked again when it is redeemed, so an ordinary access token posted to /auth/reset-password is not mistaken for permission.
 const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';
@@ -112,6 +121,7 @@ export class AuthService {
   async login(dto: LoginDto, userAgent?: string) {
     const user = await this.prisma.user.findFirst({
       where: { phoneNumber: dto.phoneNumber },
+      include: SESSION_USER_INCLUDE,
     });
     if (!user || !user.password)
       throw new UnauthorizedException({
@@ -147,7 +157,10 @@ export class AuthService {
   async me(authUser: AuthUser) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: authUser.userId },
-      include: { role: { select: { id: true, name: true } } },
+      include: {
+        role: { select: { id: true, name: true } },
+        ...SESSION_USER_INCLUDE,
+      },
     });
     return {
       ...this.toPublicUser(user),
@@ -188,6 +201,7 @@ export class AuthService {
     const user = await this.prisma.user.update({
       where: { id: authUser.userId },
       data,
+      include: SESSION_USER_INCLUDE,
     });
     return this.toPublicUser(user);
   }
@@ -251,7 +265,10 @@ export class AuthService {
       });
     }
 
-    const user = await this.prisma.user.findFirst({ where: { email } });
+    const user = await this.prisma.user.findFirst({
+      where: { email },
+      include: SESSION_USER_INCLUDE,
+    });
     if (!user)
       throw new UnauthorizedException({
         code: ErrorCode.ACCOUNT_NOT_REGISTERED,

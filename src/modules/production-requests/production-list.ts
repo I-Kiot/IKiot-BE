@@ -8,9 +8,12 @@ import {
 // no database, so every rule about "how many are short" is unit-tested on its own, the way
 // pricing-engine.ts and payroll-math.ts are. The service loads the rows and decorates the result.
 //
-// Every SKU of the catalogue can be ordered from a workshop, short or not (2026-10-05): the list
-// is the whole catalogue at each location, and "how many are short" is one column of it plus a
-// filter, with the short rows sorted first.
+// Every manufacturable SKU (`Product.isManufacturable`, since 2026-10-13 - before it, every SKU)
+// can be ordered from a workshop, short or not (2026-10-05): the list is that catalogue at each
+// location, and "how many are short" is one column of it plus a filter, with the short rows
+// sorted first. Short rows come from demand, so a SKU bought only from suppliers still shows up
+// when an order is short of it; the row carries `isManufacturable: false` and is restocked
+// through an import ("Tạo đơn nhập hàng"), never a request.
 //
 // One row is one (location, SKU) - or, for a piece made to one order line's own design, one
 // (location, SKU, order line): a custom piece is only ever for that line, so it can neither be

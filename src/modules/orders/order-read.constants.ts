@@ -48,3 +48,11 @@ export const PRIORITY_SORT_ORDER: readonly string[] = [
   OrderPriority.HIGH,
   OrderPriority.NORMAL,
 ];
+
+/** What the list's `attention` filter and `GET /orders/alerts` flag on an order still waiting to leave: a line short on the shelf, or a customer's delivery date close (or already past). */
+export const ORDER_ATTENTION_KINDS = ['SHORT', 'DUE_SOON'] as const;
+
+export type OrderAttentionKind = (typeof ORDER_ATTENTION_KINDS)[number];
+
+/** "Sắp tới ngày giao": the requested delivery date is today or within this many days after it. An overdue date counts too - it is the most urgent case, not an exempt one. */
+export const DUE_SOON_DAYS = 2;

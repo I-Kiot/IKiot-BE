@@ -27,21 +27,22 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 export class BranchController {
   constructor(private readonly service: BranchService) {}
 
-  @Permissions('branches', 'read')
+  // `read_own` is in every STAFF account's base set and reaches only their own posting - LocationService narrows it (`locationReadScope`).
+  @Permissions('branches', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách chi nhánh (phân trang, tìm kiếm)' })
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryBranchDto) {
-    return this.service.findAll(requireTenantId(user), query);
+    return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  @Permissions('branches', 'read')
+  @Permissions('branches', 'read', 'read_own')
   @Get(':id')
   @ApiOperation({ summary: 'Chi tiết chi nhánh' })
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(requireTenantId(user), id);
+    return this.service.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('branches', 'create')

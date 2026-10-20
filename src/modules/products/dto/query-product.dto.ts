@@ -1,6 +1,7 @@
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -8,7 +9,6 @@ import {
   IsUUID,
   Max,
   Min,
-  MinLength,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
@@ -33,6 +33,16 @@ export class ProductFilterDto extends IntersectionType(
     message: `status phải là ${FILTERABLE_PRODUCT_STATUSES.join(', ')}`,
   })
   status?: string;
+
+  /** `isManufacturable=true` chỉ lấy sản phẩm đặt xưởng được - ô tìm hàng của form YCSX dùng nó. Bỏ trống = không lọc. */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  isManufacturable?: boolean;
 }
 
 /** Ported from iKiotMS-BE's ProductQueryDTO. */
@@ -48,13 +58,12 @@ export class QueryProductDto extends ProductFilterDto {
 
 /** Ported from ProductSearchQueryDTO - the POS lookup, matching one term against the product name and every variant's code/SKU/barcode, with the variants returned inline. */
 export class SearchProductDto extends ProductFilterDto {
-  /** At least two characters: a one-character prefix matches most of the catalogue, which is why the old DTO rejected it too. */
+  /** One character is enough (2026-10-18): the till wants results as soon as the first letter is typed. The old DTO demanded two because a one-character prefix matches much of the catalogue; the page size already caps the cost. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
-  @MinLength(2, { message: 'Từ khoá tìm kiếm phải có ít nhất 2 ký tự' })
   q?: string;
 }
 

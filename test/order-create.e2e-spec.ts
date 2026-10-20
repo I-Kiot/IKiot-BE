@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { InvoiceService } from './../src/modules/invoices/invoices.service';
 import { randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
@@ -100,6 +101,7 @@ describe('POST /orders – ManualOrderService.create', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule],
       providers: [
+        InvoiceService,
         OrderService,
         OrderPricingService,
         ManualOrderService,
@@ -246,6 +248,7 @@ describe('POST /orders – ManualOrderService.create', () => {
 
   afterAll(async () => {
     await prisma.payment.deleteMany({ where: { tenantId } });
+    await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({
       where: { order: { tenantId }, parentItemId: { not: null } },
     });

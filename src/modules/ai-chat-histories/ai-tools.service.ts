@@ -206,10 +206,14 @@ export class AiToolsService {
 
       // ─── Org ─────────────────────────────────────────────────────────────
       case 'getBranchList':
-        return this.branches.findAll(tenantId, this.locationQuery(args));
+        return this.branches.findAll(user, tenantId, this.locationQuery(args));
 
       case 'getWarehouseList':
-        return this.warehouses.findAll(tenantId, this.locationQuery(args));
+        return this.warehouses.findAll(
+          user,
+          tenantId,
+          this.locationQuery(args),
+        );
 
       case 'getSupplierList':
         return this.suppliers.findAll(

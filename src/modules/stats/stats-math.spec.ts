@@ -1,13 +1,20 @@
 import {
   averageOrderValue,
   changePct,
+  comparisonWindows,
   countByKey,
   parseBoundary,
   previousPeriod,
   ratioPct,
   resolveRange,
+  exceedsHourlyRange,
+  stockAgingLevel,
 } from './stats-math';
-import { DEFAULT_RANGE_DAYS, MS_PER_DAY } from './stats.constants';
+import {
+  DEFAULT_RANGE_DAYS,
+  MS_PER_DAY,
+  StockAgingLevel,
+} from './stats.constants';
 
 describe('parseBoundary', () => {
   // A bare date is a local day in Vietnam, not a UTC one: 2026-03-05 starts at 17:00Z on the 4th.
@@ -126,5 +133,80 @@ describe('countByKey', () => {
 
   it('drops a null group rather than keying on "null"', () => {
     expect(countByKey([{ key: null, count: 4 }])).toEqual({});
+  });
+});
+
+describe('comparisonWindows', () => {
+  // Thu 2026-10-15 14:00 local = 07:00Z
+  const now = new Date('2026-10-15T07:00:00Z');
+  const win = (key: string) =>
+    comparisonWindows(now).find((w) => w.key === key)!;
+  const iso = (d: Date) => d.toISOString();
+
+  it('compares today with the same elapsed hours of yesterday', () => {
+    const w = win('today');
+    expect(iso(w.current.fromDate)).toBe('2026-10-14T17:00:00.000Z');
+    expect(iso(w.previous.fromDate)).toBe('2026-10-13T17:00:00.000Z');
+    expect(iso(w.previous.toDate)).toBe('2026-10-14T07:00:00.000Z');
+  });
+
+  it('starts the week on Monday', () => {
+    expect(iso(win('week').current.fromDate)).toBe('2026-10-11T17:00:00.000Z');
+    expect(iso(win('week').previous.fromDate)).toBe('2026-10-04T17:00:00.000Z');
+  });
+
+  it('compares the month so far with the same days of last month', () => {
+    const w = win('month');
+    expect(iso(w.current.fromDate)).toBe('2026-09-30T17:00:00.000Z');
+    expect(iso(w.previous.fromDate)).toBe('2026-08-31T17:00:00.000Z');
+    expect(iso(w.previous.toDate)).toBe('2026-09-15T07:00:00.000Z');
+  });
+
+  it('rolls the quarter back across the year boundary', () => {
+    const q1 = comparisonWindows(new Date('2026-02-10T05:00:00Z')).find(
+      (w) => w.key === 'quarter',
+    )!;
+    expect(iso(q1.current.fromDate)).toBe('2025-12-31T17:00:00.000Z');
+    expect(iso(q1.previous.fromDate)).toBe('2025-09-30T17:00:00.000Z');
+  });
+
+  it('never lets the previous window run into the current one', () => {
+    // 31 Mar vs a February that has 28 days
+    const w = comparisonWindows(new Date('2026-03-31T05:00:00Z')).find(
+      (x) => x.key === 'month',
+    )!;
+    expect(w.previous.toDate.getTime()).toBeLessThan(
+      w.current.fromDate.getTime(),
+    );
+  });
+});
+
+describe('stockAgingLevel', () => {
+  // Biên của từng mức là chỗ dễ lệch một ngày nhất, nên kiểm từng mép.
+  it.each([
+    [0, StockAgingLevel.NORMAL],
+    [29, StockAgingLevel.NORMAL],
+    [30, StockAgingLevel.WARNING],
+    [59, StockAgingLevel.WARNING],
+    [60, StockAgingLevel.ATTENTION],
+    [89, StockAgingLevel.ATTENTION],
+    [90, StockAgingLevel.STALE],
+    [400, StockAgingLevel.STALE],
+  ])('%i ngày chưa bán là %s', (days, level) => {
+    expect(stockAgingLevel(days)).toBe(level);
+  });
+});
+
+describe('exceedsHourlyRange', () => {
+  const from = new Date('2026-10-01T00:00:00.000Z');
+
+  it('cho phép một tháng 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(false);
+  });
+
+  it('từ chối khoảng dài hơn 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY + 1);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(true);
   });
 });

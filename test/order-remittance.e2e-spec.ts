@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { InvoiceService } from './../src/modules/invoices/invoices.service';
 import { randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
@@ -101,6 +102,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
       carrierType: CarrierType.INTERNAL,
       driverId: ownerId,
     });
+    await shipments.pickUp(owner, tenantId, shipment.id, {});
     await shipments.shipOrder(owner, tenantId, id, {});
     return { orderId: id, shipmentId: shipment.id };
   };
@@ -126,6 +128,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule],
       providers: [
+        InvoiceService,
         OrderService,
         OrderPricingService,
         ManualOrderService,
@@ -246,6 +249,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
     await prisma.order.deleteMany({ where: { tenantId } });
     await prisma.inventory.deleteMany({ where: { tenantId } });
@@ -270,6 +274,12 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     const before = await orderOf(orderId);
     expect(before.status).toBe(OrderStatus.RECEIVED);
     expect(before.payments[0].remittanceStatus).toBe(RemittanceStatus.PENDING);
+    // Delivered but the owner has not got the cash yet: the invoice is still waiting.
+    const pending = await prisma.invoice.findFirstOrThrow({
+      where: { orderId },
+    });
+    expect(pending.status).toBe('PENDING');
+    expect(pending.invoiceNumber).toBeNull();
 
     const detail = await confirm(orderId, 7_000_000, 'Đã đếm đủ');
 
@@ -281,6 +291,18 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     expect(cash.remittanceConfirmedAt).not.toBeNull();
     expect(cash.note).toContain('Đã đếm đủ');
     expect(detail).toMatchObject({ id: orderId });
+
+    // COMPLETED is the moment the invoice is issued: numbered, with the order's lines frozen onto it.
+    const issued = await prisma.invoice.findFirstOrThrow({
+      where: { orderId },
+      include: { lines: true },
+    });
+    expect(issued.status).toBe('ISSUED');
+    expect(issued.invoiceNumber).toMatch(/^HD\d{6}$/);
+    expect(issued.issuedAt).not.toBeNull();
+    // The invoice is for the whole sale (7M collected on delivery + 3M deposit), not just the last payment.
+    expect(Number(issued.total)).toBe(10_000_000);
+    expect(issued.lines).toHaveLength(1);
   });
 
   it('refuses a hand-over that is not the full amount, and changes nothing', async () => {
