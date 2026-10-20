@@ -8,10 +8,7 @@ import {
   OrderStatus,
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
-import {
-  FINAL_SHIPMENT_STATUSES,
-  ShipmentStatus,
-} from '../../common/constants/shipment-status';
+import { ShipmentStatus } from '../../common/constants/shipment-status';
 import { InventoryTxType } from '../../common/constants/inventory-ledger';
 import { LocationStatus } from '../../common/constants/location-status';
 import { locationScope, orderScope } from './stats-scope';
@@ -439,8 +436,11 @@ export class StatsService {
    * Tình trạng đơn đang chạy, đếm tại thời điểm gọi chứ không theo kỳ: một đơn chờ xác nhận từ
    * tuần trước vẫn là việc phải làm hôm nay, nên `orders-by-status` (lọc theo ngày tạo) không trả
    * lời được câu này. Các nhóm chia hết cho nhau - một đơn chỉ nằm ở đúng một nhóm:
-   * "giao thất bại" là đơn còn SHIPPING mà chuyến giao gần nhất đã FAILED và chưa có chuyến mới
-   * đang chạy, và nó được trừ khỏi "đang giao".
+   * "giao thất bại" là đơn còn SHIPPING có chuyến giao đang ở FAILED, và nó được trừ khỏi "đang giao".
+   * Từ PR #39 (2026-10-19) FAILED không còn là trạng thái cuối: hàng vẫn ở chỗ shipper, giao lại
+   * trên chính chuyến đó (→ DELIVERED) hoặc xác nhận hàng đã về (→ RETURNED, đơn → RETURNED) -
+   * cả hai đều tự đưa đơn ra khỏi nhóm này. Mỗi đơn chỉ có một chuyến mở, nên "có chuyến FAILED"
+   * là đủ, không cần xét chuyến nào mới hơn.
    * Một câu SQL duy nhất, nên các con số là cùng một thời điểm.
    */
   async getOrderPipeline(user: AuthUser, query: OrderPipelineQueryDto) {
@@ -474,7 +474,7 @@ export class StatsService {
     return { stages };
   }
 
-  /** Đếm đơn đang chạy theo trạng thái, kèm cờ "chuyến giao gần nhất thất bại và chưa có chuyến mới". */
+  /** Đếm đơn đang chạy theo trạng thái, kèm cờ "đang có chuyến giao thất bại chờ xử lý". */
   private countOpenOrders(tenantId: string | null, branchId?: string) {
     const pipelineStatuses = ORDER_PIPELINE_STAGES.flatMap((s) => s.statuses);
     return this.prisma.$queryRaw<
@@ -486,10 +486,6 @@ export class StatsService {
                  SELECT 1 FROM shipments s
                  WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id
                    AND s.status = ${ShipmentStatus.FAILED})
-               AND NOT EXISTS (
-                 SELECT 1 FROM shipments s
-                 WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id
-                   AND s.status NOT IN (${Prisma.join([...FINAL_SHIPMENT_STATUSES])}))
              ) AS "deliveryFailed",
              COUNT(*)::int AS "count"
       FROM orders o

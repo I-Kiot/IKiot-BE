@@ -60,7 +60,7 @@ export const LOW_STOCK_LIST_LIMIT = 100;
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = 10;
 
-/** Các nhóm "tình trạng đơn" trên dashboard, mỗi nhóm là những trạng thái hành trình nó gom lại. Thứ tự là thứ tự hiển thị. "Giao thất bại" không phải một trạng thái đơn (đơn vẫn SHIPPING, chuyến giao FAILED) nên được đếm riêng, xem `getOrderPipeline`. */
+/** Các nhóm "tình trạng đơn" trên dashboard, mỗi nhóm là những trạng thái hành trình nó gom lại. Thứ tự là thứ tự hiển thị. "Giao thất bại" không phải một trạng thái đơn (đơn vẫn SHIPPING, chuyến giao FAILED chờ giao lại hoặc xác nhận hàng về) nên được đếm riêng, xem `getOrderPipeline`. */
 export const ORDER_PIPELINE_STAGES = [
   { key: 'PENDING_CONFIRMATION', statuses: [OrderStatus.PENDING_CONFIRMATION] },
   { key: 'PROCESSING', statuses: [OrderStatus.CONFIRMED] },
