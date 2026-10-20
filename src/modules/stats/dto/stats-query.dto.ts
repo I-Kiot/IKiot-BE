@@ -30,13 +30,14 @@ const upper = () =>
     typeof value === 'string' ? value.toUpperCase() : value,
   );
 
-/** `fromDate` must not come after `toDate` - a range validator rather than a field one, because neither bound is wrong on its own. */
+/** `fromDate` must not come after `toDate` - a range validator rather than a field one, because neither bound is wrong on its own. Compared through `resolveRange`, the parse the query itself uses: `new Date('2026-10-21')` is UTC midnight, 07:00 local, so "today until now" sent between 00:00 and 07:00 local was refused as backwards. */
 @ValidatorConstraint({ name: 'rangeIsForwards' })
 class RangeIsForwards implements ValidatorConstraintInterface {
   validate(_: unknown, args: ValidationArguments): boolean {
     const { fromDate, toDate } = args.object as StatsQueryDto;
     if (!fromDate || !toDate) return true;
-    return new Date(fromDate).getTime() <= new Date(toDate).getTime();
+    const range = resolveRange(fromDate, toDate);
+    return range.fromDate.getTime() <= range.toDate.getTime();
   }
   defaultMessage(): string {
     return 'fromDate phải trước toDate';
