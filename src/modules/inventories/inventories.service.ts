@@ -31,6 +31,7 @@ import {
   planReturn,
   runningBalances,
 } from './lot-allocation';
+import { assertHoldsStock } from './stockable';
 
 /** One SKU at one location - the key of an `inventories` row. */
 export interface StockKey {
@@ -181,7 +182,7 @@ export class InventoryService {
 
     const productItem = await this.prisma.productItem.findFirst({
       where: { id: dto.productItemId, tenantId },
-      select: { id: true },
+      select: { id: true, sku: true, itemType: true },
     });
     if (!productItem) {
       throw new NotFoundException({
@@ -189,6 +190,7 @@ export class InventoryService {
         message: 'Product item not found',
       });
     }
+    assertHoldsStock([productItem]);
 
     const { locationId } = dto;
     const existing = await this.prisma.inventory.findFirst({

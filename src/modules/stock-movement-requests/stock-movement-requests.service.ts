@@ -45,6 +45,7 @@ import {
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { withNestedProfile } from '../../common/utils/user-profile';
+import { assertHoldsStock } from '../inventories/stockable';
 
 const DETAIL_INCLUDE = {
   details: {
@@ -56,7 +57,13 @@ const DETAIL_INCLUDE = {
       receivedQuantity: true,
       note: true,
       productItem: {
-        select: { id: true, sku: true, productName: true, productCode: true },
+        select: {
+          id: true,
+          sku: true,
+          productName: true,
+          productCode: true,
+          itemType: true,
+        },
       },
     },
   },
@@ -350,6 +357,8 @@ export class StockMovementService {
     const request = await this.findRow(tenantId, id);
     this.assertCanActAt(user, this.source(request));
     this.assertStatus(request, [MovementStatus.CLOSED, MovementStatus.PENDING]);
+    // Same reason as `receive`, earlier: stock leaves the source here, and a combo line could then never be received.
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
     const isTransfer = this.isTransferType(request.movementType);
 
@@ -404,13 +413,14 @@ export class StockMovementService {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
     this.assertCanActAt(user, this.destination(request));
-
     this.assertStatus(
       request,
       request.movementType === MovementType.IMPORT
         ? [MovementStatus.PENDING, MovementStatus.IN_TRANSIT]
         : [MovementStatus.IN_TRANSIT],
     );
+    // A document filed before `itemsById` refused combos / services may still carry one; this is the step that books stock.
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
     const receivedByItem = new Map(
       dto.details.map((line) => [line.productItemId, line.receivedQuantity]),
@@ -558,6 +568,7 @@ export class StockMovementService {
       });
     }
     this.assertStatus(request, [MovementStatus.PENDING]);
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
     const from = this.source(request)!;
     const changes = request.details.map((line) => {
@@ -825,7 +836,13 @@ export class StockMovementService {
     const ids = [...new Set(lines.map((line) => line.productItemId))];
     const items = await this.prisma.productItem.findMany({
       where: { tenantId, id: { in: ids } },
-      select: { id: true, sku: true, retailPrice: true, costPrice: true },
+      select: {
+        id: true,
+        sku: true,
+        retailPrice: true,
+        costPrice: true,
+        itemType: true,
+      },
     });
     if (items.length !== ids.length) {
       throw new NotFoundException({
@@ -833,6 +850,8 @@ export class StockMovementService {
         message: 'Product item not found',
       });
     }
+    // Every movement type reads its lines through here, so this is the one door for stock documents.
+    assertHoldsStock(items);
     return new Map(items.map((item) => [item.id, item]));
   }
 
