@@ -1,4 +1,11 @@
-import { DEFAULT_RANGE_DAYS, MS_PER_DAY, TZ_OFFSET } from './stats.constants';
+import {
+  DEFAULT_RANGE_DAYS,
+  MAX_HOURLY_RANGE_DAYS,
+  MS_PER_DAY,
+  STOCK_AGING_DAYS,
+  StockAgingLevel,
+  TZ_OFFSET,
+} from './stats.constants';
 
 /** The arithmetic behind every dashboard number, as pure functions - same shape and reason as `pricing-engine.ts`: these are the rules a shop owner will argue with. */
 
@@ -123,4 +130,25 @@ export function comparisonWindows(now: Date): ComparisonWindow[] {
       previous: { fromDate: prevFrom, toDate: new Date(prevTo) },
     };
   });
+}
+
+/** Xếp một dòng tồn vào mức cảnh báo theo số ngày chưa bán: dưới 30 bình thường, 30–59 cảnh báo, 60–89 cần chú ý, từ 90 tồn lâu ngày. Ngưỡng nằm ở `STOCK_AGING_DAYS`; phần đếm trong SQL (`getStockAlerts`) đọc cùng hằng số đó, còn mức của từng dòng do hàm này gán. */
+export function stockAgingLevel(daysIdle: number): StockAgingLevel {
+  if (daysIdle >= STOCK_AGING_DAYS[StockAgingLevel.STALE]) {
+    return StockAgingLevel.STALE;
+  }
+  if (daysIdle >= STOCK_AGING_DAYS[StockAgingLevel.ATTENTION]) {
+    return StockAgingLevel.ATTENTION;
+  }
+  if (daysIdle >= STOCK_AGING_DAYS[StockAgingLevel.WARNING]) {
+    return StockAgingLevel.WARNING;
+  }
+  return StockAgingLevel.NORMAL;
+}
+
+/** Khoảng thời gian có quá dài để chia theo giờ không. So bằng mili-giây là đủ ở đây: câu hỏi là "có vượt N ngày không", không phải đếm ngày lịch. */
+export function exceedsHourlyRange({ fromDate, toDate }: DateRange): boolean {
+  return (
+    toDate.getTime() - fromDate.getTime() > MAX_HOURLY_RANGE_DAYS * MS_PER_DAY
+  );
 }

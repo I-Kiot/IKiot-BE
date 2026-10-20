@@ -1,23 +1,43 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  OrderStatus,
+  STOCKED_LINE_TYPES,
+} from '../../common/constants/order-status';
+import {
+  FINAL_SHIPMENT_STATUSES,
+  ShipmentStatus,
+} from '../../common/constants/shipment-status';
+import { InventoryTxType } from '../../common/constants/inventory-ledger';
+import { LocationStatus } from '../../common/constants/location-status';
 import { locationScope, orderScope } from './stats-scope';
 import {
   averageOrderValue,
   changePct,
   comparisonWindows,
+  exceedsHourlyRange,
   previousPeriod,
+  stockAgingLevel,
   type DateRange,
 } from './stats-math';
 import {
+  ALERT_LIST_LIMIT,
   BUCKET_FORMAT,
   DEFAULT_LOW_STOCK_THRESHOLD,
+  DELIVERY_FAILED_STAGE,
   FlowType,
   GroupBy,
   LOW_STOCK_LIST_LIMIT,
+  MAX_HOURLY_RANGE_DAYS,
+  ORDER_PIPELINE_STAGES,
   REVENUE_STATUS,
+  STOCK_AGING_DAYS,
+  StockAgingLevel,
+  StockAlertCategory,
   TZ_NAME,
   TopProductsSort,
 } from './stats.constants';
@@ -25,9 +45,12 @@ import type {
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
+  OrderPipelineQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
+  SlowProductsQueryDto,
   StatsQueryDto,
+  StockAlertsQueryDto,
   TopCustomersQueryDto,
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
@@ -42,8 +65,30 @@ import {
 /** `COUNT(*)` is `bigint` in Postgres; every count below is cast `::int` at the source. */
 interface SummaryRow {
   revenue: Prisma.Decimal;
+  shippingFee: Prisma.Decimal;
+  channelFee: Prisma.Decimal;
   orderCount: number;
   customerCount: number;
+}
+
+interface CostRow {
+  costOfGoods: Prisma.Decimal;
+  linesMissingCost: number;
+}
+
+/** Một dòng tồn trong danh sách cảnh báo. `shelf` là tồn trên kệ (stock − locked_stock), con số bán được. */
+interface StockAlertRow {
+  category: string;
+  inventoryId: string;
+  productItemId: string;
+  productName: string;
+  sku: string | null;
+  locationId: string;
+  locationName: string;
+  locationType: string;
+  shelf: number;
+  minStock: number;
+  daysIdle: number | null;
 }
 
 interface BucketRow {
@@ -88,6 +133,7 @@ export class StatsService {
         orderCount: changePct(current.orderCount, before.orderCount),
         customerCount: changePct(current.customerCount, before.customerCount),
         aov: changePct(current.aov, before.aov),
+        grossProfit: changePct(current.grossProfit, before.grossProfit),
       },
       period: range,
       previousPeriod: previous,
@@ -100,19 +146,47 @@ export class StatsService {
     { fromDate, toDate }: DateRange,
   ) {
     if (scope.impossible) {
-      return { revenue: 0, orderCount: 0, customerCount: 0, aov: 0 };
+      return {
+        revenue: 0,
+        orderCount: 0,
+        customerCount: 0,
+        aov: 0,
+        grossProfit: 0,
+        linesMissingCost: 0,
+      };
     }
-    const rows = await this.prisma.$queryRaw<SummaryRow[]>`
-      SELECT COALESCE(SUM(grand_total), 0) AS "revenue",
-             COUNT(*)::int                 AS "orderCount",
-             COUNT(DISTINCT customer_id)::int AS "customerCount"
-      FROM orders
-      WHERE tenant_id = ${user.tenantId}
-        AND status = ${REVENUE_STATUS}
-        AND created_at >= ${fromDate}
-        AND created_at <= ${toDate}
-        ${scope.branchId ? Prisma.sql`AND branch_id = ${scope.branchId}` : Prisma.empty}
-    `;
+    const branchFilter = scope.branchId
+      ? Prisma.sql`AND o.branch_id = ${scope.branchId}`
+      : Prisma.empty;
+
+    const [rows, costRows] = await Promise.all([
+      this.prisma.$queryRaw<SummaryRow[]>`
+        SELECT COALESCE(SUM(o.grand_total), 0)  AS "revenue",
+               COALESCE(SUM(o.shipping_fee), 0) AS "shippingFee",
+               COALESCE(SUM(o.channel_fee), 0)  AS "channelFee",
+               COUNT(*)::int                    AS "orderCount",
+               COUNT(DISTINCT o.customer_id)::int AS "customerCount"
+        FROM orders o
+        WHERE o.tenant_id = ${user.tenantId}
+          AND o.status = ${REVENUE_STATUS}
+          AND o.created_at >= ${fromDate}
+          AND o.created_at <= ${toDate}
+          ${branchFilter}
+      `,
+      // Giá vốn chỉ nằm trên dòng giữ hàng (PRODUCT, món trong combo): dòng COMBO cha và SERVICE không trừ kho nên không có giá vốn, và không bị tính là "thiếu".
+      this.prisma.$queryRaw<CostRow[]>`
+        SELECT COALESCE(SUM(oi.unit_cost_price * oi.quantity), 0) AS "costOfGoods",
+               COUNT(*) FILTER (WHERE oi.unit_cost_price IS NULL)::int AS "linesMissingCost"
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.tenant_id = ${user.tenantId}
+          AND o.status = ${REVENUE_STATUS}
+          AND o.created_at >= ${fromDate}
+          AND o.created_at <= ${toDate}
+          AND oi.line_type IN (${Prisma.join([...STOCKED_LINE_TYPES])})
+          ${branchFilter}
+      `,
+    ]);
     const row = rows[0];
     const revenue = Number(row?.revenue ?? 0);
     const orderCount = row?.orderCount ?? 0;
@@ -121,15 +195,29 @@ export class StatsService {
       orderCount,
       customerCount: row?.customerCount ?? 0,
       aov: averageOrderValue(revenue, orderCount),
+      // Lợi nhuận gộp = doanh thu − phí ship thu hộ − phí sàn − giá vốn. Phí ship khách trả là tiền đi qua tay shop để trả đơn vị vận chuyển, không phải lãi; phí sàn là phần Shopee giữ lại. Chỉ là ước tính: dòng chưa có giá vốn (`linesMissingCost`) bị tính giá vốn 0, nên FE phải nói rõ khi số này > 0.
+      grossProfit:
+        revenue -
+        Number(row?.shippingFee ?? 0) -
+        Number(row?.channelFee ?? 0) -
+        Number(costRows[0]?.costOfGoods ?? 0),
+      linesMissingCost: costRows[0]?.linesMissingCost ?? 0,
     };
   }
 
   /** Revenue over time, bucketed in the shop's local day or month: an order rung up at 23:30 belongs to that day's takings, and grouping on the raw UTC timestamp would file it under the next. */
   async getRevenueSeries(user: AuthUser, query: RevenueSeriesQueryDto) {
     const scope = orderScope(user, query.branchId);
-    const { fromDate, toDate } = query.range();
-    const groupBy =
-      query.groupBy === GroupBy.MONTH ? GroupBy.MONTH : GroupBy.DAY;
+    const range = query.range();
+    const { fromDate, toDate } = range;
+    const groupBy = query.groupBy ?? GroupBy.DAY;
+
+    if (groupBy === GroupBy.HOUR && exceedsHourlyRange(range)) {
+      throw new BadRequestException({
+        code: ErrorCode.STATS_HOURLY_RANGE_TOO_LONG,
+        message: `Hourly buckets cover at most ${MAX_HOURLY_RANGE_DAYS} days`,
+      });
+    }
 
     if (scope.impossible) return { groupBy, series: [] };
 
@@ -344,6 +432,140 @@ export class StatsService {
     return {
       totalCount: statuses.reduce((n, s) => n + s.count, 0),
       statuses,
+    };
+  }
+
+  /**
+   * Tình trạng đơn đang chạy, đếm tại thời điểm gọi chứ không theo kỳ: một đơn chờ xác nhận từ
+   * tuần trước vẫn là việc phải làm hôm nay, nên `orders-by-status` (lọc theo ngày tạo) không trả
+   * lời được câu này. Các nhóm chia hết cho nhau - một đơn chỉ nằm ở đúng một nhóm:
+   * "giao thất bại" là đơn còn SHIPPING mà chuyến giao gần nhất đã FAILED và chưa có chuyến mới
+   * đang chạy, và nó được trừ khỏi "đang giao".
+   * Một câu SQL duy nhất, nên các con số là cùng một thời điểm.
+   */
+  async getOrderPipeline(user: AuthUser, query: OrderPipelineQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    const rows = scope.impossible
+      ? []
+      : await this.countOpenOrders(user.tenantId, scope.branchId);
+
+    // Cộng số đơn của những trạng thái thuộc một nhóm, tách riêng đơn giao thất bại.
+    const countOf = (statuses: readonly string[], deliveryFailed: boolean) =>
+      rows
+        .filter(
+          (row) =>
+            row.deliveryFailed === deliveryFailed &&
+            statuses.includes(row.status),
+        )
+        .reduce((total, row) => total + row.count, 0);
+
+    const stages: { key: string; statuses: string[]; count: number }[] =
+      ORDER_PIPELINE_STAGES.map((stage) => ({
+        key: stage.key,
+        statuses: [...stage.statuses],
+        count: countOf(stage.statuses, false),
+      }));
+    stages.push({
+      key: DELIVERY_FAILED_STAGE,
+      statuses: [OrderStatus.SHIPPING],
+      count: countOf([OrderStatus.SHIPPING], true),
+    });
+
+    return { stages };
+  }
+
+  /** Đếm đơn đang chạy theo trạng thái, kèm cờ "chuyến giao gần nhất thất bại và chưa có chuyến mới". */
+  private countOpenOrders(tenantId: string | null, branchId?: string) {
+    const pipelineStatuses = ORDER_PIPELINE_STAGES.flatMap((s) => s.statuses);
+    return this.prisma.$queryRaw<
+      { status: string; deliveryFailed: boolean; count: number }[]
+    >`
+      SELECT o.status AS "status",
+             (o.status = ${OrderStatus.SHIPPING}
+               AND EXISTS (
+                 SELECT 1 FROM shipments s
+                 WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id
+                   AND s.status = ${ShipmentStatus.FAILED})
+               AND NOT EXISTS (
+                 SELECT 1 FROM shipments s
+                 WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id
+                   AND s.status NOT IN (${Prisma.join([...FINAL_SHIPMENT_STATUSES])}))
+             ) AS "deliveryFailed",
+             COUNT(*)::int AS "count"
+      FROM orders o
+      WHERE o.tenant_id = ${tenantId}
+        AND o.status IN (${Prisma.join(pipelineStatuses)})
+        ${branchId ? Prisma.sql`AND o.branch_id = ${branchId}` : Prisma.empty}
+      GROUP BY 1, 2
+    `;
+  }
+
+  /**
+   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết
+   * nên dừng nhập gì. Tồn tính ở chi nhánh của người xem nếu họ được gắn vào một chi nhánh, còn
+   * chủ shop thì cả chuỗi - trừ kho hàng hỏng (`is_sellable = false`), vì hàng ở đó vốn không để bán.
+   */
+  async getSlowProducts(user: AuthUser, query: SlowProductsQueryDto) {
+    const scope = orderScope(user, query.branchId);
+    if (scope.impossible) return { products: [] };
+    const { fromDate, toDate } = query.range();
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        productItemId: string;
+        productName: string;
+        sku: string | null;
+        shelf: number;
+        quantity: Prisma.Decimal;
+        revenue: Prisma.Decimal;
+      }[]
+    >`
+      WITH stock AS (
+        SELECT i.product_item_id, SUM(i.stock - i.locked_stock)::int AS shelf
+        FROM inventories i
+        JOIN locations l ON l.id = i.location_id
+        WHERE i.tenant_id = ${user.tenantId}
+          AND l.is_sellable = true
+          AND l.status <> ${LocationStatus.DELETED}
+          ${scope.branchId ? Prisma.sql`AND i.location_id = ${scope.branchId}` : Prisma.empty}
+        GROUP BY i.product_item_id
+        HAVING SUM(i.stock - i.locked_stock) > 0
+      ),
+      sold AS (
+        SELECT oi.product_item_id,
+               SUM(oi.quantity) AS quantity,
+               SUM(oi.unit_price * oi.quantity - oi.discount_amount) AS revenue
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.tenant_id = ${user.tenantId}
+          AND o.status = ${REVENUE_STATUS}
+          AND o.created_at >= ${fromDate}
+          AND o.created_at <= ${toDate}
+          ${scope.branchId ? Prisma.sql`AND o.branch_id = ${scope.branchId}` : Prisma.empty}
+        GROUP BY oi.product_item_id
+      )
+      SELECT s.product_item_id          AS "productItemId",
+             pi.product_name            AS "productName",
+             pi.sku                     AS "sku",
+             s.shelf                    AS "shelf",
+             COALESCE(sold.quantity, 0) AS "quantity",
+             COALESCE(sold.revenue, 0)  AS "revenue"
+      FROM stock s
+      JOIN product_items pi ON pi.id = s.product_item_id
+      LEFT JOIN sold ON sold.product_item_id = s.product_item_id
+      ORDER BY COALESCE(sold.quantity, 0) ASC, s.shelf DESC, pi.product_name ASC
+      LIMIT ${query.limit}
+    `;
+
+    return {
+      products: rows.map((row) => ({
+        productItemId: row.productItemId,
+        productName: row.productName,
+        sku: row.sku,
+        shelf: row.shelf,
+        quantity: Number(row.quantity),
+        revenue: Number(row.revenue),
+      })),
     };
   }
 
@@ -636,6 +858,147 @@ export class StatsService {
           stock: row.stock,
         };
       }),
+    };
+  }
+
+  /**
+   * Cảnh báo tồn kho cho dashboard: hết hàng, sắp hết (theo ngưỡng trên dashboard), dưới mức tối
+   * thiểu (theo `Inventory.minStock` của từng dòng - cùng quy tắc `<=` với cảnh báo low-stock) và
+   * hàng lâu không bán (30 / 60 / 90 ngày, xem `stockAgingLevel`). Mọi con số đọc trên kệ
+   * (stock − locked_stock): hàng đã đóng gói cho đơn không bán được nữa.
+   *
+   * "Số ngày không bán" tính từ lần bán cuối (sổ kho SALE) tại đúng địa điểm đó; SKU chưa bán lần
+   * nào thì tính từ lô cũ nhất còn hàng, rồi mới tới ngày tạo dòng tồn. Đếm giữa hai nửa đêm giờ
+   * Việt Nam, không chia mili-giây, để con số không phụ thuộc giờ gọi.
+   *
+   * Hai câu (đếm và danh sách) chạy trong một transaction REPEATABLE READ, nên số đếm và danh sách
+   * nhìn cùng một ảnh dữ liệu - một đơn chốt giữa hai câu không làm chúng lệch nhau.
+   */
+  async getStockAlerts(user: AuthUser, query: StockAlertsQueryDto) {
+    const scope = locationScope(user, query.branchId, query.warehouseId);
+    const threshold = query.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;
+    const locationId = scope.branchId ?? scope.warehouseId;
+    const warningDays = STOCK_AGING_DAYS[StockAgingLevel.WARNING];
+    const attentionDays = STOCK_AGING_DAYS[StockAgingLevel.ATTENTION];
+    const staleDays = STOCK_AGING_DAYS[StockAgingLevel.STALE];
+
+    const stockRows = Prisma.sql`
+      WITH stock_rows AS (
+        SELECT i.id                         AS "inventoryId",
+               i.product_item_id            AS "productItemId",
+               pi.product_name              AS "productName",
+               pi.sku                       AS "sku",
+               i.location_id                AS "locationId",
+               l.name                       AS "locationName",
+               l.location_type              AS "locationType",
+               (i.stock - i.locked_stock)::int AS "shelf",
+               i.min_stock                  AS "minStock",
+               CASE WHEN i.stock - i.locked_stock > 0 THEN
+                 (now() AT TIME ZONE ${TZ_NAME})::date
+                 - (COALESCE(
+                     (SELECT MAX(t.created_at) FROM inventory_transactions t
+                      WHERE t.tenant_id = i.tenant_id
+                        AND t.location_id = i.location_id
+                        AND t.product_item_id = i.product_item_id
+                        AND t.type = ${InventoryTxType.SALE}),
+                     (SELECT MIN(lot.received_at) FROM inventory_lots lot
+                      WHERE lot.tenant_id = i.tenant_id
+                        AND lot.location_id = i.location_id
+                        AND lot.product_item_id = i.product_item_id
+                        AND lot.remaining_quantity > 0),
+                     i.created_at
+                   ) AT TIME ZONE ${TZ_NAME})::date
+               END                          AS "daysIdle"
+        FROM inventories i
+        JOIN product_items pi ON pi.id = i.product_item_id
+        JOIN locations l ON l.id = i.location_id
+        WHERE i.tenant_id = ${user.tenantId}
+          AND l.is_sellable = true
+          AND l.status <> ${LocationStatus.DELETED}
+          ${locationId ? Prisma.sql`AND i.location_id = ${locationId}` : Prisma.empty}
+      )`;
+
+    const [countRows, listRows] = await this.prisma.$transaction(
+      [
+        this.prisma.$queryRaw<
+          {
+            outOfStock: number;
+            lowStock: number;
+            belowMin: number;
+            warning: number;
+            attention: number;
+            stale: number;
+          }[]
+        >`
+          ${stockRows}
+          SELECT
+            COUNT(*) FILTER (WHERE "shelf" <= 0)::int AS "outOfStock",
+            COUNT(*) FILTER (WHERE "shelf" > 0 AND "shelf" <= ${threshold})::int AS "lowStock",
+            COUNT(*) FILTER (WHERE "minStock" > 0 AND "shelf" <= "minStock")::int AS "belowMin",
+            COUNT(*) FILTER (WHERE "daysIdle" >= ${warningDays} AND "daysIdle" < ${attentionDays})::int AS "warning",
+            COUNT(*) FILTER (WHERE "daysIdle" >= ${attentionDays} AND "daysIdle" < ${staleDays})::int AS "attention",
+            COUNT(*) FILTER (WHERE "daysIdle" >= ${staleDays})::int AS "stale"
+          FROM stock_rows
+        `,
+        this.prisma.$queryRaw<StockAlertRow[]>`
+          ${stockRows}
+          (SELECT ${StockAlertCategory.OUT_OF_STOCK}::text AS "category", r.* FROM stock_rows r
+            WHERE r."shelf" <= 0
+            ORDER BY r."productName" LIMIT ${ALERT_LIST_LIMIT})
+          UNION ALL
+          (SELECT ${StockAlertCategory.LOW_STOCK}::text, r.* FROM stock_rows r
+            WHERE r."shelf" > 0 AND r."shelf" <= ${threshold}
+            ORDER BY r."shelf" ASC, r."productName" LIMIT ${ALERT_LIST_LIMIT})
+          UNION ALL
+          (SELECT ${StockAlertCategory.BELOW_MIN}::text, r.* FROM stock_rows r
+            WHERE r."minStock" > 0 AND r."shelf" <= r."minStock"
+            ORDER BY (r."minStock" - r."shelf") DESC, r."productName" LIMIT ${ALERT_LIST_LIMIT})
+          UNION ALL
+          (SELECT ${StockAlertCategory.AGING}::text, r.* FROM stock_rows r
+            WHERE r."daysIdle" >= ${warningDays}
+            ORDER BY r."daysIdle" DESC, r."productName" LIMIT ${ALERT_LIST_LIMIT})
+        `,
+      ],
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    const counts = countRows[0];
+    const itemsOf = (category: string) =>
+      listRows
+        .filter((row) => row.category === category)
+        .map((row) => ({
+          inventoryId: row.inventoryId,
+          productItemId: row.productItemId,
+          productName: row.productName,
+          sku: row.sku,
+          locationId: row.locationId,
+          locationName: row.locationName,
+          locationType: row.locationType,
+          shelf: row.shelf,
+          minStock: row.minStock,
+          daysIdle: row.daysIdle,
+          agingLevel:
+            row.daysIdle === null ? null : stockAgingLevel(row.daysIdle),
+        }));
+
+    return {
+      lowStockThreshold: threshold,
+      counts: {
+        outOfStock: counts?.outOfStock ?? 0,
+        lowStock: counts?.lowStock ?? 0,
+        belowMin: counts?.belowMin ?? 0,
+        aging: {
+          warning: counts?.warning ?? 0,
+          attention: counts?.attention ?? 0,
+          stale: counts?.stale ?? 0,
+        },
+      },
+      items: {
+        outOfStock: itemsOf(StockAlertCategory.OUT_OF_STOCK),
+        lowStock: itemsOf(StockAlertCategory.LOW_STOCK),
+        belowMin: itemsOf(StockAlertCategory.BELOW_MIN),
+        aging: itemsOf(StockAlertCategory.AGING),
+      },
     };
   }
 }

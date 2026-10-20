@@ -7,8 +7,14 @@ import {
   previousPeriod,
   ratioPct,
   resolveRange,
+  exceedsHourlyRange,
+  stockAgingLevel,
 } from './stats-math';
-import { DEFAULT_RANGE_DAYS, MS_PER_DAY } from './stats.constants';
+import {
+  DEFAULT_RANGE_DAYS,
+  MS_PER_DAY,
+  StockAgingLevel,
+} from './stats.constants';
 
 describe('parseBoundary', () => {
   // A bare date is a local day in Vietnam, not a UTC one: 2026-03-05 starts at 17:00Z on the 4th.
@@ -172,5 +178,35 @@ describe('comparisonWindows', () => {
     expect(w.previous.toDate.getTime()).toBeLessThan(
       w.current.fromDate.getTime(),
     );
+  });
+});
+
+describe('stockAgingLevel', () => {
+  // Biên của từng mức là chỗ dễ lệch một ngày nhất, nên kiểm từng mép.
+  it.each([
+    [0, StockAgingLevel.NORMAL],
+    [29, StockAgingLevel.NORMAL],
+    [30, StockAgingLevel.WARNING],
+    [59, StockAgingLevel.WARNING],
+    [60, StockAgingLevel.ATTENTION],
+    [89, StockAgingLevel.ATTENTION],
+    [90, StockAgingLevel.STALE],
+    [400, StockAgingLevel.STALE],
+  ])('%i ngày chưa bán là %s', (days, level) => {
+    expect(stockAgingLevel(days)).toBe(level);
+  });
+});
+
+describe('exceedsHourlyRange', () => {
+  const from = new Date('2026-10-01T00:00:00.000Z');
+
+  it('cho phép một tháng 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(false);
+  });
+
+  it('từ chối khoảng dài hơn 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY + 1);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(true);
   });
 });

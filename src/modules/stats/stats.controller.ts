@@ -5,9 +5,12 @@ import {
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
+  OrderPipelineQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
+  SlowProductsQueryDto,
   StatsQueryDto,
+  StockAlertsQueryDto,
   TopCustomersQueryDto,
   TopProductsQueryDto,
 } from './dto/stats-query.dto';
@@ -125,5 +128,35 @@ export class StatsController {
     @Query() query: TopCustomersQueryDto,
   ) {
     return this.service.getTopCustomers(user, query);
+  }
+
+  /** Hàng bán chậm: còn trên kệ nhưng bán ít nhất trong kỳ. */
+  @Permissions('reports', 'read')
+  @Get('slow-products')
+  slowProducts(
+    @CurrentUser() user: AuthUser,
+    @Query() query: SlowProductsQueryDto,
+  ) {
+    return this.service.getSlowProducts(user, query);
+  }
+
+  /** Hết hàng, sắp hết, dưới mức tối thiểu, lâu không bán - mức tồn lúc gọi, không theo kỳ. */
+  @Permissions('reports', 'read')
+  @Get('stock-alerts')
+  stockAlerts(
+    @CurrentUser() user: AuthUser,
+    @Query() query: StockAlertsQueryDto,
+  ) {
+    return this.service.getStockAlerts(user, query);
+  }
+
+  /** Đơn đang chạy theo từng bước hành trình, đếm tại thời điểm gọi. */
+  @Permissions('reports', 'read')
+  @Get('order-pipeline')
+  orderPipeline(
+    @CurrentUser() user: AuthUser,
+    @Query() query: OrderPipelineQueryDto,
+  ) {
+    return this.service.getOrderPipeline(user, query);
   }
 }
