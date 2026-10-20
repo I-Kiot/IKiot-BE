@@ -480,6 +480,12 @@ export const ErrorCode = {
   /** A production line made for an order line cannot change attributes or price - the order line's customization decides what is made. */
   PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER:
     'PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER',
+
+  // ─── Combo catalogue (2026-10-20) ───────────────────────────────────────────
+  /** A combo's components are invalid: none, listed twice, the combo itself, a cycle, nesting past `MAX_COMBO_DEPTH`, a discontinued component, or components on a non-COMBO variant. */
+  PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
+  /** The variant (or a variant of the product) is a component of a combo that is still sold; take it out of the combo first. */
+  PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
