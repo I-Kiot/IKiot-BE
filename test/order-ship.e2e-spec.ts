@@ -1037,7 +1037,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
   });
 
   describe('POST /shipments/:id/fail – giao không thành', () => {
-    it('marks the shipment FAILED, keeps the order SHIPPING, and tells the person in charge', async () => {
+    it('marks the shipment FAILED, keeps the order SHIPPING, and tells the person in charge and the owner', async () => {
       const { orderId, shipmentId } = await shippedShipment();
       notify.mockClear();
       const shipment = await shipments.fail(driver, tenantId, shipmentId, {
@@ -1049,6 +1049,19 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         note: 'khách không nghe máy',
       });
       expect(await statusOf(orderId)).toBe(OrderStatus.SHIPPING);
+      // Từ 2026-10-19 chủ shop cũng được báo (hàng chưa về, phải quyết giao lại hay chờ hoàn).
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientIds: [assigneeId, ownerId],
+          type: 'SHIPMENT_FAILED',
+        }),
+      );
+    });
+
+    it('does not tell the person who reported it', async () => {
+      const { shipmentId } = await shippedShipment();
+      notify.mockClear();
+      await shipments.fail(owner, tenantId, shipmentId, { note: 'chủ báo' });
       expect(notify).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientIds: [assigneeId],

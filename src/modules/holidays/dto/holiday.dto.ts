@@ -1,3 +1,4 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
@@ -75,11 +76,7 @@ export class QueryHolidayDto extends PaginationQueryDto {
   @Max(2100, { message: 'year phải từ 2000 đến 2100' })
   year?: number;
 
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    value === 'true' ? true : value === 'false' ? false : value,
-  )
-  @IsBoolean({ message: 'isActive phải là true hoặc false' })
+  @BooleanQuery('isActive phải là true hoặc false')
   isActive?: boolean;
 
   @IsOptional()

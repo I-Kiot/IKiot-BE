@@ -1,5 +1,6 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
 import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
@@ -13,11 +14,7 @@ export class QuerySupplierDto extends PaginationQueryDto {
   search?: string;
 
   /** `hasDebt=true` narrows the list to suppliers still owed money. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === true || value === 'true',
-  )
-  @IsBoolean()
+  @BooleanQuery()
   hasDebt?: boolean;
 
   /** `type=WORKSHOP` lists the workshops a production request can be sent to. */

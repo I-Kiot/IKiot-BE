@@ -1,3 +1,4 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { PartialType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -5,7 +6,6 @@ import {
   IsArray,
   IsUrl,
   ArrayMaxSize,
-  IsBoolean,
   IsIn,
   IsInt,
   IsISO8601,
@@ -208,19 +208,11 @@ export class QueryProductionListDto extends PaginationQueryDto {
   productItemId?: string;
 
   /** Only rows still short after stock and every open request. Defaults to false: anything can be ordered, short rows are sorted first. */
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    value === undefined ? undefined : value === true || value === 'true',
-  )
-  @IsBoolean()
+  @BooleanQuery()
   onlyShort?: boolean;
 
   /** Only rows with a production request still open (draft, sent, partly received) - what is waiting to be sent or received. */
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    value === undefined ? undefined : value === true || value === 'true',
-  )
-  @IsBoolean()
+  @BooleanQuery()
   hasOpenRequest?: boolean;
 }
 

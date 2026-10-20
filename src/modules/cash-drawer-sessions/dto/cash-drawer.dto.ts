@@ -1,6 +1,6 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
@@ -125,10 +125,6 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   toDate?: string;
 
   /** Only the days that did not balance. A still-open session has no counted total and therefore no variance, so it is excluded rather than reported as balanced. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === true || value === 'true',
-  )
-  @IsBoolean()
+  @BooleanQuery()
   varianceOnly?: boolean;
 }
