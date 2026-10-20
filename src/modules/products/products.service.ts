@@ -15,9 +15,14 @@ import type {
   LocationRefQueryDto,
 } from '../../common/dto/location-ref.dto';
 import {
+  ProductItemType,
   ProductStatus,
   QUOTA_COUNTED_PRODUCT_STATUSES,
 } from '../../common/constants/product-status';
+import {
+  assertComponentsMatchType,
+  writeComboComponents,
+} from './combo-components';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -52,6 +57,33 @@ const IMAGES_INCLUDE = {
   orderBy: { position: 'asc' },
 } as const;
 
+/** Đủ để chọn một ảnh nhỏ cho một phiên bản: ảnh của nó, không có thì ảnh của hàng hoá. */
+const THUMBNAIL_SELECT = {
+  images: {
+    select: { url: true, isThumbnail: true },
+    orderBy: { position: 'asc' },
+  },
+  product: {
+    select: {
+      images: {
+        select: { url: true, isThumbnail: true },
+        orderBy: { position: 'asc' },
+      },
+    },
+  },
+} as const satisfies Prisma.ProductItemSelect;
+
+type ThumbnailSource = Prisma.ProductItemGetPayload<{
+  select: typeof THUMBNAIL_SELECT;
+}>;
+
+/** Ảnh đại diện (isThumbnail) trước, rồi ảnh đầu tiên; phiên bản không có ảnh nào thì dùng ảnh hàng hoá. */
+function thumbnailOf({ images, product }: ThumbnailSource): string | null {
+  const pick = (list: { url: string; isThumbnail: boolean }[]) =>
+    (list.find((image) => image.isThumbnail) ?? list[0])?.url;
+  return pick(images) ?? pick(product.images) ?? null;
+}
+
 const ITEM_INCLUDE = {
   images: IMAGES_INCLUDE,
   details: {
@@ -72,6 +104,23 @@ const ITEM_INCLUDE = {
           supplierName: true,
           email: true,
           phoneNumber: true,
+        },
+      },
+    },
+  },
+  // Một tầng: thành phần là combo thì FE mở tiếp bằng GET /products/:productId của nó.
+  comboComponents: {
+    select: {
+      quantity: true,
+      componentItem: {
+        select: {
+          id: true,
+          productId: true,
+          sku: true,
+          productName: true,
+          itemType: true,
+          retailPrice: true,
+          ...THUMBNAIL_SELECT,
         },
       },
     },
@@ -293,7 +342,7 @@ export class ProductService {
       ];
     }
 
-    const items = await this.prisma.productItem.findMany({
+    const found = await this.prisma.productItem.findMany({
       where,
       select: {
         id: true,
@@ -301,10 +350,16 @@ export class ProductService {
         productName: true,
         productCode: true,
         sku: true,
+        itemType: true,
+        ...THUMBNAIL_SELECT,
       },
       orderBy: { productName: 'asc' },
       take: query.limit,
     });
+    const items = found.map(({ images, product, ...item }) => ({
+      ...item,
+      thumbnailUrl: thumbnailOf({ images, product }),
+    }));
 
     if (!query.branchIds?.length || items.length === 0) return items;
 
@@ -512,7 +567,7 @@ export class ProductService {
     ).map((item) => item.id);
 
     if (itemIds.length > 0) {
-      const [stocked, movements, orders] = await Promise.all([
+      const [stocked, movements, orders, combos] = await Promise.all([
         this.prisma.inventory.count({
           where: { tenantId, productItemId: { in: itemIds }, stock: { gt: 0 } },
         }),
@@ -529,6 +584,16 @@ export class ProductService {
             tenantId,
             status: 'PENDING',
             items: { some: { productItemId: { in: itemIds } } },
+          },
+        }),
+        // Combo của sản phẩm khác còn bán mà chứa SKU của sản phẩm này: ngừng nó thì combo bán ra món đã ngừng.
+        this.prisma.comboComponent.count({
+          where: {
+            componentItemId: { in: itemIds },
+            comboItem: {
+              productId: { not: id },
+              product: { status: { not: ProductStatus.DISCONTINUED } },
+            },
           },
         }),
       ]);
@@ -550,6 +615,13 @@ export class ProductService {
         throw new BadRequestException({
           code: ErrorCode.PRODUCT_IN_UNPAID_ORDER,
           message: 'Cannot discontinue: the product is on an unpaid order.',
+        });
+      }
+      if (combos > 0) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCT_ITEM_IN_COMBO,
+          message:
+            'Cannot discontinue: a variant is a component of a combo that is still sold.',
         });
       }
     }
@@ -599,7 +671,7 @@ export class ProductService {
   ) {
     const existing = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
-      select: { id: true, productId: true },
+      select: { id: true, productId: true, itemType: true },
     });
     if (!existing)
       throw new NotFoundException({
@@ -608,6 +680,9 @@ export class ProductService {
       });
 
     if (dto.sku) await this.assertSkusAreFree(tenantId, [dto.sku], itemId);
+    if (dto.comboComponents) {
+      assertComponentsMatchType(existing.itemType, dto.comboComponents);
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.productItem.update({
@@ -646,6 +721,10 @@ export class ProductService {
           dto.productDetails,
         );
       }
+      // Đơn đã bán giữ các dòng con đã bung lúc bán; sửa thành phần chỉ áp cho đơn sau.
+      if (dto.comboComponents) {
+        await writeComboComponents(tx, tenantId, itemId, dto.comboComponents);
+      }
     });
 
     return this.findItem(tenantId, itemId);
@@ -663,16 +742,20 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    const [inventories, movements, orders, promotions] = await Promise.all([
-      this.prisma.inventory.count({ where: { productItemId: itemId } }),
-      this.prisma.stockMovementRequestItem.count({
-        where: { productItemId: itemId },
-      }),
-      this.prisma.orderItem.count({ where: { productItemId: itemId } }),
-      this.prisma.promotionProductItem.count({
-        where: { productItemId: itemId },
-      }),
-    ]);
+    const [inventories, movements, orders, promotions, combos] =
+      await Promise.all([
+        this.prisma.inventory.count({ where: { productItemId: itemId } }),
+        this.prisma.stockMovementRequestItem.count({
+          where: { productItemId: itemId },
+        }),
+        this.prisma.orderItem.count({ where: { productItemId: itemId } }),
+        this.prisma.promotionProductItem.count({
+          where: { productItemId: itemId },
+        }),
+        this.prisma.comboComponent.count({
+          where: { componentItemId: itemId },
+        }),
+      ]);
 
     if (inventories > 0) {
       throw new BadRequestException({
@@ -692,6 +775,14 @@ export class ProductService {
       throw new BadRequestException({
         code: ErrorCode.PRODUCT_ITEM_IN_PROMOTION,
         message: 'Cannot delete this item because it belongs to a promotion.',
+      });
+    }
+    // Không có cascade ở phía thành phần (FK chặn), nên báo rõ thay vì để lỗi FK.
+    if (combos > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_ITEM_IN_COMBO,
+        message:
+          'Cannot delete this item because it is a component of a combo. Remove it from the combo first.',
       });
     }
 
@@ -762,6 +853,8 @@ export class ProductService {
     productId: string,
     dto: ItemWithCodes,
   ): Promise<string> {
+    const itemType = dto.itemType ?? ProductItemType.PRODUCT;
+    assertComponentsMatchType(itemType, dto.comboComponents);
     const item = await tx.productItem.create({
       data: {
         tenantId,
@@ -775,6 +868,7 @@ export class ProductService {
         costPrice: dto.costPrice,
         warrantyPeriod: dto.warrantyPeriod,
         vat: dto.vat,
+        itemType,
         images: { create: this.imageRows(dto.images) },
         suppliers: {
           create: (dto.supplierIds ?? []).map((supplierId) => ({ supplierId })),
@@ -782,6 +876,9 @@ export class ProductService {
       },
       select: { id: true },
     });
+    if (dto.comboComponents?.length) {
+      await writeComboComponents(tx, tenantId, item.id, dto.comboComponents);
+    }
     await writeItemDetails(
       tx,
       tenantId,
@@ -913,7 +1010,8 @@ export class ProductService {
 
   /** Prices are `Decimal` in Postgres and would serialize as strings, but the old API sent numbers the frontend does arithmetic on - converting here keeps that contract in one place. */
   private toItemResponse(item: ItemRow, stock: ItemStock | undefined) {
-    const { suppliers, retailPrice, costPrice, vat, ...rest } = item;
+    const { suppliers, comboComponents, retailPrice, costPrice, vat, ...rest } =
+      item;
     const details = stock?.details ?? [];
     return {
       ...rest,
@@ -921,6 +1019,17 @@ export class ProductService {
       costPrice: Number(costPrice),
       vat: vat === null ? null : Number(vat),
       suppliers: suppliers.map((link) => link.supplier),
+      comboComponents: comboComponents.map(({ quantity, componentItem }) => {
+        const { images, product, ...component } = componentItem;
+        return {
+          quantity,
+          componentItem: {
+            ...component,
+            retailPrice: Number(component.retailPrice),
+            thumbnailUrl: thumbnailOf({ images, product }),
+          },
+        };
+      }),
       stockDetails: details,
       stock: details.reduce((sum, detail) => sum + detail.stock, 0),
       // A variant with no row anywhere is 0 everywhere - the field is always a number, so

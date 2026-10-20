@@ -2,6 +2,8 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
+  IsIn,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -11,6 +13,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { ProductItemType } from '../../../common/constants/product-status';
 
 /** One image on a product or a variant; Mongo stored these inline and Postgres splits them into a child table, but the API keeps the same array of objects. */
 export class ProductImageDto {
@@ -47,6 +50,17 @@ export class ProductItemDetailDto {
   @IsOptional()
   @IsString()
   value?: string;
+}
+
+/** One component of a combo: `quantity` of `componentItemId` in one combo. The component may itself be a COMBO (nested combo). */
+export class ComboComponentDto {
+  @IsUUID()
+  componentItemId: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1, { message: 'Số lượng trong combo phải từ 1' })
+  quantity: number;
 }
 
 /** A variant (ProductItem / SKU), ported from CreateProductItemRequestDTO - which the old code also duplicated by hand inside CreateProductRequestDTO, where the two had already diverged. */
@@ -112,4 +126,18 @@ export class CreateProductItemDto {
   @IsArray()
   @IsUUID('4', { each: true })
   supplierIds?: string[];
+
+  /** PRODUCT (default), COMBO or SERVICE. Fixed at create: a variant that has held stock must not turn into a combo. */
+  @IsOptional()
+  @IsIn(Object.values(ProductItemType), {
+    message: `itemType phải là ${Object.values(ProductItemType).join(', ')}`,
+  })
+  itemType?: ProductItemType;
+
+  /** Required on a COMBO, refused on anything else. Replaced wholesale on update. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ComboComponentDto)
+  comboComponents?: ComboComponentDto[];
 }
