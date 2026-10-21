@@ -89,3 +89,9 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 **Chưa kiểm chứng / còn lại**
 - Thứ tự thành phần là theo SKU, không phải thứ tự nhập - giữ thứ tự nhập cần cột `position` (migration).
 - Toàn bộ e2e: 282/283 - `order-ship.e2e-spec.ts` (fail báo thêm chủ shop, mục 2026-10-19) đỏ cả trên `dev` sạch, test chưa cập nhật theo hành vi mới.
+
+## 2026-10-20 - `@BooleanQuery()` + test `order-ship` theo hành vi giao thất bại mới
+
+**Đã làm**
+- `src/common/decorators/boolean-query.decorator.ts`: một decorator cho cờ boolean tuỳ chọn trên query (`'true'`/`'false'` → boolean, vắng = `undefined`, giá trị khác → 400). Thay 9 bản `@Transform` tự viết ở 7 DTO (cash-drawer, holidays, inventory, order-journey, production-request ×2, products ×2, suppliers). **Đổi hành vi:** 6 bản cũ đọc mọi giá trị lạ (`?hasDebt=yes`) thành `false`; giờ trả 400. FE luôn gửi `'true'`/`'false'`.
+- `test/order-ship.e2e-spec.ts`: `fail` báo người phụ trách **và chủ shop** (mục 2026-10-19), thêm case người báo không tự nhận thông báo. Toàn bộ e2e xanh lại: 284/284.

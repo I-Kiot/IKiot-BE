@@ -1,6 +1,7 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
 
@@ -10,11 +11,7 @@ export class QueryInventoryDto extends IntersectionType(
   LocationRefQueryDto,
 ) {
   /** Only lines at or below their own `minStock`, ignoring lines with the alert off. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === 'true' || value === true,
-  )
-  @IsBoolean()
+  @BooleanQuery()
   isLowStock?: boolean;
 
   /** Partial, case-insensitive match on the variant's SKU or product name. */

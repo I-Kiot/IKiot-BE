@@ -1,7 +1,7 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -35,13 +35,7 @@ export class ProductFilterDto extends IntersectionType(
   status?: string;
 
   /** `isManufacturable=true` chỉ lấy sản phẩm đặt xưởng được - ô tìm hàng của form YCSX dùng nó. Bỏ trống = không lọc. */
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) => {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return value;
-  })
-  @IsBoolean()
+  @BooleanQuery()
   isManufacturable?: boolean;
 }
 
@@ -85,13 +79,7 @@ export class QueryProductItemDto {
   branchIds?: string[];
 
   /** `excludeDiscontinued=true` bỏ phiên bản của hàng đã ngừng kinh doanh - bộ chọn món combo dùng nó, để `limit` áp lên hàng chọn được. Bỏ trống = không lọc. */
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) => {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return value;
-  })
-  @IsBoolean()
+  @BooleanQuery()
   excludeDiscontinued?: boolean;
 
   // Not PaginationQueryDto: this feeds a dropdown, not a table - no page, just the same 200/500 default and cap the old service applied.
