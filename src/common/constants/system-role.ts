@@ -23,4 +23,7 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   // The branch / warehouse an employee is posted to (2026-10-07). Without it, a role with no `branches:read` had no branch to pick on the order form and the location switcher had no name to show - for the one place the account already works at.
   'branches:read_own',
   'warehouses:read_own',
+  // Looking up and adding a customer (2026-10-21). Anyone selling needs both, a customer can walk up to any employee, and a role that missed one left its holders with a customer page that answered 403. Edit and delete stay grantable.
+  'customers:read',
+  'customers:create',
 ]);

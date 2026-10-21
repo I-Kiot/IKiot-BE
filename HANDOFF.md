@@ -95,3 +95,14 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 **Đã làm**
 - `src/common/decorators/boolean-query.decorator.ts`: một decorator cho cờ boolean tuỳ chọn trên query (`'true'`/`'false'` → boolean, vắng = `undefined`, giá trị khác → 400). Thay 9 bản `@Transform` tự viết ở 7 DTO (cash-drawer, holidays, inventory, order-journey, production-request ×2, products ×2, suppliers). **Đổi hành vi:** 6 bản cũ đọc mọi giá trị lạ (`?hasDebt=yes`) thành `false`; giờ trả 400. FE luôn gửi `'true'`/`'false'`.
 - `test/order-ship.e2e-spec.ts`: `fail` báo người phụ trách **và chủ shop** (mục 2026-10-19), thêm case người báo không tự nhận thông báo. Toàn bộ e2e xanh lại: 284/284.
+
+## 2026-10-21 - Xem / thêm khách hàng thành quyền mặc định của mọi nhân viên
+
+**Đã làm**
+- `customers:read` và `customers:create` vào `STAFF_BASE_PERMISSIONS`: mọi tài khoản STAFF có hai quyền này bất kể vai trò; chủ shop / admin vốn đã toàn quyền. Trình sửa vai trò không còn hiện hai ô này (BE lọc khỏi `GET /roles/permission-catalog`, `create`/`update` vai trò bỏ chúng khỏi những gì lưu). `customers:update` / `customers:delete` vẫn phải cấp qua vai trò.
+- Lý do: tạo đơn cần tìm / thêm khách, khách có thể gặp bất kỳ nhân viên nào, và trang "Khách hàng" trên sidebar không bị ẩn theo quyền nên nhân viên thiếu `customers:read` vào là 403.
+- FE: bỏ hai mã này khỏi `permission-sections.ts` (ô "Tạo đơn" và ô "Xem danh sách khách hàng").
+
+**Lưu ý / chưa kiểm chứng**
+- Đánh đổi: mọi nhân viên (cả kho, xưởng, shipper) xem được toàn bộ danh sách khách của shop (tên, SĐT, địa chỉ) và trợ lý AI cũng mở `searchCustomers` cho họ. Khách hàng không gắn chi nhánh nên không thu hẹp được theo nơi làm việc.
+- Dòng `role_permissions` cũ đang chứa hai cặp này vẫn còn (vô hại, hợp với bộ mặc định), sẽ bị bỏ ở lần sửa vai trò tiếp theo. Không cần migration.
