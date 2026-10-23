@@ -3,14 +3,31 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
+  StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiProduces,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ProductService } from './products.service';
+import {
+  ProductImportService,
+  XLSX_MIME,
+} from './import/product-import.service';
+import { MAX_IMPORT_BYTES } from './import/product-import.columns';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import {
@@ -35,7 +52,10 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 @ApiBearerAuth('bearer')
 @Controller('products')
 export class ProductController {
-  constructor(private readonly service: ProductService) {}
+  constructor(
+    private readonly service: ProductService,
+    private readonly importer: ProductImportService,
+  ) {}
 
   @Permissions('products', 'create')
   @Post()
@@ -47,6 +67,40 @@ export class ProductController {
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryProductDto) {
     return this.service.findAll(requireTenantId(user), query);
+  }
+
+  /** File Excel mẫu để nhập hàng hoá - dropdown danh mục/thương hiệu/NCC lấy từ chính cửa hàng, nên gated như việc tạo. */
+  @Permissions('products', 'create')
+  @Get('import/template')
+  @ApiProduces(XLSX_MIME)
+  async importTemplate(@CurrentUser() user: AuthUser) {
+    const buffer = await this.importer.buildTemplate(requireTenantId(user));
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="mau-nhap-hang-hoa.xlsx"',
+    });
+  }
+
+  /** Nhập hàng hoá + mặt hàng từ file mẫu. Cả file hợp lệ mới tạo; sai thì 400 kèm `errors: [{ row, column, message }]`. */
+  @Permissions('products', 'create')
+  @Post('import')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  // Multer chặn file quá lớn ngay khi đọc socket; service kiểm lại để trả lỗi có `code`.
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_BYTES + 1 } }),
+  )
+  importProducts(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.importer.import(requireTenantId(user), file);
   }
 
   // `items` and `search` must stay above `:id` or the router matches them as a product id and every call 404s.

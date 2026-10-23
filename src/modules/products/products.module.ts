@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ProductController } from './products.controller';
 import { ProductService } from './products.service';
 import { ProductVariantService } from './product-variant.service';
+import { ProductImportService } from './import/product-import.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
@@ -9,7 +10,7 @@ import { SubscriptionModule } from '../subscriptions/subscriptions.module';
   // no stock rows - they appear at a location when a stock movement first puts goods there.
   imports: [SubscriptionModule],
   controllers: [ProductController],
-  providers: [ProductService, ProductVariantService],
+  providers: [ProductService, ProductVariantService, ProductImportService],
   exports: [ProductService, ProductVariantService],
 })
 export class ProductModule {}
