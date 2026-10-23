@@ -224,13 +224,15 @@ export class SubscriptionService {
     quota: QuotaField,
     count: () => Promise<number>,
     label: string,
+    /** How many rows the caller is about to add - more than one for a bulk import, which must fit whole or not at all. */
+    adding = 1,
   ): Promise<void> {
     const subscription = await this.requireActiveSubscription(tenantId);
     const max = subscription[quota];
     if (max === null || max < 0) return;
 
     const current = await count();
-    if (current >= max) {
+    if (current + adding > max) {
       throw new BadRequestException({
         code: ErrorCode.PLAN_QUOTA_EXCEEDED,
         message: `The plan limit for ${label} has been reached (max ${max}, currently ${current}). Please upgrade.`,

@@ -486,6 +486,12 @@ export const ErrorCode = {
   PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
   /** The variant (or a variant of the product) is a component of a combo that is still sold; take it out of the combo first. */
   PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
+
+  // ─── Product import from Excel (2026-10-20) ─────────────────────────────────
+  /** The uploaded file is not a readable .xlsx, is too large, has too many rows, or lacks the template's required columns. `errors` lists `{ row, column, message }`. */
+  PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
+  /** One or more rows of the import file are invalid; nothing was created. `errors` lists `{ row, column, message }` with Vietnamese messages for display. */
+  PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
   /** A combo component belongs to a discontinued product (on save, or when switching a combo back on). The message names the SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** A COMBO or SERVICE variant was put on a stock document or a location: only a PRODUCT holds stock. */

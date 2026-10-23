@@ -164,6 +164,21 @@ export class ProductService {
   // ─── Products ──────────────────────────────────────────────────────────────
 
   async create(tenantId: string, dto: CreateProductDto) {
+    const [productId] = await this.createMany(tenantId, [dto]);
+    return this.findOne(tenantId, productId, {});
+  }
+
+  /**
+   * Creates several products with their variants in one transaction - the form's single
+   * product and the Excel import go through the same checks, so neither can skip one. All
+   * or nothing: the quota must fit every product, and codes are allocated across the whole
+   * batch at once (allocating per product would hand two products the same `SP` number,
+   * since nothing is written until the transaction runs).
+   */
+  async createMany(
+    tenantId: string,
+    dtos: CreateProductDto[],
+  ): Promise<string[]> {
     await this.subscriptions.assertQuota(
       tenantId,
       'quotaSnapshotMaxProducts',
@@ -175,48 +190,75 @@ export class ProductService {
           },
         }),
       'products',
+      dtos.length,
     );
 
-    const items = await this.allocateItemCodes(tenantId, dto.items);
-    this.assertNoDuplicateSkusInPayload(items);
+    const allItems = dtos.flatMap((dto) => dto.items);
+    const coded = await this.allocateItemCodes(tenantId, allItems);
+    this.assertNoDuplicateSkusInPayload(coded);
     await this.assertSkusAreFree(
       tenantId,
-      items.map((item) => item.sku),
+      coded.map((item) => item.sku),
     );
-    const categoryName = await this.resolveCategoryName(
+    const categoryNames = await this.categoryNamesOf(
       tenantId,
-      dto.categoryId,
+      dtos.map((dto) => dto.categoryId),
     );
-    await this.assertBrandExists(tenantId, dto.brandId);
-    await this.assertItemReferencesExist(tenantId, dto.items);
+    await this.assertBrandsExist(
+      tenantId,
+      dtos.map((dto) => dto.brandId),
+    );
+    await this.assertItemReferencesExist(tenantId, allItems);
 
-    const productId = await this.prisma.$transaction(async (tx) => {
-      const product = await tx.product.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          brandId: dto.brandId,
-          categoryId: dto.categoryId,
-          categoryName,
-          status: dto.status ?? ProductStatus.ACTIVE,
-          isManufacturable: dto.isManufacturable ?? false,
-          images: { create: this.imageRows(dto.images) },
-        },
-        select: { id: true },
-      });
-
-      // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
-      if (dto.attributes) {
-        await upsertAttributeUnits(tx, tenantId, product.id, dto.attributes);
-      }
-      for (const item of items) {
-        await this.insertItem(tx, tenantId, product.id, item);
-      }
-
-      return product.id;
+    // Each product's share of the coded list, in order.
+    let offset = 0;
+    const batches = dtos.map((dto) => {
+      const items = coded.slice(offset, offset + dto.items.length);
+      offset += dto.items.length;
+      return { dto, items };
     });
 
-    return this.findOne(tenantId, productId, {});
+    // A product with a handful of variants is a few dozen statements; an import of a few
+    // hundred rows is thousands, well past the 5 s interactive-transaction default.
+    const timeout = Math.max(5_000, allItems.length * 200);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const ids: string[] = [];
+        for (const { dto, items } of batches) {
+          const product = await tx.product.create({
+            data: {
+              tenantId,
+              name: dto.name,
+              brandId: dto.brandId,
+              categoryId: dto.categoryId,
+              categoryName: dto.categoryId
+                ? categoryNames.get(dto.categoryId)
+                : null,
+              status: dto.status ?? ProductStatus.ACTIVE,
+              isManufacturable: dto.isManufacturable ?? false,
+              images: { create: this.imageRows(dto.images) },
+            },
+            select: { id: true },
+          });
+
+          // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
+          if (dto.attributes) {
+            await upsertAttributeUnits(
+              tx,
+              tenantId,
+              product.id,
+              dto.attributes,
+            );
+          }
+          for (const item of items) {
+            await this.insertItem(tx, tenantId, product.id, item);
+          }
+          ids.push(product.id);
+        }
+        return ids;
+      },
+      { timeout, maxWait: 10_000 },
+    );
   }
 
   async findAll(tenantId: string, query: QueryProductDto) {
@@ -1222,12 +1264,19 @@ export class ProductService {
     tenantId: string,
     brandId?: string,
   ): Promise<void> {
-    if (!brandId) return;
-    const brand = await this.prisma.brand.findFirst({
-      where: { id: brandId, tenantId },
-      select: { id: true },
+    await this.assertBrandsExist(tenantId, [brandId]);
+  }
+
+  private async assertBrandsExist(
+    tenantId: string,
+    brandIds: (string | undefined)[],
+  ): Promise<void> {
+    const ids = [...new Set(brandIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return;
+    const found = await this.prisma.brand.count({
+      where: { id: { in: ids }, tenantId },
     });
-    if (!brand)
+    if (found !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.BRAND_NOT_FOUND,
         message: 'Brand not found',
@@ -1240,15 +1289,26 @@ export class ProductService {
     categoryId?: string,
   ): Promise<string | null> {
     if (!categoryId) return null;
-    const category = await this.prisma.category.findFirst({
-      where: { id: categoryId, tenantId },
-      select: { name: true },
+    const names = await this.categoryNamesOf(tenantId, [categoryId]);
+    return names.get(categoryId) ?? null;
+  }
+
+  /** Every named category must be this tenant's; answers id → name for the denormalized copy. */
+  private async categoryNamesOf(
+    tenantId: string,
+    categoryIds: (string | undefined)[],
+  ): Promise<Map<string, string>> {
+    const ids = [...new Set(categoryIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return new Map();
+    const rows = await this.prisma.category.findMany({
+      where: { id: { in: ids }, tenantId },
+      select: { id: true, name: true },
     });
-    if (!category)
+    if (rows.length !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.CATEGORY_NOT_FOUND,
         message: 'Category not found',
       });
-    return category.name;
+    return new Map(rows.map((row) => [row.id, row.name]));
   }
 }
