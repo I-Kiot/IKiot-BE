@@ -75,6 +75,23 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Mặc định mọi dòng về kho là GOOD: hàng hỏng trên đường phải khai qua `items` (FE chưa có ô chọn tình trạng).
 - Index `shipments_one_open_per_order` vẫn loại FAILED khỏi "đang mở" (không đổi migration); kiểm tra ở app đã tính FAILED là mở.
 
+## 2026-10-20 - Nhập hàng hóa từ file Excel (`/products/import`)
+
+**Đã làm**
+- `GET /products/import/template`: file `.xlsx` mẫu sinh theo cửa hàng - trang "Hàng hóa" (tiêu đề đỏ `(*)` = bắt buộc, xanh = thông tin hàng hóa chỉ điền ở dòng đầu, ghi chú trên từng ô tiêu đề, dropdown danh mục/thương hiệu/NCC/trạng thái/loại/Có-Không, cột mã hàng/SKU/mã vạch định dạng chữ để giữ số 0 đầu), trang "Hướng dẫn" (luật điền, bảng cột, ví dụ) và trang "Danh sách" (nguồn dropdown).
+- `POST /products/import` (multipart `file`, `products:create`): mỗi dòng một SKU, các dòng cùng tên hàng hóa gộp thành các phiên bản; 3 cặp thuộc tính (tên / đơn vị / giá trị). Kiểm tra cả file trước, sai một dòng là không tạo gì, trả 400 kèm `errors: [{ row, column, message }]`. Kiểm: cột bắt buộc, số tiền (nhận `1.200.000`, `1,200,000`, `đ`), VAT 0-100, trạng thái/loại theo nhãn, danh mục (tên hoặc "Cha > Con", tên trùng phải dùng đường dẫn)/thương hiệu/NCC phải có sẵn, link ảnh, SKU trùng trong file và với cửa hàng, tên hàng đã có, thông tin hàng hóa mâu thuẫn giữa các dòng, đơn vị thuộc tính lệch, hai phiên bản giống hệt. Sau đó DTO của form chạy lại `class-validator` làm lưới an toàn.
+- `ProductService.create` thành vỏ của `createMany` (dùng chung cho form và import, một transaction, quota cho cả lô qua tham số mới `adding` của `assertQuota`, cấp mã `SP` cho cả lô một lần). Danh mục/thương hiệu kiểm bằng một truy vấn cho cả lô.
+- FE: nút "Nhập file" ở `/products` mở dialog kéo-thả file, nút "Tải file mẫu", hướng dẫn ngắn, bảng lỗi theo dòng; nhập xong tải lại danh sách.
+- Test: `product-import.parser.spec.ts` (16 unit), `test/product-import.e2e-spec.ts` (tải template thật, điền, nhập, đọc bảng; file lỗi không tạo gì). `product-combo`, `smoke` e2e vẫn pass.
+
+**Chưa kiểm chứng / giới hạn**
+- Chưa thử qua HTTP thật (dev server + trình duyệt): route, multer và tải blob ở FE mới qua `tsc`/`eslint` + `di-check`; chưa mở file mẫu bằng Excel/Google Sheets để xem dropdown hiển thị.
+- Không nhập combo, không nhập tồn kho đầu kỳ, không cập nhật hàng đã có (chỉ tạo mới). Kích thước (dài/rộng/cao/khối lượng) chưa có trong template vì DTO tạo hàng chưa nhận.
+- Ô chọn NCC chỉ chọn được một giá trị; nhiều NCC phải gõ tay cách nhau bởi `;`.
+- E2E chạy trên `ikiot_e2e` (đã `migrate deploy` các migration còn thiếu cho DB này).
+- (2026-10-21) Bỏ hai cột "Ảnh hàng hóa" và "Ảnh mặt hàng" khỏi template và bộ đọc theo yêu cầu: ảnh được thêm trên web sau khi nhập. File mẫu và dialog có dòng hướng dẫn việc này. File cũ còn hai cột đó vẫn nhập được (cột lạ bị bỏ qua) nhưng ảnh trong đó không được lưu.
+- (2026-10-21) Trang "Hướng dẫn" của file mẫu có thêm bảng ví dụ "Tên hàng hóa" và "Tên mặt hàng" (nằm trước ví dụ đầy đủ): mỗi dòng luôn tạo một mặt hàng, các dòng cùng tên hàng hóa gom thành một hàng hóa, bỏ trống tên mặt hàng thì tên được tự ghép. Đã kiểm bằng cách build rồi dựng trang hướng dẫn qua exceljs. Chưa mở bằng Excel thật để xem ô gộp.
+
 ## 2026-10-20 - Khai báo combo / combo lồng nhau trong danh mục (BE PR #41) + sửa theo review
 
 **Đã làm**

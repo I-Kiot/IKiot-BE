@@ -427,6 +427,12 @@ export const ErrorCode = {
   PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
   /** Biến thể (hoặc biến thể của sản phẩm) là thành phần của một combo vẫn đang bán; gỡ khỏi combo trước. */
   PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
+
+  // ─── Nhập hàng hoá từ Excel ──────────────────────────────────────────────────
+  /** File tải lên không phải .xlsx đọc được, quá lớn, quá nhiều dòng, hoặc thiếu cột bắt buộc của file mẫu. `errors` liệt kê `{ row, column, message }`. */
+  PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
+  /** Một hoặc nhiều dòng của file nhập không hợp lệ; không có gì được tạo. `errors` liệt kê `{ row, column, message }` bằng tiếng Việt để hiển thị. */
+  PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
   /** Thành phần combo thuộc sản phẩm đã ngừng bán (khi lưu, hoặc khi bật lại combo). Thông báo nêu SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** Biến thể COMBO hoặc SERVICE bị đưa vào chứng từ kho hay địa điểm: chỉ PRODUCT mới giữ kho. */
