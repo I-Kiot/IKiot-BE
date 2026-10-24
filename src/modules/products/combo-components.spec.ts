@@ -4,6 +4,7 @@ import {
   assertComboGraph,
   assertComponentsMatchType,
   assertNoDiscontinuedComponent,
+  comboCostOf,
 } from './combo-components';
 
 const item = (id: string, itemType = 'PRODUCT') => ({
@@ -148,5 +149,20 @@ describe('assertNoDiscontinuedComponent', () => {
         { id: '2', sku: 'B', productStatus: 'INACTIVE' },
       ]),
     ).not.toThrow();
+  });
+});
+
+describe('comboCostOf', () => {
+  it('sums quantity x cost over the components', () => {
+    expect(
+      comboCostOf([
+        { quantity: 1, costPrice: 1_000_000 },
+        { quantity: 4, costPrice: 250_000 },
+      ]),
+    ).toBe(2_000_000);
+  });
+
+  it('rounds to two places like the column', () => {
+    expect(comboCostOf([{ quantity: 3, costPrice: 0.335 }])).toBe(1.01);
   });
 });

@@ -91,10 +91,12 @@ export class CreateProductItemDto {
   @Min(0, { message: 'Giá bán không được âm' })
   retailPrice: number;
 
+  /** Required on a PRODUCT / SERVICE. Ignored on a COMBO: its cost is the sum of its components' costs, computed by the server. */
+  @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0, { message: 'Giá vốn không được âm' })
-  costPrice: number;
+  costPrice?: number;
 
   @IsOptional()
   @IsString()
@@ -134,7 +136,7 @@ export class CreateProductItemDto {
   @IsUUID('4', { each: true })
   supplierIds?: string[];
 
-  /** PRODUCT (default), COMBO or SERVICE. Fixed at create: a variant that has held stock must not turn into a combo. */
+  /** Optional and redundant since 2026-10-23: the server takes it from the product's `productType`, and a value that differs is a 400 `PRODUCT_ITEM_TYPE_MISMATCH`. Fixed at create: a variant that has held stock must not turn into a combo. */
   @IsOptional()
   @IsIn(Object.values(ProductItemType), {
     message: `itemType phải là ${Object.values(ProductItemType).join(', ')}`,

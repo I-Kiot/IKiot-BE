@@ -17,12 +17,15 @@ import type {
 import {
   ProductItemType,
   ProductStatus,
+  ProductType,
   QUOTA_COUNTED_PRODUCT_STATUSES,
+  itemTypeFor,
 } from '../../common/constants/product-status';
 import {
   assertComponentsMatchType,
   assertNoDiscontinuedComponent,
   lockComboGraph,
+  recomputeComboCosts,
   writeComboComponents,
 } from './combo-components';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -124,6 +127,7 @@ const ITEM_INCLUDE = {
           productName: true,
           itemType: true,
           retailPrice: true,
+          costPrice: true,
           ...THUMBNAIL_SELECT,
         },
       },
@@ -189,6 +193,7 @@ export class ProductService {
     );
     await this.assertBrandExists(tenantId, dto.brandId);
     await this.assertItemReferencesExist(tenantId, dto.items);
+    const productType = dto.productType ?? ProductType.PRODUCT;
 
     const productId = await this.prisma.$transaction(async (tx) => {
       const product = await tx.product.create({
@@ -200,6 +205,7 @@ export class ProductService {
           categoryName,
           status: dto.status ?? ProductStatus.ACTIVE,
           isManufacturable: dto.isManufacturable ?? false,
+          productType,
           images: { create: this.imageRows(dto.images) },
         },
         select: { id: true },
@@ -210,7 +216,7 @@ export class ProductService {
         await upsertAttributeUnits(tx, tenantId, product.id, dto.attributes);
       }
       for (const item of items) {
-        await this.insertItem(tx, tenantId, product.id, item);
+        await this.insertItem(tx, tenantId, product.id, productType, item);
       }
 
       return product.id;
@@ -345,8 +351,15 @@ export class ProductService {
         { productCode: match },
       ];
     }
-    if (query.excludeDiscontinued) {
-      where.product = { status: { not: ProductStatus.DISCONTINUED } };
+    if (query.excludeDiscontinued || query.productType?.length) {
+      where.product = {
+        ...(query.excludeDiscontinued && {
+          status: { not: ProductStatus.DISCONTINUED },
+        }),
+        ...(query.productType?.length && {
+          productType: { in: query.productType },
+        }),
+      };
     }
 
     const found = await this.prisma.productItem.findMany({
@@ -358,13 +371,15 @@ export class ProductService {
         productCode: true,
         sku: true,
         itemType: true,
+        costPrice: true,
         ...THUMBNAIL_SELECT,
       },
       orderBy: { productName: 'asc' },
       take: query.limit,
     });
-    const items = found.map(({ images, product, ...item }) => ({
+    const items = found.map(({ images, product, costPrice, ...item }) => ({
       ...item,
+      costPrice: Number(costPrice),
       thumbnailUrl: thumbnailOf({ images, product }),
     }));
 
@@ -673,7 +688,7 @@ export class ProductService {
 
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId },
-      select: { id: true },
+      select: { id: true, productType: true },
     });
     if (!product)
       throw new NotFoundException({
@@ -686,7 +701,13 @@ export class ProductService {
     await this.assertItemReferencesExist(tenantId, [item]);
 
     const itemId = await this.prisma.$transaction((tx) =>
-      this.insertItem(tx, tenantId, productId, item),
+      this.insertItem(
+        tx,
+        tenantId,
+        productId,
+        product.productType as ProductType,
+        item,
+      ),
     );
 
     return this.findItem(tenantId, itemId);
@@ -725,11 +746,22 @@ export class ProductService {
           barcode: dto.barcode,
           description: dto.description,
           retailPrice: dto.retailPrice,
-          costPrice: dto.costPrice,
+          // A combo's cost is the sum of its components', written by `writeComboComponents`.
+          costPrice:
+            existing.itemType === ProductItemType.COMBO
+              ? undefined
+              : dto.costPrice,
           warrantyPeriod: dto.warrantyPeriod,
           vat: dto.vat,
         },
       });
+      // Combos above this variant carry a cost derived from it - re-price them.
+      if (
+        existing.itemType !== ProductItemType.COMBO &&
+        dto.costPrice !== undefined
+      ) {
+        await recomputeComboCosts(tx, tenantId, [itemId]);
+      }
 
       // Both collections are replaced wholesale when present, same as the old API: the client sends the list it wants to end up with, not a patch of it.
       if (dto.images) {
@@ -910,15 +942,30 @@ export class ProductService {
     return this.toItemResponse(item, stock.get(itemId));
   }
 
-  /** Creates a variant with its images, specs, supplier links and opening stock. */
+  /** Creates a variant with its images, specs, supplier links and opening stock. Its `itemType` is the product's, never the client's choice. */
   private async insertItem(
     tx: Prisma.TransactionClient,
     tenantId: string,
     productId: string,
+    productType: ProductType,
     dto: ItemWithCodes,
   ): Promise<string> {
-    const itemType = dto.itemType ?? ProductItemType.PRODUCT;
+    const itemType = itemTypeFor(productType);
+    if (dto.itemType !== undefined && dto.itemType !== itemType) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_ITEM_TYPE_MISMATCH,
+        message: `A ${productType} product only holds ${itemType} variants, not ${dto.itemType}`,
+      });
+    }
     assertComponentsMatchType(itemType, dto.comboComponents);
+    // A combo's cost is derived from its components (set by `writeComboComponents` below), so the
+    // client's figure, if any, is dropped; everything else must bring one.
+    if (itemType !== ProductItemType.COMBO && dto.costPrice === undefined) {
+      throw new BadRequestException({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'costPrice is required',
+      });
+    }
     const item = await tx.productItem.create({
       data: {
         tenantId,
@@ -929,7 +976,7 @@ export class ProductService {
         barcode: dto.barcode,
         description: dto.description,
         retailPrice: dto.retailPrice,
-        costPrice: dto.costPrice,
+        costPrice: itemType === ProductItemType.COMBO ? 0 : dto.costPrice!,
         warrantyPeriod: dto.warrantyPeriod,
         vat: dto.vat,
         itemType,
@@ -969,10 +1016,14 @@ export class ProductService {
       categoryId?: string;
       supplierId?: string;
       isManufacturable?: boolean;
+      productType?: ProductType[];
     } & LocationRefQueryDto,
   ): Prisma.ProductWhereInput {
     const where: Prisma.ProductWhereInput = { tenantId };
     if (query.status) where.status = query.status;
+    if (query.productType?.length) {
+      where.productType = { in: query.productType };
+    }
     if (query.categoryId) where.categoryId = query.categoryId;
     if (query.isManufacturable !== undefined) {
       where.isManufacturable = query.isManufacturable;
@@ -1090,6 +1141,7 @@ export class ProductService {
           componentItem: {
             ...component,
             retailPrice: Number(component.retailPrice),
+            costPrice: Number(component.costPrice),
             thumbnailUrl: thumbnailOf({ images, product }),
           },
         };

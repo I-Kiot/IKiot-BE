@@ -16,10 +16,25 @@ export interface ComboComponentInput {
   quantity: number;
 }
 
+/**
+ * Giá vốn combo bằng giá vốn các món của nó: tổng `số lượng x giá vốn` của các thành phần. Không
+ * bao giờ nhập tay - số gõ tay sẽ lệch khỏi các món ngay khi một món đổi giá. Làm tròn 2 chữ số
+ * như cột trong database, để tổng Decimal và tổng ở đây không lệch nhau một phần lẻ.
+ */
+export function comboCostOf(
+  components: readonly { quantity: number; costPrice: number }[],
+): number {
+  const total = components.reduce(
+    (sum, part) => sum + part.quantity * part.costPrice,
+    0,
+  );
+  return Math.round(total * 100) / 100;
+}
+
 const invalid = (message: string) =>
   new BadRequestException({ code: ErrorCode.PRODUCT_COMBO_INVALID, message });
 
-/** Every combo that contains `id`, directly or through another combo. */
+/** Mọi combo chứa `id`, trực tiếp hoặc qua combo khác. */
 function ancestorsOf(
   id: string,
   childrenOf: ReadonlyMap<string, readonly ComboEdge[]>,
@@ -46,11 +61,11 @@ function ancestorsOf(
 }
 
 /**
- * Checks the tenant's combo graph as it would be with `comboId` holding `edges`: the combo itself
- * and every combo above it must still flatten (`flattenCombo` - no cycle, no empty combo, no nesting
- * past `MAX_COMBO_DEPTH`). Pure, so the rules are unit-tested without a database. The order flow
- * runs the same `flattenCombo` when it sells the combo; refusing here means a bad catalogue is caught
- * when it is typed, not when a customer is at the till.
+ * Kiểm tra đồ thị combo của shop như thể `comboId` đang chứa `edges`: chính combo đó và mọi combo
+ * phía trên nó vẫn phải "bung" được (`flattenCombo` - không vòng lặp, không combo rỗng, không lồng
+ * quá `MAX_COMBO_DEPTH`). Hàm thuần nên test đơn vị được mà không cần database. Luồng bán hàng chạy
+ * cùng `flattenCombo` khi bán combo; chặn ở đây nghĩa là danh mục sai bị bắt lúc nhập, không phải
+ * lúc khách đang thanh toán.
  */
 export function assertComboGraph(
   comboId: string,
@@ -72,7 +87,7 @@ export function assertComboGraph(
   }
 }
 
-/** Throws `PRODUCT_COMBO_COMPONENT_DISCONTINUED`, naming the SKUs, when any of `items` belongs to a discontinued product. */
+/** Ném `PRODUCT_COMBO_COMPONENT_DISCONTINUED`, kèm SKU, khi có món trong `items` thuộc sản phẩm đã ngừng sản xuất. */
 export function assertNoDiscontinuedComponent(
   items: { id: string; sku: string | null; productStatus: string }[],
 ): void {
@@ -89,10 +104,10 @@ export function assertNoDiscontinuedComponent(
 }
 
 /**
- * Serialises everything that reads and then changes "which combo holds what, and is it still sold"
- * for one tenant: writing components, discontinuing a product, switching one back on. Each of those
- * checks the graph or the statuses and then writes, so two of them checked against the same old state
- * could each pass and together break the rule. Transaction-scoped: released at commit / rollback.
+ * Xếp hàng mọi thao tác đọc rồi mới đổi "combo nào chứa gì, và món đó còn bán không" của một
+ * shop: ghi thành phần, ngừng một sản phẩm, bật lại một sản phẩm. Mỗi thao tác đó kiểm tra đồ thị
+ * hoặc trạng thái rồi mới ghi, nên hai thao tác cùng kiểm theo trạng thái cũ có thể cùng qua và
+ * cùng nhau phá quy tắc. Khoá theo transaction: tự nhả khi commit / rollback.
  */
 export async function lockComboGraph(
   tx: Prisma.TransactionClient,
@@ -102,14 +117,15 @@ export async function lockComboGraph(
 }
 
 /**
- * Validates and writes a combo's components, replacing what it had. Callers run
- * `assertComponentsMatchType` first - that is the one place saying a COMBO needs at least one. The
- * components must be variants of this tenant whose product is not discontinued, each named once. A
- * component may itself be a COMBO (nested combo); the whole graph is re-checked with
- * `assertComboGraph`.
+ * Kiểm tra rồi ghi thành phần của một combo, thay cho danh sách cũ. Người gọi chạy
+ * `assertComponentsMatchType` trước - đó là nơi duy nhất nói COMBO cần ít nhất một món. Các món
+ * phải là phiên bản của shop này, thuộc sản phẩm chưa ngừng sản xuất, mỗi món chỉ nêu một lần.
+ * Một món có thể là COMBO khác (combo lồng nhau); cả đồ thị được kiểm lại bằng `assertComboGraph`.
+ * Sau khi ghi, giá vốn của combo được tính lại từ các món, rồi `recomputeComboCosts` sửa các combo
+ * phía trên.
  *
- * Runs inside the caller's transaction under `lockComboGraph`: two edits checked against the same old
- * graph (A ← B and B ← A at once) would otherwise each pass and together make a cycle.
+ * Chạy trong transaction của người gọi, dưới `lockComboGraph`: hai lần sửa cùng kiểm theo một đồ
+ * thị cũ (A ← B và B ← A cùng lúc) sẽ cùng qua và cùng nhau tạo vòng lặp.
  */
 export async function writeComboComponents(
   tx: Prisma.TransactionClient,
@@ -135,6 +151,7 @@ export async function writeComboComponents(
       productName: true,
       vat: true,
       itemType: true,
+      costPrice: true,
       product: { select: { status: true } },
     },
   });
@@ -172,7 +189,10 @@ export async function writeComboComponents(
     childrenOf.set(row.comboItemId, edges);
   }
   const byId = new Map(
-    items.map(({ product: _product, ...item }) => [item.id, item]),
+    items.map(({ product: _product, costPrice: _cost, ...item }) => [
+      item.id,
+      item,
+    ]),
   );
   assertComboGraph(
     comboId,
@@ -192,9 +212,139 @@ export async function writeComboComponents(
       quantity: component.quantity,
     })),
   });
+
+  // Món là combo lồng thì giá vốn đã lưu của nó vốn là tổng các món của nó (luôn được
+  // `recomputeComboCosts` giữ đúng), nên ở đây chỉ cần cộng một tầng.
+  const costOf = new Map(
+    items.map((item) => [item.id, Number(item.costPrice)]),
+  );
+  await tx.productItem.update({
+    where: { id: comboId },
+    data: {
+      costPrice: comboCostOf(
+        components.map((component) => ({
+          quantity: component.quantity,
+          costPrice: costOf.get(component.componentItemId)!,
+        })),
+      ),
+    },
+  });
+  await recomputeComboCosts(tx, tenantId, [comboId]);
 }
 
-/** `comboComponents` belongs to a COMBO only: at least one on a COMBO, none on anything else (an empty list on a non-combo is no components, so it passes). */
+/**
+ * Tính lại giá vốn của mọi combo nằm phía trên `changedIds`, để giá vốn combo đã lưu không bị cũ.
+ *
+ * Vì sao cần: `costPrice` của combo là số lưu sẵn (tổng số lượng x giá vốn từng món), không tính
+ * lúc đọc. Khi giá vốn một món đổi, mọi combo chứa món đó - trực tiếp hoặc qua combo khác - đều
+ * lỗi thời. Ví dụ: Phòng ăn = 1 Bộ bàn ăn + 2 Ghế, Bộ bàn ăn = 1 Bàn + 6 Ghế. Khi giá Ghế đổi phải
+ * sửa Bộ bàn ăn trước, rồi mới tới Phòng ăn (dùng giá Bộ bàn ăn mới).
+ *
+ * Cách làm, 4 bước, đều chạy trên một bản đồ thị combo của shop nạp sẵn trong bộ nhớ (đọc một lần,
+ * không query theo từng combo):
+ *   1. Lập chỉ mục đồ thị hai chiều (`partsOf` = combo gồm những món nào, `parentsOf` = món nằm
+ *      trong những combo nào).
+ *   2. Đi LÊN từ `changedIds` bằng `parentsOf` để gom mọi combo cần tính lại giá.
+ *   3. Đọc giá vốn hiện tại của các combo đó và của các món trực tiếp của chúng.
+ *   4. Tính giá từng combo từ các món của nó (`resolve`), món con trước, rồi ghi xuống.
+ *
+ * Bản thân `changedIds` không bị tính lại - giá của chúng đã đúng, chỉ là điểm xuất phát. Đồ thị
+ * không có vòng lặp (`assertComboGraph` chặn khi ghi thành phần), nên đệ quy ở bước 4 luôn dừng.
+ *
+ * Chạy trong transaction của người gọi: sửa bị rollback thì việc tính lại cũng rollback theo.
+ */
+export async function recomputeComboCosts(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  changedIds: readonly string[],
+): Promise<void> {
+  // Mỗi dòng là một cặp "combo X chứa món Y, số lượng Q", cho cả shop.
+  const rows = await tx.comboComponent.findMany({
+    where: { comboItem: { tenantId } },
+    select: {
+      comboItemId: true,
+      componentItemId: true,
+      quantity: true,
+    },
+  });
+  if (rows.length === 0) return;
+
+  // Bước 1 - lập chỉ mục đồ thị theo hai chiều. Bảng chỉ lưu "combo chứa món", nên muốn đi từ một
+  // món LÊN các combo chứa nó thì phải đảo chiều.
+  //   partsOf:   Bộ bàn ăn -> [{Bàn, 1}, {Ghế, 6}]      (đi xuống: nó gồm những gì?)
+  //   parentsOf: Ghế       -> [Bộ bàn ăn, Phòng ăn]      (đi lên: nó được dùng ở đâu?)
+  const partsOf = new Map<
+    string,
+    { componentItemId: string; quantity: number }[]
+  >();
+  const parentsOf = new Map<string, string[]>();
+  for (const row of rows) {
+    const parts = partsOf.get(row.comboItemId) ?? [];
+    parts.push(row);
+    partsOf.set(row.comboItemId, parts);
+    const parents = parentsOf.get(row.componentItemId) ?? [];
+    parents.push(row.comboItemId);
+    parentsOf.set(row.componentItemId, parents);
+  }
+
+  // Bước 2 - tìm mọi combo cần giá mới: xuất phát từ các món vừa đổi, cứ đi lên các combo chứa
+  // chúng. Combo đã có trong `affected` thì bỏ qua, nên combo đến được bằng hai đường (VD: Phòng
+  // ăn qua Ghế và qua Bộ bàn ăn) chỉ được xử lý một lần.
+  const affected = new Set<string>();
+  const queue = [...changedIds];
+  while (queue.length > 0) {
+    for (const parent of parentsOf.get(queue.pop()!) ?? []) {
+      if (affected.has(parent)) continue;
+      affected.add(parent);
+      queue.push(parent);
+    }
+  }
+  if (affected.size === 0) return;
+
+  // Bước 3 - nạp giá vốn cần dùng bằng một query: chính các combo bị ảnh hưởng và mọi món trực
+  // tiếp của chúng. Món không bị ảnh hưởng (hàng thường, hoặc combo không đổi) có giá đã lưu vốn
+  // đúng, nên dùng nguyên.
+  const involved = new Set<string>(affected);
+  for (const id of affected) {
+    for (const part of partsOf.get(id) ?? [])
+      involved.add(part.componentItemId);
+  }
+  const costs = new Map(
+    (
+      await tx.productItem.findMany({
+        where: { tenantId, id: { in: [...involved] } },
+        select: { id: true, costPrice: true },
+      })
+    ).map((item) => [item.id, Number(item.costPrice)]),
+  );
+
+  // Bước 4 - giá vốn mới nhất của `id`.
+  //   - Không bị ảnh hưởng: giá đã lưu là đúng, trả luôn.
+  //   - Combo bị ảnh hưởng: tính từ các món của nó, gọi `resolve` cho từng món để combo con (cũng bị
+  //     ảnh hưởng) được tính trước. Sau đó ghi kết quả vào `costs` và bỏ combo khỏi `affected`: lần
+  //     sau, combo khác chứa nó sẽ đọc số mới từ `costs` thay vì tính lại, nên mỗi combo chỉ được
+  //     tính đúng một lần, bất kể duyệt theo thứ tự nào.
+  const resolve = (id: string): number => {
+    if (!affected.has(id)) return costs.get(id) ?? 0;
+    const cost = comboCostOf(
+      (partsOf.get(id) ?? []).map((part) => ({
+        quantity: part.quantity,
+        costPrice: resolve(part.componentItemId),
+      })),
+    );
+    costs.set(id, cost);
+    affected.delete(id);
+    return cost;
+  };
+  // `resolve` làm rỗng dần `affected`, nên phải sao chép danh sách id cần ghi trước.
+  const toWrite = [...affected];
+  for (const id of toWrite) {
+    const cost = resolve(id);
+    await tx.productItem.update({ where: { id }, data: { costPrice: cost } });
+  }
+}
+
+/** `comboComponents` chỉ thuộc về COMBO: COMBO cần ít nhất một món, loại khác không được có (danh sách rỗng trên loại khác nghĩa là không có thành phần nên vẫn hợp lệ). */
 export function assertComponentsMatchType(
   itemType: string,
   components: ComboComponentInput[] | undefined,
