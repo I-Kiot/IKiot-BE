@@ -490,6 +490,10 @@ export const ErrorCode = {
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** A COMBO or SERVICE variant was put on a stock document or a location: only a PRODUCT holds stock. */
   PRODUCT_ITEM_NOT_STOCKABLE: 'PRODUCT_ITEM_NOT_STOCKABLE',
+
+  // ─── Product type (2026-10-23) ──────────────────────────────────────────────
+  /** A variant's `itemType` differs from its product's `productType` - every SKU of a product has the product's type. */
+  PRODUCT_ITEM_TYPE_MISMATCH: 'PRODUCT_ITEM_TYPE_MISMATCH',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

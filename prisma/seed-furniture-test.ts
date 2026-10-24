@@ -19,6 +19,8 @@
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { writeItemDetails } from '../src/modules/products/product-attributes';
+import { ProductType } from '../src/common/constants/product-status';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -62,6 +64,8 @@ type Product = {
   name: string;
   category: string;
   warranty: string;
+  /** Đặt xưởng được (YCSX). Chỉ những món có kịch bản sản xuất: tủ (K2) và sofa kích thước riêng (K10). */
+  manufacturable?: boolean;
   variants: {
     sku: string;
     name: string;
@@ -135,6 +139,7 @@ const PRODUCTS: Product[] = [
     name: 'Tủ hồ sơ 3 cánh',
     category: 'Tủ',
     warranty: '12 tháng',
+    manufacturable: true,
     variants: [
       {
         sku: 'TU-HS-3C',
@@ -153,6 +158,7 @@ const PRODUCTS: Product[] = [
     name: 'Sofa góc Milan',
     category: 'Sofa',
     warranty: '24 tháng',
+    manufacturable: true,
     variants: [
       {
         sku: 'SOFA-MILAN-L',
@@ -408,10 +414,12 @@ async function main() {
           brandId: brand.id,
           categoryId: categoryIds.get(product.category),
           categoryName: product.category,
+          productType: ProductType.PRODUCT,
+          isManufacturable: product.manufacturable ?? false,
         },
       });
       for (const v of product.variants) {
-        await tx.productItem.create({
+        const item = await tx.productItem.create({
           data: {
             tenantId,
             productId: row.id,
@@ -421,15 +429,19 @@ async function main() {
             retailPrice: v.retailPrice,
             costPrice: v.costPrice,
             warrantyPeriod: product.warranty,
-            details: {
-              create: v.details.map(([name, value], position) => ({
-                name,
-                value,
-                position,
-              })),
-            },
           },
+          select: { id: true },
         });
+        // Thuộc tính thuộc về sản phẩm (2026-10-16): đi qua cùng hàm ProductService dùng, để
+        // mỗi giá trị trỏ vào product_attributes - ghi `details` trần thì sản phẩm không có
+        // thuộc tính nào và form "thêm phiên bản" không có gì để chọn.
+        await writeItemDetails(
+          tx,
+          tenantId,
+          row.id,
+          item.id,
+          v.details.map(([name, value]) => ({ name, value })),
+        );
       }
     });
     createdProducts++;

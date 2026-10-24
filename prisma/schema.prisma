@@ -602,6 +602,8 @@ model Product {
   categoryName     String?   @map("category_name") // bản sao tên danh mục, cập nhật khi đổi tên
   /// true = đặt xưởng sản xuất được (YCSX); false = chỉ nhập từ NCC. Áp cho mọi SKU của sản phẩm.
   isManufacturable Boolean   @default(false) @map("is_manufacturable")
+  /// PRODUCT | COMBO | SERVICE - cố định lúc tạo. Mọi SKU của sản phẩm có itemType bằng đúng giá trị này (itemTypeFor).
+  productType      String    @default("PRODUCT") @map("product_type")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -609,6 +611,7 @@ model Product {
   productItems ProductItem[]
   attributes   ProductAttribute[]
 
+  @@index([tenantId, productType])
   @@map("products")
 }
 

@@ -9,6 +9,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import {
   ProductItemType,
   ProductStatus,
+  ProductType,
 } from './../src/common/constants/product-status';
 
 /**
@@ -44,12 +45,12 @@ describe('ProductService – combo components', () => {
   ) =>
     products.create(tenantId, {
       name,
+      productType: ProductType.COMBO,
       items: [
         {
           productName: name,
           retailPrice: 1_000_000,
           costPrice: 0,
-          itemType: ProductItemType.COMBO,
           comboComponents,
         },
       ],
@@ -264,6 +265,30 @@ describe('ProductService – combo components', () => {
     ).toBe(6);
   });
 
+  it("prices a combo from its components' costs, nested ones included", async () => {
+    await products.updateItem(tenantId, tableId, { costPrice: 1_000_000 });
+    await products.updateItem(tenantId, chairId, { costPrice: 200_000 });
+
+    // Bộ bàn ăn = 1 bàn + 6 ghế; Phòng ăn = 1 bộ bàn ăn + 2 ghế.
+    const costOf = async (id: string) =>
+      Number(
+        (
+          await prisma.productItem.findUniqueOrThrow({
+            where: { id },
+            select: { costPrice: true },
+          })
+        ).costPrice,
+      );
+    expect(await costOf(diningSetId)).toBe(2_200_000);
+    expect(await costOf(roomSetId)).toBe(2_600_000);
+
+    // Một giá vốn gõ tay trên combo bị bỏ qua.
+    const edited = await products.updateItem(tenantId, diningSetId, {
+      costPrice: 5,
+    });
+    expect(edited.costPrice).toBe(2_200_000);
+  });
+
   it('refuses deleting or discontinuing a component of a live combo', async () => {
     expect(await codeOf(products.removeItem(tenantId, chairId))).toBe(
       ErrorCode.PRODUCT_ITEM_IN_COMBO,
@@ -331,24 +356,85 @@ describe('ProductService – combo components', () => {
     ).toBe(ErrorCode.PRODUCT_COMBO_COMPONENT_DISCONTINUED);
   });
 
-  it('switches back on a product whose combo variant uses its own sibling variant', async () => {
-    // Một sản phẩm: phiên bản lẻ + phiên bản combo "bộ 2 cái" của chính nó.
-    const stool = await products.create(tenantId, {
-      name: 'Đôn gỗ',
-      items: [{ productName: 'Đôn gỗ', retailPrice: 200_000, costPrice: 0 }],
-    });
-    await products.createItem(tenantId, stool.id, {
-      productName: 'Đôn gỗ - bộ 2',
-      retailPrice: 380_000,
-      costPrice: 0,
-      itemType: ProductItemType.COMBO,
-      comboComponents: [{ componentItemId: stool.items[0].id, quantity: 2 }],
-    });
+  it('gives every variant its product type and refuses a mismatched one', async () => {
+    const roomProductId = (
+      await prisma.productItem.findUniqueOrThrow({ where: { id: roomSetId } })
+    ).productId;
+    expect(
+      (await prisma.product.findUniqueOrThrow({ where: { id: roomProductId } }))
+        .productType,
+    ).toBe(ProductType.COMBO);
 
-    await products.discontinue(tenantId, stool.id);
-    const back = await products.update(tenantId, stool.id, {
-      status: ProductStatus.ACTIVE,
+    // Phiên bản mới của combo là COMBO dù client không gửi itemType.
+    const variant = await products.createItem(tenantId, roomProductId, {
+      productName: 'Phòng ăn - bản nhỏ',
+      retailPrice: 900_000,
+      costPrice: 0,
+      comboComponents: [{ componentItemId: chairId, quantity: 2 }],
     });
-    expect(back.status).toBe(ProductStatus.ACTIVE);
+    expect(variant.itemType).toBe(ProductItemType.COMBO);
+
+    // Không còn được nhét combo vào sản phẩm thường, hay hàng thường vào combo.
+    expect(
+      await codeOf(
+        products.createItem(tenantId, tableProductId, {
+          productName: 'Bàn - bộ 2',
+          retailPrice: 1,
+          costPrice: 0,
+          itemType: ProductItemType.COMBO,
+          comboComponents: [{ componentItemId: tableId, quantity: 2 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCT_ITEM_TYPE_MISMATCH);
+    expect(
+      await codeOf(
+        products.createItem(tenantId, roomProductId, {
+          productName: 'Phòng ăn - lẻ',
+          retailPrice: 1,
+          costPrice: 0,
+          itemType: ProductItemType.PRODUCT,
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCT_ITEM_TYPE_MISMATCH);
+  });
+
+  it('creates a service product whose variants are services', async () => {
+    const service = await products.create(tenantId, {
+      name: 'Lắp đặt',
+      productType: ProductType.SERVICE,
+      items: [{ productName: 'Lắp đặt', retailPrice: 200_000, costPrice: 0 }],
+    });
+    expect(service.productType).toBe(ProductType.SERVICE);
+    expect(service.items[0].itemType).toBe(ProductItemType.SERVICE);
+  });
+
+  it('filters lists by product type, and lists every type when none is named', async () => {
+    const ids = async (productType?: ProductType[]) =>
+      (
+        await products.findAll(tenantId, {
+          page: 1,
+          limit: 100,
+          productType,
+        })
+      ).data.map((row) => row.productType);
+
+    expect(new Set(await ids([ProductType.COMBO]))).toEqual(
+      new Set([ProductType.COMBO]),
+    );
+    expect(
+      new Set(await ids([ProductType.PRODUCT, ProductType.SERVICE])),
+    ).toEqual(new Set([ProductType.PRODUCT, ProductType.SERVICE]));
+    expect(new Set(await ids())).toEqual(
+      new Set([ProductType.PRODUCT, ProductType.SERVICE, ProductType.COMBO]),
+    );
+
+    const comboItems = await products.listItems(tenantId, {
+      limit: 100,
+      productType: [ProductType.COMBO],
+    });
+    expect(comboItems.length).toBeGreaterThan(0);
+    expect(
+      comboItems.every((row) => row.itemType === ProductItemType.COMBO),
+    ).toBe(true);
   });
 });

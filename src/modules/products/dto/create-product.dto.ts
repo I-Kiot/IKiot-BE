@@ -10,7 +10,11 @@ import {
   IsUUID,
   ValidateNested,
 } from 'class-validator';
-import { SETTABLE_PRODUCT_STATUSES } from '../../../common/constants/product-status';
+import {
+  PRODUCT_TYPES,
+  ProductType,
+  SETTABLE_PRODUCT_STATUSES,
+} from '../../../common/constants/product-status';
 import {
   CreateProductItemDto,
   ProductAttributeDto,
@@ -35,6 +39,13 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   isManufacturable?: boolean;
+
+  /** PRODUCT (default), COMBO or SERVICE. Fixed at create; every variant gets the matching `itemType`. */
+  @IsOptional()
+  @IsIn(PRODUCT_TYPES, {
+    message: `productType phải là ${PRODUCT_TYPES.join(', ')}`,
+  })
+  productType?: ProductType;
 
   @IsOptional()
   @IsIn(SETTABLE_PRODUCT_STATUSES, {

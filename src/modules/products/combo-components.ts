@@ -16,6 +16,21 @@ export interface ComboComponentInput {
   quantity: number;
 }
 
+/**
+ * A combo's cost is what its parts cost: the sum of `quantity x costPrice` over its components. Never
+ * typed in - a hand-entered figure drifts from the parts the moment one of them is repriced. Rounded
+ * to 2 places like the column, so a Decimal sum and this one cannot disagree by a fraction.
+ */
+export function comboCostOf(
+  components: readonly { quantity: number; costPrice: number }[],
+): number {
+  const total = components.reduce(
+    (sum, part) => sum + part.quantity * part.costPrice,
+    0,
+  );
+  return Math.round(total * 100) / 100;
+}
+
 const invalid = (message: string) =>
   new BadRequestException({ code: ErrorCode.PRODUCT_COMBO_INVALID, message });
 
@@ -135,6 +150,7 @@ export async function writeComboComponents(
       productName: true,
       vat: true,
       itemType: true,
+      costPrice: true,
       product: { select: { status: true } },
     },
   });
@@ -172,7 +188,10 @@ export async function writeComboComponents(
     childrenOf.set(row.comboItemId, edges);
   }
   const byId = new Map(
-    items.map(({ product: _product, ...item }) => [item.id, item]),
+    items.map(({ product: _product, costPrice: _cost, ...item }) => [
+      item.id,
+      item,
+    ]),
   );
   assertComboGraph(
     comboId,
@@ -192,6 +211,102 @@ export async function writeComboComponents(
       quantity: component.quantity,
     })),
   });
+
+  // A nested combo's own stored cost is already the sum of its parts (kept current by
+  // `recomputeComboCosts`), so one level of arithmetic here is enough.
+  const costOf = new Map(
+    items.map((item) => [item.id, Number(item.costPrice)]),
+  );
+  await tx.productItem.update({
+    where: { id: comboId },
+    data: {
+      costPrice: comboCostOf(
+        components.map((component) => ({
+          quantity: component.quantity,
+          costPrice: costOf.get(component.componentItemId)!,
+        })),
+      ),
+    },
+  });
+  await recomputeComboCosts(tx, tenantId, [comboId]);
+}
+
+/**
+ * Re-prices every combo above `changedIds` after a component's cost moved (or a combo's own did), so
+ * a stored combo cost never goes stale. Walks the tenant's graph once in memory; the graph is acyclic
+ * (`assertComboGraph`), so each combo is priced after its parts.
+ */
+export async function recomputeComboCosts(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  changedIds: readonly string[],
+): Promise<void> {
+  const rows = await tx.comboComponent.findMany({
+    where: { comboItem: { tenantId } },
+    select: {
+      comboItemId: true,
+      componentItemId: true,
+      quantity: true,
+    },
+  });
+  if (rows.length === 0) return;
+
+  const partsOf = new Map<
+    string,
+    { componentItemId: string; quantity: number }[]
+  >();
+  const parentsOf = new Map<string, string[]>();
+  for (const row of rows) {
+    const parts = partsOf.get(row.comboItemId) ?? [];
+    parts.push(row);
+    partsOf.set(row.comboItemId, parts);
+    const parents = parentsOf.get(row.componentItemId) ?? [];
+    parents.push(row.comboItemId);
+    parentsOf.set(row.componentItemId, parents);
+  }
+
+  const affected = new Set<string>();
+  const queue = [...changedIds];
+  while (queue.length > 0) {
+    for (const parent of parentsOf.get(queue.pop()!) ?? []) {
+      if (affected.has(parent)) continue;
+      affected.add(parent);
+      queue.push(parent);
+    }
+  }
+  if (affected.size === 0) return;
+
+  const involved = new Set<string>(affected);
+  for (const id of affected) {
+    for (const part of partsOf.get(id) ?? [])
+      involved.add(part.componentItemId);
+  }
+  const costs = new Map(
+    (
+      await tx.productItem.findMany({
+        where: { tenantId, id: { in: [...involved] } },
+        select: { id: true, costPrice: true },
+      })
+    ).map((item) => [item.id, Number(item.costPrice)]),
+  );
+
+  const resolve = (id: string): number => {
+    if (!affected.has(id)) return costs.get(id) ?? 0;
+    const cost = comboCostOf(
+      (partsOf.get(id) ?? []).map((part) => ({
+        quantity: part.quantity,
+        costPrice: resolve(part.componentItemId),
+      })),
+    );
+    costs.set(id, cost);
+    affected.delete(id);
+    return cost;
+  };
+  const toWrite = [...affected];
+  for (const id of toWrite) {
+    const cost = resolve(id);
+    await tx.productItem.update({ where: { id }, data: { costPrice: cost } });
+  }
 }
 
 /** `comboComponents` belongs to a COMBO only: at least one on a COMBO, none on anything else (an empty list on a non-combo is no components, so it passes). */

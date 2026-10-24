@@ -112,3 +112,49 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 **Đã làm**
 - `RangeIsForwards` (`stats/dto/stats-query.dto.ts`) so hai mốc bằng `resolveRange` thay vì `new Date(raw)`. `new Date('2026-10-21')` là 00:00 UTC = 07:00 giờ VN, nên khi FE gửi "hôm nay đến giờ" (`fromDate` = ngày trần, `toDate` = ISO lúc này) trong khoảng 00:00-07:00 giờ VN, BE coi là kỳ chạy ngược và trả 400 `VALIDATION_FAILED` cho `/stats/overview`, `/stats/revenue`, `/stats/top-products`, `/stats/orders-by-status`. Phần đọc dữ liệu vốn đã parse đúng giờ VN, chỉ validator lệch.
 - Test: `stats/dto/stats-query.dto.spec.ts`.
+
+## 2026-10-23 - `products.product_type` + màn Combo riêng (`/combos`)
+
+**Đã làm**
+- Migration `20261023100000_product_type`: thêm `products.product_type` (`PRODUCT | COMBO | SERVICE`, mặc định `PRODUCT`) + index `(tenant_id, product_type)`. Backfill: sản phẩm mà mọi SKU là COMBO (hoặc mọi SKU là SERVICE) nhận loại đó, còn lại là `PRODUCT`.
+- Loại sản phẩm cố định lúc tạo (`UpdateProductDto` không có field này). **`itemType` của SKU luôn bằng `productType`** (`itemTypeFor`, `product-status.ts`): `POST /products` và `POST /products/:id/items` tự gán, client gửi `itemType` lệch → 400 `PRODUCT_ITEM_TYPE_MISMATCH`. `product_items.item_type` giữ nguyên vì đơn hàng / kho / tách combo đọc nó.
+- Bộ lọc `?productType=PRODUCT,SERVICE` cho `GET /products`, `/products/search`, `/products/items`. **BE không có mặc định**: POS, dialog đơn và ô chọn món combo vẫn tìm mọi loại. Mỗi màn FE tự gửi loại của mình.
+- FE: `/products` lọc `PRODUCT,SERVICE` (form tạo chọn Hàng hoá / Dịch vụ), route mới `/combos` lọc `COMBO` (tạo luôn là combo), cùng bộ component qua `ProductScreen` (`products/_constants/product-screen.ts`) truyền vào `ProductsProvider`. Dialog thêm phiên bản bỏ ô chọn loại. Màn combo ẩn cột tồn, lọc tồn và "Tìm ở chi nhánh khác"; ô "Có thể sản xuất" chỉ hiện với hàng hoá. Sidebar thêm "Combo".
+- Test: e2e `product-combo` 15/15 (thêm case loại SKU theo sản phẩm, dịch vụ, lọc theo loại; bỏ case "combo dùng chính phiên bản anh em", vì kiểu dữ liệu đó không còn tạo được); toàn bộ e2e 286/286, unit 382/382. FE `tsc` + `build` qua.
+
+**Chưa kiểm chứng / còn lại**
+- Migration CHƯA áp vào `ikiot_db`; đã chạy trên `ikiot_e2e`. Trong `ikiot_db` có **1 sản phẩm lẫn loại**: "Bàn làm việc Oak" (tenant Nội thất Demo, id `61b52e17-…`, có cả SKU PRODUCT lẫn COMBO). Backfill sẽ cho nó là `PRODUCT`, nên SKU combo của nó nằm ở màn Hàng hoá. Cần tách tay: tạo combo mới ở `/combos`, ngừng SKU combo cũ.
+- Không có ràng buộc DB nào giữ "SKU cùng loại với sản phẩm" (khác bảng, Postgres không CHECK được). Chỉ service giữ; ghi thẳng bằng Prisma (seed, test) vẫn lẫn được.
+- Nhánh `feat/product-import-excel` chưa merge: chỗ tạo của import phải ghi `productType` và báo lỗi khi các dòng cùng tên sản phẩm khác loại (chủ dự án sẽ tự sửa).
+- FE chưa mở trên trình duyệt; mới qua `tsc`/`build`.
+
+## 2026-10-24 - Rà các file seed theo schema hiện tại
+
+**Đã làm**
+- Kiểm tra: cả 5 file `prisma/seed*.ts` type-check sạch với schema hiện tại, `check-permissions` OK. Đã chạy cả chuỗi seed (hai lần, để thử idempotent) trên DB tạm `ikiot_seedcheck`, sau đó xoá DB này. Không đụng `ikiot_db` / `ikiot_e2e`.
+- `seed-furniture-test.ts`: thuộc tính SKU giờ ghi qua `writeItemDetails` (cùng hàm `ProductService` dùng). Trước đây seed ghi `details` trần, không có `product_attributes` / `attribute_id`, nên sản phẩm seed không có thuộc tính nào và form "thêm phiên bản" không có gì để chọn (lệch từ 2026-10-16). Ghi `productType: PRODUCT` rõ ràng. Bật `isManufacturable` cho **Tủ hồ sơ 3 cánh** và **Sofa góc Milan**: từ 2026-10-13 YCSX chỉ nhận sản phẩm có cờ này, nên K2 / K10 đang bị chặn `PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE`.
+- `seed-c5-delivery.ts`, `seed-c6-pack.ts`: không chạy được nữa (cần shop "Nội thất IGM Demo" của `seed-furniture.ts`, file đã xoá). Chuyển sang shop "Nội thất Demo" (tìm theo chủ shop 0981189856), CN Hà Nội, SKU của bảng 1.5.3. Mỗi đơn seed giờ có hoá đơn SALE `PENDING` qua `InvoiceService.ensurePending` (quy tắc mỗi đơn một hoá đơn, 2026-10-10). C5: tổng đơn = giá thật của `BAN-OAK-120` (3.000.000đ, cọc 900.000đ) thay cho 1.000.000đ tự đặt. C6: kho riêng "Kho test đóng gói (C-6)" (`isSellable` vì đơn chỉ xuất từ nơi bán được) để không ăn vào tồn CN Hà Nội của K1-K11; khai báo 2 kiện chuyển từ tủ sang `SOFA-MILAN-L`.
+- `seed.ts`: mô tả gói Plus / Plus Năm "Quản lý nhân sự & bảng lương" → "& lịch làm việc" (bảng lương đã gỡ ở `20261001120000`).
+- `docs/tai-khoan-test-hanh-trinh.md` 1.5: combo / dịch vụ giờ tạo được; ghi cờ "Có thể sản xuất" của tủ và sofa; ghi những gì C5 / C6 thêm vào shop.
+
+**Chưa kiểm chứng / còn lại**
+- Dữ liệu đã seed trong `ikiot_db` không tự sửa: sản phẩm cũ vẫn không có thuộc tính và tủ / sofa vẫn chưa bật cờ sản xuất (seed tìm sản phẩm theo tên rồi bỏ qua). Muốn sửa thì tạo lại shop, hoặc bật cờ trên màn Hàng hóa.
+- Mới kiểm bằng cách đọc DB sau khi seed. Chưa chạy tay các kịch bản C5 / C6 trên UI (đóng gói, webhook).
+- Gói `features` vẫn có `hr_management` - cờ còn hợp lệ (ca / lịch / ngày lễ vẫn dùng), chỉ đổi dòng hiển thị.
+
+## 2026-10-24 - Dữ liệu `ikiot_db`: chạy seed, tách SKU combo lẫn loại
+
+- Đã chạy chuỗi seed trên `ikiot_db` (`prisma db seed`, account-role, furniture-test, c6, c5): thêm kho "Kho test đóng gói (C-6)", 6 đơn `C6-TEST-…`, 5 đơn `C5-…` (kèm hoá đơn PENDING), tài khoản ngân hàng giả và webhook key `test-key-local`.
+- Mục 2026-10-24 trước nói sản phẩm cũ trong `ikiot_db` thiếu thuộc tính và cờ sản xuất. Đọc DB thì không đúng: thuộc tính đã gắn `attribute_id`, cả 5 sản phẩm đã bật `is_manufacturable`.
+- SKU combo `SP000009` (bàn Oak 120 + kệ 5 tầng) được chuyển khỏi "Bàn làm việc Oak" sang sản phẩm COMBO mới "Combo Bàn làm việc Oak + Kệ sách", giữ id / SKU / thành phần. Sau đó không còn sản phẩm nào có `item_type` khác `product_type`.
+
+## 2026-10-24 - Giá vốn combo tự tính từ các món
+
+- BE: giá vốn của phiên bản COMBO = tổng `số lượng × giá vốn` từng món (`comboCostOf`, `combo-components.ts`). `writeComboComponents` ghi giá này khi tạo / sửa thành phần; `recomputeComboCosts` tính lại mọi combo phía trên (kể cả combo lồng) khi giá vốn một món đổi qua `updateItem`. `costPrice` trong DTO thành tuỳ chọn: bắt buộc với hàng thường / dịch vụ (`VALIDATION_FAILED`), bị bỏ qua với combo. `GET /products/items` và `comboComponents[].componentItem` trả thêm `costPrice`.
+- FE: dialog tạo combo và dialog phiên bản combo không còn ô nhập giá vốn, thay bằng ô chỉ đọc (`ComboCostField`) hiện tổng xem trước; mỗi món trong danh sách hiện giá vốn của nó. Dialog tạo combo bỏ đoạn "Phiên bản đầu tiên…" và ghi chú "Combo không có tồn kho riêng…" (ghi chú này bị xoá khỏi `ProductTypeSelect` cho COMBO).
+- Test: `combo-components.spec.ts` (comboCostOf), `product-combo.e2e-spec.ts` (giá combo + combo lồng + giá gõ tay bị bỏ qua) - e2e chạy trên `ikiot_e2e`, 16/16 qua.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở UI bằng tay để xem ô giá vốn chỉ đọc và dòng giá vốn từng món.
+- Combo đã có trong `ikiot_db` giữ giá vốn cũ (đang là số gõ tay hoặc 0) cho đến lần sửa thành phần / sửa giá vốn một món kế tiếp; chưa có migration backfill.
+- Giá vốn món đổi qua đường khác `updateItem` (phiếu nhập, nếu sau này cập nhật giá vốn) sẽ không tự tính lại combo.
