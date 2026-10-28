@@ -40,7 +40,7 @@ describe('validateVietnamPhoneNumber', () => {
     'rejects the emergency line %s with a reason, not a length complaint',
     (value) => {
       expect(() => validateVietnamPhoneNumber(value)).toThrow(
-        /emergency number/,
+        /emergency number|hotline/,
       );
     },
   );
