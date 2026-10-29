@@ -12,7 +12,10 @@ import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 import { PaymentMethod } from '../../common/constants/payment-method';
-import { FulfillmentType } from '../../common/constants/order-status';
+import {
+  FulfillmentType,
+  STOCKED_LINE_TYPES,
+} from '../../common/constants/order-status';
 import {
   InventoryRefType,
   InventoryTxType,
@@ -25,6 +28,7 @@ import { narrowToScope } from '../../common/utils/scope-filter';
 import { SepayOrderService } from './sepay-order.service';
 import { buildSepayQrUrl, requireTenantBanking } from './tenant-banking';
 import { OrderPricingService } from './order-pricing.service';
+import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
   INSTANT_COMPLETE_METHODS,
   OrderStatus,
@@ -126,6 +130,15 @@ export class OrderService {
       discountValue,
     );
 
+    // A COMBO in the basket is priced as a set but holds no stock of its own: it is opened into the goods it finally contains (nested combos flattened), and those children are what leave the shelf below. Done before the transaction, as on the journey's create - expanding reads the catalogue.
+    const components = await expandCombos(this.prisma, tenantId, lines);
+    // The till deducts at its own branch on the spot and has never stored a ship-from location or a VAT rate on its lines; both are left unset so a combo does not change how the other lines of a till sale are stored or invoiced.
+    const itemRows = buildOrderItemRows(
+      lines.map((line) => ({ ...line, sourceLocationId: null })),
+      components,
+      (line) => this.pricing.lineTotalOf(line),
+    ).map((row) => ({ ...row, vatRate: undefined }));
+
     // Cash tendered has to at least cover the bill - the difference between "change" and a silent shortfall booked as revenue.
     if (dto.customerPay !== undefined && dto.customerPay < grandTotal) {
       throw new BadRequestException({
@@ -170,18 +183,8 @@ export class OrderService {
           note: dto.note,
           discountType,
           discountValue,
-          items: {
-            create: lines.map((line) => ({
-              productItemId: line.productItemId,
-              productName: line.productName,
-              sku: line.sku,
-              quantity: line.quantity,
-              listUnitPrice: line.listUnitPrice,
-              unitPrice: line.unitPrice,
-              discountAmount: line.discountAmount,
-              lineTotal: this.pricing.lineTotalOf(line),
-            })),
-          },
+          // One statement for every line, so a combo's children can name a parent inserted alongside them.
+          items: { createMany: { data: itemRows } },
           appliedPromotions: { create: appliedPromotions },
         },
         include: ORDER_INCLUDE,
@@ -189,30 +192,24 @@ export class OrderService {
 
       // Selling takes stock off the shelf, so it watches the low-stock threshold exactly like a transfer does, and `deductStock` is also what enforces "is there enough" without a check-then-decrement race.
       const lowStock: (Inventory | null)[] = [];
-      // Each ledger row names its order line, so the line's cost of goods sold is known. Lines are matched back by SKU, in order - two lines of one SKU are interchangeable.
-      const createdLines = new Map<string, string[]>();
+      // Only lines that hold goods leave the shelf: a COMBO parent is a price and a SERVICE has nothing to take, so the children of a combo are deducted and their parent is not. Each ledger row names its own order line (not a SKU: one SKU can now sit on a standalone line and under a combo at once), so the line's cost of goods sold is known.
       for (const item of created.items) {
-        createdLines.set(item.productItemId, [
-          ...(createdLines.get(item.productItemId) ?? []),
-          item.id,
-        ]);
-      }
-      for (const line of lines) {
+        if (!STOCKED_LINE_TYPES.includes(item.lineType)) continue;
         const after = await this.inventory.deductStock(tx, {
           tenantId,
-          productItemId: line.productItemId,
+          productItemId: item.productItemId,
           locationId: dto.branchId, // a Branch's id is its Location's id
-          quantity: line.quantity,
-          label: line.sku ?? line.productItemId,
+          quantity: item.quantity,
+          label: item.sku ?? item.productItemId,
           ledger: {
             type: InventoryTxType.SALE,
             referenceType: InventoryRefType.ORDER,
             referenceId: created.id,
             createdById: userId,
-            orderItemId: createdLines.get(line.productItemId)?.shift() ?? null,
+            orderItemId: item.id,
           },
         });
-        lowStock.push(this.inventory.lowStockCrossing(after, -line.quantity));
+        lowStock.push(this.inventory.lowStockCrossing(after, -item.quantity));
       }
 
       if (status === OrderStatus.COMPLETED) {
@@ -351,7 +348,10 @@ export class OrderService {
         newStatus === OrderStatus.RETURNED
       ) {
         // Back into the lots the sale drew from. A sale rung up before lots existed (2026-10-02) has no ledger rows to follow and comes back as an OPENING lot.
-        for (const line of order.items) {
+        // Only lines that took goods put goods back. A COMBO parent never drew anything, so without this filter `ifNeverDrawn` would open a lot for the combo's own SKU - stock for a variant that is not allowed to have any.
+        for (const line of order.items.filter((item) =>
+          STOCKED_LINE_TYPES.includes(item.lineType),
+        )) {
           await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,

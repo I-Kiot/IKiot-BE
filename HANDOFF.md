@@ -158,3 +158,21 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Chưa mở UI bằng tay để xem ô giá vốn chỉ đọc và dòng giá vốn từng món.
 - Combo đã có trong `ikiot_db` giữ giá vốn cũ (đang là số gõ tay hoặc 0) cho đến lần sửa thành phần / sửa giá vốn một món kế tiếp; chưa có migration backfill.
 - Giá vốn món đổi qua đường khác `updateItem` (phiếu nhập, nếu sau này cập nhật giá vốn) sẽ không tự tính lại combo.
+
+## 2026-10-29 - Bán combo ở màn check-out (`POST /orders/pos`)
+
+**Đã làm**
+- Lỗi gốc: `createPosSale` trừ kho theo đúng SKU trong giỏ nên bán combo luôn 400 `INSUFFICIENT_STOCK` (combo không có dòng tồn). Nay combo được bung như đường `POST /orders`: dòng COMBO cha mang giá, dòng con `COMBO_COMPONENT` / `SERVICE` giá 0; chỉ dòng giữ tồn (`STOCKED_LINE_TYPES`) bị trừ kho, mỗi dòng ledger gắn đúng `orderItemId` của dòng đó (trước đây ghép theo SKU).
+- Tách phần bung combo khỏi `ManualOrderService` thành hàm thuần `orders/order-combo.ts` (`loadComboGraph`, `expandCombos`, `buildOrderItemRows`) để quầy và đơn tay dùng chung một bản. `ManualOrderService.expandCombos/buildItems` giữ lại làm lớp mỏng nên `OrderEditService` và các e2e dựng provider tay không phải đổi.
+- `OrderService.updateStatus` (CANCELLED / RETURNED đơn quầy): chỉ hoàn kho các dòng giữ tồn. Trước đó vòng lặp đi qua cả dòng COMBO cha và `ifNeverDrawn` sẽ tạo lô tồn cho SKU combo.
+- `GET /products/search`: tồn của combo = số bộ trên kệ (`products/combo-availability.ts`, `stockWithCombos`); mọi variant có thêm `availableStock` = tồn trên kệ (`stock − lockedStock`). Quyết định với chủ dự án: tính theo tồn trên kệ, combo toàn dịch vụ luôn bán được.
+- FE `/check-out`: chọn hàng/combo hết tồn trên kệ không thêm được vào giỏ (click, Enter, "Mua nhanh"; có toast); số lượng trong giỏ bị chặn ở `availableStock` (nút +, ô gõ, chọn lại món đã có). Màn tạo đơn tay vẫn `allowOutOfStock`, không đổi.
+- Test: `combo-availability.spec.ts` (unit), `test/pos-combo.e2e-spec.ts` (7 ca: số bộ theo món khan nhất, tính theo kệ, bán combo, trả hàng, thiếu một món bị rollback, cùng SKU ở hai dòng). Chạy trên `ikiot_e2e`: pos-combo + stock-lot-callers + order-* + product-combo + production-requests + inventory-lots + damaged-location + di-check = 16 suite / 218 ca qua; unit 38 suite / 393 ca qua; `tsc` và lint BE sạch, `tsc` FE sạch.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở UI check-out bằng tay (không chạy dev server). Phần FE mới kiểm bằng `tsc` + đọc code; cảnh báo lint FE còn lại đều ở dòng có sẵn (any, set-state-in-effect, dấu nháy chưa escape).
+- Chưa chạy `test/smoke.e2e-spec.ts` (HANDOFF cũ ghi nó chưa chạy từ khi đổi schema Location).
+- Đơn quầy có combo chỉ trả được cả đơn (RETURNED), như đơn thường; chưa có trả một phần ở quầy.
+- `stockAllLocations` của combo có thể cao hơn thực tế khi các món nằm ở nhiều chi nhánh khác nhau; chỉ để tham khảo. Màn chi tiết / danh sách sản phẩm vẫn hiện tồn combo là 0 (chỉ `search` tính số bộ).
+- Giỏ chỉ chặn theo số đã tải lúc thêm; hai quầy cùng bán món cuối thì `deductStock` ở BE vẫn là nơi chặn thật.
+

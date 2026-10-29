@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { InvoiceService } from '../invoices/invoices.service';
 import {
   BadRequestException,
@@ -13,15 +12,10 @@ import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
-import {
-  type ComboEdge,
-  type ComboLeaf,
-  flattenCombo,
-  MAX_COMBO_DEPTH,
-} from './combo-expansion';
+import type { ComboLeaf } from './combo-expansion';
+import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
   OrderChannel,
-  OrderItemStatus,
   OrderLineType,
   OrderPaymentStatus,
   OrderPriority,
@@ -353,109 +347,18 @@ export class ManualOrderService {
     }
   }
 
-  /** What each COMBO line in the order finally contains, keyed by the combo's variant id (`flattenCombo`). The combo graph is loaded one nesting level per query - never one query per combo - and every level is bounded by `MAX_COMBO_DEPTH`. */
-  async expandCombos(tenantId: string, lines: readonly PricedLine[]) {
-    const comboIds = [
-      ...new Set(
-        lines
-          .filter((line) => line.itemType === OrderLineType.COMBO)
-          .map((line) => line.productItemId),
-      ),
-    ];
-    const childrenOf = new Map<string, ComboEdge[]>();
-    let frontier = comboIds;
-    for (let depth = 0; frontier.length > 0; depth++) {
-      if (depth > MAX_COMBO_DEPTH) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_COMBO_INVALID,
-          message: `A combo nests deeper than ${MAX_COMBO_DEPTH} levels`,
-        });
-      }
-      const edges = await this.prisma.comboComponent.findMany({
-        where: { comboItemId: { in: frontier }, comboItem: { tenantId } },
-        select: {
-          comboItemId: true,
-          quantity: true,
-          componentItem: {
-            select: {
-              id: true,
-              sku: true,
-              productName: true,
-              vat: true,
-              itemType: true,
-            },
-          },
-        },
-      });
-      for (const id of frontier) childrenOf.set(id, []);
-      for (const edge of edges) childrenOf.get(edge.comboItemId)!.push(edge);
-      // A sub-combo already loaded (or a cycle back to one) is not fetched again; `flattenCombo` reports the cycle.
-      frontier = [
-        ...new Set(
-          edges
-            .map((edge) => edge.componentItem)
-            .filter(
-              (item) =>
-                item.itemType === OrderLineType.COMBO &&
-                !childrenOf.has(item.id),
-            )
-            .map((item) => item.id),
-        ),
-      ];
-    }
-    return new Map(comboIds.map((id) => [id, flattenCombo(id, childrenOf)]));
+  /** What each COMBO line in the order finally contains, keyed by the combo's variant id. The walk lives in `order-combo.ts`, shared with the till. */
+  expandCombos(tenantId: string, lines: readonly PricedLine[]) {
+    return expandCombos(this.prisma, tenantId, lines);
   }
 
-  /** The order's lines as rows: each priced line, and under every COMBO line one child per leaf it finally contains (nested combos already flattened), at price 0 - the combo line carries the money, the children carry the stock and ship from the combo's location. A child is COMBO_COMPONENT, or SERVICE when the leaf is a service; SERVICE lines need no goods, so they ship from nowhere. */
+  /** The order's lines as rows, each COMBO line followed by its children (`buildOrderItemRows`). */
   buildItems(
     lines: readonly (PricedLine & { sourceLocationId: string })[],
     components: Map<string, ComboLeaf[]>,
   ): Prisma.OrderItemCreateManyOrderInput[] {
-    const rows: Prisma.OrderItemCreateManyOrderInput[] = [];
-    for (const line of lines) {
-      const id = randomUUID();
-      const isCombo = line.itemType === OrderLineType.COMBO;
-      rows.push({
-        id,
-        productItemId: line.productItemId,
-        status: OrderItemStatus.PENDING,
-        lineType: line.itemType,
-        // A COMBO line is priced only, so it has no stock to locate; its children do.
-        sourceLocationId:
-          isCombo || line.itemType === OrderLineType.SERVICE
-            ? null
-            : line.sourceLocationId,
-        productName: line.productName,
-        sku: line.sku,
-        listUnitPrice: line.listUnitPrice,
-        vatRate: line.vatRate,
-        quantity: line.quantity,
-        unitPrice: line.unitPrice,
-        discountAmount: line.discountAmount,
-        lineTotal: this.pricing.lineTotalOf(line),
-      });
-      if (!isCombo) continue;
-      for (const leaf of components.get(line.productItemId) ?? []) {
-        const isService = leaf.item.itemType === OrderLineType.SERVICE;
-        rows.push({
-          productItemId: leaf.item.id,
-          status: OrderItemStatus.PENDING,
-          lineType: isService
-            ? OrderLineType.SERVICE
-            : OrderLineType.COMBO_COMPONENT,
-          parentItemId: id,
-          sourceLocationId: isService ? null : line.sourceLocationId,
-          productName: leaf.item.productName,
-          sku: leaf.item.sku,
-          vatRate: leaf.item.vat as Prisma.Decimal | null,
-          quantity: line.quantity * leaf.quantity,
-          listUnitPrice: 0,
-          unitPrice: 0,
-          discountAmount: 0,
-          lineTotal: 0,
-        });
-      }
-    }
-    return rows;
+    return buildOrderItemRows(lines, components, (line) =>
+      this.pricing.lineTotalOf(line),
+    );
   }
 }

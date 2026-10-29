@@ -5,6 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { flattenCombo, type ComboLeaf } from '../orders/combo-expansion';
+import { loadComboGraph } from '../orders/order-combo';
+import { comboSetsAvailable, shelfOf } from './combo-availability';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import {
   LOCATION_SELECT,
@@ -155,6 +158,12 @@ export interface StockDetail {
 interface ItemStock {
   details: StockDetail[];
   allLocations: number;
+  /** What a sale may take at the viewed location(s): `stock − lockedStock` per row, floored at 0. `stock` above is the total on hand, packed goods included. */
+  available: number;
+  /** The same, over every location. */
+  availableAllLocations: number;
+  /** Only for a COMBO, which has no rows of its own: how many whole sets its components' shelves cover (`comboSetsAvailable`). Replaces the figures above when present. */
+  sets?: { here: number; allLocations: number };
 }
 
 /** Real port of ProductService: a Product is the catalogue entry, a ProductItem the sellable variant carrying price, SKU and stock. Three deliberate fixes - a subscription is now required to create anything (the old body was wrapped in `if (subscription)` and returned 200 having created nothing), `categoryName` is derived rather than accepted, and deleting a variant checks every table that references it, since those references are real foreign keys now. */
@@ -304,11 +313,7 @@ export class ProductService {
       where: { tenantId, productId: { in: rows.map((row) => row.id) } },
       include: ITEM_INCLUDE,
     });
-    const stock = await this.stockByItem(
-      tenantId,
-      items.map((item) => item.id),
-      query,
-    );
+    const stock = await this.stockWithCombos(tenantId, items, query);
 
     const data = rows.map(({ brand, ...product }) => {
       const own = items
@@ -1069,6 +1074,7 @@ export class ProductService {
         id: true,
         productItemId: true,
         stock: true,
+        lockedStock: true,
         locationId: true,
         location: LOCATION_SELECT,
       },
@@ -1078,9 +1084,13 @@ export class ProductService {
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
         allLocations: 0,
+        available: 0,
+        availableAllLocations: 0,
       };
       entry.allLocations += row.stock;
+      entry.availableAllLocations += shelfOf(row);
       if (here(row)) {
+        entry.available += shelfOf(row);
         entry.details.push({
           inventoryId: row.id,
           stock: row.stock,
@@ -1090,6 +1100,71 @@ export class ProductService {
       byItem.set(row.productItemId, entry);
     }
     return byItem;
+  }
+
+  /**
+   * `stockByItem` for a page that may hold COMBO variants. A combo has no inventory rows, so its
+   * figures are derived: the combo is opened down to its leaves (`flattenCombo`) and the scarcest
+   * leaf's shelf decides how many whole sets there are, at the viewed location and over the chain.
+   * The leaves' stock rides along in the same query as the page's own items.
+   */
+  private async stockWithCombos(
+    tenantId: string,
+    items: { id: string; itemType: string }[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, ItemStock>> {
+    const comboIds = items
+      .filter((item) => item.itemType === ProductItemType.COMBO)
+      .map((item) => item.id);
+
+    const leavesOf = new Map<string, ComboLeaf[]>();
+    if (comboIds.length > 0) {
+      try {
+        const graph = await loadComboGraph(this.prisma, tenantId, comboIds);
+        for (const id of comboIds) {
+          try {
+            leavesOf.set(id, flattenCombo(id, graph));
+          } catch {
+            // A combo that cannot be opened (empty, cyclic) cannot be sold either: it reads 0 sets below rather than failing the whole search.
+          }
+        }
+      } catch {
+        // Same for a graph nested past the limit: every combo on the page reads 0.
+      }
+    }
+
+    const leafIds = new Set<string>();
+    for (const leaves of leavesOf.values()) {
+      for (const leaf of leaves) leafIds.add(leaf.item.id);
+    }
+    const stock = await this.stockByItem(
+      tenantId,
+      [...new Set([...items.map((item) => item.id), ...leafIds])],
+      location,
+    );
+
+    for (const id of comboIds) {
+      const leaves = leavesOf.get(id);
+      stock.set(id, {
+        details: [],
+        allLocations: 0,
+        available: 0,
+        availableAllLocations: 0,
+        sets: leaves
+          ? {
+              here: comboSetsAvailable(
+                leaves,
+                (leafId) => stock.get(leafId)?.available ?? 0,
+              ),
+              allLocations: comboSetsAvailable(
+                leaves,
+                (leafId) => stock.get(leafId)?.availableAllLocations ?? 0,
+              ),
+            }
+          : { here: 0, allLocations: 0 },
+      });
+    }
+    return stock;
   }
 
   /** The same two totals per product, without loading the variants themselves. */
@@ -1147,10 +1222,15 @@ export class ProductService {
         };
       }),
       stockDetails: details,
-      stock: details.reduce((sum, detail) => sum + detail.stock, 0),
+      // A combo has no rows: its figures are the sets its components cover (shelf-based, see `comboSetsAvailable`).
+      stock:
+        stock?.sets?.here ??
+        details.reduce((sum, detail) => sum + detail.stock, 0),
+      // What the till may actually take: a packed-for-an-order piece is on hand but not for sale, so `stock > 0` alone can promise a sale that `deductStock` then refuses.
+      availableStock: stock?.sets?.here ?? stock?.available ?? 0,
       // A variant with no row anywhere is 0 everywhere - the field is always a number, so
       // no caller has to tell "not stocked here" from "not loaded".
-      stockAllLocations: stock?.allLocations ?? 0,
+      stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
     };
   }
 
