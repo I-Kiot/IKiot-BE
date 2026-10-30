@@ -27,6 +27,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
   const chairId = randomUUID();
   const installId = randomUUID();
   const comboId = randomUUID();
+  let comboProductId: string;
 
   const owner: AuthUser = {
     userId,
@@ -149,6 +150,12 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
     await make(chairId, 'Ghế', 'PRODUCT', 500);
     await make(installId, 'Lắp đặt', 'SERVICE', 300);
     await make(comboId, 'Bộ phòng ăn', 'COMBO', 3500);
+    comboProductId = (
+      await prisma.productItem.findUniqueOrThrow({
+        where: { id: comboId },
+        select: { productId: true },
+      })
+    ).productId;
     await prisma.comboComponent.createMany({
       data: [
         { comboItemId: comboId, componentItemId: tableId, quantity: 1 },
@@ -237,6 +244,64 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
         where: { tenantId, productItemId: tableId },
         data: { lockedStock: 0 },
       });
+    });
+  });
+
+  describe('the combos screen', () => {
+    const here = { locationId: branchId, locationType: 'BRANCH' };
+
+    it('lists a combo product with the sets its components cover as its stock', async () => {
+      const list = await products.findAll(tenantId, {
+        page: 1,
+        limit: 20,
+        productType: ['COMBO'],
+        ...here,
+      } as never);
+      const row = list.data.find((product) => product.id === comboProductId)!;
+      expect(row.totalStock).toBe(1);
+      expect(row.totalStockAllLocations).toBe(1);
+    });
+
+    it('shows a combo as 0 when one component runs out', async () => {
+      await prisma.inventory.updateMany({
+        where: { tenantId, productItemId: chairId },
+        data: { lockedStock: 4 },
+      });
+      const list = await products.findAll(tenantId, {
+        page: 1,
+        limit: 20,
+        productType: ['COMBO'],
+        ...here,
+      } as never);
+      expect(
+        list.data.find((product) => product.id === comboProductId)!.totalStock,
+      ).toBe(0);
+      await prisma.inventory.updateMany({
+        where: { tenantId, productItemId: chairId },
+        data: { lockedStock: 0 },
+      });
+    });
+
+    it('gives the expanded row the combo count and every component with its own stock', async () => {
+      const detail = await products.findOne(tenantId, comboProductId, here);
+      const combo = detail.items.find((item) => item.id === comboId)!;
+      expect(combo.stock).toBe(1);
+      expect(combo.availableStock).toBe(1);
+      expect(detail.totalStock).toBe(1);
+
+      const byId = new Map(
+        combo.comboComponents.map((part) => [part.componentItem.id, part]),
+      );
+      expect(byId.get(tableId)).toMatchObject({
+        quantity: 1,
+        componentItem: { stock: 5, availableStock: 5, stockAllLocations: 5 },
+      });
+      expect(byId.get(chairId)).toMatchObject({
+        quantity: 4,
+        componentItem: { stock: 7, availableStock: 7, stockAllLocations: 7 },
+      });
+      // A service holds none.
+      expect(byId.get(installId)?.componentItem.stock).toBe(0);
     });
   });
 

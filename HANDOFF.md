@@ -176,3 +176,19 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - `stockAllLocations` của combo có thể cao hơn thực tế khi các món nằm ở nhiều chi nhánh khác nhau; chỉ để tham khảo. Màn chi tiết / danh sách sản phẩm vẫn hiện tồn combo là 0 (chỉ `search` tính số bộ).
 - Giỏ chỉ chặn theo số đã tải lúc thêm; hai quầy cùng bán món cuối thì `deductStock` ở BE vẫn là nơi chặn thật.
 
+## 2026-10-29 - Màn Combo: cột Tồn kho và tồn từng thành phần khi expand
+
+**Đã làm**
+- BE: `GET /products` trả cho sản phẩm COMBO `totalStock` / `totalStockAllLocations` bằng tổng số bộ của các variant combo (`comboProductTotals`, dùng lại `stockWithCombos`). Một thành phần hết thì cả combo = 0 (min theo tồn trên kệ, như ô tìm kiếm ở quầy).
+- BE: `GET /products/:id`, `search` và `findItem` cho variant combo `stock` = số bộ, và mỗi `comboComponents[].componentItem` có thêm `stock`, `availableStock`, `stockAllLocations` (combo lồng báo số bộ của nó; dịch vụ = 0). Gom phép tính vào `stockFigures`, bỏ bản trùng trong `toItemResponse`.
+- FE `/combos`: bật lại cột "Tồn kho" và bộ lọc tồn (`showStock: true`); thêm cờ `crossBranchSearch` để nút "Tìm ở chi nhánh khác" vẫn chỉ có ở màn Hàng hóa. Dòng expand của variant combo hiện "Tồn kho (số bộ)" và khối "Tồn kho thành phần" (`combo-stock-list.tsx`): số lượng mỗi bộ, tồn trên kệ, "đủ N bộ", thành phần khan nhất được tô nổi.
+- Test: 3 ca mới trong `test/pos-combo.e2e-spec.ts` (danh sách combo, một thành phần hết, chi tiết kèm tồn thành phần). Chạy trên `ikiot_e2e`: 15 suite / 202 ca e2e qua; unit 38 suite / 393 ca qua; tsc + lint BE sạch, tsc FE sạch.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở UI `/combos` bằng tay (chưa chạy dev server); FE mới kiểm bằng `tsc` + eslint + đọc code.
+- Bộ lọc "Hết hàng / Sắp hết" của cột tồn lọc client-side trên trang đang hiển thị, như màn Hàng hóa.
+- Combo gồm thành phần ở nhiều chi nhánh: "Toàn chuỗi" của combo là min theo tổng từng thành phần nên có thể cao hơn thực tế (chỉ để tham khảo).
+- Tồn thành phần trong dòng expand là tồn trên kệ (đã trừ hàng đóng gói cho đơn), không phải tồn vật lý.
+
+**Chỉnh thêm (cùng ngày, màn Combo):** bỏ chữ "Toàn chuỗi" ở cột Tồn kho (cờ mới `ProductScreen.showChainStock`, bật ở Hàng hóa, tắt ở Combo) và bỏ "Toàn chuỗi" / "đủ N bộ" ở khối tồn thành phần. Thành phần khan nhất vẫn được tô nổi. Chỉ sửa FE; `stockAllLocations` của thành phần vẫn do BE trả nhưng FE không dùng nữa.
+

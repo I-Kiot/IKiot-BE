@@ -260,6 +260,15 @@ export class ProductService {
       rows.map((row) => row.id),
       query,
     );
+    // A combo product has no inventory rows of its own, so the query above reads 0 for it. Its total is the sets its variants cover (`stockWithCombos`), summed like any other product's variants.
+    const comboSets = await this.comboProductTotals(
+      tenantId,
+      rows
+        .filter((row) => row.productType === ProductType.COMBO)
+        .map((row) => row.id),
+      query,
+    );
+    for (const [productId, total] of comboSets) totals.set(productId, total);
 
     const data = rows.map(({ brand, ...product }) => {
       const total = totals.get(product.id);
@@ -313,12 +322,16 @@ export class ProductService {
       where: { tenantId, productId: { in: rows.map((row) => row.id) } },
       include: ITEM_INCLUDE,
     });
-    const stock = await this.stockWithCombos(tenantId, items, query);
+    const stock = await this.stockWithCombos(
+      tenantId,
+      this.withComponentCombos(items),
+      query,
+    );
 
     const data = rows.map(({ brand, ...product }) => {
       const own = items
         .filter((item) => item.productId === product.id)
-        .map((item) => this.toItemResponse(item, stock.get(item.id)));
+        .map((item) => this.toItemResponse(item, stock.get(item.id), stock));
       return {
         ...product,
         brandName: brand?.name ?? null,
@@ -436,15 +449,15 @@ export class ProductService {
       include: ITEM_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
-    const stock = await this.stockByItem(
+    const stock = await this.stockWithCombos(
       tenantId,
-      items.map((item) => item.id),
+      this.withComponentCombos(items),
       location,
     );
 
     const { brand, ...rest } = product;
     const mapped = items.map((item) =>
-      this.toItemResponse(item, stock.get(item.id)),
+      this.toItemResponse(item, stock.get(item.id), stock),
     );
 
     return {
@@ -943,8 +956,12 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    const stock = await this.stockByItem(tenantId, [itemId], {});
-    return this.toItemResponse(item, stock.get(itemId));
+    const stock = await this.stockWithCombos(
+      tenantId,
+      this.withComponentCombos([item]),
+      {},
+    );
+    return this.toItemResponse(item, stock.get(itemId), stock);
   }
 
   /** Creates a variant with its images, specs, supplier links and opening stock. Its `itemType` is the product's, never the client's choice. */
@@ -1113,9 +1130,13 @@ export class ProductService {
     items: { id: string; itemType: string }[],
     location: LocationRefQueryDto,
   ): Promise<Map<string, ItemStock>> {
-    const comboIds = items
-      .filter((item) => item.itemType === ProductItemType.COMBO)
-      .map((item) => item.id);
+    const comboIds = [
+      ...new Set(
+        items
+          .filter((item) => item.itemType === ProductItemType.COMBO)
+          .map((item) => item.id),
+      ),
+    ];
 
     const leavesOf = new Map<string, ComboLeaf[]>();
     if (comboIds.length > 0) {
@@ -1198,11 +1219,69 @@ export class ProductService {
     return totals;
   }
 
-  /** Prices are `Decimal` in Postgres and would serialize as strings, but the old API sent numbers the frontend does arithmetic on - converting here keeps that contract in one place. */
-  private toItemResponse(item: ItemRow, stock: ItemStock | undefined) {
+  /** One variant's three stock figures, from the rows (or, for a combo, the sets) behind it. The one copy of this arithmetic: an item and a combo's component are reported the same way. */
+  private stockFigures(stock: ItemStock | undefined) {
+    const details = stock?.details ?? [];
+    return {
+      // A combo has no rows: its figures are the sets its components cover (shelf-based, see `comboSetsAvailable`).
+      stock:
+        stock?.sets?.here ??
+        details.reduce((sum, detail) => sum + detail.stock, 0),
+      // What the till may actually take: a packed-for-an-order piece is on hand but not for sale, so `stock > 0` alone can promise a sale that `deductStock` then refuses.
+      availableStock: stock?.sets?.here ?? stock?.available ?? 0,
+      // A variant with no row anywhere is 0 everywhere - the field is always a number, so
+      // no caller has to tell "not stocked here" from "not loaded".
+      stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
+    };
+  }
+
+  /** The items plus the combos they directly contain, for `stockWithCombos`: a nested combo is shown with its own set count, so it has to be opened too. */
+  private withComponentCombos(items: ItemRow[]) {
+    return items.flatMap((item) => [
+      item,
+      ...item.comboComponents.map((part) => part.componentItem),
+    ]);
+  }
+
+  /** Per combo product, the sets its variants cover here and over the chain. */
+  private async comboProductTotals(
+    tenantId: string,
+    productIds: string[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, { here: number; allLocations: number }>> {
+    const totals = new Map<string, { here: number; allLocations: number }>();
+    if (productIds.length === 0) return totals;
+
+    const variants = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        productId: { in: productIds },
+        itemType: ProductItemType.COMBO,
+      },
+      select: { id: true, productId: true, itemType: true },
+    });
+    const stock = await this.stockWithCombos(tenantId, variants, location);
+    for (const variant of variants) {
+      const sets = stock.get(variant.id)?.sets;
+      const entry = totals.get(variant.productId) ?? {
+        here: 0,
+        allLocations: 0,
+      };
+      entry.here += sets?.here ?? 0;
+      entry.allLocations += sets?.allLocations ?? 0;
+      totals.set(variant.productId, entry);
+    }
+    return totals;
+  }
+
+  /** Prices are `Decimal` in Postgres and would serialize as strings, but the old API sent numbers the frontend does arithmetic on - converting here keeps that contract in one place. `all` is the stock of every item the page touched, so each component of a combo can carry its own figures. */
+  private toItemResponse(
+    item: ItemRow,
+    stock: ItemStock | undefined,
+    all?: ReadonlyMap<string, ItemStock>,
+  ) {
     const { suppliers, comboComponents, retailPrice, costPrice, vat, ...rest } =
       item;
-    const details = stock?.details ?? [];
     return {
       ...rest,
       retailPrice: Number(retailPrice),
@@ -1218,19 +1297,13 @@ export class ProductService {
             retailPrice: Number(component.retailPrice),
             costPrice: Number(component.costPrice),
             thumbnailUrl: thumbnailOf({ images, product }),
+            // How many of this component are on hand / for sale, so a combo's expanded row can show why it is or is not in stock. Always numbers; a SERVICE reads 0 (it holds none).
+            ...this.stockFigures(all?.get(componentItem.id)),
           },
         };
       }),
-      stockDetails: details,
-      // A combo has no rows: its figures are the sets its components cover (shelf-based, see `comboSetsAvailable`).
-      stock:
-        stock?.sets?.here ??
-        details.reduce((sum, detail) => sum + detail.stock, 0),
-      // What the till may actually take: a packed-for-an-order piece is on hand but not for sale, so `stock > 0` alone can promise a sale that `deductStock` then refuses.
-      availableStock: stock?.sets?.here ?? stock?.available ?? 0,
-      // A variant with no row anywhere is 0 everywhere - the field is always a number, so
-      // no caller has to tell "not stocked here" from "not loaded".
-      stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
+      stockDetails: stock?.details ?? [],
+      ...this.stockFigures(stock),
     };
   }
 
