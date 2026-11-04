@@ -11,6 +11,7 @@ import { InvoiceService } from '../invoices/invoices.service';
 import { OrderService } from './orders.service';
 import { assertOrderStepAccess, OrderStepPermission } from './order-handler';
 import { PickupCollectDto } from './dto/pickup-collect.dto';
+import { PickupHandOverDto } from './dto/pickup-hand-over.dto';
 import {
   assertPickupReady,
   assertStorePickup,
@@ -20,6 +21,11 @@ import { assigneeClaim } from './order-handler';
 import { buildSepayQrUrl, requireTenantBanking } from './tenant-banking';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
+  InventoryRefType,
+  InventoryTxType,
+} from '../../common/constants/inventory-ledger';
+import {
+  OrderItemStatus,
   OrderPaymentStatus,
   OrderStatus,
 } from '../../common/constants/order-status';
@@ -240,4 +246,122 @@ export class OrderPickupService {
       },
     };
   }
+
+  /**
+   * Giao hàng cho khách tại quầy, khi đã thu đủ. Một transaction: đơn PACKED → COMPLETED, hàng khoá rời kho (rút theo lô,
+   * ghi sổ SALE kèm dòng đơn nên hoàn hàng sau này tra được), dòng đơn SHIPPED, fulfillment HANDED_OVER, hoá đơn phát hành.
+   * Còn tiền chưa thu thì từ chối (`ORDER_PICKUP_BALANCE_DUE`); khoản QR đang chờ chưa tính là đã thu.
+   */
+  async handOver(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: PickupHandOverDto,
+  ) {
+    const { order, fulfillment, access } = await this.loadPickupOrder(
+      user,
+      tenantId,
+      id,
+    );
+    if (!fulfillment) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_PICKUP_NOT_READY,
+        message: 'The order has no packed fulfillment to hand over',
+      });
+    }
+    const amountDue = pickupAmountDue(
+      Number(order.grandTotal),
+      order.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    );
+    if (amountDue > 0) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_PICKUP_BALANCE_DUE,
+        message: `${amountDue} is still due; collect it before handing the goods over`,
+      });
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: OrderStatus.PACKED,
+          ...assigneeClaim(access, user),
+        },
+        data: {
+          status: OrderStatus.COMPLETED,
+          paymentStatus: OrderPaymentStatus.PAID,
+          shippedById: user.userId,
+          shippedAt: now,
+          ...(dto.receiverName || dto.note
+            ? { note: appendHandOverNote(order.note, dto) }
+            : {}),
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order has just changed, please reload',
+        });
+      }
+
+      // Một UPDATE có điều kiện cho mỗi dòng (locked_stock ≥ quantity) là chốt chặn, nên không gom được thành một query.
+      for (const item of fulfillment.items) {
+        await this.inventory.shipLockedStock(tx, {
+          tenantId,
+          locationId: fulfillment.locationId,
+          productItemId: item.orderItem.productItemId,
+          quantity: item.quantity,
+          label:
+            item.orderItem.sku ??
+            item.orderItem.productName ??
+            item.orderItemId,
+          ledger: {
+            type: InventoryTxType.SALE,
+            referenceType: InventoryRefType.ORDER,
+            referenceId: id,
+            orderItemId: item.orderItemId,
+            createdById: user.userId,
+          },
+        });
+      }
+      await tx.orderItem.updateMany({
+        where: {
+          id: { in: fulfillment.items.map((item) => item.orderItemId) },
+          status: OrderItemStatus.PENDING,
+        },
+        data: { status: OrderItemStatus.SHIPPED },
+      });
+      const handed = await tx.fulfillment.updateMany({
+        where: { id: fulfillment.id, status: FulfillmentStatus.PACKED },
+        data: { status: FulfillmentStatus.HANDED_OVER, handedOverAt: now },
+      });
+      if (handed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The fulfillment has just changed, please reload',
+        });
+      }
+      await this.invoices.issueForOrder(tx, id, user.userId);
+    });
+
+    return { order: await this.orders.findOne(user, tenantId, id) };
+  }
+}
+
+/** Ghi người nhận và ghi chú giao hàng vào ghi chú của đơn, để người xem sau còn biết ai đã nhận hàng. */
+function appendHandOverNote(
+  current: string | null,
+  dto: PickupHandOverDto,
+): string {
+  const parts = [
+    dto.receiverName ? `Người nhận: ${dto.receiverName}` : null,
+    dto.note ?? null,
+  ].filter(Boolean);
+  const line = `[Giao tại quầy] ${parts.join(' - ')}`;
+  return current
+    ? `${current}
+${line}`
+    : line;
 }
