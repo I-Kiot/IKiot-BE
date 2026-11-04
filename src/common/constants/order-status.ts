@@ -1,44 +1,34 @@
 /**
- * The order journey (docs/hanh-trinh-don-hang.md, revised after the 2026-10-02 meeting):
- * PENDING_CONFIRMATION (Shopee) → CONFIRMED → PACKED → PICKED_UP → SHIPPING → RECEIVED → COMPLETED.
- * Confirming holds nothing. Packing locks the goods off the shelf (inventories.locked_stock, since
- * 2026-10-04) and is refused when the shelf is short; they are deducted once, on the move to
- * SHIPPING, together with their lock. Every status change
- * goes through one transition function (contract §2, A-1).
- *
- * The entries marked @deprecated belong to the reservation design the meeting dropped. They stay
- * only so the fulfillment / allocation code written against it still compiles until tracks A and
- * C rewrite it (contract §7); migration 20261004120000 refuses to run while an order sits in one.
+ * Hành trình đơn: PENDING_CONFIRMATION (Shopee) → CONFIRMED → PACKED → PICKED_UP → SHIPPING → RECEIVED → COMPLETED. Mọi đổi trạng thái đi qua `assertTransition`.
+ * Mục @deprecated là thiết kế giữ hàng đã bỏ, giữ tới khi track A, C viết lại (migration 20261004120000 chặn khi còn đơn ở trạng thái này).
  */
 export const OrderStatus = {
-  /** A marketplace order just synced, waiting for staff to confirm it and name a person in charge. */
+  /** Đơn marketplace vừa đồng bộ, chờ nhân viên xác nhận và gán người phụ trách. */
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
-  /** Confirmed with a person in charge - where a manual order is born. Stock is not touched. */
+  /** Đã xác nhận có người phụ trách; đơn thủ công được tạo ở trạng thái này. Chưa đụng tới kho. */
   CONFIRMED: 'CONFIRMED',
-  /** Packed, waiting for the shipper / carrier. Its goods are locked off the shelf (`lockStock`), still in `stock`. */
+  /** Đã đóng gói, chờ shipper/đơn vị vận chuyển. Hàng bị khoá khỏi kệ (`lockStock`), vẫn nằm trong `stock`. */
   PACKED: 'PACKED',
-  /** The shipper / carrier has the goods. Still locked, still in `stock`. */
+  /** Shipper/đơn vị vận chuyển đã nhận hàng. Vẫn khoá, vẫn trong `stock`. */
   PICKED_UP: 'PICKED_UP',
-  /** Confirmed under way by someone holding orders:ship - the locked goods leave `stock` here (`shipLockedStock`). */
+  /** Người có orders:ship xác nhận đang giao - hàng khoá rời `stock` tại đây (`shipLockedStock`). */
   SHIPPING: 'SHIPPING',
-  /** Delivered and paid in cash to the shipper; waiting for the owner to confirm the cash came back in full. */
+  /** Đã giao và shipper đã thu tiền mặt; chờ chủ shop xác nhận tiền về đủ. */
   RECEIVED: 'RECEIVED',
-  /** Delivered and paid in full - and, for cash, handed back. */
+  /** Đã giao và thanh toán đủ; với tiền mặt là đã nộp về shop. */
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
-  /** Every line has come back. */
+  /** Mọi dòng đã được trả lại. */
   RETURNED: 'RETURNED',
   /**
-   * Legacy: the till's "awaiting the SePay transfer" state from before the order journey. The
-   * current `OrdersService` still opens a SePay sale here; track A (A-2) moves the till onto
-   * the statuses above and migrates these rows, after which this entry goes.
+   * Legacy: trạng thái chờ chuyển khoản SePay của máy bán hàng. OrdersService vẫn mở đơn SePay ở đây tới khi track A (A-2) chuyển sang trạng thái mới và migrate dữ liệu; sau đó bỏ mục này.
    */
   PENDING: 'PENDING',
-  /** @deprecated reservation design - nothing creates it (contract §7). */
+  /** @deprecated Thiết kế giữ hàng - không còn ai tạo (hợp đồng §7). */
   DRAFT: 'DRAFT',
-  /** @deprecated reservation design - nothing creates it (contract §7). */
+  /** @deprecated Thiết kế giữ hàng - không còn ai tạo (hợp đồng §7). */
   READY_TO_PACK: 'READY_TO_PACK',
-  /** @deprecated replaced by RECEIVED (contract §7). */
+  /** @deprecated Thay bằng RECEIVED (hợp đồng §7). */
   DELIVERED: 'DELIVERED',
 } as const;
 
@@ -46,39 +36,39 @@ export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
 export const ORDER_STATUSES: readonly string[] = Object.values(OrderStatus);
 
-/** Statuses that need no person in charge yet - every other one is pinned by the `orders_assignee_required` CHECK. */
+/** Các trạng thái chưa cần người phụ trách; mọi trạng thái khác bị ràng buộc bởi CHECK `orders_assignee_required`. */
 export const UNASSIGNED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.PENDING_CONFIRMATION,
 ];
 
-/** Orders still waiting to leave: their lines are the demand the production list and stockCheck count, and they can still be edited. */
+/** Đơn còn chờ rời kho: các dòng là nhu cầu cho danh sách sản xuất và stockCheck, và còn sửa được. */
 export const UNSHIPPED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.CONFIRMED,
   OrderStatus.PACKED,
   OrderStatus.PICKED_UP,
 ];
 
-/** Nothing moves an order out of these. */
+/** Không trạng thái nào đưa đơn ra khỏi nhóm này. */
 export const FINAL_ORDER_STATUSES: readonly string[] = [
   OrderStatus.COMPLETED,
   OrderStatus.CANCELLED,
   OrderStatus.RETURNED,
 ];
 
-/** One order line's own progress. Whether its stock is there is shown (stockCheck), not stored. */
+/** Tiến độ của từng dòng đơn. Hàng có đủ hay không được hiển thị qua stockCheck, không lưu. */
 export const OrderItemStatus = {
   PENDING: 'PENDING',
-  /** Its stock was deducted when the order moved to SHIPPING. */
+  /** Kho đã bị trừ khi đơn chuyển sang SHIPPING. */
   SHIPPED: 'SHIPPED',
   CANCELLED: 'CANCELLED',
   RETURNED: 'RETURNED',
-  /** @deprecated reservation design (contract §7). */
+  /** @deprecated Thiết kế giữ hàng (hợp đồng §7). */
   WAITING_STOCK: 'WAITING_STOCK',
-  /** @deprecated reservation design (contract §7). */
+  /** @deprecated Thiết kế giữ hàng (hợp đồng §7). */
   READY: 'READY',
-  /** @deprecated reservation design (contract §7) - migrated to SHIPPED. */
+  /** @deprecated Thiết kế giữ hàng (hợp đồng §7) - đã chuyển sang SHIPPED. */
   PACKED: 'PACKED',
-  /** @deprecated migrated to SHIPPED. */
+  /** @deprecated Đã chuyển sang SHIPPED. */
   DELIVERED: 'DELIVERED',
 } as const;
 
@@ -88,7 +78,7 @@ export type OrderItemStatus =
 export const ORDER_ITEM_STATUSES: readonly string[] =
   Object.values(OrderItemStatus);
 
-/** What kind of line it is. A COMBO line carries the price and no stock; its COMBO_COMPONENT children carry the stock at price 0. */
+/** Loại dòng. Dòng COMBO chỉ mang giá; các dòng COMBO_COMPONENT con mang hàng với giá 0. */
 export const OrderLineType = {
   PRODUCT: 'PRODUCT',
   COMBO: 'COMBO',
@@ -100,13 +90,13 @@ export type OrderLineType = (typeof OrderLineType)[keyof typeof OrderLineType];
 
 export const ORDER_LINE_TYPES: readonly string[] = Object.values(OrderLineType);
 
-/** Lines that hold stock. COMBO is priced only and SERVICE needs no goods, so neither is ever deducted. */
+/** Dòng giữ kho. COMBO chỉ có giá và SERVICE không cần hàng, nên hai loại này không bao giờ bị trừ kho. */
 export const STOCKED_LINE_TYPES: readonly string[] = [
   OrderLineType.PRODUCT,
   OrderLineType.COMBO_COMPONENT,
 ];
 
-/** Where the order came from. MANUAL and SHOPEE are both orders the customer placed online (docs/hanh-trinh-don-hang.md); MANUAL is one staff typed in. A POS sale at the counter is stored as MANUAL too, outside the journey; the counter only differs by `fulfillmentType = TAKEAWAY`. There is no channel for an own website. */
+/** Nguồn đơn. MANUAL và SHOPEE đều là đơn khách đặt online; MANUAL là đơn nhân viên nhập tay. Bán tại quầy cũng lưu MANUAL, khác ở `fulfillmentType = TAKEAWAY`. Không có kênh website riêng. */
 export const OrderChannel = {
   MANUAL: 'MANUAL',
   SHOPEE: 'SHOPEE',
@@ -116,7 +106,7 @@ export type OrderChannel = (typeof OrderChannel)[keyof typeof OrderChannel];
 
 export const ORDER_CHANNELS: readonly string[] = Object.values(OrderChannel);
 
-/** How the goods reach the customer. TAKEAWAY is a POS sale at the counter: paid and deducted at once, outside the order journey. */
+/** Cách hàng đến tay khách. TAKEAWAY là bán tại quầy: thu tiền và trừ kho ngay, ngoài hành trình đơn. */
 export const FulfillmentType = {
   TAKEAWAY: 'TAKEAWAY',
   STORE_PICKUP: 'STORE_PICKUP',
@@ -129,7 +119,7 @@ export type FulfillmentType =
 export const FULFILLMENT_TYPES: readonly string[] =
   Object.values(FulfillmentType);
 
-/** The tag staff pick the next order to ship by (with requestedDeliveryDate). A fixed list, highest last, so it sorts. */
+/** Thẻ ưu tiên nhân viên dùng để chọn đơn giao tiếp theo (cùng requestedDeliveryDate). Danh sách cố định, cao nhất đứng cuối để sắp xếp được. */
 export const OrderPriority = {
   NORMAL: 'NORMAL',
   HIGH: 'HIGH',
@@ -140,7 +130,7 @@ export type OrderPriority = (typeof OrderPriority)[keyof typeof OrderPriority];
 
 export const ORDER_PRIORITIES: readonly string[] = Object.values(OrderPriority);
 
-/** Derived from the order's Payment rows (Phase 2, E-5) - never set from a request. */
+/** Suy ra từ các dòng Payment của đơn (Phase 2, E-5) - không bao giờ đặt từ request. */
 export const OrderPaymentStatus = {
   UNPAID: 'UNPAID',
   PARTIALLY_PAID: 'PARTIALLY_PAID',
@@ -155,7 +145,7 @@ export type OrderPaymentStatus =
 export const ORDER_PAYMENT_STATUSES: readonly string[] =
   Object.values(OrderPaymentStatus);
 
-/** `Payment.remittanceStatus`: has the cash a shipper collected reached the owner? PENDING only on a CASH balance collected on delivery. */
+/** `Payment.remittanceStatus`: tiền shipper thu hộ đã về tới chủ shop chưa? Chỉ PENDING khi thu tiền mặt lúc giao. */
 export const RemittanceStatus = {
   NOT_APPLICABLE: 'NOT_APPLICABLE',
   PENDING: 'PENDING',

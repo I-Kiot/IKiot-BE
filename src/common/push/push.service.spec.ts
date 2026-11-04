@@ -2,7 +2,7 @@ import { PushService, chunk, deadTokensIn } from './push.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { FirebaseService } from '../firebase/firebase.service';
 
-/** The multicast half of firebase-admin's overloaded argument - the only shape we send. */
+/** Nửa multicast trong tham số overload của firebase-admin - là dạng duy nhất ta gửi. */
 interface SendArgs {
   tokens: string[];
   notification: { title: string; body: string };
@@ -13,14 +13,14 @@ interface SendArgs {
 const NOT_REGISTERED = 'messaging/registration-token-not-registered';
 const INVALID = 'messaging/invalid-registration-token';
 
-/** A batch response where every token succeeded. */
+/** Batch response mà mọi token đều thành công. */
 const allOk = (n: number) => ({
   successCount: n,
   failureCount: 0,
   responses: Array.from({ length: n }, () => ({ success: true })),
 });
 
-/** The message handed to FCM on the nth call, typed - `mock.calls` is `any[][]`. */
+/** Message gửi cho FCM ở lần gọi thứ n, có kiểu - `mock.calls` là `any[][]`. */
 function sentMessage(send: jest.Mock, index = 0): SendArgs {
   const calls = send.mock.calls as unknown as [SendArgs][];
   return calls[index][0];
@@ -64,7 +64,7 @@ describe('chunk', () => {
   });
 });
 
-// Which failures delete a row is the one decision here that loses data if it is wrong.
+// Quyết định xoá dòng nào là điểm duy nhất ở đây làm mất dữ liệu nếu sai.
 describe('deadTokensIn', () => {
   it('picks out only the two permanent-failure codes', () => {
     const tokens = ['ok', 'gone', 'malformed', 'ratelimited'];
@@ -82,7 +82,7 @@ describe('deadTokensIn', () => {
     expect(deadTokensIn(['a'], [])).toEqual([]);
   });
 
-  // What FCM v1 actually returns for a junk token - the legacy codes never fire for this case.
+  // Đây là thứ FCM v1 thực sự trả về cho token rác - các mã legacy không bao giờ xuất hiện trong trường hợp này.
   it('treats invalid-argument as dead when the message blames the token', () => {
     const responses = [
       {
@@ -98,7 +98,7 @@ describe('deadTokensIn', () => {
     expect(deadTokensIn(['junk'], responses)).toEqual(['junk']);
   });
 
-  // One bad payload goes to the whole batch, so blanket-pruning on invalid-argument would unregister every device at once.
+  // Một payload lỗi thì cả batch cùng nhận, nên xoá theo invalid-argument sẽ huỷ đăng ký mọi thiết bị một lúc.
   it('keeps tokens when invalid-argument is about the payload', () => {
     const responses = [
       {
@@ -136,7 +136,7 @@ describe('PushService.sendToUsers', () => {
     await expect(
       service.sendToUsers(['u1'], { title: 'T', body: 'B' }),
     ).resolves.toEqual({ sent: 0, failed: 0 });
-    // Not even a query - a deployment with no Firebase should cost nothing per notification.
+    // Không cả query - thiết bị không có Firebase không được tốn chi phí cho mỗi thông báo.
     expect(findMany).not.toHaveBeenCalled();
   });
 
@@ -195,7 +195,7 @@ describe('PushService.sendToUsers', () => {
     expect(sentMessage(send).webpush).toBeUndefined();
   });
 
-  // FCM rejects a non-string data value, and the literal "null" would have the client try to open it.
+  // FCM từ chối giá trị data không phải string, và chữ "null" sẽ khiến client cố mở nó.
   it('drops null/undefined data values and stringifies the rest', async () => {
     const send = jest.fn().mockResolvedValue(allOk(1));
     const { service } = makeService({ tokens: ['t1'], send });
@@ -256,7 +256,7 @@ describe('PushService.sendToUsers', () => {
     expect(deleteMany).not.toHaveBeenCalled();
   });
 
-  // notify() runs after the business transaction has committed, so a throw here would error an operation that already succeeded.
+  // notify() chạy sau khi transaction nghiệp vụ đã commit, nên throw ở đây sẽ làm lỗi một thao tác đã thành công.
   it('never throws when FCM rejects', async () => {
     const send = jest.fn().mockRejectedValue(new Error('FCM is down'));
     const { service } = makeService({ tokens: ['t1'], send });

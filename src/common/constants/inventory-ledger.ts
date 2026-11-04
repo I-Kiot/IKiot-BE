@@ -1,52 +1,52 @@
-/** `InventoryTransaction.type` - what a ledger row records. The quantity is signed (+ in, - out) and every row moves exactly one lot. */
+/** `InventoryTransaction.type` - loại dòng sổ cái. Số lượng có dấu (+ vào, - ra); mỗi dòng chỉ tác động đúng một lot. */
 export const InventoryTxType = {
   IMPORT: 'IMPORT',
   TRANSFER_OUT: 'TRANSFER_OUT',
   TRANSFER_IN: 'TRANSFER_IN',
-  /** Shipped but not received - the gap between a transfer's shipped and received quantities. */
+  /** Đã xuất nhưng chưa nhận - phần chênh giữa số xuất và số nhận của phiếu chuyển kho. */
   TRANSFER_LOSS: 'TRANSFER_LOSS',
   ADJUST: 'ADJUST',
   SALE: 'SALE',
-  /** A packed sale cancelled before hand-over: the goods go back to the lots they came from. */
+  /** Đơn đã đóng gói bị huỷ trước khi bàn giao: hàng trở về đúng các lot đã xuất ra. */
   SALE_REVERSAL: 'SALE_REVERSAL',
   RETURN_GOOD: 'RETURN_GOOD',
   RETURN_DAMAGED: 'RETURN_DAMAGED',
-  /** Defective units from an import, put away at a damaged-goods location. */
+  /** Hàng lỗi từ phiếu nhập, được đưa vào kho hàng hỏng. */
   DEFECT: 'DEFECT',
-  /** The stock that existed before lots did, opened once by the migration. */
+  /** Tồn kho có từ trước khi có lot, được migration mở một lần. */
   OPENING: 'OPENING',
 } as const;
 
 export type InventoryTxType =
   (typeof InventoryTxType)[keyof typeof InventoryTxType];
 
-/** `InventoryTransaction.referenceType` - which document caused the row. */
+/** `InventoryTransaction.referenceType` - chứng từ nào sinh ra dòng này. */
 export const InventoryRefType = {
   STOCK_MOVEMENT: 'STOCK_MOVEMENT',
   FULFILLMENT: 'FULFILLMENT',
   ORDER: 'ORDER',
   PRODUCTION_REQUEST: 'PRODUCTION_REQUEST',
   ORDER_RETURN: 'ORDER_RETURN',
-  /** OPENING rows: the inventory row whose stock was turned into a lot. */
+  /** Dòng OPENING: dòng inventory có tồn kho đã chuyển thành lot. */
   INVENTORY: 'INVENTORY',
 } as const;
 
 export type InventoryRefType =
   (typeof InventoryRefType)[keyof typeof InventoryRefType];
 
-/** `InventoryLot.sourceType` - where the goods originally came from. Carried unchanged when a lot is split by a transfer or a return, so margin per source survives every move. */
+/** `InventoryLot.sourceType` - hàng gốc từ đâu. Giữ nguyên khi lot bị tách do chuyển kho hoặc trả hàng, để biên lợi nhuận theo nguồn không đổi qua các lần di chuyển. */
 export const LotSourceType = {
   SUPPLIER: 'SUPPLIER',
   WORKSHOP: 'WORKSHOP',
-  /** A stocktake surplus. */
+  /** Hàng dư khi kiểm kê. */
   ADJUSTMENT: 'ADJUSTMENT',
-  /** Stock that predates lots. */
+  /** Tồn kho có trước khi có lot. */
   OPENING: 'OPENING',
 } as const;
 
 export type LotSourceType = (typeof LotSourceType)[keyof typeof LotSourceType];
 
-/** `StockMovementRequest.importSource` - the two receiving flows, never mixed on one document. Set on IMPORT only (SQL CHECK). */
+/** `StockMovementRequest.importSource` - hai luồng nhận hàng, không bao giờ lẫn trên một chứng từ. Chỉ đặt cho IMPORT (SQL CHECK). */
 export const ImportSource = {
   SUPPLIER: 'SUPPLIER',
   WORKSHOP: 'WORKSHOP',
@@ -56,7 +56,7 @@ export type ImportSource = (typeof ImportSource)[keyof typeof ImportSource];
 
 export const IMPORT_SOURCES: readonly string[] = Object.values(ImportSource);
 
-/** `Supplier.type`. A GOODS supplier sells finished goods (SUPPLIER imports); a WORKSHOP makes them to order (production requests + WORKSHOP imports). */
+/** `Supplier.type`. GOODS bán thành phẩm (nhập SUPPLIER); WORKSHOP làm theo đơn (yêu cầu sản xuất + nhập WORKSHOP). */
 export const SupplierType = {
   GOODS: 'GOODS',
   WORKSHOP: 'WORKSHOP',
@@ -66,7 +66,7 @@ export type SupplierType = (typeof SupplierType)[keyof typeof SupplierType];
 
 export const SUPPLIER_TYPES: readonly string[] = Object.values(SupplierType);
 
-/** The import flow each supplier type may feed. */
+/** Luồng nhập mà mỗi loại nhà cung cấp được phép đưa vào. */
 export const IMPORT_SOURCE_FOR_SUPPLIER_TYPE: Readonly<
   Record<SupplierType, ImportSource>
 > = {

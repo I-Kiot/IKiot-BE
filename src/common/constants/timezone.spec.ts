@@ -12,7 +12,7 @@ function tsFilesUnder(dir: string): string[] {
   });
 }
 
-/** Reads the source rather than calling anything: a @Cron schedule is a decorator argument, so a missing timezone only fails on a host in another zone. */
+/** Đọc source thay vì gọi hàm: lịch @Cron là đối số decorator, nên thiếu múi giờ chỉ lộ ra trên máy ở múi giờ khác. */
 describe('cron schedules', () => {
   const sources = tsFilesUnder(SRC)
     .map((path) => ({ path, text: readFileSync(path, 'utf8') }))
@@ -27,7 +27,7 @@ describe('cron schedules', () => {
       ? sources.map(({ path, text }) => [path.slice(SRC.length + 1), text])
       : [['<no cron files found>', '']],
   )('%s pins every @Cron to the shop timezone', (_name, text) => {
-    // Matches each @Cron(...) up to the first ')' - cron arguments never nest parens in practice.
+    // Khớp từng @Cron(...) tới dấu ')' đầu tiên - thực tế đối số cron không có ngoặc lồng nhau.
     const calls = text.match(/@Cron\([^)]*\)/g) ?? [];
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {

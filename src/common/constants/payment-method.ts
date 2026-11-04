@@ -1,4 +1,4 @@
-/** How money actually moved - the set CashFlow.paymentMethod documents in prisma/schema.prisma. */
+/** Tiền thực sự đi bằng cách nào - bộ giá trị mà CashFlow.paymentMethod ghi trong prisma/schema.prisma. */
 export const PaymentMethod = {
   CASH: 'CASH',
   BANK_TRANSFER: 'BANK_TRANSFER',
@@ -11,7 +11,7 @@ export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 
 export const PAYMENT_METHODS: readonly string[] = Object.values(PaymentMethod);
 
-/** `Payment.kind`: what a payment row is for. An order can collect several (contract §2): a DEPOSIT when it is taken, a BALANCE on delivery; FULL is a sale paid at once, REFUND money going back. */
+/** `Payment.kind`: loại khoản thanh toán. Một đơn có thể có nhiều khoản (hợp đồng §2): DEPOSIT khi nhận cọc, BALANCE khi giao; FULL là thanh toán một lần, REFUND là tiền trả lại khách. */
 export const PaymentKind = {
   FULL: 'FULL',
   DEPOSIT: 'DEPOSIT',
@@ -21,7 +21,7 @@ export const PaymentKind = {
 
 export type PaymentKind = (typeof PaymentKind)[keyof typeof PaymentKind];
 
-/** `Payment.status` - one payment row's own state, not the order's `paymentStatus` (which is derived from these rows). */
+/** `Payment.status` - trạng thái riêng của một khoản, không phải `paymentStatus` của đơn (đơn suy ra từ các khoản này). */
 export const PaymentRecordStatus = {
   PENDING: 'PENDING',
   PAID: 'PAID',
@@ -33,9 +33,7 @@ export type PaymentRecordStatus =
   (typeof PaymentRecordStatus)[keyof typeof PaymentRecordStatus];
 
 /**
- * Cách shipper thu số tiền còn phải thu khi giao (`POST /shipments/:id/deliver`, C-5). Khác `PaymentMethod`
- * vì đây là lựa chọn của shipper trên màn hình: `BANK_TRANSFER_QR` ghi thành khoản SEPAY chờ webhook,
- * `NONE` là đã cọc đủ – không ghi khoản nào.
+ * Cách shipper thu số tiền còn phải thu khi giao (`POST /shipments/:id/deliver`). Khác `PaymentMethod` vì đây là lựa chọn trên màn hình: `BANK_TRANSFER_QR` ghi thành khoản SEPAY chờ webhook, `NONE` là đã cọc đủ, không ghi khoản nào.
  */
 export const DeliveryCollectionMethod = {
   CASH: 'CASH',
@@ -50,7 +48,7 @@ export const DELIVERY_COLLECTION_METHODS: readonly string[] = Object.values(
   DeliveryCollectionMethod,
 );
 
-/** How a deposit can be taken when a manual order is created (contract §2 `deposit.method`). */
+/** Cách nhận cọc khi tạo đơn thủ công (hợp đồng §2, `deposit.method`). */
 export const DEPOSIT_METHODS: readonly string[] = [
   PaymentMethod.CASH,
   PaymentMethod.BANK_TRANSFER,

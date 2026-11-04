@@ -3,10 +3,7 @@ import { Transform } from 'class-transformer';
 import { IsBoolean, IsOptional } from 'class-validator';
 
 /**
- * An optional boolean query flag (`?onlyShort=true`). A query string only ever carries text, so
- * `'true'` / `'false'` become booleans and anything else is passed through for `IsBoolean` to refuse
- * with a 400 - never silently read as `false`, which is what several hand-written copies of this did
- * (`?hasDebt=yes` listed every supplier). Absent stays `undefined`.
+ * Cờ boolean tuỳ chọn trên query. Chỉ `'true'` / `'false'` thành boolean; giá trị khác giữ nguyên để `IsBoolean` trả 400, không bao giờ âm thầm thành `false` (`?hasDebt=yes` từng liệt kê mọi NCC).
  */
 export function BooleanQuery(message?: string): PropertyDecorator {
   return applyDecorators(

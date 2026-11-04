@@ -1,28 +1,9 @@
 /**
- * Every error this API can answer with, as a stable machine-readable code.
+ * Mã lỗi ổn định của API. Client KHÔNG được rẽ nhánh theo `message`, vì câu chữ có thể đổi. Mọi `HttpException` phải mang `code` làm key đầu của body; mỗi mã là một key riêng, nên dùng mã chưa khai báo sẽ lỗi biên dịch.
  *
- * The `message` on an error response is human copy: it is Vietnamese today, it may be
- * translated tomorrow, and its wording moves whenever somebody rewords a sentence. A client
- * that branches on it breaks the first time that happens - silently, and in production; the
- * dashboard has a `message.includes(...)` on a Vietnamese phrase in it today. `code` is the
- * half of the contract that does not move, so clients switch on this and render their own
- * text.
- *
- * **Every `HttpException` raised in this codebase carries one**, passed as the first key of
- * the object body - `AllExceptionsFilter` spreads the rest of that object through untouched,
- * so nothing else has to know about it:
- *
- *     new NotFoundException({ code: ErrorCode.ORDER_NOT_FOUND, message: 'Khong tim thay...' })
- *
- * Each value is its own key, so `ErrorCode.X` is a compile error for a code that is not
- * listed here - which is what keeps this file the complete list rather than a stale sample.
- *
- * Codes are **append-only**: renaming one is a breaking API change for every client that has
- * shipped a branch on it. Add a new code instead, and reuse an existing one wherever two call
- * sites are the same failure to whoever is reading it.
+ * Chỉ THÊM mã, không đổi tên: đổi tên là breaking change với client.
  */
 export const ErrorCode = {
-  // --- Access, identity and scope --------------------------------------------
   ACCOUNT_HAS_NO_BRANCH: 'ACCOUNT_HAS_NO_BRANCH',
   ACCOUNT_HAS_NO_LOCATION: 'ACCOUNT_HAS_NO_LOCATION',
   ACCOUNT_HAS_NO_TENANT: 'ACCOUNT_HAS_NO_TENANT',
@@ -34,7 +15,6 @@ export const ErrorCode = {
   TENANT_OWNER_ONLY: 'TENANT_OWNER_ONLY',
   UNAUTHENTICATED: 'UNAUTHENTICATED',
 
-  // --- Generic request problems ----------------------------------------------
   BAD_REQUEST: 'BAD_REQUEST',
   BRANCH_ID_REQUIRED: 'BRANCH_ID_REQUIRED',
   DATE_RANGE_INVALID: 'DATE_RANGE_INVALID',
@@ -44,7 +24,6 @@ export const ErrorCode = {
   REPORT_RANGE_TOO_LONG: 'REPORT_RANGE_TOO_LONG',
   VALIDATION_FAILED: 'VALIDATION_FAILED',
 
-  // --- Database constraints (translated from Prisma) -------------------------
   FOREIGN_KEY_VIOLATION: 'FOREIGN_KEY_VIOLATION',
   RECORD_NOT_FOUND: 'RECORD_NOT_FOUND',
   RELATION_VIOLATION: 'RELATION_VIOLATION',
@@ -52,7 +31,6 @@ export const ErrorCode = {
   UNIQUE_VIOLATION: 'UNIQUE_VIOLATION',
   VALUE_TOO_LONG: 'VALUE_TOO_LONG',
 
-  // --- Authentication and sessions -------------------------------------------
   ACCOUNT_INACTIVE: 'ACCOUNT_INACTIVE',
   ACCOUNT_NOT_FOUND_OR_LOCKED: 'ACCOUNT_NOT_FOUND_OR_LOCKED',
   ACCOUNT_NOT_REGISTERED: 'ACCOUNT_NOT_REGISTERED',
@@ -76,7 +54,6 @@ export const ErrorCode = {
   SMS_NOT_CONFIGURED: 'SMS_NOT_CONFIGURED',
   USER_NOT_FOUND: 'USER_NOT_FOUND',
 
-  // --- Phone and citizen ID validation ---------------------------------------
   EMAIL_ALREADY_IN_USE: 'EMAIL_ALREADY_IN_USE',
   IDENTIFICATION_ALREADY_IN_USE: 'IDENTIFICATION_ALREADY_IN_USE',
   IDENTIFICATION_DOB_INVALID: 'IDENTIFICATION_DOB_INVALID',
@@ -93,7 +70,6 @@ export const ErrorCode = {
   PHONE_REQUIRED: 'PHONE_REQUIRED',
   PHONE_RESERVED_RANGE: 'PHONE_RESERVED_RANGE',
 
-  // --- Tenants, plans and subscriptions --------------------------------------
   INVOICE_NOT_FOUND: 'INVOICE_NOT_FOUND',
   PLAN_IS_FREE: 'PLAN_IS_FREE',
   PLAN_NOT_FOUND: 'PLAN_NOT_FOUND',
@@ -111,7 +87,6 @@ export const ErrorCode = {
   TRIAL_PLAN_UNAVAILABLE: 'TRIAL_PLAN_UNAVAILABLE',
   WEBHOOK_API_KEY_INVALID: 'WEBHOOK_API_KEY_INVALID',
 
-  // --- Locations - branches and warehouses -----------------------------------
   BRANCH_NOT_FOUND: 'BRANCH_NOT_FOUND',
   BRANCH_NOT_IN_TENANT: 'BRANCH_NOT_IN_TENANT',
   LOCATION_ALREADY_DELETED: 'LOCATION_ALREADY_DELETED',
@@ -122,7 +97,6 @@ export const ErrorCode = {
   WAREHOUSE_NOT_FOUND: 'WAREHOUSE_NOT_FOUND',
   WAREHOUSE_NOT_IN_TENANT: 'WAREHOUSE_NOT_IN_TENANT',
 
-  // --- Staff accounts and roles ----------------------------------------------
   ROLE_BEYOND_GRANT: 'ROLE_BEYOND_GRANT',
   ROLE_IN_USE: 'ROLE_IN_USE',
   ROLE_NOT_FOUND: 'ROLE_NOT_FOUND',
@@ -137,7 +111,6 @@ export const ErrorCode = {
   STAFF_SELF_EDIT_DENIED: 'STAFF_SELF_EDIT_DENIED',
   STAFF_SINGLE_LOCATION_REQUIRED: 'STAFF_SINGLE_LOCATION_REQUIRED',
 
-  // --- Catalogue - products, brands, categories, suppliers -------------------
   BRAND_IN_USE: 'BRAND_IN_USE',
   BRAND_NOT_FOUND: 'BRAND_NOT_FOUND',
   CATEGORY_HAS_CHILDREN: 'CATEGORY_HAS_CHILDREN',
@@ -163,32 +136,29 @@ export const ErrorCode = {
   SUPPLIER_NOT_FOUND: 'SUPPLIER_NOT_FOUND',
   SUPPLIER_PAYMENT_EXCEEDS_DEBT: 'SUPPLIER_PAYMENT_EXCEEDS_DEBT',
 
-  // --- Inventory -------------------------------------------------------------
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
   INVENTORY_ALREADY_AT_LOCATION: 'INVENTORY_ALREADY_AT_LOCATION',
   INVENTORY_NOT_FOUND: 'INVENTORY_NOT_FOUND',
   INVENTORY_STILL_HAS_STOCK: 'INVENTORY_STILL_HAS_STOCK',
-  // Order journey (2026-10-02): holding stock, lots and the damaged-goods location.
-  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
+  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
   INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
-  /** The lots at a location do not add up to what is being drawn - Σ lot.remaining has drifted from `stock`. A data fault, never user error. */
+  /** Tổng lot tại địa điểm không khớp số đang xuất: Σ remaining đã lệch khỏi `stock`. Lỗi dữ liệu, không phải lỗi người dùng. */
   INVENTORY_LOT_SHORTAGE: 'INVENTORY_LOT_SHORTAGE',
-  /** Shipping or releasing more than is locked for orders at that location (2026-10-04) - the order was never packed there, or its lock was already shipped or released. */
+  /** Xuất hoặc nhả nhiều hơn số đang khoá cho đơn tại địa điểm đó (từ 2026-10-04): đơn chưa được đóng gói ở đó, hoặc khoá đã xuất/nhả rồi. */
   INVENTORY_LOCK_MISMATCH: 'INVENTORY_LOCK_MISMATCH',
-  /** A custom piece has no lot made for its order line at that location. */
+  /** Hàng đặt riêng chưa có lot được tạo cho dòng đơn ở địa điểm này. */
   INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
-  /** Stock cannot be held or sold from a damaged-goods location (`isSellable = false`). */
+  /** Không giữ hay bán hàng từ kho hàng hỏng (`isSellable = false`). */
   LOCATION_NOT_SELLABLE: 'LOCATION_NOT_SELLABLE',
-  /** `damagedLocationId` must be another non-sellable location of the same tenant. */
+  /** `damagedLocationId` phải là địa điểm khác, không bán được, cùng tenant. */
   LOCATION_DAMAGED_INVALID: 'LOCATION_DAMAGED_INVALID',
-  /** The location has no damaged-goods location to send defective / damaged units to. */
+  /** Địa điểm chưa có kho hàng hỏng để chuyển hàng lỗi sang. */
   LOCATION_DAMAGED_REQUIRED: 'LOCATION_DAMAGED_REQUIRED',
-  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
+  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
   RESERVATION_NOT_ACTIVE: 'RESERVATION_NOT_ACTIVE',
-  /** @deprecated Stock reservations were dropped (2026-10-04); nothing raises this. Kept because codes are append-only. */
+  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
   RESERVATION_NOT_FOUND: 'RESERVATION_NOT_FOUND',
 
-  // --- Stock movements -------------------------------------------------------
   IMPORT_PRICE_ABOVE_RETAIL: 'IMPORT_PRICE_ABOVE_RETAIL',
   IMPORT_PRICE_MUST_BE_POSITIVE: 'IMPORT_PRICE_MUST_BE_POSITIVE',
   STOCK_MOVEMENT_ADJUST_HAS_DESTINATION:
@@ -214,19 +184,17 @@ export const ErrorCode = {
   STOCK_MOVEMENT_STATUS_INVALID: 'STOCK_MOVEMENT_STATUS_INVALID',
   STOCK_MOVEMENT_SUPPLIER_REQUIRED: 'STOCK_MOVEMENT_SUPPLIER_REQUIRED',
   STOCK_MOVEMENT_WRITE_DENIED: 'STOCK_MOVEMENT_WRITE_DENIED',
-  // Two import flows (2026-10-02): SUPPLIER buys finished goods, WORKSHOP receives made-to-order goods.
   IMPORT_SOURCE_REQUIRED: 'IMPORT_SOURCE_REQUIRED',
-  /** The supplier's `type` does not feed this `importSource` (GOODS ↔ SUPPLIER, WORKSHOP ↔ WORKSHOP). */
+  /** `supplier.type` không khớp `importSource` (GOODS ↔ SUPPLIER, WORKSHOP ↔ WORKSHOP). */
   IMPORT_SOURCE_SUPPLIER_MISMATCH: 'IMPORT_SOURCE_SUPPLIER_MISMATCH',
-  /** Every line of a WORKSHOP import must point at a production request line. */
+  /** Mỗi dòng nhập WORKSHOP phải trỏ tới một dòng yêu cầu sản xuất. */
   IMPORT_PRODUCTION_ITEM_REQUIRED: 'IMPORT_PRODUCTION_ITEM_REQUIRED',
-  /** The production request line belongs to another workshop / SKU, or is not open. */
+  /** Dòng yêu cầu sản xuất thuộc xưởng/SKU khác, hoặc không còn mở. */
   IMPORT_PRODUCTION_ITEM_MISMATCH: 'IMPORT_PRODUCTION_ITEM_MISMATCH',
-  /** More received than the production request line still expects. */
+  /** Nhận nhiều hơn số dòng yêu cầu sản xuất còn chờ. */
   IMPORT_PRODUCTION_QTY_EXCEEDS: 'IMPORT_PRODUCTION_QTY_EXCEEDS',
   STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS: 'STOCK_MOVEMENT_DEFECT_QTY_EXCEEDS',
 
-  // --- Selling - orders, customers, promotions -------------------------------
   CASH_FLOW_NOT_FOUND: 'CASH_FLOW_NOT_FOUND',
   CUSTOMER_CODE_TAKEN: 'CUSTOMER_CODE_TAKEN',
   CUSTOMER_NOT_FOUND: 'CUSTOMER_NOT_FOUND',
@@ -254,123 +222,108 @@ export const ErrorCode = {
   PROMOTION_STACK_LIMIT: 'PROMOTION_STACK_LIMIT',
   PROMOTION_USAGE_EXHAUSTED: 'PROMOTION_USAGE_EXHAUSTED',
 
-  // --- Order journey (2026-10-02, docs/order-flow.md) -------------------------
-  /** Every order past DRAFT / PENDING_CONFIRMATION needs a person in charge. */
+  /** Mọi đơn sau DRAFT / PENDING_CONFIRMATION phải có người phụ trách. */
   ORDER_ASSIGNEE_REQUIRED: 'ORDER_ASSIGNEE_REQUIRED',
-  /** The assignee is not an active account of this tenant. */
   ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
-  /** Packed and handed over - an OrderReturn is the only way back. */
+  /** Đã đóng gói và bàn giao - đường quay lại duy nhất là OrderReturn. */
   ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
   ORDER_COMBO_INVALID: 'ORDER_COMBO_INVALID',
   ORDER_EMPTY: 'ORDER_EMPTY',
   ORDER_ITEM_CUSTOM_LOCKED: 'ORDER_ITEM_CUSTOM_LOCKED',
   ORDER_ITEM_NOT_CUSTOMIZABLE: 'ORDER_ITEM_NOT_CUSTOMIZABLE',
   ORDER_ITEM_NOT_FOUND: 'ORDER_ITEM_NOT_FOUND',
-  /** Only DRAFT / PENDING_CONFIRMATION orders can be confirmed. */
+  /** Chỉ đơn DRAFT / PENDING_CONFIRMATION mới được xác nhận. */
   ORDER_NOT_CONFIRMABLE: 'ORDER_NOT_CONFIRMABLE',
-  /** Only a DRAFT may be edited freely. */
+  /** Chỉ DRAFT mới được sửa tự do. */
   ORDER_NOT_DRAFT: 'ORDER_NOT_DRAFT',
   ORDER_SOURCE_LOCATION_INVALID: 'ORDER_SOURCE_LOCATION_INVALID',
 
-  // --- Workshop: production requests ----------------------------------------
-  /** A custom SKU's line must point at the order line it is made for. */
+  /** Dòng của SKU đặt riêng phải trỏ tới dòng đơn hàng mà nó được làm cho. */
   PRODUCTION_REQUEST_CUSTOM_LINE_REQUIRED:
     'PRODUCTION_REQUEST_CUSTOM_LINE_REQUIRED',
   PRODUCTION_REQUEST_EMPTY: 'PRODUCTION_REQUEST_EMPTY',
   PRODUCTION_REQUEST_ITEM_NOT_FOUND: 'PRODUCTION_REQUEST_ITEM_NOT_FOUND',
-  /** Lines and specs are frozen once the request is SENT. */
+  /** Dòng và thông số bị khoá khi yêu cầu đã SENT. */
   PRODUCTION_REQUEST_LOCKED: 'PRODUCTION_REQUEST_LOCKED',
   PRODUCTION_REQUEST_NOT_FOUND: 'PRODUCTION_REQUEST_NOT_FOUND',
   PRODUCTION_REQUEST_STATUS_INVALID: 'PRODUCTION_REQUEST_STATUS_INVALID',
-  /** The supplier on a production request must be a WORKSHOP. */
   SUPPLIER_NOT_WORKSHOP: 'SUPPLIER_NOT_WORKSHOP',
-  /** A supplier's `type` cannot change once a production request or an import names it - the documents would stop matching the flow that made them. */
+  /** `type` của nhà cung cấp không đổi được khi đã có yêu cầu sản xuất hoặc phiếu nhập gắn với họ - chứng từ sẽ không còn khớp luồng đã tạo ra nó. */
   SUPPLIER_TYPE_LOCKED: 'SUPPLIER_TYPE_LOCKED',
-  /** The same SKU (for the same order line) twice on one production request. */
+  /** Cùng một SKU (cùng dòng đơn) xuất hiện hai lần trong một yêu cầu. */
   PRODUCTION_REQUEST_DUPLICATE_ITEM: 'PRODUCTION_REQUEST_DUPLICATE_ITEM',
-  /** The order line named on a production request line is not in this shop, is for another SKU, or has already shipped. */
+  /** Dòng đơn hàng gắn với dòng yêu cầu không thuộc shop này, sai SKU, hoặc đã giao đi. */
   PRODUCTION_REQUEST_ORDER_ITEM_INVALID:
     'PRODUCTION_REQUEST_ORDER_ITEM_INVALID',
-  /** A STAFF account can only work on production requests delivering to its own location. */
+  /** Tài khoản STAFF chỉ được thao tác yêu cầu sản xuất giao về địa điểm của chính mình. */
   PRODUCTION_REQUEST_LOCATION_DENIED: 'PRODUCTION_REQUEST_LOCATION_DENIED',
-  /** Something has already been received against it - a production request that delivered goods cannot be cancelled. */
+  /** Đã nhận hàng theo yêu cầu - yêu cầu đã giao hàng thì không huỷ được. */
   PRODUCTION_REQUEST_HAS_RECEIPTS: 'PRODUCTION_REQUEST_HAS_RECEIPTS',
-  /** A receipt with nothing in it: at least one line must receive more than 0. */
+  /** Phiếu nhận rỗng: ít nhất một dòng phải nhận > 0. */
   PRODUCTION_REQUEST_RECEIVE_EMPTY: 'PRODUCTION_REQUEST_RECEIVE_EMPTY',
-  /** Could not allocate the next YCSX code after several attempts (concurrent creates). */
+  /** Không cấp được mã YCSX kế tiếp sau nhiều lần thử (do tạo đồng thời). */
   PRODUCTION_REQUEST_CODE_UNAVAILABLE: 'PRODUCTION_REQUEST_CODE_UNAVAILABLE',
-  /** Only a PRODUCT variant can be made - a COMBO is ordered through its components, a SERVICE needs no goods. */
+  /** Chỉ biến thể PRODUCT mới được sản xuất: COMBO được đặt qua các thành phần, SERVICE không cần hàng. */
   PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE:
     'PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE',
-  /** The product is not marked `isManufacturable` - it is bought from a supplier, never ordered from a workshop. */
+  /** Sản phẩm chưa bật `isManufacturable` - nó được mua từ nhà cung cấp, không đặt xưởng sản xuất. */
   PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE:
     'PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE',
-  /** Closing a partly delivered request short needs a reason - it is the record of why ordered goods will never arrive. */
+  /** Đóng yêu cầu đã giao thiếu cần lý do - đó là bằng chứng vì sao phần hàng còn lại sẽ không về. */
   PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
     'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',
 
-  // --- Workshop staff & delivery notes (2026-10-09) -------------------------
-  /** The workshop routes need an account linked to a workshop (`users.workshop_id`). */
+  /** Các route xưởng cần tài khoản gắn với một xưởng (`users.workshop_id`). */
   WORKSHOP_STAFF_NOT_LINKED: 'WORKSHOP_STAFF_NOT_LINKED',
-  /** The workshop named for a staff account is not a WORKSHOP supplier of this shop. */
+  /** Xưởng gắn với tài khoản nhân viên không phải nhà cung cấp WORKSHOP của shop này. */
   USER_WORKSHOP_INVALID: 'USER_WORKSHOP_INVALID',
   PRODUCTION_DELIVERY_NOT_FOUND: 'PRODUCTION_DELIVERY_NOT_FOUND',
-  /** The delivery note is no longer PENDING (already received or cancelled), or its request no longer expects goods. */
+  /** Phiếu giao không còn PENDING (đã nhận hoặc đã huỷ), hoặc yêu cầu không còn chờ hàng. */
   PRODUCTION_DELIVERY_STATUS_INVALID: 'PRODUCTION_DELIVERY_STATUS_INVALID',
-  /** A delivery note with no line above 0. */
   PRODUCTION_DELIVERY_EMPTY: 'PRODUCTION_DELIVERY_EMPTY',
-  /** Delivered + still pending on other notes + already received would pass what was ordered. */
+  /** Đã giao + còn đang chờ trên các phiếu khác + đã nhận sẽ vượt số lượng đã đặt. */
   PRODUCTION_DELIVERY_QTY_EXCEEDS: 'PRODUCTION_DELIVERY_QTY_EXCEEDS',
-  /** The location counted more than the workshop said it delivered on that line. */
+  /** Địa điểm đếm được nhiều hơn số xưởng báo đã giao trên dòng đó. */
   PRODUCTION_DELIVERY_RECEIVE_EXCEEDS: 'PRODUCTION_DELIVERY_RECEIVE_EXCEEDS',
-  /** A line named on the confirmation is not on this delivery note. */
   PRODUCTION_DELIVERY_ITEM_MISMATCH: 'PRODUCTION_DELIVERY_ITEM_MISMATCH',
-  /** Could not allocate the next delivery code after several attempts. */
+  /** Không cấp được mã phiếu giao kế tiếp sau nhiều lần thử. */
   PRODUCTION_DELIVERY_CODE_UNAVAILABLE: 'PRODUCTION_DELIVERY_CODE_UNAVAILABLE',
 
-  // --- Fulfillment & delivery -----------------------------------------------
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
-  /** No longer raised: packing now answers ORDER_STEP_DENIED, the one refusal every journey step shares. Kept because codes are append-only. */
+  /** Không còn được ném: đóng gói nay trả ORDER_STEP_DENIED, lỗi chung của mọi bước hành trình. Giữ lại vì mã chỉ được thêm. */
   FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
   FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
-  /** No longer raised: split into FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK, so the client can say what to do. Kept because codes are append-only. */
+  /** Không còn được ném: tách thành FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK để client biết phải làm gì. Giữ lại vì mã chỉ được thêm. */
   FULFILLMENT_ORDER_NOT_READY: 'FULFILLMENT_ORDER_NOT_READY',
-  /** The order's lines ship from more than one location - transfer the goods to one place before packing. */
+  /** Các dòng của đơn xuất từ nhiều hơn một địa điểm - chuyển hàng về một chỗ trước khi đóng gói. */
   FULFILLMENT_MULTIPLE_SOURCES: 'FULFILLMENT_MULTIPLE_SOURCES',
-  /** A line to be packed has no location to ship from. */
   FULFILLMENT_LINE_NO_SOURCE: 'FULFILLMENT_LINE_NO_SOURCE',
-  /** Nothing on the order holds stock (only combo parents / services), so there is nothing to pack. */
+  /** Không dòng nào giữ kho (chỉ có combo cha / dịch vụ) nên không có gì để đóng gói. */
   FULFILLMENT_NOTHING_TO_PACK: 'FULFILLMENT_NOTHING_TO_PACK',
-  /** A multi-package item is missing packages. */
   FULFILLMENT_PACKAGES_INCOMPLETE: 'FULFILLMENT_PACKAGES_INCOMPLETE',
   FULFILLMENT_QTY_EXCEEDS: 'FULFILLMENT_QTY_EXCEEDS',
   FULFILLMENT_STATUS_INVALID: 'FULFILLMENT_STATUS_INVALID',
-  /** Only the order's person in charge (or someone holding the permission) may verify the packed goods. */
+  /** Chỉ người phụ trách đơn (hoặc người có quyền) mới được xác nhận hàng đã đóng gói. */
   FULFILLMENT_VERIFY_DENIED: 'FULFILLMENT_VERIFY_DENIED',
   CARRIER_WEBHOOK_INVALID: 'CARRIER_WEBHOOK_INVALID',
-  /** The fulfillment has not been handed over yet. */
   SHIPMENT_FULFILLMENT_NOT_HANDED_OVER: 'SHIPMENT_FULFILLMENT_NOT_HANDED_OVER',
-  /** The shipper is not the driver on this shipment. */
   SHIPMENT_NOT_ASSIGNED: 'SHIPMENT_NOT_ASSIGNED',
   SHIPMENT_NOT_FOUND: 'SHIPMENT_NOT_FOUND',
-  /** An INTERNAL delivery needs at least one proof photo. */
   SHIPMENT_PROOF_REQUIRED: 'SHIPMENT_PROOF_REQUIRED',
   SHIPMENT_STATUS_INVALID: 'SHIPMENT_STATUS_INVALID',
   SHIPMENT_TRACKING_TAKEN: 'SHIPMENT_TRACKING_TAKEN',
 
-  // --- Returns --------------------------------------------------------------
   ORDER_RETURN_CONDITION_REQUIRED: 'ORDER_RETURN_CONDITION_REQUIRED',
-  /** Neither the order's person in charge nor a holder of `returns:create`. */
+  /** Không phải người phụ trách đơn, cũng không có `returns:create`. */
   ORDER_RETURN_DENIED: 'ORDER_RETURN_DENIED',
   ORDER_RETURN_EMPTY: 'ORDER_RETURN_EMPTY',
   ORDER_RETURN_NOT_FOUND: 'ORDER_RETURN_NOT_FOUND',
-  /** Nothing has left the shop yet - cancel the order instead. */
+  /** Chưa có hàng nào rời shop - hãy huỷ đơn thay vì trả hàng. */
   ORDER_RETURN_ORDER_NOT_RETURNABLE: 'ORDER_RETURN_ORDER_NOT_RETURNABLE',
-  /** More than was sold minus what already came back. */
+  /** Nhiều hơn số đã bán trừ đi số đã trả về. */
   ORDER_RETURN_QTY_EXCEEDS: 'ORDER_RETURN_QTY_EXCEEDS',
   ORDER_RETURN_STATUS_INVALID: 'ORDER_RETURN_STATUS_INVALID',
 
-  // --- Marketplace channels & payments (Phase 2) ----------------------------
   CHANNEL_MAPPING_DUPLICATE: 'CHANNEL_MAPPING_DUPLICATE',
   CHANNEL_MAPPING_NOT_FOUND: 'CHANNEL_MAPPING_NOT_FOUND',
   PAYMENT_AMOUNT_EXCEEDS_DUE: 'PAYMENT_AMOUNT_EXCEEDS_DUE',
@@ -382,7 +335,6 @@ export const ErrorCode = {
   SALES_CHANNEL_NOT_CONFIGURED: 'SALES_CHANNEL_NOT_CONFIGURED',
   SALES_CHANNEL_NOT_FOUND: 'SALES_CHANNEL_NOT_FOUND',
 
-  // --- Cash drawer sessions --------------------------------------------------
   CASH_DRAWER_ALREADY_OPEN: 'CASH_DRAWER_ALREADY_OPEN',
   CASH_DRAWER_BRANCH_DENIED: 'CASH_DRAWER_BRANCH_DENIED',
   CASH_DRAWER_CLOSED: 'CASH_DRAWER_CLOSED',
@@ -396,7 +348,6 @@ export const ErrorCode = {
   SHIFT_LOG_NEXT_STAFF_SELF: 'SHIFT_LOG_NEXT_STAFF_SELF',
   SHIFT_LOG_START_REQUIRED: 'SHIFT_LOG_START_REQUIRED',
 
-  // --- Scheduling and shift templates ----------------------------------------
   SCHEDULE_COMPLETED_CANNOT_DELETE: 'SCHEDULE_COMPLETED_CANNOT_DELETE',
   SCHEDULE_LOCATION_REQUIRED: 'SCHEDULE_LOCATION_REQUIRED',
   SCHEDULE_NOT_EDITABLE: 'SCHEDULE_NOT_EDITABLE',
@@ -407,7 +358,6 @@ export const ErrorCode = {
   SHIFT_TEMPLATE_INVALID: 'SHIFT_TEMPLATE_INVALID',
   SHIFT_TEMPLATE_NOT_FOUND: 'SHIFT_TEMPLATE_NOT_FOUND',
 
-  // --- Holidays --------------------------------------------------------------
   GOOGLE_CALENDAR_NOT_CONFIGURED: 'GOOGLE_CALENDAR_NOT_CONFIGURED',
   GOOGLE_CALENDAR_SYNC_FAILED: 'GOOGLE_CALENDAR_SYNC_FAILED',
   HOLIDAY_DATE_INVALID: 'HOLIDAY_DATE_INVALID',
@@ -415,7 +365,6 @@ export const ErrorCode = {
   HOLIDAY_NOT_FOUND: 'HOLIDAY_NOT_FOUND',
   HOLIDAY_UPDATE_EMPTY: 'HOLIDAY_UPDATE_EMPTY',
 
-  // --- Notifications, tickets, uploads and the AI assistant ------------------
   AI_CONVERSATION_NOT_FOUND: 'AI_CONVERSATION_NOT_FOUND',
   AI_NOT_CONFIGURED: 'AI_NOT_CONFIGURED',
   NOTIFICATION_NOT_FOUND: 'NOTIFICATION_NOT_FOUND',
@@ -430,7 +379,6 @@ export const ErrorCode = {
   UPLOAD_FORMAT_UNSUPPORTED: 'UPLOAD_FORMAT_UNSUPPORTED',
   UPLOAD_NOT_CONFIGURED: 'UPLOAD_NOT_CONFIGURED',
 
-  // --- Order journey, revised 2026-10-04 (docs/api-contract-order-flow.md §6) ---
   ORDER_COLLECTION_AMOUNT_MISMATCH: 'ORDER_COLLECTION_AMOUNT_MISMATCH',
   ORDER_DEPOSIT_CHANGED: 'ORDER_DEPOSIT_CHANGED',
   ORDER_DEPOSIT_EXCEEDS_TOTAL: 'ORDER_DEPOSIT_EXCEEDS_TOTAL',
@@ -441,61 +389,52 @@ export const ErrorCode = {
   IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST:
     'IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST',
   SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
-  /** The named driver is not the shop owner, the order's person in charge, or an active staff member holding shipments:deliver. */
+  /** Tài xế được chỉ định không phải chủ shop, người phụ trách đơn, hoặc nhân viên đang hoạt động có quyền `shipments:deliver`. */
   SHIPMENT_DRIVER_INVALID: 'SHIPMENT_DRIVER_INVALID',
-  /** An EXTERNAL (third-party carrier) shipment has no driver of ours. */
+  /** Chuyến giao bên ngoài (đơn vị vận chuyển thứ ba) không có tài xế của shop. */
   SHIPMENT_DRIVER_NOT_ALLOWED: 'SHIPMENT_DRIVER_NOT_ALLOWED',
-  /** A journey step (pack, hand over, change driver, ship) is open to the shop owner, the order's person in charge, or someone holding that step's permission at that location - and the caller is none of them. */
+  /** Các bước hành trình (đóng gói, bàn giao, đổi tài xế, giao) mở cho chủ shop, người phụ trách đơn, hoặc người có quyền của bước đó tại địa điểm đó; ngoài ra bị từ chối. */
   ORDER_STEP_DENIED: 'ORDER_STEP_DENIED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
-  /** Confirming a delivery is for our own shippers only; a third-party carrier's delivery is reported automatically (C-4, later). */
+  /** Xác nhận đã giao chỉ dành cho shipper nội bộ; giao qua đơn vị vận chuyển ngoài được báo tự động (C-4, sau này). */
   SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
-  /** The order already has a shipment that has not ended (waiting for pickup or on the road) - hand-over is a one-at-a-time step; reload. Backed by the partial index `shipments_one_open_per_order`. */
+  /** Đơn đã có chuyến giao chưa kết thúc (đang chờ lấy hoặc đang trên đường) - bàn giao chỉ làm một chuyến mỗi lần; tải lại. Được bảo vệ bởi partial index `shipments_one_open_per_order`. */
   SHIPMENT_ALREADY_OPEN: 'SHIPMENT_ALREADY_OPEN',
-  /** "The customer paid cash instead" needs a QR balance still waiting for its transfer - there is none, or the money has just arrived. */
+  /** "Khách trả tiền mặt" chỉ áp dụng khi còn số dư QR đang chờ chuyển khoản; không còn, hoặc tiền vừa về. */
   ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
-  // --- Order cancel (A-5, 2026-10-05) ---------------------------------------
-  /** The order holds a deposit, so whoever cancels must say how much of it goes back (0 = the shop keeps it). */
+  /** Đơn đang giữ tiền cọc: người huỷ phải nói rõ hoàn lại bao nhiêu (0 = shop giữ lại). */
   ORDER_REFUND_AMOUNT_REQUIRED: 'ORDER_REFUND_AMOUNT_REQUIRED',
-  /** More refunded than the deposit still held. */
+  /** Hoàn nhiều hơn số tiền cọc còn giữ. */
   ORDER_REFUND_EXCEEDS_DEPOSIT: 'ORDER_REFUND_EXCEEDS_DEPOSIT',
 
-  // --- Order edit (A-8, 2026-10-06) -----------------------------------------
-  /** An edit would drop an order line a production request was raised for; take it off the request first. */
+  /** Sửa đổi sẽ bỏ một dòng đơn đã có yêu cầu sản xuất; gỡ dòng đó khỏi yêu cầu trước. */
   ORDER_ITEM_IN_PRODUCTION: 'ORDER_ITEM_IN_PRODUCTION',
 
-  // --- Health (2026-10-07) --------------------------------------------------
-  /** `GET /health/ready`: the database is unreachable or misses a migration this build ships. */
+  /** `GET /health/ready`: DB không kết nối được, hoặc thiếu migration mà build này cần. */
   SERVICE_NOT_READY: 'SERVICE_NOT_READY',
 
-  // ─── Product attributes & variants from a production request (2026-10-16) ───
-  /** Two attributes of one product share a name. */
   PRODUCT_ATTRIBUTE_DUPLICATE: 'PRODUCT_ATTRIBUTE_DUPLICATE',
-  /** A changed attribute value names an attribute that is not on the SKU's product. */
+  /** Giá trị thuộc tính được sửa trỏ tới một thuộc tính không có trên sản phẩm của SKU. */
   PRODUCT_ATTRIBUTE_NOT_FOUND: 'PRODUCT_ATTRIBUTE_NOT_FOUND',
-  /** A changed attribute value is blank. */
   PRODUCT_ATTRIBUTE_VALUE_REQUIRED: 'PRODUCT_ATTRIBUTE_VALUE_REQUIRED',
-  /** A production line made for an order line cannot change attributes or price - the order line's customization decides what is made. */
+  /** Dòng sản xuất làm cho một dòng đơn không đổi được thuộc tính hay giá - dòng đơn đã quyết định sẽ làm gì. */
   PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER:
     'PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER',
 
-  // ─── Combo catalogue (2026-10-20) ───────────────────────────────────────────
-  /** A combo's components are invalid: none, listed twice, the combo itself, a cycle, nesting past `MAX_COMBO_DEPTH`, a discontinued component, or components on a non-COMBO variant. */
+  /** Thành phần combo không hợp lệ: rỗng, trùng nhau, chứa chính nó, vòng lặp, lồng quá `MAX_COMBO_DEPTH`, thành phần đã ngừng bán, hoặc gắn vào biến thể không phải COMBO. */
   PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
-  /** The variant (or a variant of the product) is a component of a combo that is still sold; take it out of the combo first. */
+  /** Biến thể (hoặc biến thể của sản phẩm) là thành phần của một combo vẫn đang bán; gỡ khỏi combo trước. */
   PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
-  /** A combo component belongs to a discontinued product (on save, or when switching a combo back on). The message names the SKU. */
+  /** Thành phần combo thuộc sản phẩm đã ngừng bán (khi lưu, hoặc khi bật lại combo). Thông báo nêu SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
-  /** A COMBO or SERVICE variant was put on a stock document or a location: only a PRODUCT holds stock. */
+  /** Biến thể COMBO hoặc SERVICE bị đưa vào chứng từ kho hay địa điểm: chỉ PRODUCT mới giữ kho. */
   PRODUCT_ITEM_NOT_STOCKABLE: 'PRODUCT_ITEM_NOT_STOCKABLE',
 
-  // ─── Product type (2026-10-23) ──────────────────────────────────────────────
-  /** A variant's `itemType` differs from its product's `productType` - every SKU of a product has the product's type. */
+  /** `itemType` của biến thể khác `productType` của sản phẩm - mọi SKU của một sản phẩm đều mang loại của sản phẩm đó. */
   PRODUCT_ITEM_TYPE_MISMATCH: 'PRODUCT_ITEM_TYPE_MISMATCH',
 
-  // ─── Shared SePay webhook ───────────────────────────────────────────────────
   TENANT_BANKING_ACCOUNT_TAKEN: 'TENANT_BANKING_ACCOUNT_TAKEN',
   TENANT_BANKING_HAS_PENDING_SEPAY: 'TENANT_BANKING_HAS_PENDING_SEPAY',
   TENANT_SEPAY_NOT_LINKED: 'TENANT_SEPAY_NOT_LINKED',

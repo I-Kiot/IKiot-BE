@@ -1,4 +1,4 @@
-/** One delivery attempt. A failed attempt is retried with a new Shipment or turned into an OrderReturn. */
+/** Một lần giao hàng. Giao thất bại được thử lại bằng Shipment mới, hoặc chuyển thành OrderReturn. */
 export const ShipmentStatus = {
   CREATED: 'CREATED',
   PICKED_UP: 'PICKED_UP',
@@ -17,9 +17,7 @@ export const SHIPMENT_STATUSES: readonly string[] =
   Object.values(ShipmentStatus);
 
 /**
- * Nothing moves a shipment out of these. FAILED is deliberately not here: a failed attempt leaves the goods
- * with the shipper, who may try again (-> DELIVERED) until someone confirms they are back at the shop
- * (-> RETURNED, `OrderReturnService.confirmFailedDelivery`).
+ * Không trạng thái nào đưa chuyến giao ra khỏi nhóm này. FAILED cố ý không có: hàng vẫn ở shipper và có thể giao lại (-> DELIVERED) cho tới khi shop xác nhận đã nhận về (-> RETURNED).
  */
 export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.DELIVERED,
@@ -27,13 +25,13 @@ export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.CANCELLED,
 ];
 
-/** The driver can be swapped only while the goods are still with us. Once the order is SHIPPING (IN_TRANSIT / OUT_FOR_DELIVERY) the shipper is on the road with them, and changing it would hand the goods - and the cash they are about to collect - to someone who never took them. */
+/** Chỉ đổi được tài xế khi hàng còn ở shop. Khi đơn đang SHIPPING, shipper đã chở hàng và đang cầm tiền cần thu; đổi lúc này sẽ giao cả hai cho người chưa nhận hàng. */
 export const DRIVER_CHANGEABLE_STATUSES: readonly string[] = [
   ShipmentStatus.CREATED,
   ShipmentStatus.PICKED_UP,
 ];
 
-/** INTERNAL: our own shipper confirms with proof photos. EXTERNAL: a carrier (or the marketplace's logistics) reports DELIVERED - or, with no carrier API, staff mark it by hand. */
+/** INTERNAL: shipper của shop xác nhận bằng ảnh minh chứng. EXTERNAL: đơn vị vận chuyển (hoặc logistics của sàn) báo DELIVERED; khi chưa có API vận chuyển thì nhân viên đánh dấu tay. */
 export const CarrierType = {
   INTERNAL: 'INTERNAL',
   EXTERNAL: 'EXTERNAL',
@@ -43,7 +41,6 @@ export type CarrierType = (typeof CarrierType)[keyof typeof CarrierType];
 
 export const CARRIER_TYPES: readonly string[] = Object.values(CarrierType);
 
-/** Who wrote a ShipmentEvent. */
 export const ShipmentEventSource = {
   MANUAL: 'MANUAL',
   CARRIER: 'CARRIER',

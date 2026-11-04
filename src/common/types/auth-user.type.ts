@@ -1,16 +1,16 @@
 import { SystemRole } from '../constants/system-role';
 
-/** Temporary rights held by whoever is running a shift right now (iKiotMS-BE's `managedScheduleAccess`); null for everyone else, and it expires by the clock. */
+/** Quyền tạm thời của người đang trực ca (`managedScheduleAccess` của iKiotMS-BE); null với người khác, và hết hạn theo đồng hồ. */
 export interface ShiftSupervisorAccess {
   scheduleIds: string[];
-  /** Locations the supervision reaches - the shift's, intersected with their own posting. */
+  /** Địa điểm mà quyền giám sát chạm tới - giao giữa ca và chỗ làm của chính họ. */
   branchIds: string[];
   warehouseIds: string[];
   startsAt: Date;
   endsAt: Date;
 }
 
-/** Populated onto `request.user` by JwtStrategy after a fresh per-request DB lookup, so permissions reflect the tenant's current role edits rather than cached JWT claims. */
+/** JwtStrategy gắn vào `request.user` sau khi tra DB mới ở mỗi request, nên quyền phản ánh chỉnh sửa role hiện tại của tenant thay vì claim cache trong JWT. */
 export interface AuthUser {
   userId: string;
   tenantId: string | null;
@@ -18,13 +18,13 @@ export interface AuthUser {
   roleId: string | null;
   branchId: string | null;
   warehouseId: string | null;
-  /** Workshop staff: the WORKSHOP supplier this account belongs to (`users.workshop_id`). Null or absent for everyone else - JwtStrategy always sets it; hand-built test users may leave it out. */
+  /** Nhân viên xưởng: WORKSHOP supplier mà tài khoản thuộc về (`users.workshop_id`). Null hoặc vắng với mọi người khác; JwtStrategy luôn set, user test tự dựng có thể bỏ qua. */
   workshopId?: string | null;
-  /** `"<resource>:<action>"` set, empty for ADMIN/TENANT_OWNER (they short-circuit); includes anything a live shift supervision adds. */
+  /** Tập `"<resource>:<action>"`, rỗng với ADMIN/TENANT_OWNER (họ được bỏ qua kiểm tra); gồm cả quyền mà giám sát ca đang chạy thêm vào. */
   permissions: ReadonlySet<string>;
-  /** Non-null only while this account is running a shift: `permissions` says what it allows, this says where. */
+  /** Chỉ khác null khi tài khoản đang trực ca: `permissions` cho biết được làm gì, trường này cho biết ở đâu. */
   shiftSupervision: ShiftSupervisorAccess | null;
-  /** Carried only so AuditInterceptor needs no second query; not used by any permission check. */
+  /** Chỉ để AuditInterceptor không cần query thêm; không dùng trong kiểm tra quyền nào. */
   email: string | null;
   displayName: string | null;
   phoneNumber: string;

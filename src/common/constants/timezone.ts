@@ -1,2 +1,2 @@
-/** The one clock this product runs on: every shop is in Vietnam and nearly every answer is about a local calendar day, so crons and date math must name this zone. */
+/** Múi giờ duy nhất sản phẩm dùng: mọi shop ở Việt Nam và gần như mọi câu trả lời theo lịch ngày địa phương, nên cron và tính ngày phải ghi rõ múi giờ này. */
 export const VIETNAM_TIMEZONE = 'Asia/Ho_Chi_Minh';

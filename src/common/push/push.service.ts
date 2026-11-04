@@ -6,9 +6,9 @@ import { FirebaseService } from '../firebase/firebase.service';
 export interface PushPayload {
   title: string;
   body: string;
-  /** Extra keys the client reads on tap. Values are coerced to strings - FCM requires it. */
+  /** Key thêm mà client đọc khi người dùng bấm. Giá trị bị ép thành string vì FCM bắt buộc. */
   data?: Record<string, string | null | undefined>;
-  /** Where a web push should navigate when clicked. */
+  /** Đường dẫn web push mở khi bấm. */
   link?: string;
 }
 
@@ -17,16 +17,16 @@ export interface PushResult {
   failed: number;
 }
 
-/** FCM's own cap on one `sendEachForMulticast` call - exceeding it rejects the whole batch. */
+/** Giới hạn của FCM cho một lần `sendEachForMulticast`; vượt quá là từ chối cả batch. */
 const FCM_MULTICAST_LIMIT = 500;
 
-/** Codes that mean the registration is gone for good; everything else is transient and must not delete anything. */
+/** Các mã nghĩa là đăng ký đã mất vĩnh viễn; mọi lỗi khác là tạm thời và không được xoá gì. */
 const DEAD_TOKEN_CODES = new Set([
   'messaging/registration-token-not-registered',
   'messaging/invalid-registration-token',
 ]);
 
-/** Whether an error means the *token* is dead: FCM v1 answers a malformed token with the generic `invalid-argument`, which a malformed payload also returns, so this prunes only when the message blames the token. */
+/** Lỗi có nghĩa là *token* đã chết không? FCM v1 trả `invalid-argument` chung cho token sai định dạng, payload sai cũng trả mã này; nên chỉ xoá khi thông báo nêu đích danh token. */
 function isDeadTokenError(error?: {
   code?: string;
   message?: string;
@@ -39,7 +39,7 @@ function isDeadTokenError(error?: {
   );
 }
 
-/** Push delivery for users who are not looking at the app - the third leg of `notify()`, and like the others it never throws. */
+/** Gửi push cho người dùng không mở app - là nhánh thứ ba của `notify()`, và như hai nhánh kia, không bao giờ throw. */
 @Injectable()
 export class PushService {
   private readonly logger = new Logger(PushService.name);
@@ -49,7 +49,7 @@ export class PushService {
     private readonly firebase: FirebaseService,
   ) {}
 
-  /** Send one notification to every device registered to any of `userIds`; a user with no registered device contributes no tokens. */
+  /** Gửi một thông báo tới mọi thiết bị đã đăng ký của bất kỳ `userIds` nào; user chưa có thiết bị thì không đóng góp token nào. */
   async sendToUsers(
     userIds: (string | null | undefined)[],
     payload: PushPayload,
@@ -57,7 +57,7 @@ export class PushService {
     try {
       const messaging = this.firebase.messaging();
       if (!messaging) {
-        // Debug, not warn: on a deployment that deliberately leaves Firebase unset this would fire on every notification.
+        // Dùng debug, không phải warn: trên môi trường cố tình không cấu hình Firebase, warn sẽ bắn cho mọi thông báo.
         this.logger.debug('Skipped: Firebase Admin is not configured');
         return { sent: 0, failed: 0 };
       }
@@ -74,7 +74,7 @@ export class PushService {
       const tokens = rows.map((row) => row.token);
       if (tokens.length === 0) return { sent: 0, failed: 0 };
 
-      // FCM data values must all be strings; null/undefined is dropped rather than sent as the literal "null".
+      // Giá trị data của FCM phải đều là string; null/undefined bị bỏ thay vì gửi thành chữ "null".
       const data = Object.fromEntries(
         Object.entries(payload.data ?? {})
           .filter(([, value]) => value !== null && value !== undefined)
@@ -110,7 +110,7 @@ export class PushService {
     }
   }
 
-  // Drop the registrations FCM reports gone; deleting by token alone is safe because `token` is unique across the table.
+  // Xoá các đăng ký mà FCM báo đã mất; xoá theo token là an toàn vì `token` là duy nhất trong cả bảng.
   private async pruneDeadTokens(tokens: string[]): Promise<void> {
     if (tokens.length === 0) return;
     const { count } = await this.prisma.userFcmToken.deleteMany({
@@ -120,7 +120,7 @@ export class PushService {
   }
 }
 
-/** Which of `tokens` the responses say are permanently dead - exported so that decision can be unit-tested without Firebase. */
+/** Trong `tokens`, những token mà response nói là chết vĩnh viễn - export để quyết định này unit test được mà không cần Firebase. */
 export function deadTokensIn(
   tokens: string[],
   responses: Pick<SendResponse, 'success' | 'error'>[],
@@ -130,7 +130,7 @@ export function deadTokensIn(
   );
 }
 
-/** Split into runs of at most `size`. */
+/** Chia thành các đoạn có tối đa `size` phần tử. */
 export function chunk<T>(items: T[], size: number): T[][] {
   const batches: T[][] = [];
   for (let i = 0; i < items.length; i += size) {

@@ -4,12 +4,11 @@ import type { LocationEnd } from '../dto/location-ref.dto';
 import type { AuthUser } from '../types/auth-user.type';
 import { supervisesLocation } from '../../modules/working-schedules/shift-supervisor.service';
 
-// "Where may this account act" - the substitution for the old BRANCH_MANAGER / WAREHOUSE_MANAGER
-// roles, shared by every flow that works at one location (stock movements, production requests).
-// It used to live privately in StockMovementService; a second flow needing the same answer is
-// what moved it here (coding rule 6).
+// "Được hành động ở đâu" - thay cho các role BRANCH_MANAGER / WAREHOUSE_MANAGER cũ, dùng chung cho
+// mọi luồng làm việc tại một địa điểm (phiếu kho, yêu cầu sản xuất). Trước đây nằm riêng trong
+// StockMovementService; khi luồng thứ hai cần cùng câu trả lời thì mới chuyển ra đây.
 
-/** Where a staff account is posted - `{ locationId: null }` if nowhere - or `null` for an account that may act anywhere in the tenant. `AuthUser` still carries the branch/warehouse pair, but a Branch or Warehouse shares its id with its Location, so whichever is set *is* the Location id. */
+/** Địa điểm được gán cho nhân viên (`{ locationId: null }` nếu không có), hoặc `null` với tài khoản được hành động ở mọi nơi trong tenant. Branch và Warehouse dùng chung id với Location nên id được set chính là id địa điểm. */
 export function postingOf(
   user: AuthUser,
 ): { locationId: string | null } | null {
@@ -22,7 +21,7 @@ export function postingOf(
   return { locationId: user.branchId ?? user.warehouseId };
 }
 
-/** A TENANT_OWNER acts anywhere in the tenant, a STAFF account where it is posted - or where the shift it is currently supervising reaches. That clause only ever widens to a location the supervisor is already posted at, so it is about when they may act, not where. A missing location is never a staff account's. */
+/** TENANT_OWNER hành động ở mọi nơi trong tenant; STAFF ở nơi được gán hoặc nơi ca đang giám sát chạm tới. Vế giám sát chỉ quyết định *khi nào* được làm, không mở rộng *ở đâu*. Địa điểm thiếu thì không bao giờ là của nhân viên. */
 export function canActAt(
   user: AuthUser,
   location: LocationEnd | null | undefined,
@@ -30,14 +29,14 @@ export function canActAt(
   const own = postingOf(user);
   if (!own) return true;
   if (!location) return false;
-  // `supervisesLocation` still speaks the branch/warehouse pair (shift supervision is not this flow's).
+  // `supervisesLocation` vẫn dùng cặp branch/warehouse (giám sát ca không thuộc luồng này).
   if (supervisesLocation(user.shiftSupervision, columnsOfLocation(location))) {
     return true;
   }
   return own.locationId === location.id;
 }
 
-/** Whether this is literally where the actor works. `canActAt` is about permission and answers true everywhere for an owner, which cannot tell which end of a transfer raised it. */
+/** Có đúng là nơi người này làm việc không. `canActAt` là về quyền và trả true ở mọi nơi với chủ shop, nên không phân biệt được đầu nào của phiếu chuyển đã tạo ra nó. */
 export function isPostedAt(
   user: AuthUser,
   location: LocationEnd | null | undefined,

@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, Max, Min } from 'class-validator';
 
-// Defaults and the 100 ceiling come from iKiotMS-BE; `@Type` is needed because query strings arrive as strings.
+// Giá trị mặc định và trần 100 lấy từ iKiotMS-BE; cần `@Type` vì query string đến dưới dạng chuỗi.
 export class PaginationQueryDto {
   @IsOptional()
   @Type(() => Number)

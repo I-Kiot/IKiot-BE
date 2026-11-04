@@ -1,7 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { RedisService } from './redis.service';
 
-// Global, like RealtimeModule: one connection, injected without every feature module re-importing it.
+// Global như RealtimeModule: một kết nối duy nhất, được inject mà không cần mọi feature module import lại.
 @Global()
 @Module({
   providers: [RedisService],

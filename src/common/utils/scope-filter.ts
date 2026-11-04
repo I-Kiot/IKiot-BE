@@ -1,14 +1,14 @@
 import { ForbiddenException } from '@nestjs/common';
 import { ErrorCode } from '../errors/error-codes';
 
-/** A client filter may narrow a server-derived scope, never replace it - `?branchId=` used to overwrite it and hand a cashier another branch's ledger. */
+/** Filter của client chỉ được thu hẹp scope do server tính, không được thay thế - `?branchId=` từng ghi đè scope và đưa thu ngân xem sổ của chi nhánh khác. */
 export function narrowToScope(
   scoped: string | undefined,
   requested: string | undefined,
   message: string,
 ): string | undefined {
   if (!requested) return scoped;
-  // Passing back your own scope is normal - a screen echoes whatever it was showing.
+  // Gửi lại đúng scope của mình là bình thường - màn hình thường echo lại những gì nó đang hiển thị.
   if (scoped !== undefined && requested !== scoped) {
     throw new ForbiddenException({
       code: ErrorCode.SCOPE_FILTER_DENIED,
@@ -18,21 +18,21 @@ export function narrowToScope(
   return requested;
 }
 
-/** Where an account may read other people's HR rows from: always your own, widened to your posted location by a read-all permission. An empty object means no restriction. */
+/** Được đọc dòng nhân sự của ai: luôn là của chính mình, được mở rộng tới địa điểm đã gán khi có quyền read-all. Object rỗng nghĩa là không giới hạn. */
 export interface StaffReadScope {
   userId?: string;
   branchId?: string;
   warehouseId?: string;
 }
 
-/** The `?userId=` / `?branchId=` / `?warehouseId=` filters a list endpoint accepts. */
+/** Các bộ lọc `?userId=` / `?branchId=` / `?warehouseId=` mà endpoint danh sách chấp nhận. */
 export interface StaffScopeQuery {
   userId?: string;
   branchId?: string;
   warehouseId?: string;
 }
 
-/** Applies {@link narrowToScope} to all three staff filters at once - merging them by hand is what let `?branchId=` replace the server-derived branch. */
+/** Áp {@link narrowToScope} cho cả ba filter nhân sự cùng lúc - ghép tay từng cái là thứ để `?branchId=` thay thế chi nhánh do server suy ra. */
 export function narrowStaffScope(
   scope: StaffReadScope,
   query: StaffScopeQuery,
