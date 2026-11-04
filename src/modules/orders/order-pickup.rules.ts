@@ -53,6 +53,31 @@ export function assertNoPickupShippingFee(shippingFee: number): void {
   }
 }
 
+/**
+ * Đổi hình thức giao từ hoặc sang “khách tới lấy” (khách đổi ý, hoặc muốn nhận tại nhà): chỉ khi đơn chưa có ai mang hàng đi, tức CONFIRMED,
+ * hoặc PACKED mà chưa có shipment. Từ PICKED_UP trở đi hàng đã trao cho người giao. Các đổi hình thức không liên quan tới khách tới lấy thì không ràng buộc ở đây.
+ */
+export function assertFulfillmentTypeChangeAllowed(
+  order: { status: string; fulfillmentType: string },
+  nextType: string,
+  openShipments: number,
+): void {
+  if (nextType === order.fulfillmentType) return;
+  const involvesPickup =
+    nextType === FulfillmentType.STORE_PICKUP ||
+    order.fulfillmentType === FulfillmentType.STORE_PICKUP;
+  if (!involvesPickup) return;
+  const open =
+    order.status === OrderStatus.CONFIRMED ||
+    (order.status === OrderStatus.PACKED && openShipments === 0);
+  if (!open) {
+    throw new ConflictException({
+      code: ErrorCode.ORDER_FULFILLMENT_TYPE_LOCKED,
+      message: `An order in ${order.status} with a shipment can no longer switch between pickup and delivery`,
+    });
+  }
+}
+
 export interface PickupPaymentRow {
   kind: string;
   status: string;
