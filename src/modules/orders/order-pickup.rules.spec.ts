@@ -8,6 +8,7 @@ import {
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import {
+  assertFulfillmentTypeChangeAllowed,
   assertNoPickupShippingFee,
   assertNotStorePickup,
   assertPickupReady,
@@ -167,5 +168,45 @@ describe('isPickupOverdue', () => {
     expect(isPickupOverdue({ ...base, requestedDeliveryDate: null }, now)).toBe(
       false,
     );
+  });
+});
+
+describe('assertFulfillmentTypeChangeAllowed', () => {
+  const pickup = FulfillmentType.STORE_PICKUP;
+  const home = FulfillmentType.HOME_DELIVERY;
+
+  it('lets a confirmed order switch either way', () => {
+    const order = { status: OrderStatus.CONFIRMED, fulfillmentType: pickup };
+    expect(() =>
+      assertFulfillmentTypeChangeAllowed(order, home, 0),
+    ).not.toThrow();
+  });
+
+  it('lets a packed order switch while it has no shipment', () => {
+    const order = { status: OrderStatus.PACKED, fulfillmentType: pickup };
+    expect(() =>
+      assertFulfillmentTypeChangeAllowed(order, home, 0),
+    ).not.toThrow();
+  });
+
+  it('locks a packed order that already has a shipment', () => {
+    const order = { status: OrderStatus.PACKED, fulfillmentType: home };
+    expect(
+      codeOf(() => assertFulfillmentTypeChangeAllowed(order, pickup, 1)),
+    ).toBe(ErrorCode.ORDER_FULFILLMENT_TYPE_LOCKED);
+  });
+
+  it('locks an order whose goods were handed to a shipper', () => {
+    const order = { status: OrderStatus.PICKED_UP, fulfillmentType: home };
+    expect(
+      codeOf(() => assertFulfillmentTypeChangeAllowed(order, pickup, 1)),
+    ).toBe(ErrorCode.ORDER_FULFILLMENT_TYPE_LOCKED);
+  });
+
+  it('does not touch a change that has nothing to do with pickup', () => {
+    const order = { status: OrderStatus.PICKED_UP, fulfillmentType: home };
+    expect(() =>
+      assertFulfillmentTypeChangeAllowed(order, FulfillmentType.TAKEAWAY, 1),
+    ).not.toThrow();
   });
 });
