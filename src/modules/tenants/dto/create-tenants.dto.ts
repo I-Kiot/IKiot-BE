@@ -1,6 +1,6 @@
 import { IsOptional, IsString } from 'class-validator';
 
-/** Admin-only. Banking is not here: `PUT /tenant/banking` and `PUT /tenant/:id/sepay-key` hold the rules for it. */
+/** Chỉ admin. Phần ngân hàng không nằm ở đây: `PUT /tenant/banking` và `PUT /tenant/:id/sepay-key` giữ quy tắc của nó. */
 export class CreateTenantDto {
   @IsString()
   name: string;

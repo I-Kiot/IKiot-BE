@@ -6,13 +6,13 @@ export interface SyncTenant {
   bankingSepayLinkedAt: Date | null;
 }
 
-/** The docs show `active` as both `1` and `true`. */
+/** Tài liệu SePay ghi `active` lúc là `1`, lúc là `true`. */
 export interface SepayBankAccount {
   account_number: string;
   active?: number | boolean | string;
 }
 
-/** Null for anything that isn't a list of accounts: the sync must not read that as "no accounts". */
+/** Trả null nếu body không phải danh sách tài khoản: sync không được coi đó là "không có tài khoản". */
 export function parseBankAccountList(body: unknown): SepayBankAccount[] | null {
   if (typeof body !== 'object' || body === null) return null;
   const data = (body as { data?: unknown }).data;
@@ -33,7 +33,7 @@ export function parseBankAccountList(body: unknown): SepayBankAccount[] | null {
   return accounts;
 }
 
-/** A missing `active` counts as active: not every sample in the docs has it. */
+/** Thiếu `active` thì coi là đang hoạt động: không phải mẫu nào trong tài liệu cũng có trường này. */
 function isActive(account: SepayBankAccount): boolean {
   const { active } = account;
   return !(
@@ -44,7 +44,7 @@ function isActive(account: SepayBankAccount): boolean {
   );
 }
 
-/** Only shops whose state changes, so a periodic sync writes and notifies on the edge only. */
+/** Chỉ trả các shop có trạng thái thay đổi, để sync định kỳ chỉ ghi và thông báo khi có thay đổi. */
 export function planSepayLinks(
   tenants: SyncTenant[],
   accounts: SepayBankAccount[],

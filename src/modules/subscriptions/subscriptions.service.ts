@@ -18,10 +18,10 @@ import type { Plan, Subscription } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 
-/** Every quota frozen onto a subscription at purchase time, derived from the schema rather than listed by hand, so a new `quotaSnapshot*` column is usable here immediately. */
+/** Mọi quota đóng băng vào gói lúc mua, lấy từ schema chứ không liệt kê tay, nên cột `quotaSnapshot*` mới dùng được ngay ở đây. */
 export type QuotaField = Extract<keyof Subscription, `quotaSnapshot${string}`>;
 
-/** Ported from SubscriptionService. Owns the state of a tenant's subscription - which plan, whether it is live, what it lets them do - while everything about getting paid lives in SubscriptionBillingService. */
+/** Port từ SubscriptionService. Quản lý trạng thái gói của tenant (gói nào, còn hiệu lực không, được làm gì); phần thu tiền nằm ở SubscriptionBillingService. */
 @Injectable()
 export class SubscriptionService {
   constructor(
@@ -88,7 +88,7 @@ export class SubscriptionService {
     };
   }
 
-  /** Returns the subscription with its status already brought up to date in the DB: the nightly cron sweeps in bulk, but a tenant must never be served on a term that ran out an hour ago. The rules themselves live in `nextSubscriptionStatus`. */
+  /** Trả về gói với trạng thái đã cập nhật trong DB: cron ban đêm quét theo lô, nhưng tenant không được phục vụ bằng kỳ đã hết từ một giờ trước. Quy tắc nằm ở `nextSubscriptionStatus`. */
   private async settleSubscription(
     tenantId: string,
   ): Promise<(Subscription & { plan: Plan | null }) | null> {
@@ -124,7 +124,7 @@ export class SubscriptionService {
           trialEndDate,
         };
       case SubscriptionStatus.EXPIRED:
-        // endDate equals trialEndDate for trials, so this is the right anchor whether the subscription expired as a trial or as a paid term.
+        // endDate của trial bằng trialEndDate, nên dùng làm mốc đúng cả khi gói hết hạn dạng trial lẫn kỳ trả phí.
         return {
           status: SubscriptionStatus.EXPIRED,
           daysOverdue: wholeDaysBetween(endDate, now),
@@ -150,20 +150,10 @@ export class SubscriptionService {
   }
 
   /**
-   * The tenant's subscription as a billing screen needs to draw it - plan name, term,
-   * and the quotas frozen at purchase - rather than the status summary `checkTrialStatus`
-   * answers.
-   *
-   * iKiotMS-BE shipped this inside `GET /auth/me` (`AuthService.getMe` joined the
-   * subscription for TENANT_OWNERs); the rewrite dropped it and nothing replaced it, so
-   * the dashboard's "Gói hiện tại" card read `user.subscription` and got `undefined` on
-   * every single request - it could only ever draw an empty plan, and no `fetchMe()` after
-   * a payment could change that. It lives here and not back on `/auth/me` because one
-   * screen wants it, `/auth/me` is fetched on every page load by every account kind, and a
-   * screen that can refetch this on its own is a screen that updates when payment lands.
-   *
-   * Status is settled first, so a term that ran out overnight reads EXPIRED here even
-   * before the nightly cron sweeps.
+   * Gói của tenant để màn billing vẽ: tên gói, kỳ hạn và quota đóng băng lúc mua (khác với tóm tắt của `checkTrialStatus`).
+   * Không nằm trên `/auth/me` vì route đó được gọi ở mọi lần tải trang; màn này tự refetch được khi thanh toán xong.
+   * Bản NestJS đầu từng bỏ field này khiến thẻ "Gói hiện tại" luôn trống.
+   * Trạng thái được cập nhật trước, nên kỳ đã hết qua đêm hiện EXPIRED ngay, không chờ cron.
    */
   async getCurrentSubscription(tenantId: string) {
     const subscription = await this.settleSubscription(tenantId);
@@ -180,8 +170,7 @@ export class SubscriptionService {
       endDate: subscription.endDate,
       trialEndDate: subscription.trialEndDate,
       autoRenew: subscription.autoRenew,
-      // Named `currentQuotaSnapshot` because that is what the Mongo subdocument was called
-      // and what the dashboard reads; the columns are flattened, the wire shape is not.
+      // Tên `currentQuotaSnapshot` giữ theo subdocument Mongo cũ và dashboard; cột được gom phẳng, còn dạng trả về thì không.
       currentQuotaSnapshot: {
         maxBranches: subscription.quotaSnapshotMaxBranches,
         maxWarehouses: subscription.quotaSnapshotMaxWarehouses,
@@ -191,7 +180,7 @@ export class SubscriptionService {
     };
   }
 
-  /** iKiotMS-BE's `requireActiveSubscription` middleware as a service call, since callers need the row itself for its quota snapshot. PAST_DUE deliberately passes - that is what the grace period is for. */
+  /** Bản service của middleware `requireActiveSubscription` cũ: caller cần chính row để lấy quota snapshot. PAST_DUE cố ý cho qua, đó là mục đích của thời gian ân hạn. */
   async requireActiveSubscription(
     tenantId: string,
   ): Promise<Subscription & { plan: Plan | null }> {
@@ -218,7 +207,7 @@ export class SubscriptionService {
     return subscription;
   }
 
-  /** Shared quota gate for the limits frozen onto the subscription at purchase. A negative limit means unlimited and so does `null`, but `0` is a real limit of zero - it used to be lumped in with unlimited, turning "no branches" into "any number". `count` is a thunk so unlimited plans run no counting query. */
+  /** Cổng kiểm hạn mức dùng chung, theo các giới hạn đóng băng trên gói lúc mua. Số âm hoặc `null` là không giới hạn; `0` là giới hạn thật bằng không (trước đây bị gộp với không giới hạn, khiến "không có chi nhánh" thành "bao nhiêu cũng được"). `count` là hàm để gói không giới hạn không chạy query đếm. */
   async assertQuota(
     tenantId: string,
     quota: QuotaField,
@@ -238,7 +227,7 @@ export class SubscriptionService {
     }
   }
 
-  /** Admin-only: change a tenant's plan directly, no payment involved. */
+  /** Chỉ admin: đổi gói của tenant trực tiếp, không qua thanh toán. */
   async adminUpgradePlan(
     tenantId: string,
     adminUserId: string,
@@ -291,9 +280,7 @@ export class SubscriptionService {
       },
     });
 
-    // The same event the SePay webhook fires. Until this was here it was the *only*
-    // emitter, so a plan switched by hand - the ordinary path in dev, where no webhook can
-    // reach localhost - left every open dashboard showing the old plan until an F5.
+    // Cùng sự kiện mà webhook SePay phát ra. Trước đó đây là nơi phát duy nhất, nên gói đổi tay (đường thường gặp khi dev, vì webhook không tới được localhost) khiến dashboard đang mở vẫn hiện gói cũ cho tới khi F5.
     this.realtime.emitToRoom(`tenant:${tenantId}`, 'subscription:activated', {
       planId: updated.planId,
       status: updated.status,
@@ -304,7 +291,7 @@ export class SubscriptionService {
   }
 }
 
-/** Freezes the plan's limits onto the subscription: quotas are snapshotted at purchase and never read live off the Plan, so a later price-list change can't shrink an existing customer. */
+/** Đóng băng hạn mức của gói vào subscription: quota chốt lúc mua, không đọc lại từ Plan, nên đổi bảng giá về sau không làm giảm quyền của khách đang có gói. */
 export function quotaSnapshotOf(
   plan: Pick<
     Plan,

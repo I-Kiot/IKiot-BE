@@ -27,7 +27,6 @@ interface BankingSnapshot {
   bankingAccountName: string | null;
 }
 
-/** Did the account actually change? Ported from the old `bankingChanged` helper. */
 function bankingChanged(before: BankingSnapshot, after: BankingSnapshot) {
   return (
     before.bankingAccountNumber !== after.bankingAccountNumber ||
@@ -36,12 +35,11 @@ function bankingChanged(before: BankingSnapshot, after: BankingSnapshot) {
   );
 }
 
-/** Enough of an account to be worth linking. Ported from `hasBankInfo`. */
 function hasBankInfo(banking: BankingSnapshot) {
   return Boolean(banking.bankingAccountNumber && banking.bankingBankName);
 }
 
-/** A shop reading and editing its own record. Never takes a tenant id from the caller; `TenantService` is the admin side. */
+/** Shop đọc và sửa hồ sơ của chính mình. Không bao giờ nhận tenant id từ caller; `TenantService` là phía admin. */
 @Injectable()
 export class TenantSelfService {
   constructor(
@@ -50,7 +48,7 @@ export class TenantSelfService {
     private readonly sepaySync: SepayAccountSyncService,
   ) {}
 
-  /** The shop's own record, with `hasSepayKey` instead of the key itself: the settings screen needs to show whether the account is linked, and nothing needs the secret back. */
+  /** Hồ sơ của shop, với `hasSepayKey` thay cho key: màn cài đặt cần biết đã liên kết chưa, và không cần trả key bí mật về. */
   async findMine(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -76,7 +74,7 @@ export class TenantSelfService {
     };
   }
 
-  /** `PUT /tenant/me`. Sends the operators a heads-up when the bank account changes. */
+  /** `PUT /tenant/me`. Báo cho operator khi tài khoản ngân hàng đổi. */
   async updateMine(tenantId: string, dto: UpdateMyTenantDto) {
     const before = await this.bankingOf(tenantId);
     const banking = dto.banking
@@ -99,7 +97,7 @@ export class TenantSelfService {
     return withNestedBanking(tenant);
   }
 
-  /** `PUT /tenant/banking` - the same write on its own route, as the old API had it. */
+  /** `PUT /tenant/banking`: cùng thao tác ghi như `PUT /tenant/me`, tách route riêng như API cũ. */
   async updateBanking(tenantId: string, dto: BankingDto) {
     const before = await this.bankingOf(tenantId);
 
@@ -113,7 +111,7 @@ export class TenantSelfService {
     return withNestedBanking(tenant);
   }
 
-  /** The webhook finds a shop by its account, so a number belongs to one shop and can't move while a QR printed with it awaits payment. SePay watched the old number, so changing it unlinks the shop. */
+  /** Webhook tìm shop theo tài khoản, nên một số chỉ thuộc một shop và không được đổi khi QR in với số đó còn chờ thanh toán. SePay đang theo dõi số cũ, nên đổi số sẽ huỷ liên kết shop. */
   private async bankingWrite(
     tenantId: string,
     before: BankingSnapshot,
@@ -175,7 +173,7 @@ export class TenantSelfService {
     }
   }
 
-  /** Not awaited: the save must not wait on SePay. The owner hears through `SEPAY_LINKED`. */
+  /** Không await: lưu không được chờ SePay. Chủ shop được báo qua `SEPAY_LINKED`. */
   private async afterBankChange(
     before: BankingSnapshot,
     after: BankingSnapshot & { name: string },
@@ -186,7 +184,7 @@ export class TenantSelfService {
     }
   }
 
-  /** Admin-only: the key identifies a tenant to the payment webhook. */
+  /** Chỉ admin: key định danh tenant với webhook thanh toán. */
   async setSepayKey(tenantId: string, sepayWebhookApiKey: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -231,7 +229,7 @@ export class TenantSelfService {
     return tenant;
   }
 
-  /** Only when the details really moved, and only once they are worth linking. */
+  /** Chỉ thông báo khi thông tin thực sự đổi và đã đủ để liên kết. */
   private async announceBankChange(
     before: BankingSnapshot,
     after: BankingSnapshot & { name: string },

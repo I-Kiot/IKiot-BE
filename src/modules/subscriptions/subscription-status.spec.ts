@@ -22,7 +22,7 @@ function term(overrides: {
   };
 }
 
-// These rules used to exist twice - lazily in the service, in bulk in the cron - and had already drifted apart, so the one function they became is worth pinning down.
+// Bộ quy tắc này từng có hai bản (lười ở service, theo lô ở cron) và đã lệch nhau, nên đáng ghim hành vi của hàm duy nhất hiện nay.
 describe('nextSubscriptionStatus', () => {
   it('leaves a trial alone until its end date passes', () => {
     expect(

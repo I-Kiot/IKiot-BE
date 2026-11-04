@@ -7,14 +7,14 @@ import type {
   AuditDescriptor,
 } from '../../common/audit/audit-descriptor';
 
-// Domain-owned audit description for the platform-admin plan change, moved out of AuditInterceptor so that file stays domain-agnostic.
+// Mô tả audit do domain subscription sở hữu cho việc đổi gói của admin nền tảng; tách khỏi AuditInterceptor để file đó không phụ thuộc domain.
 @Injectable()
 @AuditTemplate()
 export class SubscriptionAuditTemplate implements AuditDescriptor {
   constructor(private readonly prisma: PrismaService) {}
 
   matches(path: string): boolean {
-    // `/subscription/upgrade/:tenantId` and `/subscription/upgrade/initiate` share a substring, so a plain `.includes()` would misfire on the tenant-initiated route.
+    // `/subscription/upgrade/:tenantId` và `/subscription/upgrade/initiate` có chung chuỗi con, nên `.includes()` đơn thuần sẽ khớp nhầm route do tenant khởi tạo.
     return (
       path.includes('/subscription/upgrade/') && !path.endsWith('/initiate')
     );
