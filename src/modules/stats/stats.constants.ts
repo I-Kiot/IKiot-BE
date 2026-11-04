@@ -1,18 +1,18 @@
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { OrderStatus } from '../../common/constants/order-status';
 
-/** The dashboard reads in the shop's local days, so both halves of the timezone problem live here: `TZ_OFFSET` parses a `YYYY-MM-DD` into an instant (a named zone won't parse inside `new Date()`), and `TZ_NAME` buckets instants back into local days inside Postgres. */
+/** Dashboard đọc theo ngày địa phương của shop, nên có hai nửa bài toán múi giờ: `TZ_OFFSET` đổi `YYYY-MM-DD` thành thời điểm (`new Date()` không parse được tên múi giờ), còn `TZ_NAME` gom thời điểm về ngày địa phương trong Postgres. */
 export const TZ_OFFSET = '+07:00';
 export const TZ_NAME = VIETNAM_TIMEZONE;
 
-/** Only completed sales are revenue - a pending or cancelled order is not money. */
+/** Chỉ đơn hoàn tất mới là doanh thu - đơn chờ hoặc đã huỷ chưa phải tiền. */
 export const REVENUE_STATUS = 'COMPLETED';
 
 export const DEFAULT_RANGE_DAYS = 30;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export const GroupBy = {
-  /** Added 2026-10-20 for the dashboard's "Hôm nay" chart - a single day bucketed by day is one point. Shop revenue only; the platform overview keeps day/month. */
+  /** Thêm 2026-10-20 cho biểu đồ "Hôm nay" - một ngày gom theo ngày chỉ ra một điểm. Chỉ dùng cho doanh thu shop; tổng quan nền tảng vẫn dùng ngày/tháng. */
   HOUR: 'hour',
   DAY: 'day',
   MONTH: 'month',
@@ -22,16 +22,16 @@ export type GroupBy = (typeof GroupBy)[keyof typeof GroupBy];
 
 export const GROUP_BY_VALUES: readonly string[] = Object.values(GroupBy);
 
-/** The platform overview spans months of invoices; hourly buckets there would be thousands of rows nobody reads. */
+/** Tổng quan nền tảng trải nhiều tháng hoá đơn; gom theo giờ ở đó sẽ ra hàng nghìn dòng không ai đọc. */
 export const ADMIN_GROUP_BY_VALUES: readonly string[] = [
   GroupBy.DAY,
   GroupBy.MONTH,
 ];
 
-/** Hourly buckets are for "today" and "this week"; a year of them is 8,760 points for a chart 800px wide. */
+/** Gom theo giờ chỉ dùng cho "hôm nay" và "tuần này"; một năm là 8.760 điểm cho biểu đồ rộng 800px. */
 export const MAX_HOURLY_RANGE_DAYS = 31;
 
-/** `to_char` patterns matching Mongo's `$dateToString` formats, one per bucket size. */
+/** Pattern `to_char` khớp định dạng `$dateToString` của Mongo, một cho mỗi cỡ bucket. */
 export const BUCKET_FORMAT: Record<GroupBy, string> = {
   [GroupBy.HOUR]: 'YYYY-MM-DD"T"HH24',
   [GroupBy.DAY]: 'YYYY-MM-DD',
@@ -55,12 +55,12 @@ export const TopProductsSort = {
 export const TOP_PRODUCTS_SORTS: readonly string[] =
   Object.values(TopProductsSort);
 
-/** The old service capped the low-stock list at 100 rows; the totals cover everything. */
+/** Bản cũ giới hạn danh sách tồn thấp ở 100 dòng; tổng thì tính trên tất cả. */
 export const LOW_STOCK_LIST_LIMIT = 100;
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = 10;
 
-/** Các nhóm "tình trạng đơn" trên dashboard, mỗi nhóm là những trạng thái hành trình nó gom lại. Thứ tự là thứ tự hiển thị. "Giao thất bại" không phải một trạng thái đơn (đơn vẫn SHIPPING, chuyến giao FAILED chờ giao lại hoặc xác nhận hàng về) nên được đếm riêng, xem `getOrderPipeline`. */
+/** Nhóm “tình trạng đơn” trên dashboard, thứ tự là thứ tự hiển thị. “Giao thất bại” không phải trạng thái đơn (đơn vẫn SHIPPING, chuyến FAILED chờ giao lại hoặc xác nhận hàng về) nên đếm riêng, xem `getOrderPipeline`. */
 export const ORDER_PIPELINE_STAGES = [
   { key: 'PENDING_CONFIRMATION', statuses: [OrderStatus.PENDING_CONFIRMATION] },
   { key: 'PROCESSING', statuses: [OrderStatus.CONFIRMED] },
@@ -73,7 +73,7 @@ export const ORDER_PIPELINE_STAGES = [
 
 export const DELIVERY_FAILED_STAGE = 'DELIVERY_FAILED';
 
-/** How many rows each dashboard alert list shows; the counts beside them cover everything. */
+/** Số dòng mỗi danh sách cảnh báo trên dashboard; số đếm bên cạnh tính trên tất cả. */
 export const ALERT_LIST_LIMIT = 5;
 
 /** Bốn loại cảnh báo tồn kho trên dashboard. Một dòng tồn có thể thuộc nhiều loại cùng lúc (vừa dưới mức tối thiểu vừa lâu không bán). */
@@ -102,9 +102,9 @@ export const STOCK_AGING_DAYS = {
   [StockAgingLevel.STALE]: 90,
 } as const;
 
-/** How many rows the platform overview returns for its two "recent"/"top" lists. */
+/** Số dòng tổng quan nền tảng trả về cho hai danh sách "gần đây" và "top". */
 export const TOP_TENANTS_LIMIT = 5;
 export const RECENT_INVOICES_LIMIT = 8;
 
-/** Subscription statuses that count as a shop currently holding a plan. */
+/** Trạng thái gói còn hiệu lực, tức shop đang giữ một gói. */
 export const LIVE_SUBSCRIPTION_STATUSES = ['TRIAL', 'ACTIVE', 'PAST_DUE'];

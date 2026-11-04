@@ -18,7 +18,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** The shop dashboard: read-only endpoints at the old paths, all behind `reports:read`. How much of the tenant each answer covers is decided by the caller's posting, not the query string - see `stats-scope.ts`. */
+/** Dashboard shop: endpoint chỉ đọc, giữ đường dẫn cũ, đều yêu cầu `reports:read`. Phạm vi dữ liệu do quyền gắn của người gọi quyết định, không phải query string - xem `stats-scope.ts`. */
 @ApiTags('stats')
 @ApiBearerAuth('bearer')
 @Controller('stats')
@@ -55,7 +55,7 @@ export class StatsController {
     return this.service.getRevenueByStaff(user, query);
   }
 
-  /** Declared before `cashflow` so the longer literal path is matched first. */
+  /** Khai báo trước `cashflow` để route literal dài hơn khớp trước. */
   @Permissions('reports', 'read')
   @Get('cashflow/transactions')
   cashflowTransactions(
@@ -89,7 +89,7 @@ export class StatsController {
     return this.service.getInventory(user, query);
   }
 
-  /** Today / week / month / quarter / year, each against the same elapsed span of the period before. */
+  /** Hôm nay / tuần / tháng / quý / năm, mỗi mốc so với cùng khoảng đã trôi qua của kỳ trước. */
   @Permissions('reports', 'read')
   @Get('revenue-comparison')
   revenueComparison(
@@ -114,7 +114,7 @@ export class StatsController {
     return this.service.getRevenueByBranch(user, query);
   }
 
-  /** Weekday x hour of the shop's local day - when the till is busy. */
+  /** Thứ trong tuần x giờ trong ngày địa phương của shop - lúc quầy đông khách. */
   @Permissions('reports', 'read')
   @Get('sales-heatmap')
   salesHeatmap(@CurrentUser() user: AuthUser, @Query() query: StatsQueryDto) {
