@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Reads over the money ledger; nothing here writes - see the controller. The real filtered listing belongs to the stats module, so `findAll` is still the generated unfiltered list. */
+/** Chỉ đọc sổ quỹ; việc ghi do các sự kiện thu chi đảm nhiệm. `findAll` chưa lọc vì danh sách lọc thuộc module stats. */
 @Injectable()
 export class CashFlowService {
   constructor(private readonly prisma: PrismaService) {}
@@ -14,7 +14,7 @@ export class CashFlowService {
     });
   }
 
-  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's not-found error isn't an HttpException, and a row in another tenant must be indistinguishable from one that doesn't exist.
+  // Dùng findFirst + throw tay thay vì findFirstOrThrow: lỗi not-found của Prisma không phải HttpException, và bản ghi của tenant khác phải không phân biệt được với bản ghi không tồn tại.
   async findOne(tenantId: string | undefined, id: string) {
     const found = await this.prisma.cashFlow.findFirst({
       where: { id, ...(tenantId ? { tenantId } : {}) },

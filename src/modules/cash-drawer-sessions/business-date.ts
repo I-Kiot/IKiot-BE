@@ -1,6 +1,6 @@
 import { BUSINESS_TIMEZONE } from './cash-drawer.constants';
 
-/** Which trading day an instant belongs to, in the shop's timezone, returned as midnight UTC of that calendar day (the shape a Postgres `date` column wants). Doing it in UTC would file every drawer opened before 07:00 local under the previous day. */
+/** Ngày giao dịch của một thời điểm theo múi giờ shop, trả về nửa đêm UTC của ngày đó (cột `date` của Postgres cần). Tính theo UTC sẽ đẩy mọi két mở trước 07:00 giờ địa phương sang ngày hôm trước. */
 export function businessDate(
   at: Date = new Date(),
   timeZone: string = BUSINESS_TIMEZONE,
@@ -21,12 +21,12 @@ export function businessDate(
   );
 }
 
-/** `YYYY-MM-DD`, for messages and for comparing two business dates in a log line. */
+/** `YYYY-MM-DD`, dùng cho thông báo và so sánh hai ngày giao dịch trong log. */
 export function formatBusinessDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** How far the zone is ahead of UTC at a given instant, read off `Intl` rather than hardcoded - reconciliation is the one place where being an hour out silently moves a receipt into yesterday's till. */
+/** Múi giờ lệch UTC bao nhiêu tại một thời điểm, đọc từ `Intl` chứ không hard-code - đối chiếu là chỗ duy nhất mà lệch một giờ sẽ âm thầm chuyển biên lai sang két hôm qua. */
 function zoneOffsetMs(at: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -43,7 +43,7 @@ function zoneOffsetMs(at: Date, timeZone: string): number {
     parts.map((part) => [part.type, part.value]),
   ) as Record<string, string>;
 
-  // `hour12: false` renders local midnight as hour 24 in some ICU versions and 00 in others; only one of them survives Date.UTC unchanged.
+  // `hour12: false` có bản ICU trả nửa đêm là giờ 24, bản khác trả 00; chỉ một dạng đi qua Date.UTC nguyên vẹn.
   const hour = Number(value.hour) % 24;
 
   const asIfUtc = Date.UTC(
@@ -57,7 +57,7 @@ function zoneOffsetMs(at: Date, timeZone: string): number {
   return asIfUtc - at.getTime();
 }
 
-/** The half-open UTC window `[start, end)` covering one trading day - the inverse of `businessDate()`, half-open so a receipt at exactly local midnight belongs to one day and is never double-counted. */
+/** Khoảng UTC nửa mở `[start, end)` của một ngày giao dịch, nghịch đảo của `businessDate()`. Nửa mở để biên lai đúng nửa đêm địa phương thuộc đúng một ngày, không bị đếm hai lần. */
 export function businessDayRange(
   day: Date,
   timeZone: string = BUSINESS_TIMEZONE,
@@ -70,7 +70,7 @@ export function businessDayRange(
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** The instant local midnight falls at for the day a UTC-midnight marker names. The offset is read twice - at the marker and again at the guess - because it is a property of the instant, so a DST day cannot land an hour off. */
+/** Nửa đêm địa phương của ngày mà marker nửa đêm UTC trỏ tới. Offset đọc hai lần (tại marker và tại điểm đoán) vì nó phụ thuộc thời điểm, để ngày đổi giờ không lệch một giờ. */
 function localMidnight(marker: Date, timeZone: string): Date {
   const guess = new Date(marker.getTime() - zoneOffsetMs(marker, timeZone));
   return new Date(marker.getTime() - zoneOffsetMs(guess, timeZone));

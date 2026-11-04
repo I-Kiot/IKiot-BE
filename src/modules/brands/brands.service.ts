@@ -11,7 +11,7 @@ import { QueryBrandDto } from './dto/query-brand.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Ported from BrandService, with two changes: brands are tenant-scoped now (the Mongoose model had no tenantId), and delete refuses while products still reference the brand instead of surfacing the FK error as a 500. */
+/** Port từ BrandService, khác ở hai điểm: thương hiệu nay gắn theo tenant (model Mongoose cũ không có tenantId), và xoá sẽ từ chối khi còn sản phẩm dùng thương hiệu, thay vì để lỗi FK thành 500. */
 @Injectable()
 export class BrandService {
   constructor(private readonly prisma: PrismaService) {}

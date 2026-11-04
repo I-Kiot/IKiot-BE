@@ -19,7 +19,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Ported from iKiotMS-BE's category module (which, like brands, ran with no authorize()).
+// Port từ module category của iKiotMS-BE (như brands, module này chạy không có authorize()).
 @ApiTags('categories')
 @ApiBearerAuth('bearer')
 @Controller('categories')
@@ -36,7 +36,7 @@ export class CategoryController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  // Must stay above @Get(':id') - route matching is top-down, so 'tree' would otherwise be swallowed as an :id and ParseUUIDPipe would turn it into a confusing 400.
+  // Phải nằm trên @Get(':id'): route khớp từ trên xuống, nếu không 'tree' sẽ bị coi là :id và ParseUUIDPipe trả 400 khó hiểu.
   @Permissions('categories', 'read')
   @Get('tree')
   @ApiOperation({ summary: 'Cây danh mục (toàn bộ, lồng nhau)' })

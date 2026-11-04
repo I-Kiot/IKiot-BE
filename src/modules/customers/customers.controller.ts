@@ -22,7 +22,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of CustomerController. Every route here is newly permission-gated: the old module registered all six on bare `verifyJwt`, so any logged-in account could read and delete the tenant's whole customer list. */
+/** Port từ CustomerController. Mọi route được gắn permission; module cũ chỉ có `verifyJwt` nên mọi tài khoản đăng nhập đọc và xoá được toàn bộ khách của tenant. */
 @ApiTags('customers')
 @ApiBearerAuth('bearer')
 @Controller('customers')
@@ -41,7 +41,7 @@ export class CustomerController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  /** Bulk soft delete. Declared above `:id` so `DELETE /customers` isn't read as an id. */
+  /** Xoá mềm hàng loạt. Khai báo trên `:id` để `DELETE /customers` không bị đọc thành id. */
   @Permissions('customers', 'delete')
   @Delete()
   removeMany(

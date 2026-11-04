@@ -23,7 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of CashDrawerController - same six routes and permissions, with the three reads taking `cash_drawers:read` **or** `read_own`. There is deliberately no PATCH or DELETE: a till session is opened, logged and finalised, never edited. */
+/** Cùng sáu route và permission như CashDrawerController; ba route đọc nhận `cash_drawers:read` **hoặc** `read_own`. Cố ý không có PATCH/DELETE: phiên két chỉ mở, ghi log và chốt, không sửa. */
 @ApiTags('cash-drawer-sessions')
 @ApiBearerAuth('bearer')
 @Controller('cash-drawer-sessions')
@@ -36,14 +36,14 @@ export class CashDrawerSessionController {
     return this.service.open(user, dto);
   }
 
-  // `current` is declared above `:id` - both are one segment deep, so the literal has to come first.
+  // `current` khai báo trên `:id` - cả hai đều một đoạn, nên route cố định phải đứng trước.
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('current')
   current(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
     return this.service.current(user, query.branchId);
   }
 
-  /** The variance report - which trading days did not balance. Above `:id` because both are one segment deep, and under the same `read`/`read_own` narrowing, so it can never show a session the caller could not already open. */
+  /** Báo cáo chênh lệch - những ngày nào không khớp. Khai báo trên `:id` vì cả hai đều một đoạn, và chịu cùng phạm vi `read`/`read_own`, nên không bao giờ lộ phiên mà caller không mở được. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('reconciliation')
   report(@CurrentUser() user: AuthUser, @Query() query: QueryCashVarianceDto) {
@@ -65,7 +65,7 @@ export class CashDrawerSessionController {
     return this.service.findOne(user, id);
   }
 
-  /** One session's counted amounts against the cash the ledger says moved, per shift - the subtraction the shift logs always implied and nothing ever performed. */
+  /** Số đã đếm của một phiên so với tiền sổ quỹ ghi nhận, theo từng ca: phép trừ mà shift log luôn ngầm định nhưng chưa từng được thực hiện. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get(':id/reconciliation')
   reconcile(
@@ -75,7 +75,7 @@ export class CashDrawerSessionController {
     return this.service.reconcile(user, id);
   }
 
-  /** A cashier taking the drawer (START) or handing it back (END). */
+  /** Thu ngân nhận két (START) hoặc bàn giao lại (END). */
   @Permissions('cash_drawers', 'report')
   @HttpCode(HttpStatus.OK)
   @Post(':id/shift-logs')
@@ -87,7 +87,6 @@ export class CashDrawerSessionController {
     return this.service.submitShiftLog(user, id, dto);
   }
 
-  /** Closes the day with a counted total. */
   @Permissions('cash_drawers', 'finalize')
   @HttpCode(HttpStatus.OK)
   @Post(':id/finalize')

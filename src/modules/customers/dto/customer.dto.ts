@@ -14,7 +14,7 @@ import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export const CUSTOMER_GENDERS: readonly string[] = ['MALE', 'FEMALE', 'OTHER'];
 
-/** Ported from iKiotMS-BE's CreateCustomerDTO. */
+/** Port từ CreateCustomerDTO của iKiotMS-BE. */
 export class CreateCustomerDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên khách hàng không được để trống' })
@@ -30,7 +30,7 @@ export class CreateCustomerDto {
   )
   customerCode?: string;
 
-  // Not run through validateVietnamPhoneNumber: a customer's number is a contact detail typed off a receipt, and refusing a landline would stop a sale.
+  // Không qua validateVietnamPhoneNumber: SĐT khách là thông tin liên lạc gõ từ hoá đơn, từ chối số bàn sẽ làm đơn không lên được.
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -53,11 +53,10 @@ export class CreateCustomerDto {
   dob?: string;
 }
 
-/** `isDeleted` is absent on purpose - DELETE is what sets it. */
+/** `isDeleted` cố ý không có ở đây - DELETE mới là thứ đặt nó. */
 export class UpdateCustomerDto extends PartialType(CreateCustomerDto) {}
 
 export class QueryCustomerDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on name or phone. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -65,13 +64,12 @@ export class QueryCustomerDto extends PaginationQueryDto {
   )
   search?: string;
 
-  /** Only customers who have bought at this branch. */
   @IsOptional()
   @IsUUID()
   branchId?: string;
 }
 
-/** Ported from the old bulk `DELETE /customers`. */
+/** Port từ `DELETE /customers` hàng loạt của bản cũ. */
 export class DeleteManyCustomersDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'Cần chọn ít nhất một khách hàng' })

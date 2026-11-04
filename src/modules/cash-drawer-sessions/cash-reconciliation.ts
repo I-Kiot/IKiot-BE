@@ -1,34 +1,34 @@
 import { FlowType } from '../stats/stats.constants';
 
-/** The arithmetic behind "the till is short", pure so it can be settled without a database. Every count is a link in the chain `openingAmount → shiftLog… → finalAmount`, each checked as `counted − (previous count + net cash in between)`, so the segment variances sum to the session variance - the day is short by X, and here is which shift lost it. Cash only; the caller filters. */
+/** Phép tính đằng sau “két bị hụt”, thuần để test không cần DB. Mỗi đoạn kiểm bằng `counted − (số đếm trước + tiền mặt thuần ở giữa)`, nên tổng chênh các đoạn bằng chênh của phiên: chỉ ra ngày hụt và ca làm mất. Chỉ tiền mặt; caller tự lọc. */
 
-// Kept as a local literal rather than importing ShiftLogType: that module pulls in the timezone constant, and this one stays pure arithmetic. Asserted against the real enum in the spec.
+// Giữ literal cục bộ thay vì import ShiftLogType: module đó kéo theo hằng múi giờ, còn file này chỉ là số học thuần. Được assert với enum thật trong spec.
 const ShiftLogStart = 'START';
 
-/** Which link of the chain a segment ends at - i.e. who is answerable for it. */
+/** Mắt xích nào đoạn kết thúc, tức ai chịu trách nhiệm. */
 export const CashSegmentKind = {
-  /** Trading day opened → the first cashier took the drawer. Nobody had custody yet. */
+  /** Ngày giao dịch mở → thu ngân đầu tiên nhận két. Chưa ai giữ két. */
   OPENING: 'OPENING',
-  /** One cashier held the drawer, from their `START` to their `END`. */
+  /** Một thu ngân giữ két, từ `START` đến `END` của họ. */
   SHIFT: 'SHIFT',
-  /** Between one cashier handing back and the next taking over - nobody had custody. */
+  /** Giữa lúc một thu ngân trả và người kế tiếp nhận - không ai giữ két. */
   GAP: 'GAP',
-  /** The last `END` → the manager's closing count. */
+  /** `END` cuối → số đếm đóng ca của quản lý. */
   CLOSING: 'CLOSING',
 } as const;
 
 export type CashSegmentKind =
   (typeof CashSegmentKind)[keyof typeof CashSegmentKind];
 
-/** One `CashFlow` row, already narrowed to cash and to this branch and trading day. */
+/** Một dòng `CashFlow`, đã lọc còn tiền mặt, chi nhánh này và ngày giao dịch này. */
 export interface CashMovement {
   at: Date;
-  /** `INCOME` | `EXPENSE` - the sign is applied here, not by the caller. */
+  /** `INCOME` | `EXPENSE` - dấu được áp dụng ở đây, không phải caller. */
   flowType: string;
   amount: number;
 }
 
-/** The subset of a shift log this math needs. */
+/** Phần của sổ ca mà phép tính này cần. */
 export interface ShiftLogEntry {
   type: string;
   staffId: string;
@@ -38,32 +38,32 @@ export interface ShiftLogEntry {
 
 export interface ReconcileInput {
   openingAmount: number;
-  /** The manager's closing count, or `null` while the session is still open. */
+  /** Số đếm đóng ca của quản lý, hoặc `null` khi session còn mở. */
   finalAmount: number | null;
-  /** Chronological, as `SESSION_INCLUDE` already orders them. */
+  /** Theo thứ tự thời gian, như `SESSION_INCLUDE` đã sắp. */
   shiftLogs: readonly ShiftLogEntry[];
-  /** Every cash movement of the trading day, in any order. */
+  /** Mọi dòng tiền mặt của ngày giao dịch, không theo thứ tự. */
   movements: readonly CashMovement[];
 }
 
 export interface CashSegment {
   kind: CashSegmentKind;
-  /** Who had custody. `null` for OPENING, GAP and CLOSING - that is the point of them. */
+  /** Ai đang giữ két. `null` với OPENING, GAP và CLOSING - đó là ý nghĩa của các loại này. */
   staffId: string | null;
-  /** `null` = the start of the trading day (nothing was counted before this). */
+  /** `null` = đầu ngày giao dịch (chưa đếm gì trước đó). */
   from: Date | null;
-  /** `null` = still running: an open shift, or a session nobody has closed yet. */
+  /** `null` = còn chạy: ca đang mở, hoặc session chưa ai chốt. */
   to: Date | null;
-  /** The count this segment starts from - the previous link of the chain. */
+  /** Số đếm mà đoạn này bắt đầu - mắt xích trước của chuỗi. */
   openingCount: number;
-  /** The count it ends at, or `null` when the segment has not been closed by a count. */
+  /** Số đếm mà đoạn kết thúc, hoặc `null` khi đoạn chưa được đếm để chốt. */
   closingCount: number | null;
   cashIn: number;
   cashOut: number;
   netCash: number;
-  /** `openingCount + netCash` - what should have been in the drawer at `to`. */
+  /** `openingCount + netCash` - lẽ ra phải có bao nhiêu trong két tại `to`. */
   expected: number;
-  /** `closingCount − expected`. Negative is short, positive is over. `null` if unclosed. */
+  /** `closingCount − expected`. Âm là hụt, dương là thừa. `null` nếu chưa đóng. */
   variance: number | null;
   movementCount: number;
 }
@@ -73,7 +73,7 @@ export interface Reconciliation {
   cashIn: number;
   cashOut: number;
   netCash: number;
-  /** `openingAmount + netCash` - what the drawer should hold at the end of the day. */
+  /** `openingAmount + netCash` - lẽ ra két phải có gì khi kết thúc ngày. */
   expectedClosing: number;
   countedClosing: number | null;
   variance: number | null;
@@ -81,21 +81,21 @@ export interface Reconciliation {
   segments: CashSegment[];
 }
 
-/** Whole đồng to the cent: amounts are integers, but `CashFlow.amount` is `Decimal(14,2)` read through `Number()`, so a few hundred of them can land on 1234.9999999999998. */
+/** Làm tròn đến xu: `CashFlow.amount` là `Decimal(14,2)` đọc qua `Number()`, vài trăm dòng cộng lại có thể ra 1234.9999999999998. */
 function money(value: number): number {
   const rounded = Math.round(value * 100) / 100;
-  // `-0` is a real JS value that a strict comparison in a client does not treat as 0.
+  // `-0` là giá trị JS thật mà phép so sánh nghiêm ngặt ở client không coi là 0.
   return rounded === 0 ? 0 : rounded;
 }
 
-/** `INCOME` adds to the drawer, anything else takes from it. */
+/** `INCOME` cộng vào két, còn lại thì trừ. */
 export function signedAmount(movement: CashMovement): number {
   return movement.flowType === FlowType.INCOME
     ? movement.amount
     : -movement.amount;
 }
 
-/** Splits the trading day into segments at every counted amount and attributes each movement to the segment it falls in; a movement exactly on a boundary belongs to the later segment, so it lands on the incoming cashier rather than being left to sort order. */
+/** Chia ngày giao dịch thành đoạn tại mỗi số tiền đã đếm và gán từng dòng vào đoạn chứa nó. Dòng đúng tại biên thuộc đoạn sau, để rơi vào thu ngân đang nhận két chứ không phụ thuộc thứ tự sắp xếp. */
 export function reconcileSession(input: ReconcileInput): Reconciliation {
   const logs = [...input.shiftLogs].sort(
     (a, b) => a.loggedAt.getTime() - b.loggedAt.getTime(),
@@ -105,7 +105,7 @@ export function reconcileSession(input: ReconcileInput): Reconciliation {
   );
 
   const segments: CashSegment[] = [];
-  let cursor = 0; // how far through `movements` we have got - each is used exactly once
+  let cursor = 0; // Đã đi tới đâu trong `movements`; mỗi dòng chỉ dùng đúng một lần
   let openingCount = input.openingAmount;
 
   for (let i = 0; i <= logs.length; i++) {
@@ -117,7 +117,7 @@ export function reconcileSession(input: ReconcileInput): Reconciliation {
     let movementCount = 0;
     while (cursor < movements.length) {
       const movement = movements[cursor];
-      // The last segment has no upper bound: it runs to the end of the trading day.
+      // Đoạn cuối không có biên trên: chạy đến hết ngày giao dịch.
       if (next && movement.at.getTime() >= next.loggedAt.getTime()) break;
       if (movement.flowType === FlowType.INCOME) cashIn += movement.amount;
       else cashOut += movement.amount;
@@ -131,7 +131,7 @@ export function reconcileSession(input: ReconcileInput): Reconciliation {
 
     segments.push({
       kind: segmentKind(previous, next),
-      // Custody belongs to whoever filed the START that opened the segment; after an END nobody holds the drawer, which is why GAP is its own kind.
+      // Quyền giữ két thuộc người ghi START mở đoạn; sau END không ai giữ két, nên GAP là loại riêng.
       staffId: previous?.type === ShiftLogStart ? previous.staffId : null,
       from: previous ? previous.loggedAt : null,
       to: next ? next.loggedAt : null,
@@ -175,7 +175,7 @@ export function reconcileSession(input: ReconcileInput): Reconciliation {
   };
 }
 
-/** `next` separates the last stretch of the day from an ordinary lull: both follow an END, but only the one with nothing after it ends at the manager's closing count, where a recount discrepancy shows up. */
+/** `next` phân biệt đoạn cuối ngày với khoảng nghỉ thường: cả hai đều theo sau một END, nhưng chỉ đoạn không có gì sau nó mới kết thúc ở số đếm đóng ca của quản lý, nơi chênh lệch đếm lại hiện ra. */
 function segmentKind(
   previous: ShiftLogEntry | null,
   next: ShiftLogEntry | null,
@@ -185,7 +185,7 @@ function segmentKind(
   return next ? CashSegmentKind.GAP : CashSegmentKind.CLOSING;
 }
 
-/** The one-line version for a list of sessions: the same top-level numbers from pre-aggregated sums, so a 90-day report is one grouped query rather than 90 row-by-row attributions. */
+/** Bản rút gọn cho danh sách session: cùng số tổng từ tổng đã gom sẵn, nên báo cáo 90 ngày là một truy vấn gom nhóm thay vì 90 lần phân bổ từng dòng. */
 export function summarizeVariance(input: {
   openingAmount: number;
   finalAmount: number | null;

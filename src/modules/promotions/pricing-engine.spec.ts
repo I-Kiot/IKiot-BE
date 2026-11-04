@@ -33,7 +33,7 @@ function promo(over: Partial<PricingPromotion> = {}): PricingPromotion {
   };
 }
 
-// Line ids are handed out in order, exactly as `buildCartContext` does; pass `lineId` explicitly only when a test is about the id.
+// lineId được cấp tuần tự như `buildCartContext`; chỉ truyền `lineId` tường minh khi test nói về chính id đó.
 let nextLineId = 0;
 beforeEach(() => {
   nextLineId = 0;
@@ -75,7 +75,7 @@ describe('rawDiscount', () => {
   });
 
   it('never lets a fixed discount exceed what the matched items are worth', () => {
-    // A 100k voucher against a 40k basket must not start paying the customer.
+    // Voucher 100k trên giỏ 40k không được trả ngược tiền cho khách.
     const items = [item({ unitPrice: 40_000 })];
     expect(
       rawDiscount(
@@ -114,7 +114,7 @@ describe('evaluateEligibility', () => {
   });
 
   it('rejects a per-customer-capped promotion on a walk-in cart', () => {
-    // Without a customer the cap cannot be enforced, so it must not be waved through - otherwise a once-per-customer voucher works on every anonymous sale.
+    // Không có khách thì không kiểm được giới hạn theo khách nên không được cho qua; nếu không, voucher mỗi khách một lần sẽ dùng được ở mọi đơn vãng lai.
     const verdict = evaluateEligibility(
       promo({ usageLimitPerCustomer: 1 }),
       cart([item()], { customerId: null }),
@@ -162,7 +162,7 @@ describe('allocatePerItemDiscount', () => {
   });
 
   it('does not multiply the discount when one variant is on several lines', () => {
-    // The bug this replaced: keying the allocation by `productItemId` made N lines of the same variant each accumulate their neighbours' share, so ten lines under a 10% promotion came out at 100% off and the order was written at 0đ.
+    // Lỗi cũ: phân bổ theo `productItemId` khiến N dòng cùng variant cộng dồn phần của nhau, 10 dòng giảm 10% thành giảm 100% và đơn ghi 0đ.
     const lines = Array.from({ length: 10 }, () =>
       item({ productItemId: 'same-sku', unitPrice: 100_000 }),
     );
@@ -181,7 +181,7 @@ describe('allocatePerItemDiscount', () => {
   });
 
   it('never discounts a line past its own price', () => {
-    // Two stacked promotions on the same 50k line: 40k + 40k must clamp to 50k, or the order ends up owing the customer money.
+    // Hai khuyến mãi cộng dồn trên dòng 50k: 40k + 40k phải kẹp về 50k, nếu không đơn sẽ nợ khách tiền.
     const only = item({ productItemId: 'a', unitPrice: 50_000 });
     const perLine = allocatePerItemDiscount([
       { matchedItems: [only], discount: 40_000 },
@@ -287,7 +287,7 @@ describe('resolveSelectedPromotions', () => {
   });
 
   it('fails loudly when a selected promotion is no longer eligible', () => {
-    // Dropping it silently would charge the customer more than the screen showed.
+    // Bỏ lặng lẽ sẽ thu của khách nhiều hơn số đã hiện trên màn hình.
     expect(() =>
       resolveSelectedPromotions(
         [promo({ status: 'INACTIVE' })],

@@ -11,14 +11,14 @@ import { QueryCategoryDto } from './dto/query-category.dto';
 import type { Category, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Guards against an infinite walk if bad data ever produces a parent cycle; same value iKiotMS-BE used.
+// Chặn đi vòng vô hạn nếu dữ liệu xấu tạo ra chu kỳ cha-con; cùng giá trị với iKiotMS-BE.
 const MAX_DEPTH = 20;
 
 export interface CategoryNode extends Category {
   children: CategoryNode[];
 }
 
-/** Ported from CategoryService; like brands, categories became tenant-scoped in the port, and the tree/breadcrumb/cycle handling is carried over as-is for the frontend's picker. */
+/** Port từ CategoryService; như brands, category đã gắn theo tenant khi port. Phần xử lý cây, breadcrumb và vòng lặp được giữ nguyên cho bộ chọn của frontend. */
 @Injectable()
 export class CategoryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -46,7 +46,7 @@ export class CategoryService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** The whole category forest in one query, assembled in memory - a tree is small and read constantly, so this stays a single round trip rather than a recursive CTE. */
+  /** Lấy cả rừng danh mục trong một query rồi ghép trên bộ nhớ: cây nhỏ và được đọc liên tục, nên giữ một round trip thay vì CTE đệ quy. */
   async findTree(tenantId: string): Promise<CategoryNode[]> {
     const categories = await this.prisma.category.findMany({
       where: { tenantId },
@@ -63,7 +63,7 @@ export class CategoryService {
       const parent = category.parentId
         ? byId.get(category.parentId)
         : undefined;
-      // A category whose parent is missing (or in another tenant) is shown at the top rather than dropped, so a data problem can never hide products from the picker.
+      // Danh mục có cha bị thiếu (hoặc thuộc tenant khác) được đưa lên gốc thay vì bỏ đi, để lỗi dữ liệu không bao giờ làm mất sản phẩm khỏi bộ chọn.
       if (parent) parent.children.push(node);
       else roots.push(node);
     }
@@ -82,7 +82,7 @@ export class CategoryService {
     return category;
   }
 
-  /** Every category in the tenant, keyed by id - the parent walks used to cost one query per level, and `findTree` already proved the whole forest fits in one. */
+  /** Mọi danh mục của tenant, key theo id. Các lần đi lên cha từng tốn một query mỗi cấp, và `findTree` đã chứng minh cả rừng vừa trong một query. */
   private async categoriesById(
     tenantId: string,
   ): Promise<Map<string, Category>> {
@@ -92,7 +92,7 @@ export class CategoryService {
     return new Map(categories.map((category) => [category.id, category]));
   }
 
-  /** The chain from `startFromId` up to its root, root first and itself included; stops at MAX_DEPTH so a parent cycle in the data can't spin forever. */
+  /** Chuỗi từ `startFromId` lên tới gốc, gốc đứng đầu và gồm cả chính nó; dừng ở MAX_DEPTH để chu kỳ cha trong dữ liệu không quay vô hạn. */
   private ancestorsOf(
     byId: Map<string, Category>,
     startFromId: string | null,
@@ -108,7 +108,7 @@ export class CategoryService {
     return ancestors;
   }
 
-  /** Detail plus the ancestor chain, root first, as the old API returned it. */
+  /** Chi tiết kèm chuỗi tổ tiên, gốc đứng đầu, như API cũ trả về. */
   async findOne(tenantId: string, id: string) {
     const category = await this.prisma.category.findFirst({
       where: { id, tenantId },
@@ -128,7 +128,7 @@ export class CategoryService {
     return { ...category, breadcrumbs };
   }
 
-  /** A parent must exist and belong to the same tenant, or the hierarchy leaks across tenants. */
+  /** Cha phải tồn tại và cùng tenant, nếu không cây sẽ rò rỉ sang tenant khác. */
   private async assertParentExists(tenantId: string, parentId: string) {
     const parent = await this.prisma.category.findFirst({
       where: { id: parentId, tenantId },
@@ -140,7 +140,7 @@ export class CategoryService {
       });
   }
 
-  /** Refuses to hang a category under itself or one of its own descendants, which would detach the subtree from every root. */
+  /** Từ chối gắn danh mục làm con của chính nó hoặc của con cháu nó, vì sẽ tách cây con khỏi mọi gốc. */
   private async assertNoCycle(
     tenantId: string,
     categoryId: string,
@@ -153,7 +153,7 @@ export class CategoryService {
       });
     }
 
-    // The chain the category would hang under, proposed parent included; if it passes through the category itself the move would loop.
+    // Chuỗi tổ tiên mà danh mục sẽ có (kể cả cha đề xuất); nếu đi qua chính danh mục này thì việc chuyển sẽ tạo vòng lặp.
     const byId = await this.categoriesById(tenantId);
     const wouldBeAncestors = this.ancestorsOf(byId, newParentId);
     if (wouldBeAncestors.some((ancestor) => ancestor.id === categoryId)) {
@@ -182,7 +182,7 @@ export class CategoryService {
     return this.prisma.$transaction(async (tx) => {
       const category = await tx.category.update({ where: { id }, data: dto });
 
-      // Product.categoryName is a denormalized copy for list screens, so it has to follow a rename - iKiotMS-BE never did this and left every product showing the old label.
+      // `Product.categoryName` là bản sao phi chuẩn hoá cho màn danh sách, nên phải đổi theo khi đổi tên. iKiotMS-BE trước đây không làm, và mọi sản phẩm vẫn hiện tên cũ.
       if (renamed) {
         await tx.product.updateMany({
           where: { tenantId, categoryId: id },
@@ -197,7 +197,7 @@ export class CategoryService {
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
 
-    // Category.parentId is onDelete: Restrict and Product.categoryId is a plain FK, so both would otherwise surface as an unhandled constraint violation.
+    // `Category.parentId` là onDelete: Restrict và `Product.categoryId` là FK thường; nếu không kiểm trước, cả hai sẽ thành lỗi ràng buộc không được xử lý.
     const [children, products] = await Promise.all([
       this.prisma.category.count({ where: { parentId: id } }),
       this.prisma.product.count({ where: { categoryId: id } }),

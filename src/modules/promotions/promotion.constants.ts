@@ -7,7 +7,7 @@ export type DiscountType = (typeof DiscountType)[keyof typeof DiscountType];
 
 export const DISCOUNT_TYPES: readonly string[] = Object.values(DiscountType);
 
-/** What a promotion applies to; lowercase because these are the exact strings the frontend sends and iKiotMS-BE stored. */
+/** Phạm vi áp dụng; viết thường vì đây đúng là chuỗi FE gửi và iKiotMS-BE đã lưu. */
 export const ApplicableRuleType = {
   ALL: 'all',
   CATEGORY: 'category',
@@ -31,5 +31,5 @@ export type PromotionStatus =
 export const PROMOTION_STATUSES: readonly string[] =
   Object.values(PromotionStatus);
 
-/** How many promotions may be combined on one order: two, and only when all of them are `stackable`. The cap exists because the per-item clamp gets harder to reason about - and to explain to a cashier - the more promotions pile onto one line. */
+/** Số khuyến mãi được cộng trên một đơn: tối đa hai, và chỉ khi tất cả đều `stackable`. Giới hạn vì càng nhiều khuyến mãi dồn vào một dòng thì kẹp giảm theo dòng càng khó giải thích cho thu ngân. */
 export const MAX_STACKED_PROMOTIONS = 2;
