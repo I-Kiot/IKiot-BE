@@ -1,7 +1,6 @@
 /**
- * The allocation rules behind InventoryService's lot writes, kept pure so they
- * can be tested without a database. The service loads (and locks) the rows, asks these
- * functions what to do, and writes the answer - never the other way round.
+ * Luật phân bổ lô cho InventoryService, để thuần nên test không cần DB. Service nạp (và khoá) dòng, hỏi các hàm
+ * này cần làm gì rồi ghi kết quả, không theo chiều ngược lại.
  */
 
 export interface LotSlice {
@@ -13,16 +12,13 @@ export interface DrawableLot {
   id: string;
   remainingQuantity: number;
   receivedAt: Date;
-  /** Set only on a lot made for one custom order line. */
+  /** Chỉ đặt trên lô làm riêng cho một dòng đơn tuỳ chỉnh. */
   orderItemId: string | null;
 }
 
 /**
- * Which lots an outbound move of `quantity` draws from: the lots made for `forOrderItemId`
- * first, then the shared lots oldest-first (FIFO by `receivedAt`, id as the tie-break so the
- * order is stable). A lot made for a *different* line is never touched. Returns `null` when
- * the eligible lots cannot cover the quantity - the caller treats that as a data fault, since
- * `inventories.stock` already said the goods were there.
+ * Lô nào bị trừ cho `quantity`: lô làm riêng cho `forOrderItemId` trước, rồi lô dùng chung cũ nhất (FIFO theo `receivedAt`).
+ * Lô làm cho dòng khác không bao giờ bị chạm. `null` khi đủ điều kiện không đủ số lượng (lỗi dữ liệu: tồn đã báo có).
  */
 export function planDraw(
   lots: readonly DrawableLot[],
@@ -54,17 +50,15 @@ export function planDraw(
 
 export interface DrawnLot {
   lotId: string;
-  /** Units this document took out of the lot. */
+  /** Số đơn vị chứng từ này đã lấy khỏi lô. */
   drawn: number;
-  /** Units already brought back against the same document. */
+  /** Số đơn vị đã trả lại theo cùng chứng từ. */
   returned: number;
 }
 
 /**
- * How `quantity` units coming back against a document (a cancelled transfer, a packed sale
- * cancelled before hand-over, a customer return) split over the lots that document drew
- * from, so each unit returns to - or is split off from - the lot it left. Lots are used in
- * the order given. `null` when more is coming back than was taken out and not yet returned.
+ * Chia `quantity` đơn vị trả về vào các lô chứng từ đó đã lấy, để mỗi đơn vị về đúng lô đã rời.
+ * `null` nếu trả nhiều hơn đã xuất.
  */
 export function planReturn(
   lots: readonly DrawnLot[],
@@ -82,7 +76,7 @@ export function planReturn(
   return left > 0 ? null : slices;
 }
 
-/** Each slice's running stock level after it is applied, given the level before the whole move. Ledger rows carry it as `balanceAfter`. */
+/** Mức tồn sau mỗi phần khi áp dụng, tính từ mức trước cả phiếu. Dòng sổ cái lưu ở `balanceAfter`. */
 export function runningBalances(
   before: number,
   signedQuantities: readonly number[],
@@ -91,7 +85,7 @@ export function runningBalances(
   return signedQuantities.map((quantity) => (balance += quantity));
 }
 
-/** Average cost of the units a line has actually taken out: Σ(-quantity × unitCost) / Σ(-quantity) over its SALE and SALE_REVERSAL rows. `null` once nothing is out any more. */
+/** Giá vốn bình quân các đơn vị dòng đã lấy: Σ(-quantity × unitCost) / Σ(-quantity) trên dòng SALE và SALE_REVERSAL. `null` khi không còn gì đã lấy. */
 export function averageUnitCost(
   rows: readonly { quantity: number; unitCost: number }[],
 ): number | null {

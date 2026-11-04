@@ -33,22 +33,20 @@ import {
 } from './lot-allocation';
 import { assertHoldsStock } from './stockable';
 
-/** One SKU at one location - the key of an `inventories` row. */
 export interface StockKey {
   tenantId: string;
   productItemId: string;
-  /** A Location id - the same id as the Branch or Warehouse it specializes. */
+  /** Id địa điểm (Location), cũng là id của Branch hoặc Warehouse tương ứng. */
   locationId: string;
 }
 
-/** What a stock change records about itself in the ledger. */
 export interface LedgerRef {
   type: InventoryTxType;
   referenceType: InventoryRefType;
   referenceId: string;
   createdById?: string | null;
   note?: string | null;
-  /** SALE / SALE_REVERSAL / RETURN_* rows: the order line, so its cost of goods sold can be read off the ledger. */
+  /** Dòng SALE / SALE_REVERSAL / RETURN_*: trỏ tới dòng đơn để đọc giá vốn hàng bán từ sổ cái. */
   orderItemId?: string | null;
 }
 
@@ -85,7 +83,7 @@ type InventoryRow = Prisma.InventoryGetPayload<{
   include: typeof INVENTORY_INCLUDE;
 }>;
 
-/** Ported from InventoryService, serving two audiences: the four `/inventory` routes, and the stock primitives Order and StockMovement call - those live here because "what happens to stock, and when do we warn" is one rule. */
+/** Port từ InventoryService, phục vụ bốn route `/inventory` và các primitive tồn mà Order / StockMovement gọi. Đặt chung vì "chuyện gì xảy ra với tồn và khi nào cảnh báo" là một luật. */
 @Injectable()
 export class InventoryService {
   private readonly logger = new Logger(InventoryService.name);
@@ -95,7 +93,7 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** `location` is already the shared `{ id, type, name }` (LOCATION_SELECT); `locationId` is dropped so the response names the place once. `stock` is the total and `actualStock` what is still on the shelf - computed here, never stored. */
+  /** `location` đã là `{ id, type, name }` chung (LOCATION_SELECT), nên bỏ `locationId`. `stock` là tổng, `actualStock` là phần còn trên kệ, tính lúc đọc, không lưu. */
   private toResponse(row: InventoryRow) {
     const { locationId, ...rest } = row;
     return { ...rest, actualStock: actualStockOf(row) };
@@ -108,7 +106,8 @@ export class InventoryService {
     };
 
     if (query.isLowStock) {
-      // A row is low when its shelf (stock − locked_stock, as crossedLowStock judges it) is at or under its own threshold; minStock = 0 switches the alert off for that line, so those are excluded rather than matching everything. Prisma can compare a column with a column but not with an expression, so the ids come from SQL and every other filter stays here.
+      // Dòng thấp khi kệ (stock − locked_stock) ≤ ngưỡng riêng. minStock = 0 tắt cảnh báo nên loại ra, không khớp tất cả.
+      // Prisma không so cột với biểu thức, nên id lấy từ SQL, các điều kiện khác giữ ở đây.
       const low = await this.prisma.$queryRaw<{ id: string }[]>`
         SELECT "id" FROM "inventories"
         WHERE "tenant_id" = ${tenantId}
@@ -171,11 +170,8 @@ export class InventoryService {
   }
 
   /**
-   * Start stocking a variant at a location, at zero.
-   *
-   * The way to declare "this branch will carry this" before any of it has arrived - a
-   * receipt would create the row anyway, so this is only ever a head start, useful for
-   * setting a `minStock` threshold on something that is on order.
+   * Bắt đầu nhập một phiên bản tại địa điểm, số 0. Dùng để khai báo "địa điểm này sẽ có hàng này" trước khi hàng về
+   * (VD đặt ngưỡng `minStock` cho hàng đang đặt). Phiếu nhập vốn cũng tạo dòng, đây chỉ là đầu mối.
    */
   async addProductToLocation(tenantId: string, dto: AddProductToLocationDto) {
     await resolveLocations(this.prisma, tenantId, [dto.locationId]);
@@ -232,24 +228,21 @@ export class InventoryService {
     return { success: true };
   }
 
-  // ─── Stock primitives, for Order / StockMovement / Fulfillment / OrderReturn ──
+  // ─── Primitive tồn dùng chung cho Order / StockMovement / Fulfillment / OrderReturn ──
   //
-  // The rules every caller shares (schema header, docs/order-flow.md):
-  //   - Goods packed for an order are locked (2026-10-04): `lockStock` when the order is packed
-  //     (CONFIRMED → PACKED), `shipLockedStock` when it moves to SHIPPING - the one step that
-  //     lowers `stock`, with the order line on the ledger - and `releaseLockedStock` on any way
-  //     out in between. The shelf is `stock − locked_stock` (`actualStockOf`); `deductStock` and
-  //     `lockStock` only ever take from the shelf, never from goods packed for someone else.
-  //     The fulfillment is the record of who holds the lock - there is no reservation table.
-  //   - Stock sits in lots: Σ lot.remainingQuantity = inventories.stock, always. Every change
-  //     writes ledger rows (InventoryTransaction), one per lot it touches.
-  //   - Every write takes the caller's transactional client - a rolled-back sale must not have
-  //     moved stock - and the guard that refuses an impossible move is inside the same UPDATE
-  //     that makes it, never a read followed by a write.
-  //   - The inventory row is always written before its lots, so concurrent moves of one SKU at
-  //     one location queue on that row's lock and see each other's lot changes.
+  // Luật chung (schema, docs/order-flow.md):
+  //   - Hàng đã đóng gói cho đơn bị khoá (2026-10-04): `lockStock` khi đóng gói (CONFIRMED → PACKED),
+  //     `shipLockedStock` khi chuyển SHIPPING (bước duy nhất hạ `stock`, có dòng sổ cái), `releaseLockedStock`
+  //     nếu huỷ giữa chừng. Kệ = `stock − locked_stock`; `deductStock` và `lockStock` chỉ lấy từ kệ, không
+  //     lấy hàng đã đóng cho người khác. Fulfillment ghi ai đang giữ khoá, không có bảng đặt trước.
+  //   - Tồn nằm trong lô: Σ lot.remainingQuantity = inventories.stock, luôn đúng. Mỗi thay đổi ghi dòng sổ cái
+  //     (InventoryTransaction), một dòng cho mỗi lô bị chạm.
+  //   - Mọi ghi dùng transaction của người gọi (rollback thì tồn không đổi). Điều kiện chặn thao tác bất khả thi
+  //     nằm trong chính UPDATE đó, không đọc rồi mới ghi.
+  //   - Luôn ghi dòng inventory trước lô, để hai thao tác đồng thời trên một SKU ở một địa điểm xếp hàng theo khoá
+  //     của dòng đó và thấy thay đổi lô của nhau.
 
-  /** Goods arrive that were never ours before (an import, a stocktake surplus): one new lot, its stock, and the inbound ledger row. Leave `unitCost` out to cost the lot at the variant's current cost price. */
+  /** Hàng về lần đầu (nhập, thừa kiểm kê): một lô mới, tồn và dòng sổ cái nhập. Không truyền `unitCost` thì lấy giá vốn hiện tại. */
   async openLot(
     tx: Prisma.TransactionClient,
     args: StockKey & {
@@ -335,15 +328,10 @@ export class InventoryService {
   }
 
   /**
-   * Lock goods on the shelf for an order being packed (CONFIRMED → PACKED). Every line is tried
-   * and the short ones are reported together, so whoever packs sees the whole problem at once.
-   * The guard (`stock - locked_stock >= quantity`) is inside the UPDATE, like `deductStock`'s,
-   * so two orders cannot both pack the last piece. Moves no stock and writes no ledger row: the
-   * goods have not left, and the fulfillment is the record of who holds them.
-   *
-   * Returns each line's row after its lock together with the quantity locked, for
-   * `lowStockCrossing(row, -quantity)` - packing empties the shelf just as a sale does. The pair
-   * travels together so the caller never has to line two arrays up by index.
+   * Khoá hàng trên kệ cho đơn đang đóng gói (CONFIRMED → PACKED). Thử mọi dòng rồi báo chung các dòng thiếu.
+   * Điều kiện `stock - locked_stock >= quantity` nằm trong UPDATE, nên hai đơn không cùng khoá món cuối.
+   * Không đổi tồn, không ghi sổ cái (hàng chưa rời kho). Trả từng dòng sau khi khoá kèm số lượng khoá, để gọi
+   * `lowStockCrossing(row, -quantity)`: đóng gói cũng làm kệ vơi như bán. Cặp đi chung để khỏi ghép theo index.
    */
   async lockStock(
     tx: Prisma.TransactionClient,
@@ -391,7 +379,7 @@ export class InventoryService {
     return locked;
   }
 
-  /** Packed goods leave with their order (PICKED_UP → SHIPPING): `stock` and `locked_stock` drop together, so the shelf is untouched and no low-stock warning is due, then the lots are drawn exactly as `deductStock` draws them. Refuses to ship more than is locked - that means the order was never packed here, or its lock was already shipped or released. */
+  /** Đóng gói rời kho (PICKED_UP → SHIPPING): `stock` và `locked_stock` cùng giảm nên kệ không đổi; sau đó trừ lô như `deductStock`. Không giao quá số đang khoá. */
   async shipLockedStock(
     tx: Prisma.TransactionClient,
     args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
@@ -421,7 +409,7 @@ export class InventoryService {
     return inventory;
   }
 
-  /** Give a lock back to the shelf - a packed order cancelled, or its quantity lowered, before it ships. `stock` does not change and nothing is written to the ledger, since nothing moved. Same refusal as `shipLockedStock`, for the same reason. */
+  /** Trả khoá về kệ khi huỷ đơn đã đóng gói, hoặc giảm số lượng trước khi giao. Không đổi `stock`, không ghi sổ cái vì hàng chưa đi đâu. Từ chối như `shipLockedStock`. */
   async releaseLockedStock(
     tx: Prisma.TransactionClient,
     args: StockKey & { quantity: number; label: string },
@@ -445,16 +433,12 @@ export class InventoryService {
   }
 
   /**
-   * Goods coming back against the document that took them out, to the lots they left:
-   * a transfer received (`drawnBy` the movement, `toLocationId` the destination - each unit
-   * becomes a child lot keeping its source and cost), a transfer cancelled in transit or a
-   * packed sale cancelled before hand-over (same location - straight back into the original
-   * lots), a customer return (`drawnBy` the order line, possibly to a damaged-goods location).
-   * Refuses to bring back more than went out and has not already come back.
-   *
-   * `ifNeverDrawn` is for paperwork older than lots (2026-10-02): a sale or a transfer that
-   * left before the migration has no ledger rows to follow, so its goods come back as a fresh
-   * lot of that source instead. Leave it out where that cannot happen.
+   * Hàng trả về theo chứng từ đã xuất, về đúng các lô đã rời: phiếu chuyển đã nhận (`drawnBy` là phiếu,
+   * `toLocationId` là đích; mỗi đơn vị thành lô con giữ nguồn và giá vốn), phiếu chuyển huỷ giữa đường,
+   * đơn đã đóng gói huỷ trước khi bàn giao (cùng địa điểm: về lô gốc), hoặc khách trả (`drawnBy` là dòng đơn,
+   * có thể về địa điểm hàng hỏng). Từ chối nếu trả nhiều hơn đã xuất trừ phần đã trả.
+   * `ifNeverDrawn` cho chứng từ cũ hơn lô (2026-10-02): không có dòng sổ cái để truy, nên hàng về thành lô mới
+   * của nguồn. Bỏ trống nếu không thể xảy ra.
    */
   async returnDrawn(
     tx: Prisma.TransactionClient,
@@ -599,7 +583,7 @@ export class InventoryService {
     return inventory;
   }
 
-  /** Append ledger rows. Every stock change goes through the primitives above, which call this - write it directly only for a row that moves no stock. */
+  /** Ghi dòng sổ cái. Mọi thay đổi tồn đi qua các primitive trên; ghi trực tiếp chỉ cho dòng không đổi tồn. */
   async writeLedger(
     tx: Prisma.TransactionClient,
     rows: Prisma.InventoryTransactionCreateManyInput[],
@@ -682,7 +666,7 @@ export class InventoryService {
     }
   }
 
-  /** Raise stock, creating the row if this location has never held the item. One upsert on purpose: a read-then-create lets two receipts both insert and one die on the unique index. */
+  /** Tăng tồn, tạo dòng nếu địa điểm chưa có món này. Cố ý dùng upsert: đọc rồi tạo thì hai phiếu nhập có thể cùng chèn và một cái chết trên unique index. */
   private incrementStock(
     tx: Prisma.TransactionClient,
     key: StockKey,

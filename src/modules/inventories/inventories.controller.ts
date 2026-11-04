@@ -19,7 +19,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of InventoryController, still at the singular `/inventory`. Adding and removing a product at a location was gated on a role that no longer exists; it is `inventory:create`/`delete` now, granted by the tenant. */
+/** Port của InventoryController, vẫn ở `/inventory` số ít. Thêm / xoá hàng tại địa điểm nay dùng `inventory:create` / `delete` (tenant cấp), vì role cũ đã bỏ. */
 @ApiTags('inventory')
 @ApiBearerAuth('bearer')
 @Controller('inventory')

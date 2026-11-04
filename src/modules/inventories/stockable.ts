@@ -3,11 +3,8 @@ import { holdsStock } from '../../common/constants/product-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
 /**
- * Refuses a COMBO or SERVICE variant at a door where stock comes in: a stock document's lines
- * (import, transfer, stocktake) and `POST /inventory`. A combo is stocked through its components -
- * stock booked on the combo itself would never be sold (orders expand it) and would count in every
- * stock total. Checked at those doors rather than in `openLot`, which runs per line inside receipts
- * and would cost a query each time.
+ * Từ chối COMBO / SERVICE ở cửa nhập tồn (dòng phiếu, `POST /inventory`): tồn gắn trên combo không bán được mà vẫn đếm vào tổng.
+ * Kiểm ở cửa thay vì trong `openLot` vì `openLot` chạy mỗi dòng phiếu.
  */
 export function assertHoldsStock(
   items: { id: string; sku: string | null; itemType: string }[],

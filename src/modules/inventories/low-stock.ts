@@ -1,9 +1,9 @@
 import type { Inventory } from '../../../generated/prisma/client';
 
-/** The fields the rules here read, so callers can pass a partial row in tests. */
+/** Các trường mà luật đọc, để test truyền được dòng thiếu trường. */
 export type StockLevel = Pick<Inventory, 'stock' | 'lockedStock' | 'minStock'>;
 
-/** What is still on the shelf: the total less what is packed for orders that have not shipped. The one spelling of that subtraction - it is never stored, so it cannot drift from the two columns it comes from. */
+/** Tồn trên kệ = tổng trừ phần đã đóng gói cho đơn chưa giao. Đây là cách trừ duy nhất, không lưu nên không lệch khỏi hai cột gốc. */
 export function actualStockOf(
   level: Pick<Inventory, 'stock' | 'lockedStock'>,
 ): number {
@@ -11,12 +11,8 @@ export function actualStockOf(
 }
 
 /**
- * Did this change just push a line's shelf stock through its low-stock threshold? `delta` is
- * the change in shelf stock (`actualStockOf`), not in `stock`: packing an order lowers the
- * shelf without touching the total, and shipping it lowers the total without touching the
- * shelf - goods already packed for someone cannot be sold, so it is the shelf that runs out.
- * Edge-triggered on purpose - a level test would re-fire on every later sale of an
- * already-short item. `minStock = 0` switches the alert off.
+ * Thay đổi này có kéo kệ của dòng qua ngưỡng không? `delta` là thay đổi trên kệ (`actualStockOf`), không phải `stock`.
+ * Chỉ báo khi vượt ngưỡng (cạnh), không báo lại mỗi lần bán món đã thấp. `minStock = 0` tắt cảnh báo.
  */
 export function crossedLowStock<T extends StockLevel>(
   after: T | null,
@@ -26,7 +22,7 @@ export function crossedLowStock<T extends StockLevel>(
   if (after.minStock <= 0) return null;
 
   const actualAfter = actualStockOf(after);
-  const actualBefore = actualAfter - delta; // delta is negative, so before > after
+  const actualBefore = actualAfter - delta; // delta âm nên trước > sau
   const crossed =
     actualBefore > after.minStock && actualAfter <= after.minStock;
   return crossed ? after : null;

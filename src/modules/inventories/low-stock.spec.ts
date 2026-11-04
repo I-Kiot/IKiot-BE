@@ -6,7 +6,7 @@ const line = (stock: number, minStock: number, lockedStock = 0) => ({
   minStock,
 });
 
-// This rule decides whether a manager's phone buzzes; the failure that matters is warning on every sale once stock is low, which gets the channel muted on day one.
+// Luật này quyết định điện thoại quản lý có rung không; lỗi đáng sợ là cảnh báo mỗi lần bán khi tồn đã thấp, khiến kênh bị tắt từ ngày đầu.
 describe('crossedLowStock', () => {
   it('fires on the step that lands exactly on the threshold', () => {
     expect(crossedLowStock(line(5, 5), -1)).not.toBeNull();
@@ -17,7 +17,7 @@ describe('crossedLowStock', () => {
   });
 
   it('stays quiet on every later sale below the threshold', () => {
-    // Stock was 4 against a threshold of 5 - the warning already went out then.
+    // Tồn còn 4, ngưỡng 5 - cảnh báo đã gửi lúc đó rồi.
     expect(crossedLowStock(line(3, 5), -1)).toBeNull();
   });
 
@@ -41,14 +41,14 @@ describe('crossedLowStock', () => {
     expect(crossedLowStock(null, -5)).toBeNull();
   });
 
-  // The threshold is against the shelf: goods packed for an order can no longer be sold.
+  // Ngưỡng so với kệ: hàng đã đóng gói cho đơn không còn bán được.
   it('fires when packing an order takes the shelf through the threshold', () => {
-    // 10 in total, 6 now packed: the shelf went 8 -> 4 against a threshold of 5.
+    // Tổng 10, 6 đã đóng gói: kệ từ 8 còn 4, ngưỡng 5.
     expect(crossedLowStock(line(10, 5, 6), -4)).not.toBeNull();
   });
 
   it('judges the shelf, not the total', () => {
-    // The total (10) is well above 5, but only 5 are left on the shelf after this sale.
+    // Tổng (10) vượt 5, nhưng sau lần bán chỉ còn 5 trên kệ.
     expect(crossedLowStock(line(10, 5, 5), -1)).not.toBeNull();
   });
 });
