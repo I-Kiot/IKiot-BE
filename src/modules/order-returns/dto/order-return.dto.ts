@@ -32,7 +32,7 @@ export class CreateOrderReturnItemDto {
   note?: string;
 }
 
-/** Body of POST /order-returns (D-5, contract §5). Who opens it comes from the token. */
+/** Người mở đơn hoàn lấy từ token (D-5, contract §5). */
 export class CreateOrderReturnDto {
   @IsUUID()
   orderId: string;
@@ -42,7 +42,7 @@ export class CreateOrderReturnDto {
   })
   reason: string;
 
-  /** The failed delivery, when that is why the goods came back. */
+  /** Lần giao thất bại, nếu hàng về vì lý do đó. */
   @IsOptional()
   @IsUUID()
   shipmentId?: string;
@@ -63,14 +63,14 @@ export class InspectOrderReturnItemDto {
   @IsUUID()
   orderItemId: string;
 
-  /** Null / missing is refused with ORDER_RETURN_CONDITION_REQUIRED, so the service can name every line that lacks it. */
+  /** Thiếu hoặc null thì bị từ chối bằng ORDER_RETURN_CONDITION_REQUIRED, để service chỉ ra được mọi dòng thiếu. */
   @IsOptional()
   @IsIn(RETURN_CONDITIONS, {
     message: `condition phải là ${RETURN_CONDITIONS.join(', ')}`,
   })
   condition?: string;
 
-  /** GOOD only: where the goods are put back. Defaults to the location they left, which must sell. */
+  /** Chỉ cho GOOD: hàng được đưa về đâu. Mặc định là nơi hàng xuất, nơi này phải bán được. */
   @IsOptional()
   @IsUUID()
   locationId?: string;
@@ -89,7 +89,7 @@ export class InspectOrderReturnDto {
   items: InspectOrderReturnItemDto[];
 }
 
-/** Body of POST /order-returns/confirm-failed-delivery: the goods of a failed delivery are back at the shop. */
+/** Hàng của lần giao thất bại đã về shop (confirm-failed-delivery). */
 export class ConfirmFailedDeliveryDto {
   @IsUUID()
   shipmentId: string;
@@ -99,7 +99,7 @@ export class ConfirmFailedDeliveryDto {
   @MaxLength(500)
   note?: string;
 
-  /** Verdicts per line; a line left out (or the whole list) comes back GOOD to the location it shipped from. */
+  /** Kết luận từng dòng; dòng bỏ sót (hoặc cả danh sách) thì về GOOD tại nơi đã xuất. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -116,7 +116,6 @@ export class QueryOrderReturnDto extends PaginationQueryDto {
   @IsUUID()
   orderId?: string;
 
-  /** Return code, order code or customer name / phone. */
   @IsOptional()
   @IsString()
   search?: string;

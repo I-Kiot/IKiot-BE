@@ -41,14 +41,14 @@ import {
 import type { Prisma } from '../../../generated/prisma/client';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Orders whose goods have already left stock (`ship` deducted them) - the only ones a return can bring back. */
+/** Đơn đã trừ kho (`ship`): chỉ các đơn này mới hoàn về được. */
 export const RETURNABLE_ORDER_STATUSES: readonly string[] = [
   OrderStatus.SHIPPING,
   OrderStatus.RECEIVED,
   OrderStatus.COMPLETED,
 ];
 
-/** A return that has been opened and not yet settled: its quantity is spoken for. */
+/** Đơn hoàn đã mở nhưng chưa chốt: số lượng của nó đã bị giữ. */
 const OPEN_RETURN_STATUSES: readonly string[] = [
   OrderReturnStatus.REQUESTED,
   OrderReturnStatus.INSPECTING,
@@ -94,7 +94,7 @@ interface UserRow {
   profileLastName: string | null;
 }
 
-/** A Vietnamese full name reads family name first (`lastName firstName`); an account with no profile name shows its phone number. */
+/** Tên Việt đọc họ trước (`lastName firstName`); tài khoản chưa có tên thì hiện SĐT. */
 function toUserRef(user: UserRow | null) {
   if (!user) return null;
   const name = [user.profileLastName, user.profileFirstName]
@@ -104,7 +104,6 @@ function toUserRef(user: UserRow | null) {
   return { id: user.id, name: name || user.phoneNumber };
 }
 
-/** The contract's `OrderReturn` (§5). */
 export function toOrderReturn(row: ReturnRow) {
   return {
     id: row.id,
@@ -141,10 +140,7 @@ export function toOrderReturn(row: ReturnRow) {
 }
 
 /**
- * Hoàn hàng (D-5, contract §5). A return is opened by hand for any channel against an order whose
- * goods already left stock; nothing moves until `inspect`, which puts each line back through
- * `InventoryService.returnDrawn` - GOOD into a sellable location (stock goes up again), DAMAGED
- * into the shipping location's damaged-goods location (never sellable stock).
+ * Hoàn hàng (D-5). Mở tay cho mọi kênh với đơn đã trừ kho. Khi chuyển sang `inspect`, từng dòng đi qua `InventoryService.returnDrawn`: GOOD vào tồn bán được, DAMAGED vào kho hàng hỏng của kho xuất, không bao giờ là tồn bán được.
  */
 @Injectable()
 export class OrderReturnService {
@@ -189,12 +185,12 @@ export class OrderReturnService {
     return toOrderReturn(await this.load(user, tenantId, id));
   }
 
-  /** `POST /order-returns`: `REQUESTED`, stock untouched. */
+  /** `POST /order-returns`: tạo ở `REQUESTED`, chưa đụng tồn. */
   async create(
     user: AuthUser,
     tenantId: string,
     dto: CreateOrderReturnDto,
-    /** Set by callers that have already decided who may open the return (`confirmFailedDelivery`). */
+    /** Người gọi đã quyết ai được mở đơn hoàn (`confirmFailedDelivery`) thì truyền cờ này. */
     options: { skipPermission?: boolean } = {},
   ) {
     const order = await this.prisma.order.findFirst({
@@ -262,7 +258,7 @@ export class OrderReturnService {
         });
     }
 
-    // What other open returns of this order already spoke for - two clerks can't both return the same unit.
+    // Số lượng mà các đơn hoàn đang mở của đơn này đã giữ: hai nhân viên không được cùng hoàn một đơn vị.
     const reserved = await this.prisma.orderReturnItem.groupBy({
       by: ['orderItemId'],
       where: {
@@ -320,7 +316,7 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, created.id);
   }
 
-  /** `POST /order-returns/:id/receive`: the goods are back at the shop. `REQUESTED` → `INSPECTING`. */
+  /** `POST /order-returns/:id/receive`: hàng đã về shop. `REQUESTED` → `INSPECTING`. */
   async receive(user: AuthUser, tenantId: string, id: string) {
     await this.load(user, tenantId, id);
     const claimed = await this.prisma.orderReturn.updateMany({
@@ -336,11 +332,10 @@ export class OrderReturnService {
   }
 
   /**
-   * `POST /order-returns/confirm-failed-delivery`: the goods of a failed delivery are back at the shop.
-   * One click opens a DELIVERY_FAILED return for every line still out, receives it and inspects it, so the
-   * stock goes back, the order becomes RETURNED and the shipment RETURNED in one transaction. Until then a
-   * failed shipment is still on the road (the shipper may retry), which is why none of this happens on `fail`.
-   * Lines come back GOOD to where they shipped from unless `items` says otherwise.
+   * `POST /order-returns/confirm-failed-delivery`: hàng của lần giao thất bại đã về shop. Một lần bấm mở đơn hoàn
+   * DELIVERY_FAILED cho mọi dòng còn ở ngoài, nhận và kiểm luôn, nên tồn về lại, đơn → RETURNED và shipment → RETURNED
+   * trong một transaction. Trước đó shipment thất bại vẫn đang trên đường (shipper có thể giao lại), nên `fail` không làm việc này.
+   * Dòng về GOOD tại nơi đã xuất, trừ khi `items` ghi khác.
    */
   async confirmFailedDelivery(
     user: AuthUser,
@@ -480,7 +475,7 @@ export class OrderReturnService {
     );
   }
 
-  /** `POST /order-returns/:id/cancel`: only before the goods were put back, so stock was never touched. */
+  /** `POST /order-returns/:id/cancel`: chỉ trước khi hàng được đưa về, nên tồn chưa bị đụng tới. */
   async cancel(user: AuthUser, tenantId: string, id: string) {
     await this.load(user, tenantId, id);
     const claimed = await this.prisma.orderReturn.updateMany({
@@ -493,16 +488,15 @@ export class OrderReturnService {
   }
 
   /**
-   * `POST /order-returns/:id/inspect`: every line gets a verdict and goes back through
-   * `returnDrawn` in one transaction, so a refused line (no damaged-goods location, a location
-   * that does not sell) puts nothing back. The return and its order are claimed on the status read.
+   * `POST /order-returns/:id/inspect`: mỗi dòng có một kết luận và đi qua `returnDrawn` trong một transaction.
+   * Dòng bị từ chối (không có kho hàng hỏng, kho không bán được) thì không đưa gì về. Đơn hoàn và đơn gốc được khoá ngay khi đọc trạng thái.
    */
   async inspect(
     user: AuthUser,
     tenantId: string,
     id: string,
     dto: InspectOrderReturnDto,
-    /** Runs inside the settling transaction, so a caller's own write lands with it or not at all. */
+    /** Chạy trong transaction chốt, nên ghi của người gọi lên cùng hoặc không lên gì. */
     within?: (tx: Prisma.TransactionClient) => Promise<void>,
   ) {
     const orderReturn = await this.load(user, tenantId, id);
@@ -584,11 +578,11 @@ export class OrderReturnService {
             createdById: user.userId,
             note: verdict.note ?? line.note ?? null,
           },
-          // Sold before goods had lots: nothing to follow back, so it returns as a fresh lot.
+          // Bán trước khi hàng có lot: không có gì để lần ngược, nên hoàn thành một lot mới.
           ifNeverDrawn: { sourceType: LotSourceType.OPENING },
         });
 
-        // Guarded on quantity: two returns settling the same line at once can't push it past what was sold.
+        // Có điều kiện theo số lượng: hai đơn hoàn chốt cùng dòng không thể đẩy số hoàn vượt số đã bán.
         const bumped = await tx.orderItem.updateMany({
           where: {
             id: line.orderItemId,
@@ -622,7 +616,7 @@ export class OrderReturnService {
 
       await this.settleOrder(tx, tenantId, orderReturn.order.id);
       await within?.(tx);
-      // Once the sale invoice is issued, returned goods are an ADJUSTMENT for their value (a PENDING invoice nets them out when it issues).
+      // Hoá đơn đã xuất thì hàng hoàn là điều chỉnh theo giá trị (hoá đơn PENDING sẽ tự trừ khi xuất).
       await this.invoices.adjustForReturn(
         tx,
         orderReturn.order.id,
@@ -638,7 +632,7 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, id);
   }
 
-  /** `PATCH /order-returns/:id/replacement-order`: links the order a customer placed to buy the goods again. */
+  /** `PATCH /order-returns/:id/replacement-order`: gắn đơn khách đặt để mua lại hàng. */
   async setReplacementOrder(
     user: AuthUser,
     tenantId: string,
@@ -668,9 +662,7 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, id);
   }
 
-  // ─── internals ────────────────────────────────────────────────────────────
-
-  /** The return, cross-tenant and foreign-branch reads both 404 (contract §0). */
+  /** Đơn hoàn khác tenant hoặc khác chi nhánh đều 404 (contract §0). */
   private async load(user: AuthUser, tenantId: string, id: string) {
     const scope = this.orders.branchScope(user);
     const row = await this.prisma.orderReturn.findFirst({
@@ -692,7 +684,7 @@ export class OrderReturnService {
     });
   }
 
-  /** Where the line's goods left from: the ledger's SALE rows name it exactly; a sale that predates lots falls back to the line's planned source. */
+  /** Hàng của dòng xuất từ đâu: dòng SALE trong sổ ghi đúng nơi đó; đơn bán trước khi có lot thì dùng nguồn dự kiến của dòng. */
   private async shippedFrom(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -716,7 +708,7 @@ export class OrderReturnService {
     return item?.sourceLocationId ?? null;
   }
 
-  /** GOOD → the named (or shipping) location, which must sell. DAMAGED → the shipping location's damaged-goods location. */
+  /** GOOD → kho được chỉ định (hoặc kho xuất), kho đó phải bán được. DAMAGED → kho hàng hỏng của kho xuất. */
   private async destination(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -766,7 +758,7 @@ export class OrderReturnService {
     return locationId;
   }
 
-  /** The order becomes RETURNED once every line that left stock is back in full; a partial return leaves it where it was. */
+  /** Đơn → RETURNED khi mọi dòng đã trừ kho được hoàn đủ; hoàn một phần thì đơn giữ nguyên. */
   private async settleOrder(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -794,7 +786,7 @@ export class OrderReturnService {
         where: { id: orderId, tenantId, status: order.status },
         data: { status: OrderStatus.RETURNED },
       });
-      // Back whole before it was ever completed: nothing was invoiced, so the PENDING invoice is withdrawn.
+      // Hoàn đủ trước khi đơn kịp hoàn thành: chưa xuất hoá đơn nên rút hoá đơn PENDING.
       await this.invoices.voidPending(tx, orderId);
     }
   }
