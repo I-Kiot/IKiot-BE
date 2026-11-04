@@ -22,6 +22,17 @@ export function assertStorePickup(order: { fulfillmentType: string }): void {
   }
 }
 
+/** Đơn khách tới lấy không đi qua shipment: không có người hay hãng nào mang hàng đi. */
+export function assertNotStorePickup(order: { fulfillmentType: string }): void {
+  if (order.fulfillmentType === FulfillmentType.STORE_PICKUP) {
+    throw new ConflictException({
+      code: ErrorCode.SHIPMENT_NOT_FOR_PICKUP,
+      message:
+        'A store pickup order is handed over at the counter, not shipped',
+    });
+  }
+}
+
 /** Đơn đã đóng gói (hàng khoá khỏi kệ) và đang chờ khách mới thu tiền, giao được. */
 export function assertPickupReady(order: { status: string }): void {
   if (order.status !== OrderStatus.PACKED) {
