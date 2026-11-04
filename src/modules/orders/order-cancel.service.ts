@@ -19,8 +19,11 @@ import {
 } from '../../common/constants/order-status';
 import {
   PaymentKind,
+  PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
+import { pendingCounterQr } from './order-pickup.rules';
+import { cancelCounterQr } from './order-pickup.service';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
   FINAL_SHIPMENT_STATUSES,
@@ -52,7 +55,7 @@ export interface ResolvedRefund {
   paymentStatus: string;
 }
 
-/** Cọc shop còn giữ: tổng cọc PAID trừ tổng hoàn PAID. Quy tắc duy nhất: hoàn khi hủy (A-5) và kiểm tra khi sửa (A-8) đều đọc ở đây. */
+/** Cọc shop còn giữ: tổng cọc PAID trừ tổng hoàn PAID. Dùng để kiểm tra khi sửa đơn (A-8); hoàn khi huỷ còn tính cả khoản thu tại quầy (`resolveRefund`). */
 export function depositHeld(
   payments: readonly Pick<DepositPaymentRow, 'kind' | 'status' | 'amount'>[],
 ): number {
@@ -64,27 +67,40 @@ export function depositHeld(
   return sum(PaymentKind.DEPOSIT) - sum(PaymentKind.REFUND);
 }
 
+/** Khoản shop đã thu của đơn còn huỷ được: cọc, và số còn lại nếu là đơn khách tới lấy đã thu tại quầy. Đơn giao tận nơi chỉ có BALANCE sau khi giao, lúc đó đã không huỷ được nữa. */
+const REFUNDABLE_KINDS: readonly string[] = [
+  PaymentKind.DEPOSIT,
+  PaymentKind.BALANCE,
+];
+
 /**
- * Hoàn cọc khi huỷ (A-5): người huỷ tự chọn số tiền hoàn, từ 0 (shop giữ cọc) tới toàn bộ số đang giữ. Không có mặc định vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. Null khi không có gì để hoàn và không giữ gì.
+ * Hoàn tiền khi huỷ (A-5): người huỷ tự chọn số tiền hoàn, từ 0 (shop giữ lại) tới toàn bộ số đang giữ. Không có mặc định vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. Null khi không có gì để hoàn và không giữ gì.
  */
 export function resolveRefund(
   payments: readonly DepositPaymentRow[],
   refundAmount: number | undefined,
   refundMethod: string | undefined,
 ): ResolvedRefund | null {
-  const deposits = payments
+  const received = payments
     .filter(
       (p) =>
-        p.status === PaymentRecordStatus.PAID && p.kind === PaymentKind.DEPOSIT,
+        p.status === PaymentRecordStatus.PAID &&
+        REFUNDABLE_KINDS.includes(p.kind),
     )
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  const held = depositHeld(payments);
+  const refunded = payments
+    .filter(
+      (p) =>
+        p.status === PaymentRecordStatus.PAID && p.kind === PaymentKind.REFUND,
+    )
+    .reduce((total, p) => total + p.amount, 0);
+  const held = received.reduce((total, p) => total + p.amount, 0) - refunded;
 
   if (held <= 0) {
     if (refundAmount) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_REFUND_EXCEEDS_DEPOSIT,
-        message: 'This order holds no deposit to refund',
+        message: 'This order holds no money to refund',
       });
     }
     return null;
@@ -92,21 +108,26 @@ export function resolveRefund(
   if (refundAmount === undefined) {
     throw new BadRequestException({
       code: ErrorCode.ORDER_REFUND_AMOUNT_REQUIRED,
-      message: `The order holds a deposit of ${held}; say how much of it is refunded (0 keeps it)`,
+      message: `The order holds ${held}; say how much of it is refunded (0 keeps it)`,
     });
   }
   const amount = Math.round(refundAmount);
   if (amount > held) {
     throw new BadRequestException({
       code: ErrorCode.ORDER_REFUND_EXCEEDS_DEPOSIT,
-      message: `A refund of ${amount} exceeds the deposit held (${held})`,
+      message: `A refund of ${amount} exceeds the money held (${held})`,
     });
   }
-  const [latest] = deposits;
+  const [latest] = received;
   return {
     held,
     amount,
-    method: refundMethod ?? latest.method,
+    // SePay chỉ báo tiền vào, không chuyển tiền ra: khoản thu qua QR được hoàn bằng chuyển khoản.
+    method:
+      refundMethod ??
+      (latest.method === PaymentMethod.SEPAY
+        ? PaymentMethod.BANK_TRANSFER
+        : latest.method),
     refundOfPaymentId: latest.id,
     paymentStatus:
       amount === 0
@@ -219,6 +240,9 @@ export class OrderCancelService {
         });
       }
 
+      // Mã QR thu tại quầy hết hiệu lực; tiền vừa về đúng lúc này thì dừng để người huỷ thấy và hoàn cả khoản đó.
+      await cancelCounterQr(tx, pendingCounterQr(order.payments));
+
       // Đơn hủy được chưa bao giờ COMPLETED nên hóa đơn chưa phát hành: chỉ cần thu hồi.
       await this.invoices.voidPending(tx, id);
 
@@ -253,7 +277,7 @@ export class OrderCancelService {
       });
 
       if (refund && refund.amount > 0) {
-        // Tiền hoàn là dòng REFUND gắn với cọc được hoàn. Dòng CashFlow do E-5 ghi, như với cọc.
+        // Tiền hoàn là dòng REFUND gắn với khoản thu gần nhất. Dòng CashFlow do E-5 ghi, như với cọc.
         await tx.payment.create({
           data: {
             tenantId,

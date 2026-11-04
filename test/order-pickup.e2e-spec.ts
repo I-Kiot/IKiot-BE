@@ -11,6 +11,7 @@ import { ShipmentService } from './../src/modules/shipments/shipments.service';
 import { ShipmentDeliveryService } from './../src/modules/shipments/shipment-delivery.service';
 import { OrderService } from './../src/modules/orders/orders.service';
 import { OrderPickupService } from './../src/modules/orders/order-pickup.service';
+import { OrderCancelService } from './../src/modules/orders/order-cancel.service';
 import {
   DeliveryCollectionMethod,
   PaymentKind,
@@ -46,6 +47,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
   let shipments: ShipmentService;
   let delivery: ShipmentDeliveryService;
   let pickups: OrderPickupService;
+  let cancels: OrderCancelService;
   let inventory: InventoryService;
   const notify = jest.fn();
 
@@ -153,6 +155,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
         ShipmentService,
         ShipmentDeliveryService,
         OrderPickupService,
+        OrderCancelService,
         {
           // Chỉ cần phạm vi chi nhánh và đọc lại đơn; phần còn lại của OrderService không dính tới luồng này.
           provide: OrderService,
@@ -178,6 +181,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
     shipments = moduleRef.get(ShipmentService);
     delivery = moduleRef.get(ShipmentDeliveryService);
     pickups = moduleRef.get(OrderPickupService);
+    cancels = moduleRef.get(OrderCancelService);
     inventory = moduleRef.get(InventoryService);
 
     await prisma.tenant.create({
@@ -459,6 +463,59 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       expect(
         rows.filter((row) => row.status === PaymentRecordStatus.PAID),
       ).toHaveLength(1);
+    });
+  });
+
+  describe('cancelling a pickup order', () => {
+    it('refunds the balance collected at the counter along with the deposit', async () => {
+      const id = await packedPickup();
+      await pickups.collect(owner, tenantId, id, {
+        method: DeliveryCollectionMethod.CASH,
+      });
+
+      await expect(
+        cancels.cancel(owner, tenantId, id, {}),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_REFUND_AMOUNT_REQUIRED },
+      });
+
+      const { refund } = await cancels.cancel(owner, tenantId, id, {
+        refundAmount: 1000,
+      });
+      expect(refund).toMatchObject({ held: 1000, refunded: 1000, kept: 0 });
+      const order = await orderOf(id);
+      expect(order.status).toBe(OrderStatus.CANCELLED);
+      expect(order.paymentStatus).toBe(OrderPaymentStatus.REFUNDED);
+    });
+
+    it('voids a QR still waiting, so a late transfer is not booked as collected', async () => {
+      const id = await packedPickup();
+      const { payment } = await pickups.collect(owner, tenantId, id, {
+        method: DeliveryCollectionMethod.BANK_TRANSFER_QR,
+      });
+
+      await cancels.cancel(owner, tenantId, id, { refundAmount: 300 });
+      expect(
+        (
+          await prisma.payment.findFirstOrThrow({
+            where: { paymentReference: payment!.reference },
+          })
+        ).status,
+      ).toBe(PaymentRecordStatus.CANCELLED);
+
+      await delivery.settleSepayBalance(
+        tenantId,
+        payment!.reference,
+        `late-${id}`,
+        700,
+      );
+      expect(
+        (
+          await prisma.payment.findFirstOrThrow({
+            where: { paymentReference: payment!.reference },
+          })
+        ).status,
+      ).toBe(PaymentRecordStatus.CANCELLED);
     });
   });
 });

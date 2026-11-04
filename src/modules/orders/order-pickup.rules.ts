@@ -5,6 +5,7 @@ import {
 } from '../../common/constants/order-status';
 import {
   PaymentKind,
+  PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
@@ -76,6 +77,38 @@ export function assertFulfillmentTypeChangeAllowed(
       message: `An order in ${order.status} with a shipment can no longer switch between pickup and delivery`,
     });
   }
+}
+
+/**
+ * Đơn đã thu tiền tại quầy thì không rời luồng khách tới lấy được: lúc giao, shipper thu `grandTotal − cọc` nên khách bị thu lần nữa.
+ * Muốn giao tận nơi thì huỷ đơn (hoàn khoản đã thu) rồi tạo lại.
+ */
+export function assertNoCounterPayment(
+  payments: readonly { kind: string; status: string }[],
+): void {
+  const collected = payments.some(
+    (p) =>
+      p.kind === PaymentKind.BALANCE && p.status === PaymentRecordStatus.PAID,
+  );
+  if (collected) {
+    throw new ConflictException({
+      code: ErrorCode.ORDER_PICKUP_ALREADY_COLLECTED,
+      message:
+        'The balance was collected at the counter; cancel the order instead of switching it to delivery',
+    });
+  }
+}
+
+/** Khoản QR thu tại quầy còn đang chờ tiền về. */
+export function pendingCounterQr<
+  T extends { kind: string; method: string; status: string },
+>(payments: readonly T[]): T[] {
+  return payments.filter(
+    (p) =>
+      p.kind === PaymentKind.BALANCE &&
+      p.method === PaymentMethod.SEPAY &&
+      p.status === PaymentRecordStatus.PENDING,
+  );
 }
 
 export interface PickupPaymentRow {

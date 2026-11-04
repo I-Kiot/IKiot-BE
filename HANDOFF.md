@@ -212,3 +212,13 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Dialog giao hàng của shipper chưa bấm thử trên trình duyệt (BE có e2e).
 - `.env.{dev,prod}` trên VPS cần `SEPAY_ORDER_WEBHOOK_API_KEY` và `SEPAY_API_KEY`; webhook phải trỏ về API dev.
 - Khách tự gõ nội dung vào VietinBank phải gõ cả `SEVQR`, màn hình chưa hiện.
+
+## 2026-11-07 – Đơn khách tới lấy: chặn thu trùng và hoàn được tiền thu tại quầy (PR #54, FE PR #51)
+
+- Đã thu tiền tại quầy thì không đổi sang giao tận nơi (`ORDER_PICKUP_ALREADY_COLLECTED`), vì shipper thu theo `grandTotal − cọc`. Chưa có tiền về thì đổi được, khoản QR đang chờ bị huỷ.
+- `resolveRefund` tính cả `BALANCE` đã thu vào số đang giữ. Đơn giao tận nơi chỉ có `BALANCE` sau khi giao, lúc đó không huỷ được nên không đổi hành vi. `depositHeld` giữ nguyên cho kiểm tra khi sửa đơn.
+- Huỷ đơn cũng huỷ khoản QR tại quầy đang chờ. Khoản thu qua QR mặc định hoàn bằng `BANK_TRANSFER`.
+- Bộ lọc `DUE_SOON` bỏ đơn khách quá hạn lấy, để badge không đếm hai lần.
+
+**Chưa kiểm chứng:** máy không có Postgres nên chưa chạy `test:e2e`, gồm 2 case mới trong `test/order-pickup.e2e-spec.ts`.
+**Còn lại:** FE chưa có màn huỷ đơn hành trình kèm số tiền hoàn. `CashFlow` vẫn chưa ghi tiền cọc, tiền thu khi giao và tiền thu tại quầy (E-5).

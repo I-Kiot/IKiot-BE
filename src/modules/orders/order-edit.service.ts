@@ -19,8 +19,11 @@ import {
 import { depositHeld } from './order-cancel.service';
 import {
   assertFulfillmentTypeChangeAllowed,
+  assertNoCounterPayment,
   assertNoPickupShippingFee,
+  pendingCounterQr,
 } from './order-pickup.rules';
+import { cancelCounterQr } from './order-pickup.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
 import {
   SetOrderAssigneeDto,
@@ -153,6 +156,10 @@ export class OrderEditService {
 
     // Khách tới lấy: đổi hình thức giao có ràng buộc, và không có phí giao hàng (khi đổi sang đây phải gửi shippingFee = 0).
     const nextType = dto.fulfillmentType ?? order.fulfillmentType;
+    const leavingPickup =
+      order.fulfillmentType === FulfillmentType.STORE_PICKUP &&
+      nextType !== FulfillmentType.STORE_PICKUP;
+    if (leavingPickup) assertNoCounterPayment(order.payments);
     if (nextType !== order.fulfillmentType) {
       assertFulfillmentTypeChangeAllowed(
         order,
@@ -288,6 +295,10 @@ export class OrderEditService {
           code: ErrorCode.ORDER_STATUS_CONFLICT,
           message: 'The order has just changed, please reload',
         });
+      }
+      // Rời luồng khách tới lấy thì mã QR tại quầy không còn hiệu lực: giao tận nơi sẽ thu qua shipper.
+      if (leavingPickup) {
+        await cancelCounterQr(tx, pendingCounterQr(order.payments));
       }
       if (!money) return;
 

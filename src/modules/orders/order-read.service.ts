@@ -261,15 +261,13 @@ export class OrderReadService {
       const cutoff = businessDate();
       cutoff.setUTCDate(cutoff.getUTCDate() + DUE_SOON_DAYS);
       and.push({ requestedDeliveryDate: { not: null, lte: cutoff } });
+      // Đơn khách quá hạn lấy đã có nhóm riêng; đếm ở cả hai thì badge cộng hai lần.
+      and.push({ NOT: pickupOverdueWhere() });
     }
 
     // Khách hẹn lấy hàng nhưng quá hạn mà vẫn chưa tới: nhân viên cần liên hệ. Chỉ đánh cờ, không tự huỷ.
     if (query.attention === 'PICKUP_OVERDUE') {
-      and.push({
-        fulfillmentType: FulfillmentType.STORE_PICKUP,
-        status: OrderStatus.PACKED,
-        requestedDeliveryDate: { not: null, lt: businessDate() },
-      });
+      and.push(pickupOverdueWhere());
     }
 
     return { AND: and };
@@ -357,6 +355,15 @@ export class OrderReadService {
 
     return { rows, total: matched.length, stockChecks };
   }
+}
+
+/** Cùng quy tắc với `isPickupOverdue`, ở dạng bộ lọc: khách tới lấy, đã đóng gói, quá ngày hẹn theo lịch Việt Nam. */
+function pickupOverdueWhere(): Prisma.OrderWhereInput {
+  return {
+    fulfillmentType: FulfillmentType.STORE_PICKUP,
+    status: OrderStatus.PACKED,
+    requestedDeliveryDate: { not: null, lt: businessDate() },
+  };
 }
 
 function isShort(summary: string | null | undefined): boolean {

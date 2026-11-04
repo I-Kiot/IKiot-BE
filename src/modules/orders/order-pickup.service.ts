@@ -15,6 +15,7 @@ import { PickupHandOverDto } from './dto/pickup-hand-over.dto';
 import {
   assertPickupReady,
   assertStorePickup,
+  pendingCounterQr,
   pickupAmountDue,
 } from './order-pickup.rules';
 import { assigneeClaim } from './order-handler';
@@ -41,6 +42,26 @@ import {
 } from '../../common/utils/reference-generator';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import type { Prisma } from '../../../generated/prisma/client';
+
+/** Huỷ các khoản QR tại quầy đang chờ, trong transaction của người gọi. Tiền vừa về đúng lúc này thì dừng để người dùng tải lại, không ghi đè khoản đã thu. */
+export async function cancelCounterQr(
+  tx: Prisma.TransactionClient,
+  pending: readonly { id: string }[],
+): Promise<void> {
+  for (const payment of pending) {
+    const cancelled = await tx.payment.updateMany({
+      where: { id: payment.id, status: PaymentRecordStatus.PENDING },
+      data: { status: PaymentRecordStatus.CANCELLED },
+    });
+    if (cancelled.count !== 1) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
+        message: 'The transfer has just arrived, please reload',
+      });
+    }
+  }
+}
 
 /**
  * Đơn khách tới lấy (STORE_PICKUP): đóng gói xong thì đơn nằm ở PACKED chờ khách, không có shipment.
@@ -146,29 +167,13 @@ export class OrderPickupService {
       });
     }
 
-    const pending = order.payments.filter(
-      (p) =>
-        p.kind === PaymentKind.BALANCE &&
-        p.method === PaymentMethod.SEPAY &&
-        p.status === PaymentRecordStatus.PENDING,
-    );
+    const pending = pendingCounterQr(order.payments);
     const now = new Date();
 
     if (dto.method === DeliveryCollectionMethod.CASH) {
       await this.prisma.$transaction(async (tx) => {
         // Khách trả tiền mặt thay vì quét QR: huỷ khoản QR đang chờ, nếu tiền vừa về thì dừng.
-        for (const payment of pending) {
-          const cancelled = await tx.payment.updateMany({
-            where: { id: payment.id, status: PaymentRecordStatus.PENDING },
-            data: { status: PaymentRecordStatus.CANCELLED },
-          });
-          if (cancelled.count !== 1) {
-            throw new ConflictException({
-              code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
-              message: 'The transfer has just arrived, please reload',
-            });
-          }
-        }
+        await cancelCounterQr(tx, pending);
         const claimed = await tx.order.updateMany({
           where: {
             id,

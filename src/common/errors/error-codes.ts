@@ -439,8 +439,8 @@ export const ErrorCode = {
   TENANT_BANKING_HAS_PENDING_SEPAY: 'TENANT_BANKING_HAS_PENDING_SEPAY',
   TENANT_SEPAY_NOT_LINKED: 'TENANT_SEPAY_NOT_LINKED',
   SEPAY_API_NOT_CONFIGURED: 'SEPAY_API_NOT_CONFIGURED',
-  SEPAY_API_FAILED: 'SEPAY_API_FAILED',
-
+  SEPAY_API_FAILED: 'SEPAY_API_FAILED',
+
   /** Thao tác chỉ dành cho đơn khách tới lấy (STORE_PICKUP) nhưng đơn này giao theo cách khác. */
   ORDER_NOT_STORE_PICKUP: 'ORDER_NOT_STORE_PICKUP',
   /** Đơn khách tới lấy không đi qua shipment: không tạo lần giao, không bấm "Bắt đầu vận chuyển". */
@@ -453,6 +453,8 @@ export const ErrorCode = {
   ORDER_PICKUP_NOT_READY: 'ORDER_PICKUP_NOT_READY',
   /** Đơn đã có shipment nên không đổi sang hoặc khỏi hình thức khách tới lấy được. */
   ORDER_FULFILLMENT_TYPE_LOCKED: 'ORDER_FULFILLMENT_TYPE_LOCKED',
+  /** Đơn khách tới lấy đã thu tiền tại quầy nên không đổi sang giao tận nơi được: shipper sẽ thu lần nữa. */
+  ORDER_PICKUP_ALREADY_COLLECTED: 'ORDER_PICKUP_ALREADY_COLLECTED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

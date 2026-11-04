@@ -5,17 +5,60 @@ import {
 } from '../../common/constants/order-status';
 import {
   PaymentKind,
+  PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import {
   assertFulfillmentTypeChangeAllowed,
+  assertNoCounterPayment,
   assertNoPickupShippingFee,
   assertNotStorePickup,
   assertPickupReady,
   assertStorePickup,
   isPickupOverdue,
+  pendingCounterQr,
   pickupAmountDue,
 } from './order-pickup.rules';
+
+describe('assertNoCounterPayment', () => {
+  it('refuses once the balance has been collected', () => {
+    expect(
+      codeOf(() =>
+        assertNoCounterPayment([
+          { kind: PaymentKind.BALANCE, status: PaymentRecordStatus.PAID },
+        ]),
+      ),
+    ).toBe(ErrorCode.ORDER_PICKUP_ALREADY_COLLECTED);
+  });
+
+  it('allows a deposit, a waiting QR and a cancelled one', () => {
+    expect(() =>
+      assertNoCounterPayment([
+        { kind: PaymentKind.DEPOSIT, status: PaymentRecordStatus.PAID },
+        { kind: PaymentKind.BALANCE, status: PaymentRecordStatus.PENDING },
+        { kind: PaymentKind.BALANCE, status: PaymentRecordStatus.CANCELLED },
+      ]),
+    ).not.toThrow();
+  });
+});
+
+describe('pendingCounterQr', () => {
+  it('finds only a SePay balance still waiting', () => {
+    const waiting = {
+      kind: PaymentKind.BALANCE,
+      method: PaymentMethod.SEPAY,
+      status: PaymentRecordStatus.PENDING,
+    };
+    expect(
+      pendingCounterQr([
+        waiting,
+        { ...waiting, status: PaymentRecordStatus.PAID },
+        { ...waiting, method: PaymentMethod.CASH },
+        { ...waiting, kind: PaymentKind.DEPOSIT },
+      ]),
+    ).toEqual([waiting]);
+  });
+});
 
 const codeOf = (fn: () => void): string | undefined => {
   try {
