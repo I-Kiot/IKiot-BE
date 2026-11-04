@@ -17,6 +17,10 @@ import {
   resolveDeposit,
 } from './manual-order.service';
 import { depositHeld } from './order-cancel.service';
+import {
+  assertFulfillmentTypeChangeAllowed,
+  assertNoPickupShippingFee,
+} from './order-pickup.rules';
 import { OrderShortageAlerts } from './order-shortage-alerts';
 import {
   SetOrderAssigneeDto,
@@ -30,6 +34,7 @@ import {
   OrderStatus,
   UNSHIPPED_ORDER_STATUSES,
 } from '../../common/constants/order-status';
+import { FINAL_SHIPMENT_STATUSES } from '../../common/constants/shipment-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -146,6 +151,24 @@ export class OrderEditService {
         ? Math.round(dto.shippingFee)
         : storedShipping;
 
+    // Khách tới lấy: đổi hình thức giao có ràng buộc, và không có phí giao hàng (khi đổi sang đây phải gửi shippingFee = 0).
+    const nextType = dto.fulfillmentType ?? order.fulfillmentType;
+    if (nextType !== order.fulfillmentType) {
+      assertFulfillmentTypeChangeAllowed(
+        order,
+        nextType,
+        await this.prisma.shipment.count({
+          where: {
+            orderId: id,
+            status: { notIn: [...FINAL_SHIPMENT_STATUSES] },
+          },
+        }),
+      );
+    }
+    if (nextType === FulfillmentType.STORE_PICKUP) {
+      assertNoPickupShippingFee(shippingFee);
+    }
+
     let money: Awaited<ReturnType<OrderEditService['reprice']>> | null = null;
     let grandTotal = Number(order.grandTotal) - storedShipping + shippingFee;
     if (reprice) {
@@ -227,6 +250,11 @@ export class OrderEditService {
             ['recipientName', 'recipientPhone', 'deliveryAddress', 'note'],
             true,
           ),
+          // Đổi sang khách tới lấy thì địa chỉ giao không còn nghĩa.
+          ...(nextType === FulfillmentType.STORE_PICKUP &&
+          nextType !== order.fulfillmentType
+            ? { deliveryAddress: null }
+            : {}),
           ...(dto.requestedDeliveryDate !== undefined
             ? {
                 requestedDeliveryDate: dto.requestedDeliveryDate
