@@ -11,10 +11,12 @@ import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
+import { assertNoPickupShippingFee } from './order-pickup.rules';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import type { ComboLeaf } from './combo-expansion';
 import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
+  FulfillmentType,
   OrderChannel,
   OrderLineType,
   OrderPaymentStatus,
@@ -171,6 +173,9 @@ export class ManualOrderService {
       discountValue,
     );
     const shippingFee = Math.round(dto.shippingFee ?? 0);
+    const isPickup = dto.fulfillmentType === FulfillmentType.STORE_PICKUP;
+    // Khách tới lấy thì không có phí giao hàng và không có địa chỉ giao.
+    if (isPickup) assertNoPickupShippingFee(shippingFee);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
     const paymentStatus = paymentStatusForDeposit(
@@ -222,7 +227,7 @@ export class ManualOrderService {
           paymentStatus,
           recipientName: dto.recipientName,
           recipientPhone: dto.recipientPhone,
-          deliveryAddress: dto.deliveryAddress,
+          deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
           requestedDeliveryDate: dto.requestedDeliveryDate
             ? new Date(dto.requestedDeliveryDate)
             : undefined,
