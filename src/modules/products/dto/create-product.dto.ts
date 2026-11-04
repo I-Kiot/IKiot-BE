@@ -21,7 +21,7 @@ import {
   ProductImageDto,
 } from './product-item.dto';
 
-/** Ported from CreateProductRequestDTO. `categoryName` is deliberately absent: it is a denormalized copy the server fills in from `categoryId`, and taking it from the client let a product claim a category it wasn't in. */
+/** Port từ CreateProductRequestDTO. Không có `categoryName`: server tự điền từ `categoryId`, nhận từ client thì sản phẩm có thể gán nhầm danh mục. */
 export class CreateProductDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên sản phẩm không được để trống' })
@@ -35,12 +35,12 @@ export class CreateProductDto {
   @IsUUID()
   categoryId?: string;
 
-  /** Đặt xưởng sản xuất được hay không. Bỏ trống = false: sản phẩm chỉ nhập từ NCC. */
+  /** Có đặt xưởng sản xuất được không. Bỏ trống = false (chỉ nhập từ NCC). */
   @IsOptional()
   @IsBoolean()
   isManufacturable?: boolean;
 
-  /** PRODUCT (default), COMBO or SERVICE. Fixed at create; every variant gets the matching `itemType`. */
+  /** PRODUCT (mặc định), COMBO hoặc SERVICE. Cố định lúc tạo; mọi phiên bản nhận `itemType` tương ứng. */
   @IsOptional()
   @IsIn(PRODUCT_TYPES, {
     message: `productType phải là ${PRODUCT_TYPES.join(', ')}`,
@@ -59,14 +59,14 @@ export class CreateProductDto {
   @Type(() => ProductImageDto)
   images?: ProductImageDto[];
 
-  /** The product's attributes with their units (2026-10-16). The first SKU's `productDetails` give the values. */
+  /** Thuộc tính của sản phẩm kèm đơn vị (2026-10-16). Giá trị lấy từ `productDetails` của SKU đầu tiên. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ProductAttributeDto)
   attributes?: ProductAttributeDto[];
 
-  // A product with no variants has no price and nothing sellable, so it is rejected as the old API rejected it.
+  // Sản phẩm không có phiên bản thì không có giá và không bán được, nên bị từ chối như API cũ.
   @IsArray()
   @ArrayNotEmpty({ message: 'Sản phẩm phải có ít nhất một mặt hàng' })
   @ValidateNested({ each: true })

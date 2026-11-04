@@ -7,7 +7,7 @@ import type {
   GeminiClient,
 } from './gemini.client';
 
-/** A scripted model: each entry is one turn's reply, and once the script runs out it answers with plain text, as a real model does. */
+/** Model giả: mỗi phần tử là câu trả lời của một lượt; hết script thì trả lời văn bản thường, như model thật. */
 class FakeGemini implements GeminiClient {
   readonly seen: GenerateOptions[] = [];
 
@@ -21,7 +21,7 @@ class FakeGemini implements GeminiClient {
   }
 
   generate(options: GenerateOptions): Promise<GenerateResult> {
-    // Snapshot the conversation: the loop mutates the array it was handed.
+    // Chụp lại hội thoại: vòng lặp sửa chính mảng được truyền vào.
     this.seen.push({
       ...options,
       contents: Array.isArray(options.contents)
@@ -93,7 +93,7 @@ describe('AiAgentService.run', () => {
     expect(result.answer).toBe('Doanh thu tháng này là 12.000.000đ.');
     expect(result.steps).toBe(2);
 
-    // The model's own turn must go back in before its results, or the second request has tool answers with nothing that asked for them.
+    // Lượt của model phải được đưa vào trước kết quả tool, nếu không request thứ hai có tool answer mà không có call nào yêu cầu.
     const second = gemini.seen[1].contents as Content[];
     expect(second).toHaveLength(3);
     expect(second[1].parts[0]).toHaveProperty('functionCall');
@@ -141,7 +141,7 @@ describe('AiAgentService.run', () => {
     expect(second[2].parts).toHaveLength(2);
   });
 
-  // A refused tool is data, not a crash: the model is told why and can say so.
+  // Tool bị từ chối là dữ liệu, không phải lỗi: model được báo lý do và có thể nói lại với người dùng.
   it('hands a tool failure back to the model instead of throwing', async () => {
     const gemini = new FakeGemini([
       toolCall('getRevenueOverview'),
@@ -158,7 +158,7 @@ describe('AiAgentService.run', () => {
     expect(JSON.stringify(second[2])).toContain('reports:read');
   });
 
-  /** The regression this seam exists for: the old loop threw on `loopCount >= maxLoops`, discarding an answer produced on the last allowed turn. */
+  /** Hồi quy mà seam này sinh ra để kiểm tra: vòng lặp cũ throw khi `loopCount >= maxLoops`, làm mất câu trả lời có được ở lượt cho phép cuối. */
   it('keeps an answer produced on the very last allowed turn', async () => {
     const script = Array.from({ length: MAX_AGENT_STEPS - 1 }, () =>
       toolCall('searchProducts'),
@@ -185,7 +185,7 @@ describe('AiAgentService.run', () => {
     ).rejects.toThrow('exceeded execution loop limit');
   });
 
-  // Custom tools and Google Search grounding cannot be armed together - that is why the classification round-trip exists.
+  // Custom tool và Google Search grounding không bật cùng lúc được - đó là lý do có bước phân loại trước.
   it('arms tools according to the route', async () => {
     const cases: [AgentRoute, boolean, boolean][] = [
       [AgentRoute.INTERNAL_DATA, true, false],
@@ -202,7 +202,7 @@ describe('AiAgentService.run', () => {
     }
   });
 
-  // On the other two routes no custom tools are armed, so a stray functionCall must not be executed.
+  // Hai route còn lại không bật custom tool, nên functionCall lạc không được thực thi.
   it('ignores tool calls outside the internal-data route', async () => {
     const gemini = new FakeGemini([toolCall('searchProducts')]);
     const agent = new AiAgentService(gemini);

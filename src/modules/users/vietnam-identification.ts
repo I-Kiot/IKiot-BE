@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** The three-digit province-of-birth prefixes a Vietnamese citizen ID may start with, ported verbatim from StaffIdentificationValidator. */
+/** Mã tỉnh khai sinh 3 chữ số hợp lệ ở đầu CCCD, port nguyên từ StaffIdentificationValidator. */
 // prettier-ignore
 export const VIETNAM_PROVINCE_CODES: ReadonlySet<string> = new Set([
   '001', '002', '004', '006', '008', '010', '011', '012', '014',
@@ -13,12 +13,12 @@ export const VIETNAM_PROVINCE_CODES: ReadonlySet<string> = new Set([
   '086', '087', '089', '091', '092', '093', '094', '095', '096',
 ]);
 
-/** Digit 4 encodes century *and* sex: even = male, odd = female, pair per century. */
+/** Số thứ 4 mã hoá cả thế kỷ và giới tính: chẵn = nam, lẻ = nữ, mỗi cặp là một thế kỷ. */
 function birthYearOf(centurySexCode: number, yearSuffix: string): number {
   return 1900 + Math.floor(centurySexCode / 2) * 100 + Number(yearSuffix);
 }
 
-/** Validates a 12-digit Vietnamese citizen ID and cross-checks it against the profile it is attached to: digits 1–3 are the province, digit 4 the century and sex, digits 5–6 the birth year - so a CCCD disagreeing with `dob` or `gender` means one of them was typed wrong, which is worth catching before anything downstream trusts all three. Returns the trimmed, normalised number. */
+/** Kiểm tra CCCD 12 số và đối chiếu với hồ sơ: số 1–3 là tỉnh, số 4 là thế kỷ và giới tính, số 5–6 là năm sinh. CCCD lệch với `dob` hoặc `gender` nghĩa là một trường bị nhập sai, nên bắt ngay trước khi dùng. Trả về số đã trim. */
 export function validateVietnamIdentificationId(
   identificationId: string,
   profile: { dob?: Date | string | null; gender?: string | null } = {},

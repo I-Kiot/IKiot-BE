@@ -1,6 +1,6 @@
-/** A staff member's personal details: stored flat in `profile_*` columns and answered nested, because the dashboard reads `user.profile.firstName`. Read side only. */
+/** Thông tin cá nhân nhân viên: lưu phẳng trong các cột `profile_*` nhưng trả về lồng nhau, vì dashboard đọc `user.profile.firstName`. Chỉ phía đọc. */
 
-/** The flat columns this maps. Structural, so any `select` carrying them satisfies it. */
+/** Các cột phẳng được map. Kiểu structural nên select nào có đủ các cột này đều khớp. */
 export interface FlatUserProfile {
   profileFirstName?: string | null;
   profileLastName?: string | null;
@@ -23,7 +23,7 @@ export interface NestedUserProfile {
   gender: string | null;
 }
 
-/** Swaps the `profile*` columns for one nested `profile` object. */
+/** Đổi các cột `profile*` thành một object `profile` lồng nhau. */
 export function withNestedProfile<T extends FlatUserProfile>(
   row: T,
 ): Omit<T, keyof FlatUserProfile> & {

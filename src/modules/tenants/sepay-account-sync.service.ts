@@ -20,10 +20,10 @@ import {
 
 const DEFAULT_BASE_URL = 'https://userapi.sepay.vn/v2';
 const PAGE_SIZE = 100;
-/** Stops a runaway `has_more`: 5,000 accounts is far past what one platform links. */
+/** Chặn `has_more` chạy vô hạn: 5.000 tài khoản đã vượt xa số shop mà một nền tảng liên kết. */
 const MAX_PAGES = 50;
 
-/** Marks a shop as linked when its account appears on the platform's SePay account, which the shared webhook already covers. */
+/** Đánh dấu shop đã liên kết khi tài khoản của shop xuất hiện trên tài khoản SePay của nền tảng; webhook dùng chung đã phục vụ phần này. */
 @Injectable()
 export class SepayAccountSyncService {
   private readonly logger = new Logger(SepayAccountSyncService.name);
@@ -33,7 +33,7 @@ export class SepayAccountSyncService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** Throws when SePay can't be read: a failed read taken for "no accounts" would unlink every shop. */
+  /** Ném lỗi khi không đọc được SePay: nếu coi lỗi đọc là "không có tài khoản" thì mọi shop sẽ bị huỷ liên kết. */
   async sync(): Promise<{
     accounts: number;
     linked: string[];
@@ -77,9 +77,9 @@ export class SepayAccountSyncService {
     return { accounts: accounts.length, linked: link, unlinked: unlink };
   }
 
-  /** For the cron and banking saves: SePay being down must not fail either. */
+  /** Dùng cho cron và lúc lưu banking: SePay lỗi không được làm hỏng request đó. */
   async syncQuietly(): Promise<void> {
-    // A developer's `.env` may hold a real token; a test run must not reach SePay.
+    // Máy dev có thể có token thật trong .env; test không được gọi SePay.
     if (process.env.NODE_ENV === 'test') return;
     if (!process.env.SEPAY_API_KEY?.trim()) return;
     try {
@@ -173,7 +173,7 @@ export class SepayAccountSyncService {
   }
 }
 
-/** With no `meta.pagination`, a full page is the only hint there may be another. */
+/** Không có `meta.pagination` thì chỉ khi trang đầy mới có khả năng còn trang sau. */
 function hasMorePages(body: unknown, rowCount: number): boolean {
   const pagination = (
     body as { meta?: { pagination?: Record<string, unknown> } }

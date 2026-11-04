@@ -8,7 +8,6 @@ interface GoogleEvent {
   start?: { date?: string; dateTime?: string };
 }
 
-/** One holiday as it comes back from Google, before it meets the database. */
 export interface FetchedHoliday {
   date: Date;
   name: string;
@@ -17,7 +16,7 @@ export interface FetchedHoliday {
 const DEFAULT_VN_HOLIDAY_CALENDAR_ID =
   'vi.vietnamese#holiday@group.v.calendar.google.com';
 
-/** Pulls Vietnam's public holidays from Google Calendar into a tenant's calendar. The rule that matters: a row the tenant has touched is never overwritten, including one they switched off. */
+/** Kéo ngày lễ công cộng VN từ Google Calendar vào lịch của tenant. Quy tắc quan trọng: dòng tenant đã sửa tay không bao giờ bị ghi đè, kể cả dòng đã tắt. */
 @Injectable()
 export class HolidaySyncService {
   private readonly logger = new Logger(HolidaySyncService.name);
@@ -31,7 +30,6 @@ export class HolidaySyncService {
     );
   }
 
-  /** An all-day event carries `start.date`; a timed one only `start.dateTime`. */
   private eventDate(event: GoogleEvent): Date | null {
     const text = event.start?.date ?? event.start?.dateTime?.slice(0, 10);
     if (!text) return null;
@@ -56,7 +54,6 @@ export class HolidaySyncService {
     url.searchParams.set('key', apiKey);
     url.searchParams.set('timeMin', `${year}-01-01T00:00:00.000Z`);
     url.searchParams.set('timeMax', `${year + 1}-01-01T00:00:00.000Z`);
-    // Recurring holidays are expanded into one event per occurrence.
     url.searchParams.set('singleEvents', 'true');
     url.searchParams.set('orderBy', 'startTime');
     url.searchParams.set('maxResults', '2500');
@@ -78,7 +75,7 @@ export class HolidaySyncService {
       );
   }
 
-  /** Syncs one tenant, one year. Prisma has no bulk upsert, so this loops inside one transaction - a partial sync leaving half a year updated would be worse than one that failed outright. */
+  /** Đồng bộ một tenant, một năm. Prisma không có bulk upsert nên lặp trong một transaction: đồng bộ dở dang nửa năm còn tệ hơn là thất bại hẳn. */
   async syncVietnamPublicHolidays(tenantId: string, year: number) {
     const holidays = await this.fetchFromGoogle(year);
     if (holidays.length === 0) {
@@ -111,7 +108,7 @@ export class HolidaySyncService {
         const key = holiday.date.toISOString().slice(0, 10);
         const row = byDate.get(key);
 
-        // Tenant edits always win over the external calendar, isActive: false included.
+        // Sửa tay của tenant luôn thắng lịch ngoài, kể cả `isActive: false`.
         if (row?.isManuallyEdited) {
           skippedManualCount += 1;
           continue;

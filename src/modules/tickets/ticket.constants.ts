@@ -1,4 +1,4 @@
-/** Ported from the Ticket model's enums. `RESOLVED` is carried over even though no route ever set it - the value exists in production data and the admin UI filters on it, so dropping it would be a schema change. */
+/** Port từ enum của model Ticket. `RESOLVED` giữ lại dù không route nào set: giá trị này có trong dữ liệu production và admin UI lọc theo nó, bỏ đi là đổi schema. */
 export const TicketStatus = {
   OPEN: 'OPEN',
   IN_PROGRESS: 'IN_PROGRESS',
@@ -17,5 +17,4 @@ export const TicketPriority = {
 
 export const TICKET_PRIORITIES = Object.values(TicketPriority);
 
-/** What `POST /tickets` stamps when the client sends no `priority`. */
 export const DEFAULT_TICKET_PRIORITY = TicketPriority.MEDIUM;

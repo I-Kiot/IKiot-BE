@@ -13,7 +13,7 @@ const lot = (
   orderItemId: string | null = null,
 ) => ({ id, remainingQuantity, receivedAt: day(receivedOn), orderItemId });
 
-// FIFO decides the cost of every unit sold; getting it wrong silently misstates margins.
+// FIFO quyết định giá vốn mỗi đơn vị bán; sai ở đây thì biên lợi nhuận lệch âm thầm.
 describe('planDraw', () => {
   it('draws the oldest lot first, spilling into the next', () => {
     const lots = [lot('new', 5, 3), lot('old', 2, 1), lot('mid', 4, 2)];

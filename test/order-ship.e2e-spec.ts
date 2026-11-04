@@ -38,10 +38,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Kiểm thử lấy hàng & giao hàng (C-2, C-8) trên Postgres thật (docker compose up -d): "ĐVVC đã lấy
- * hàng" (POST /shipments), đổi shipper, và chuyển sang Đang vận chuyển – bước trừ tồn kho. Ai được
- * làm theo luật chốt 2026-10-06: chủ shop, người phụ trách đơn, hoặc người có quyền tại đúng kho.
- * Tự tạo tenant riêng và dọn sạch mọi thứ đã ghi, nên chạy lại bao nhiêu lần cũng được.
+ * Lấy hàng & giao hàng (C-2, C-8) trên Postgres thật: “ĐVVC đã lấy hàng” (POST /shipments), đổi shipper, chuyển sang Đang vận chuyển (bước trừ tồn kho). Ai được làm theo luật chốt 2026-10-06: chủ shop, người phụ trách đơn, hoặc người có quyền tại đúng kho. Tự tạo tenant riêng và dọn sạch.
  */
 describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orders/:id/ship', () => {
   let prisma: PrismaService;
@@ -722,7 +719,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         response: { code: ErrorCode.SHIPMENT_DRIVER_INVALID },
       });
 
-      // On the road already: the shipper has the goods, so no swap.
+      // Đã trên đường: shipper đã có hàng nên không đổi shipper.
       await prisma.shipment.update({
         where: { id: created.id },
         data: { status: ShipmentStatus.IN_TRANSIT },
@@ -1017,7 +1014,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     });
 
     it('stops a driver who has just been replaced', async () => {
-      // The swap is only possible before the goods are on the road.
+      // Chỉ đổi shipper được khi hàng chưa đi.
       const orderId = await packedOrder();
       const { id: shipmentId } = await shipments.create(
         owner,

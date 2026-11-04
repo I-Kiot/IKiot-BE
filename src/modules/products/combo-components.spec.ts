@@ -42,7 +42,6 @@ const code = (fn: () => void) => {
 
 describe('assertComboGraph', () => {
   it('accepts a nested combo', () => {
-    // phòng ngủ = bộ giường + tủ; bộ giường = giường + 2 tab
     const existing = graph(
       edge('bed-set', 'bed'),
       edge('bed-set', 'nightstand', 'PRODUCT', 2),
@@ -57,7 +56,6 @@ describe('assertComboGraph', () => {
   });
 
   it('refuses a cycle through another combo', () => {
-    // B đã chứa A; giờ cho A chứa B.
     const existing = graph(edge('B', 'A', 'COMBO'), edge('A', 'chair'));
     expect(
       code(() => assertComboGraph('A', [edge('A', 'B', 'COMBO')], existing)),
@@ -73,7 +71,7 @@ describe('assertComboGraph', () => {
   });
 
   it('refuses an edit that pushes a combo above it past the depth limit', () => {
-    // Chuỗi đúng MAX_COMBO_DEPTH combo (top → … → leaf-combo); cho leaf-combo chứa thêm một combo là quá.
+    // Chuỗi đã đúng MAX_COMBO_DEPTH; thêm một tầng ở đáy là quá.
     const chain: ComboEdge[] = [];
     const ids = [
       'top',

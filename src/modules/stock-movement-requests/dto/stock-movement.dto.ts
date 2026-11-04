@@ -13,7 +13,7 @@ import {
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { MOVEMENT_STATUSES, MOVEMENT_TYPES } from '../stock-movement.constants';
 
-/** One line of a movement. Which fields are required depends on the movement type and the service enforces that: `quantity` is optional because an ADJUST line may mean "use what the system thinks", `importPrice` because EXPORT/RETURN falls back to cost price. */
+/** Một dòng phiếu. Trường bắt buộc tuỳ loại phiếu, service kiểm: `quantity` không bắt buộc với ADJUST (dùng số hệ thống), `importPrice` với EXPORT/RETURN lấy giá vốn. */
 export class MovementItemDto {
   @IsUUID()
   productItemId: string;
@@ -30,7 +30,6 @@ export class MovementItemDto {
   @Min(0, { message: 'Đơn giá nhập không được âm' })
   importPrice?: number;
 
-  /** What was actually counted or actually arrived. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -42,24 +41,23 @@ export class MovementItemDto {
   note?: string;
 }
 
-/** Ported from the payload StockMovementController accepted; `status` is the state machine's business and `totalPrice` is computed from the lines. */
+/** Port từ payload StockMovementController nhận. `status` do state machine quyết, `totalPrice` tính từ dòng. */
 export class CreateStockMovementDto {
   @IsIn(MOVEMENT_TYPES, {
     message: `movementType phải là ${MOVEMENT_TYPES.join(', ')}`,
   })
   movementType: string;
 
-  /** IMPORT only - who the goods are coming from. */
   @IsOptional()
   @IsUUID()
   fromSupplierId?: string;
 
-  /** Where stock leaves from - required for EXPORT/RETURN/ADJUST. A STAFF account may omit it and have their posting filled in; a TENANT_OWNER has to say. */
+  /** Hàng xuất từ đâu, bắt buộc với EXPORT/RETURN/ADJUST. STAFF có thể bỏ trống để dùng nơi phân công; TENANT_OWNER phải ghi. */
   @IsOptional()
   @IsUUID()
   fromLocationId?: string;
 
-  /** Where stock arrives. Required for IMPORT/EXPORT/RETURN, meaningless for ADJUST. Only the id: the kind of place is read from the Location row, never taken from the client. */
+  /** Hàng về đâu, bắt buộc với IMPORT/EXPORT/RETURN, vô nghĩa với ADJUST. Chỉ nhận id: loại địa điểm đọc từ dòng Location, không lấy từ client. */
   @IsOptional()
   @IsUUID()
   toLocationId?: string;
@@ -75,7 +73,6 @@ export class CreateStockMovementDto {
   details: MovementItemDto[];
 }
 
-/** Replaces the whole line set. */
 export class UpdateMovementDetailsDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'Phiếu phải có ít nhất một mặt hàng' })

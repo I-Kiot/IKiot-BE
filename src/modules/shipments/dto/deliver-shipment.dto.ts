@@ -14,7 +14,7 @@ import {
 } from 'class-validator';
 import { DELIVERY_COLLECTION_METHODS } from '../../../common/constants/payment-method';
 
-/** Body của POST /shipments/:id/deliver – shipper xác nhận đã giao thành công và thu tiền (C-5). */
+/** Shipper xác nhận đã giao thành công và thu tiền (C-5). */
 export class DeliverShipmentDto {
   /** Ảnh bằng chứng giao hàng (URL từ POST /uploads). Giao nội bộ cần ít nhất 1 ảnh. */
   @IsArray()

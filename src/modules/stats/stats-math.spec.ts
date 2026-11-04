@@ -17,7 +17,7 @@ import {
 } from './stats.constants';
 
 describe('parseBoundary', () => {
-  // A bare date is a local day in Vietnam, not a UTC one: 2026-03-05 starts at 17:00Z on the 4th.
+  // Ngày trơn là ngày địa phương Việt Nam, không phải UTC: 2026-03-05 bắt đầu lúc 17:00Z ngày 4.
   it('expands a bare YYYY-MM-DD to the local day it names', () => {
     expect(parseBoundary('2026-03-05', false).toISOString()).toBe(
       '2026-03-04T17:00:00.000Z',
@@ -44,7 +44,7 @@ describe('resolveRange', () => {
     );
   });
 
-  // The bug this guards: truncating toDate to midnight would drop the named day's sales.
+  // Lỗi được chặn ở đây: cắt toDate về nửa đêm sẽ làm mất doanh thu của ngày được chọn.
   it('keeps the whole of a bare toDate', () => {
     const { toDate } = resolveRange(undefined, '2026-03-05');
     expect(toDate.toISOString()).toBe('2026-03-05T16:59:59.999Z');
@@ -67,7 +67,7 @@ describe('previousPeriod', () => {
     const previous = previousPeriod(range);
 
     expect(previous.toDate.getTime()).toBe(range.fromDate.getTime() - 1);
-    // Both windows are inclusive at both ends, so both are span + 1 ms wide.
+    // Hai khoảng bao cả hai đầu nên đều rộng span + 1 ms.
     expect(previous.toDate.getTime() - previous.fromDate.getTime()).toBe(
       range.toDate.getTime() - range.fromDate.getTime(),
     );
@@ -90,7 +90,7 @@ describe('changePct', () => {
     expect(changePct(50, 200)).toBe(-75);
   });
 
-  // Not 0 and not Infinity: "went from nothing to something" has no honest percentage, and 0 renders as "flat", the opposite of the truth.
+  // Không phải 0 cũng không phải Infinity: "từ không lên có" không có % trung thực, còn 0 hiển thị là "đi ngang", ngược với thực tế.
   it('answers null when the previous period was zero', () => {
     expect(changePct(5_000_000, 0)).toBeNull();
     expect(changePct(0, 0)).toBeNull();
@@ -137,7 +137,7 @@ describe('countByKey', () => {
 });
 
 describe('comparisonWindows', () => {
-  // Thu 2026-10-15 14:00 local = 07:00Z
+  // Thứ Năm 2026-10-15 14:00 giờ VN = 07:00Z
   const now = new Date('2026-10-15T07:00:00Z');
   const win = (key: string) =>
     comparisonWindows(now).find((w) => w.key === key)!;
@@ -171,7 +171,7 @@ describe('comparisonWindows', () => {
   });
 
   it('never lets the previous window run into the current one', () => {
-    // 31 Mar vs a February that has 28 days
+    // 31/3 so với tháng 2 có 28 ngày
     const w = comparisonWindows(new Date('2026-03-31T05:00:00Z')).find(
       (x) => x.key === 'month',
     )!;

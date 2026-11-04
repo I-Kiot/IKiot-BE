@@ -85,7 +85,7 @@ type MovementRow = Prisma.StockMovementRequestGetPayload<{
   include: typeof DETAIL_INCLUDE;
 }>;
 
-/** Real port of StockMovementService. Two rules run through all of it: stock changes and the status change share one transaction, and notifications plus low-stock warnings are sent after it commits and never throw. Access is a substitution for the old manager roles - an owner acts anywhere, a STAFF account where it is posted, plus `managedScheduleAccess` while supervising a shift, which enters through `canActAt()` alone. The old "branch managers cannot create IMPORTs / EXPORT to a warehouse" rules are dropped: the first is now who holds `stock_movement:create`, the second survives in `assertTransferMakesSense`. */
+/** Port của StockMovementService. Hai luật: tồn và trạng thái đổi chung một transaction; thông báo gửi sau commit và không bao giờ throw. Owner làm mọi nơi, STAFF chỉ nơi được phân công. */
 @Injectable()
 export class StockMovementService {
   constructor(
@@ -95,19 +95,17 @@ export class StockMovementService {
     private readonly suppliers: SupplierService,
   ) {}
 
-  // ─── Reads ─────────────────────────────────────────────────────────────────
-
   async findAll(user: AuthUser, query: QueryStockMovementDto) {
     const tenantId = this.tenantOf(user);
     const where: Prisma.StockMovementRequestWhereInput = { tenantId };
     if (query.status) where.status = query.status;
     if (query.movementType) where.movementType = query.movementType;
 
-    // A staff account sees the movements that touch their own location, from either end.
+    // Tài khoản nhân viên thấy phiếu chạm tới địa điểm của mình, ở cả hai đầu.
     const own = this.postingOf(user);
     if (own) {
       if (!own.locationId) {
-        // Posted nowhere: there is no location whose movements they could be looking at, and matching the column directly would quietly match rows where it is null.
+        // Không được phân công nơi nào: so khớp trực tiếp cột sẽ âm thầm khớp các dòng null.
         return paginate([], 0, query.page, query.limit);
       }
       where.OR = [
@@ -137,7 +135,7 @@ export class StockMovementService {
 
   async findOne(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
-    // Viewable from either end - the sender and the receiver both need to see it.
+    // Xem được từ cả hai đầu: bên gửi và bên nhận đều cần thấy.
     if (
       !this.canActAt(user, this.source(request)) &&
       !this.canActAt(user, this.destination(request))
@@ -150,15 +148,12 @@ export class StockMovementService {
     return this.toResponse(request);
   }
 
-  // ─── Create ────────────────────────────────────────────────────────────────
-
   async create(user: AuthUser, dto: CreateStockMovementDto) {
     const tenantId = this.tenantOf(user);
     this.assertNoDuplicateItems(dto.details);
 
-    // Both ends in one query: existence, tenant and kind (the kind drives the RETURN rule).
-    // This runs before the access checks, so a location in another tenant answers 404
-    // rather than 403 - coding rule 5.
+    // Cả hai đầu trong một query: tồn tại, tenant và loại (loại quyết luật RETURN). Chạy trước kiểm quyền,
+    // nên địa điểm tenant khác trả 404 chứ không 403 (luật 5).
     const fromId = this.resolveSourceId(user, dto);
     const ends = await resolveLocations(this.prisma, tenantId, [
       fromId,
@@ -166,13 +161,12 @@ export class StockMovementService {
     ]);
     const from = fromId ? ends.get(fromId)! : null;
     const to = dto.toLocationId ? ends.get(dto.toLocationId)! : null;
-    // An IMPORT has no source, so it is scoped by its destination - left unchecked, a staff account could file goods in against any warehouse.
+    // IMPORT không có nguồn nên lọc theo đích; bỏ qua thì nhân viên có thể nhập hàng vào kho bất kỳ.
     if (dto.movementType === MovementType.IMPORT) {
       if (to) this.assertCanActAt(user, to);
     } else if (this.isTransferType(dto.movementType)) {
-      // Either end may raise a transfer: the sender pushing goods out, or the receiver
-      // asking for them. Only one endpoint has to be the actor's - the other is whoever
-      // they are trading with. Every later step still checks the end that acts.
+      // Bên gửi hoặc bên nhận đều được tạo phiếu chuyển (bên nhận xin hàng). Chỉ cần một đầu là của người thao tác;
+      // mỗi bước sau vẫn kiểm đầu đang thao tác.
       if (!this.canActAt(user, from) && !this.canActAt(user, to)) {
         throw new ForbiddenException({
           code: ErrorCode.STOCK_MOVEMENT_LOCATION_DENIED,
@@ -181,7 +175,7 @@ export class StockMovementService {
         });
       }
     } else if (from) {
-      // ADJUST counts stock at one location, so it is only ever filed there.
+      // ADJUST đếm tồn tại một nơi, nên chỉ lập tại đó.
       this.assertCanActAt(user, from);
     }
     this.assertEndpointsValid(dto.movementType, from, to);
@@ -197,7 +191,7 @@ export class StockMovementService {
       dto.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (dto.movementType === MovementType.IMPORT) {
-      // A workshop's goods come in only through its production request (contract §3).
+      // Hàng của xưởng chỉ về qua yêu cầu sản xuất (contract §3).
       const supplier = await this.suppliers.requireForImport(
         tenantId,
         dto.fromSupplierId,
@@ -206,7 +200,7 @@ export class StockMovementService {
       this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
-    // IMPORT and ADJUST have nothing to pick and pack, so they open at PENDING.
+    // IMPORT và ADJUST không có gì để chọn và đóng gói, nên mở ở PENDING.
     const status =
       dto.movementType === MovementType.IMPORT ||
       dto.movementType === MovementType.ADJUST
@@ -217,7 +211,7 @@ export class StockMovementService {
       data: {
         tenantId,
         movementType: dto.movementType,
-        // The stock_movement_requests_import_source_iff_import CHECK needs a source on every IMPORT and none elsewhere. Only the supplier flow exists today; B-5 adds WORKSHOP and lets the client choose.
+        // CHECK stock_movement_requests_import_source_iff_import: IMPORT phải có nguồn, loại khác không được có. Hiện chỉ có luồng NCC; B-5 thêm WORKSHOP.
         importSource:
           dto.movementType === MovementType.IMPORT
             ? ImportSource.SUPPLIER
@@ -234,9 +228,8 @@ export class StockMovementService {
       include: DETAIL_INCLUDE,
     });
 
-    // A transfer raised by the end that wants the goods is a request, not paperwork about
-    // a shipment already agreed - so the source hears a different sentence. Who is told
-    // does not change: the source is the side that has to pick and pack either way.
+    // Phiếu do bên cần hàng tạo là yêu cầu, không phải chứng từ lô đã thoả thuận, nên bên gửi nhận câu thông báo
+    // khác. Ai được báo không đổi: bên gửi vẫn là bên phải soạn hàng.
     const pulledIn =
       this.isTransferType(created.movementType) &&
       this.isPostedAt(user, this.destination(created)) &&
@@ -249,7 +242,7 @@ export class StockMovementService {
             created.id,
             created.movementType,
           )),
-      // An import is awaited by the place receiving it; a transfer is actioned by the place sending it.
+      // Import do nơi nhận chờ; chuyển do nơi gửi xử lý.
       notifyFrom: created.movementType !== MovementType.IMPORT,
       notifyTo: created.movementType === MovementType.IMPORT,
     });
@@ -257,9 +250,7 @@ export class StockMovementService {
     return this.toResponse(created);
   }
 
-  // ─── State transitions ─────────────────────────────────────────────────────
-
-  /** Replace the lines. Allowed while the request is still being written up. */
+  /** Thay các dòng. Chỉ được khi phiếu còn đang soạn. */
   async updateDetails(
     user: AuthUser,
     id: string,
@@ -273,7 +264,7 @@ export class StockMovementService {
 
     if (isTransfer) {
       this.assertStatus(request, [MovementStatus.OPENING]);
-      // Either end may still correct the list while it is open.
+      // Hai đầu vẫn sửa được danh sách khi phiếu còn mở.
       if (
         !this.canActAt(user, this.source(request)) &&
         !this.canActAt(user, this.destination(request))
@@ -325,7 +316,7 @@ export class StockMovementService {
     return this.toResponse(updated);
   }
 
-  /** DRAFT → OPENING: the sending location starts picking. */
+  /** DRAFT → OPENING: nơi gửi bắt đầu soạn hàng. */
   async open(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
     this.assertCanActAt(user, this.source(request));
@@ -335,7 +326,7 @@ export class StockMovementService {
     return this.toResponse(await this.setStatus(id, MovementStatus.OPENING));
   }
 
-  /** OPENING → CLOSED: picking is finished and the list is final. */
+  /** OPENING → CLOSED: soạn xong, danh sách chốt. */
   async close(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
     this.assertCanActAt(user, this.source(request));
@@ -351,13 +342,13 @@ export class StockMovementService {
     return this.toResponse(await this.setStatus(id, MovementStatus.CLOSED));
   }
 
-  /** → IN_TRANSIT: the goods physically leave, so the source decrement and the status change share one transaction. */
+  /** → IN_TRANSIT: hàng rời kho thật, nên trừ nguồn và đổi trạng thái chung một transaction. */
   async ship(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
     this.assertCanActAt(user, this.source(request));
     this.assertStatus(request, [MovementStatus.CLOSED, MovementStatus.PENDING]);
-    // Same reason as `receive`, earlier: stock leaves the source here, and a combo line could then never be received.
+    // Lý do như `receive`, sớm hơn: hàng rời nguồn tại đây, và dòng combo sau đó không bao giờ nhận được.
     assertHoldsStock(request.details.map((line) => line.productItem));
 
     const isTransfer = this.isTransferType(request.movementType);
@@ -370,7 +361,7 @@ export class StockMovementService {
           const from = this.source(request)!;
           for (const line of request.details) {
             const quantity = Number(line.quantity);
-            // `deductStock` is the check as well as the write: the `assertSourceStock` calls elsewhere are advisory, and this is what stops two shipments emptying the same shelf twice.
+            // `deductStock` vừa là kiểm tra vừa là ghi: `assertSourceStock` nơi khác chỉ là tư vấn, chỗ này ngăn hai chuyến cùng rút một kệ.
             const after = await this.inventory.deductStock(tx, {
               tenantId,
               productItemId: line.productItemId,
@@ -408,7 +399,7 @@ export class StockMovementService {
     return this.toResponse(shipped);
   }
 
-  /** → RECEIVED: the destination confirms what turned up, line by line. Received quantities move stock, not ordered ones, so a short delivery is simply never added - and for an IMPORT this is where the supplier's debt goes up, so the credit limit is re-checked here too. */
+  /** → RECEIVED: bên nhận xác nhận từng dòng đã về. Tồn tính theo số thực nhận, không theo số đặt. Với IMPORT cũng là lúc công nợ NCC tăng, nên kiểm lại hạn mức tín dụng. */
   async receive(user: AuthUser, id: string, dto: ReceiveMovementDto) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
@@ -419,7 +410,7 @@ export class StockMovementService {
         ? [MovementStatus.PENDING, MovementStatus.IN_TRANSIT]
         : [MovementStatus.IN_TRANSIT],
     );
-    // A document filed before `itemsById` refused combos / services may still carry one; this is the step that books stock.
+    // Phiếu tạo trước khi `itemsById` từ chối combo / dịch vụ vẫn có thể mang chúng; bước này là chỗ ghi tồn.
     assertHoldsStock(request.details.map((line) => line.productItem));
 
     const receivedByItem = new Map(
@@ -435,7 +426,8 @@ export class StockMovementService {
       });
     }
 
-    // Nobody can receive more than was sent: the figure feeds both the stock write and the supplier charge, so an IMPORT of one unit received as a million would conjure inventory and a matching debt. Short deliveries stay allowed; over-delivery needs its own paperwork.
+    // Không nhận quá số đã gửi: con số này ghi cả tồn lẫn công nợ NCC, nhận 1 đơn vị thành 1 triệu sẽ tạo tồn và nợ ảo.
+    // Nhận thiếu vẫn được; nhận thừa cần chứng từ riêng.
     const over = request.details.find(
       (line) =>
         (receivedByItem.get(line.productItemId) ?? 0) > Number(line.quantity),
@@ -495,7 +487,7 @@ export class StockMovementService {
               ledger: { ...ledger, type: InventoryTxType.IMPORT },
             });
           } else {
-            // A transfer: the goods arrive as child lots of the ones that left the source, keeping their origin and cost. One shipped before lots existed has nothing to follow.
+            // Chuyển: hàng về thành lô con của lô đã rời nguồn, giữ nguồn và giá vốn. Phiếu xuất trước khi có lô thì không có gì để truy.
             await this.inventory.returnDrawn(tx, {
               tenantId,
               productItemId: line.productItemId,
@@ -555,7 +547,7 @@ export class StockMovementService {
     return this.toResponse(received);
   }
 
-  /** ADJUST PENDING → COMPLETED: apply the counted numbers, delta `counted - recorded`. An adjustment that would take a line below zero is refused rather than clamped - a count implying negative stock is wrong, or something moved while it was open. */
+  /** ADJUST PENDING → COMPLETED: áp số kiểm đếm, chênh `counted − recorded`. Dòng xuống dưới 0 bị từ chối thay vì kẹp về 0: số kiểm ngụ ý tồn âm là sai, hoặc có gì đã đổi khi phiếu đang mở. */
   async approveAdjust(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
@@ -664,7 +656,7 @@ export class StockMovementService {
     return this.toResponse(completed);
   }
 
-  /** Cancel, returning stock that had already left: a transfer cancelled IN_TRANSIT is put back, while anything RECEIVED or COMPLETED can only be corrected with a new movement. */
+  /** Huỷ, trả lại hàng đã rời kho: chuyển huỷ lúc IN_TRANSIT được đưa về; RECEIVED hoặc COMPLETED chỉ sửa bằng phiếu mới. */
   async cancel(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
@@ -735,7 +727,7 @@ export class StockMovementService {
 
   // ─── Line preparation ──────────────────────────────────────────────────────
 
-  /** IMPORT lines need both a price and a quantity, and the import price may not exceed the variant's retail price - buying above what you sell at is a data-entry error that silently poisons every margin report. */
+  /** Dòng IMPORT cần cả giá và số lượng; giá nhập không được vượt giá bán lẻ, nếu không mọi báo cáo lợi nhuận sẽ lệch âm thầm. */
   private async prepareImportLines(tenantId: string, lines: MovementItemDto[]) {
     const items = await this.itemsById(tenantId, lines);
 
@@ -796,7 +788,7 @@ export class StockMovementService {
     return prepared;
   }
 
-  /** ADJUST lines: `receivedQuantity` is the counted figure and is required, while `quantity` is what the system thinks and is filled from inventory when absent, so the difference is against the number at count time. */
+  /** Dòng ADJUST: `receivedQuantity` là số kiểm đếm (bắt buộc); `quantity` là số hệ thống, bỏ trống thì lấy từ tồn, nên chênh lệch tính theo số lúc kiểm. */
   private async prepareAdjustLines(
     tenantId: string,
     from: LocationEnd,
@@ -876,7 +868,7 @@ export class StockMovementService {
     }
   }
 
-  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. That both ends exist in the tenant was settled by `resolveLocations` before this runs. */
+  /** Trường cần cho từng loại phiếu, gom một chỗ: mọi nhánh state machine phía sau giả định các trường này có. Hai đầu tồn tại trong tenant đã được `resolveLocations` kiểm trước. */
   private assertEndpointsValid(
     movementType: string,
     from: LocationEnd | null,
@@ -933,7 +925,7 @@ export class StockMovementService {
       : this.prepareTransferLines(tenantId, from, lines);
   }
 
-  /** A transfer must actually go somewhere else, and one in a return direction must be filed as a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. Which directions count lives in `isReturnDirection` (plan 2026-09-29, QĐ-1). */
+  /** Chuyển phải đến nơi khác; chiều về thì lập RETURN chứ không EXPORT (chiều mới quyết định là trả hàng, không phải vai trò). Chiều nào tính là trả nằm ở `isReturnDirection` (plan 2026-09-29, QĐ-1). */
   private assertTransferMakesSense(
     movementType: string,
     from: LocationEnd,
@@ -1056,7 +1048,7 @@ export class StockMovementService {
     }
   }
 
-  /** Where the movement takes stock from: a staff account that omitted it gets their own posting, and a TENANT_OWNER has to name one. Access is not checked here - a transfer may be raised from either end, so `create()` decides which endpoint has to match. */
+  /** Nguồn trừ hàng: NV bỏ trống thì lấy nơi phân công của họ, TENANT_OWNER phải chọn. Không kiểm quyền ở đây: phiếu chuyển có thể do một trong hai đầu tạo, nên `create()` quyết đầu nào phải khớp. */
   private resolveSourceId(
     user: AuthUser,
     dto: CreateStockMovementDto,
@@ -1114,7 +1106,7 @@ export class StockMovementService {
     );
   }
 
-  /** Tells the people who need to know, after the work is done. The actor is always removed - nobody needs telling about the thing they just did - and `notify()` de-duplicates, so someone who is both creator and receiving manager gets one message. */
+  /** Báo cho người cần biết, sau khi việc xong. Luôn bỏ người thao tác; `notify()` tự khử trùng nên người vừa là người tạo vừa là quản lý nhận chỉ nhận một tin. */
   private async notifyMovement(
     request: MovementRow,
     actorId: string,
@@ -1158,7 +1150,7 @@ export class StockMovementService {
     });
   }
 
-  /** Decimals become numbers; each end of the movement is the shared `{ id, type, name }` (LOCATION_SELECT) or null, and the raw FK columns are dropped so each place is named once. */
+  /** Decimal thành số; mỗi đầu phiếu là `{ id, type, name }` chung (LOCATION_SELECT) hoặc null, bỏ cột FK thô để mỗi nơi chỉ nêu một lần. */
   private toResponse(request: MovementRow) {
     const {
       fromLocationId,

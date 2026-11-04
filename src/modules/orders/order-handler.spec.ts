@@ -13,7 +13,6 @@ import {
 const WAREHOUSE = 'warehouse-1';
 const OTHER = 'warehouse-2';
 
-/** Một tài khoản STAFF đang được phân công ở `WAREHOUSE`, với các quyền cho trước. */
 function staff(permissions: string[], userId = 'staff-1'): AuthUser {
   return {
     userId,

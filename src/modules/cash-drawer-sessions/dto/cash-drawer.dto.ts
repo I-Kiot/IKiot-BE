@@ -17,14 +17,14 @@ import {
   ShiftLogType,
 } from '../cash-drawer.constants';
 
-/** Amounts here are whole đồng - there is no smaller unit in circulation, so a till count with decimals is a typo. */
+/** Số tiền ở đây là đồng nguyên, không có đơn vị nhỏ hơn đang lưu hành, nên kiểm đếm két có số lẻ là lỗi nhập. */
 export class OpenCashDrawerDto {
-  /** Optional for someone posted at a branch - theirs is the only one they could mean - and required for an owner, who has none. */
+  /** Không bắt buộc với người được gán chi nhánh (chỉ có một chi nhánh khả dĩ); bắt buộc với owner vì owner không gắn chi nhánh nào. */
   @IsOptional()
   @IsUUID()
   branchId?: string;
 
-  /** Who takes the drawer first. Must be active staff at that branch. */
+  /** Ai nhận két đầu tiên. Phải là nhân viên đang hoạt động tại chi nhánh đó. */
   @IsUUID()
   staffId: string;
 
@@ -34,21 +34,20 @@ export class OpenCashDrawerDto {
   openingAmount: number;
 }
 
-/** Ported from ShiftLogDTO. */
+/** Port từ ShiftLogDTO. */
 export class SubmitShiftLogDto {
   @IsIn(SHIFT_LOG_TYPES, {
     message: `type phải là ${SHIFT_LOG_TYPES.join(' hoặc ')}`,
   })
   type: string = ShiftLogType.END;
 
-  /** What was counted in the drawer at that moment. */
   @Type(() => Number)
   @IsInt({ message: 'Số tiền phải là số nguyên' })
   @Min(0, { message: 'Số tiền không được âm' })
   amount: number;
 
-  /** Only on an `END`, and only when handing over: the drawer stays open and becomes that person's. Rejected on a `START`, where it would mean nothing. */
-  // "Not on a START" is checked in the service rather than with a second @ValidateIf, since stacking two on one property makes the winning rule depend on decorator order.
+  /** Chỉ có ở `END`, và chỉ khi bàn giao: két vẫn mở và thành của người được giao. Bị từ chối ở `START` vì không có nghĩa. */
+  // Kiểm "không có ở START" trong service thay vì thêm @ValidateIf thứ hai, vì xếp hai decorator trên cùng một property làm rule thắng phụ thuộc thứ tự decorator.
   @IsOptional()
   @IsUUID()
   nextStaffId?: string;
@@ -62,9 +61,8 @@ export class SubmitShiftLogDto {
   note?: string;
 }
 
-/** Ported from FinalizeCashDrawerDTO. */
+/** Port từ FinalizeCashDrawerDTO. */
 export class FinalizeCashDrawerDto {
-  /** What the manager actually counted when closing the day. */
   @Type(() => Number)
   @IsInt({ message: 'Số tiền cuối ca phải là số nguyên' })
   @Min(0, { message: 'Số tiền cuối ca không được âm' })
@@ -79,7 +77,7 @@ export class FinalizeCashDrawerDto {
   note?: string;
 }
 
-/** Ported from CashDrawerQueryDTO (`YYYY-MM-DD` dates, as before). */
+/** Port từ CashDrawerQueryDTO (ngày dạng `YYYY-MM-DD`, như trước). */
 export class QueryCashDrawerDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -98,14 +96,13 @@ export class QueryCashDrawerDto extends PaginationQueryDto {
   toDate?: string;
 }
 
-/** `GET /cash-drawer-sessions/current` takes only the branch. */
 export class CurrentCashDrawerDto {
   @IsOptional()
   @IsUUID()
   branchId?: string;
 }
 
-/** `GET /cash-drawer-sessions/reconciliation` - the variance report over a range of days, separate from `QueryCashDrawerDto` because it compares each session against the ledger rather than listing them; hence the range cap and `varianceOnly`. */
+/** `GET /cash-drawer-sessions/reconciliation` - báo cáo chênh lệch qua nhiều ngày, tách khỏi `QueryCashDrawerDto` vì nó so từng phiên với sổ quỹ thay vì liệt kê; vì vậy có giới hạn khoảng ngày và `varianceOnly`. */
 export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -115,7 +112,7 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsIn(CASH_DRAWER_STATUSES)
   status?: string;
 
-  /** Business dates, `YYYY-MM-DD`. Defaults to the last 30 trading days. */
+  /** Ngày nghiệp vụ, `YYYY-MM-DD`. Mặc định 30 ngày giao dịch gần nhất. */
   @IsOptional()
   @IsDateString()
   fromDate?: string;
@@ -124,7 +121,7 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsDateString()
   toDate?: string;
 
-  /** Only the days that did not balance. A still-open session has no counted total and therefore no variance, so it is excluded rather than reported as balanced. */
+  /** Chỉ các ngày không khớp. Phiên còn mở chưa có tổng đếm nên không có chênh lệch; nó bị loại chứ không được báo là khớp. */
   @BooleanQuery()
   varianceOnly?: boolean;
 }

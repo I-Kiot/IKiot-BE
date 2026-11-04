@@ -5,7 +5,7 @@ import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export class QuerySupplierDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on supplier name or phone number. */
+  /** Khớp một phần, không phân biệt hoa thường, theo tên hoặc SĐT NCC. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -13,11 +13,11 @@ export class QuerySupplierDto extends PaginationQueryDto {
   )
   search?: string;
 
-  /** `hasDebt=true` narrows the list to suppliers still owed money. */
+  /** `hasDebt=true` chỉ lấy NCC còn nợ. */
   @BooleanQuery()
   hasDebt?: boolean;
 
-  /** `type=WORKSHOP` lists the workshops a production request can be sent to. */
+  /** `type=WORKSHOP` liệt kê các thợ có thể nhận yêu cầu sản xuất. */
   @IsOptional()
   @IsIn(SUPPLIER_TYPES)
   type?: string;

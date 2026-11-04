@@ -1,8 +1,7 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Notification copy for the inventory domain; InventoryService calls these instead of writing title/description inline. */
 export const InventoryNotificationTemplates = {
-  /** Sent the moment a line crosses its low-stock threshold, not every time it sits below it - see `InventoryService.lowStockCrossing`. */
+  /** Chỉ gửi khi dòng vừa xuống dưới ngưỡng, không gửi lại mỗi lần còn dưới ngưỡng. Xem `InventoryService.lowStockCrossing`. */
   lowStock: (args: {
     label: string;
     stock: number;

@@ -14,12 +14,12 @@ export class PaySupplierDebtDto {
   @IsPositive({ message: 'Số tiền thanh toán phải lớn hơn 0' })
   amount: number;
 
-  /** Defaults to CASH, matching iKiotMS-BE. */
+  /** Mặc định CASH, như bản cũ. */
   @IsOptional()
   @IsIn(PAYMENT_METHODS)
   paymentMethod?: string;
 
-  /** Free-text memo; becomes the CashFlow description when provided. */
+  /** Ghi chú tự do; có thì thành mô tả của CashFlow. */
   @IsOptional()
   @IsString()
   note?: string;

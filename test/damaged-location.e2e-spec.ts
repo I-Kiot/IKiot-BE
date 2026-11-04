@@ -11,9 +11,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Kiểm thử kho hàng hỏng (D-4, contract §3) trên Postgres thật: `isSellable` của kho,
- * `damagedLocationId` của chi nhánh / kho và các quy tắc giữ cho liên kết đó có nghĩa. Hạn mức
- * gói được bỏ qua (SubscriptionService giả); tự tạo hai tenant riêng và dọn sạch.
+ * Kiểm thử kho hàng hỏng (D-4) trên Postgres thật: `isSellable` của kho, `damagedLocationId` của chi nhánh / kho và quy tắc giữ cho liên kết đó. Hạn mức gói được bỏ qua; tự tạo hai tenant riêng và dọn sạch.
  */
 describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', () => {
   let prisma: PrismaService;
@@ -22,7 +20,7 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
 
   const tenantId = randomUUID();
   const otherTenantId = randomUUID();
-  // The shop owner reads every location; `findOne` takes the caller since `read_own` narrows it.
+  // Chủ shop xem được mọi địa điểm; `findOne` nhận người gọi vì quyền `read_own` thu hẹp phạm vi.
   const owner: AuthUser = {
     userId: randomUUID(),
     tenantId,
@@ -99,7 +97,6 @@ describe('Damaged-goods locations – BranchService / WarehouseService (D-4)', (
     });
     sellableWarehouseId = main.id;
     expect(main).toMatchObject({ isSellable: true });
-    // The contract's three fields are on every response.
     expect(main).toHaveProperty('defaultFulfillmentLocationId', null);
   });
 

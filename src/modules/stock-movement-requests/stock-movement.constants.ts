@@ -1,4 +1,4 @@
-/** What a stock movement is for: `IMPORT` (goods from a supplier, the only type that moves their debt), `EXPORT` (between our own locations), `RETURN` (the same move back to a warehouse, kept separate because the paperwork and reporting differ) and `ADJUST` (a stocktake correcting the recorded number at one location). */
+/** Mục đích phiếu: `IMPORT` (từ NCC, loại duy nhất có công nợ), `EXPORT` (giữa địa điểm của mình), `RETURN` (chuyển ngược về kho, tách riêng để báo cáo), `ADJUST` (kiểm kê chỉnh số tại một địa điểm). */
 export const MovementType = {
   IMPORT: 'IMPORT',
   EXPORT: 'EXPORT',
@@ -10,7 +10,7 @@ export type MovementType = (typeof MovementType)[keyof typeof MovementType];
 
 export const MOVEMENT_TYPES: readonly string[] = Object.values(MovementType);
 
-/** The lifecycle of a request. `DRAFT → OPENING → CLOSED → IN_TRANSIT → RECEIVED` is the transfer path; IMPORT and ADJUST start at `PENDING`, since there is nothing to pick and pack, and ADJUST finishes at `COMPLETED` because nothing arrived. */
+/** Vòng đời phiếu. `DRAFT → OPENING → CLOSED → IN_TRANSIT → RECEIVED` là luồng chuyển; IMPORT và ADJUST bắt đầu ở `PENDING` (không có gì để soạn), ADJUST kết thúc ở `COMPLETED` (không có gì về). */
 export const MovementStatus = {
   DRAFT: 'DRAFT',
   PENDING: 'PENDING',
@@ -28,7 +28,7 @@ export type MovementStatus =
 export const MOVEMENT_STATUSES: readonly string[] =
   Object.values(MovementStatus);
 
-/** Statuses in which a movement still expects to touch its items; `ProductService` reads this to refuse discontinuing a product caught up in unfinished paperwork. */
+/** Trạng thái phiếu còn chạm tới món của nó; `ProductService` dùng để từ chối ngừng sản phẩm đang nằm trong phiếu dở. */
 export const OPEN_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.DRAFT,
   MovementStatus.PENDING,
@@ -36,7 +36,7 @@ export const OPEN_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.IN_TRANSIT,
 ];
 
-/** Nothing moves a request out of these - cancelling one is refused. */
+/** Không thao tác nào đưa phiếu ra khỏi các trạng thái này; huỷ bị từ chối. */
 export const FINAL_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.RECEIVED,
   MovementStatus.COMPLETED,

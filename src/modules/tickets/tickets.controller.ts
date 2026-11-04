@@ -16,7 +16,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** The shop's half of support, at the old paths. `GET :id` and `DELETE :id` are shared with the operators, as the old router had them, so a link to a ticket resolves the same whoever opens it. */
+/** Phần của shop trong support, giữ đường dẫn cũ. `GET :id` và `DELETE :id` dùng chung với operator như router cũ, nên link tới ticket mở ra giống nhau với mọi người. */
 @ApiTags('tickets')
 @ApiBearerAuth('bearer')
 @Controller('tickets')
@@ -29,7 +29,7 @@ export class TicketController {
     return this.service.create(requireTenantId(user), user, dto);
   }
 
-  /** Declared before `:id` - Nest matches routes in declaration order, so the literal segment has to come first. */
+  /** Khai báo trước `:id`: Nest khớp route theo thứ tự khai báo, nên segment cố định phải đứng trước. */
   @Permissions('tickets', 'read')
   @Get('my')
   findMine(@CurrentUser() user: AuthUser) {

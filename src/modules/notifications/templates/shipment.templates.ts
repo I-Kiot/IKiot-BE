@@ -2,9 +2,9 @@ import type { NotificationContent } from '../notification-content.type';
 
 const link = (shipmentId: string) => `/shipments/${shipmentId}`;
 
-/** Nội dung thông báo của mảng giao hàng (C-2, C-8). */
+/** Nội dung thông báo giao hàng (task C-2, C-8). */
 export const ShipmentNotificationTemplates = {
-  /** Người nhận vừa được gán làm shipper / thợ – lúc tạo shipment hoặc khi đổi người. */
+  /** Gửi khi vừa gán người làm shipper/thợ: lúc tạo shipment hoặc khi đổi người. */
   assigned: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_ASSIGNED',
     title: 'Bạn có đơn cần giao',
@@ -12,7 +12,6 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
-  /** Báo người phụ trách đơn: shipper đã lấy hàng, đơn chờ xác nhận Đang vận chuyển. */
   pickedUp: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_PICKED_UP',
     title: 'Shipper đã lấy hàng',
@@ -20,7 +19,7 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
-  /** Báo người phụ trách đơn và chủ shop: giao không thành. Hàng còn ở shipper - giao lại được, hoặc xác nhận hàng đã hoàn về shop. */
+  /** Gửi người phụ trách đơn và chủ shop. Hàng vẫn ở shipper: có thể giao lại, hoặc xác nhận hoàn về shop. */
   failed: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_FAILED',
     title: 'Giao hàng không thành',

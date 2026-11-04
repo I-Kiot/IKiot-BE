@@ -2,9 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Thuộc tính của sản phẩm (2026-10-16): định nghĩa ở Product (`ProductAttribute`), mỗi SKU giữ giá trị trong
-// `ProductItemDetail.attributeId`. Mọi chỗ ghi giá trị thuộc tính của SKU đi qua `writeItemDetails` để một tên
-// thuộc tính luôn trỏ về đúng một dòng của sản phẩm.
+// Thuộc tính định nghĩa ở Product (`ProductAttribute`), SKU giữ giá trị qua `ProductItemDetail.attributeId`.
+// Mọi ghi giá trị đi qua `writeItemDetails` để một tên luôn trỏ về đúng một dòng thuộc tính.
 
 export type DetailInput = { name?: string | null; value?: string | null };
 export type AttributeInput = {
@@ -13,11 +12,11 @@ export type AttributeInput = {
   unit?: string | null;
 };
 
-// NFC: cùng một chữ tiếng Việt gõ bằng bộ gõ khác nhau có thể ra dạng dựng sẵn hoặc tổ hợp - phải so như nhau.
+// NFC: cùng chữ tiếng Việt gõ khác bộ gõ có thể ra dạng dựng sẵn hoặc tổ hợp - phải so như nhau.
 const clean = (text: string | null | undefined) =>
   (text ?? '').normalize('NFC').trim();
 
-/** Bộ giá trị của một SKU theo thuộc tính: attributeId → giá trị đã trim. Dòng ghi tự do (không có thuộc tính) bị bỏ qua. */
+/** Giá trị của một SKU theo attributeId (đã trim). Dòng ghi tự do không có thuộc tính thì bỏ qua. */
 export function valueMap(
   details: { attributeId: string | null; value: string | null }[],
 ): Map<string, string> {
@@ -30,7 +29,7 @@ export function valueMap(
   return map;
 }
 
-/** Hai bộ giá trị có giống hệt nhau không (cùng thuộc tính, cùng giá trị) - hai SKU là một phiên bản. */
+/** Hai bộ giá trị giống hệt nhau thì hai SKU là một phiên bản. */
 export function sameValues(
   a: ReadonlyMap<string, string>,
   b: ReadonlyMap<string, string>,
@@ -43,7 +42,7 @@ export function sameValues(
   return true;
 }
 
-/** Thay toàn bộ danh sách thuộc tính của sản phẩm: giữ dòng theo `id` (đổi tên / đơn vị), thêm dòng mới, xoá dòng vắng mặt (giá trị của nó trên các SKU xoá theo). */
+/** Thay toàn bộ thuộc tính sản phẩm: giữ dòng theo `id`, thêm dòng mới, xoá dòng vắng mặt kèm giá trị trên các SKU. */
 export async function replaceAttributes(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -75,7 +74,7 @@ export async function replaceAttributes(
   if (removed.length > 0) {
     await tx.productAttribute.deleteMany({ where: { id: { in: removed } } });
   }
-  // Đổi tên trước bằng tên tạm để hai thuộc tính đổi chỗ tên cho nhau không vướng @@unique([productId, name]).
+  // Đổi tên qua tên tạm để hai thuộc tính đổi chỗ tên cho nhau không vướng @@unique([productId, name]).
   const updates = rows.filter(
     (attr) => attr.id && existing.some((row) => row.id === attr.id),
   );
@@ -109,7 +108,7 @@ export async function replaceAttributes(
   }
 }
 
-/** Thêm đơn vị cho các thuộc tính có trong `attributes` mà chưa có - dùng lúc tạo sản phẩm, khi SKU đầu tiên đã tạo các thuộc tính theo tên. */
+/** Thêm đơn vị cho thuộc tính chưa có, lúc tạo sản phẩm (SKU đầu tiên đã tạo thuộc tính theo tên). */
 export async function upsertAttributeUnits(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -133,10 +132,7 @@ export async function upsertAttributeUnits(
   }
 }
 
-/**
- * Ghi lại toàn bộ giá trị thuộc tính của một SKU. Mỗi tên được nối vào thuộc tính cùng tên của sản phẩm; tên mới
- * thì thêm thuộc tính cho sản phẩm (đứng cuối). Dòng thiếu tên hoặc giá trị bị bỏ.
- */
+/** Ghi lại toàn bộ giá trị thuộc tính của một SKU. Tên mới thì thêm thuộc tính cho sản phẩm (đứng cuối). */
 export async function writeItemDetails(
   tx: Prisma.TransactionClient,
   tenantId: string,

@@ -1,7 +1,7 @@
 import { StreamableFile } from '@nestjs/common';
 import { ResponseEnvelopeInterceptor } from './response-envelope.interceptor';
 
-/** Stands in for the class instances that really reach the interceptor; the `data` field is the case the prototype check exists for. */
+/** Đại diện cho các instance class thật sự đi tới interceptor; trường `data` là trường hợp mà kiểm tra prototype tồn tại để xử lý. */
 class Money {
   constructor(public readonly data: number) {}
   total() {
@@ -9,7 +9,7 @@ class Money {
   }
 }
 
-/** `wrap` is private, but every endpoint's response shape depends on it, so it is tested directly rather than through thirty-four routes. */
+/** `wrap` là private, nhưng hình dạng response của mọi endpoint phụ thuộc vào nó, nên test trực tiếp thay vì qua ba mươi bốn route. */
 const wrap = (body: unknown): unknown =>
   (
     new ResponseEnvelopeInterceptor(null as never) as unknown as {
@@ -29,7 +29,7 @@ describe('ResponseEnvelopeInterceptor.wrap', () => {
     expect(wrap([1, 2])).toEqual({ success: true, data: [1, 2] });
   });
 
-  // Why the merge branch exists: nesting would push every client from body.data[0] to body.data.data[0].
+  // Lý do có nhánh merge: nếu lồng lại thì mọi client phải đổi từ body.data[0] thành body.data.data[0].
   it('merges a paginated result instead of nesting it', () => {
     expect(
       wrap({ data: [{ id: 'a' }], pagination: { total: 1, page: 1 } }),
@@ -67,7 +67,7 @@ describe('ResponseEnvelopeInterceptor.wrap', () => {
     expect(wrap(null)).toEqual({ success: true });
   });
 
-  // A class instance carries behaviour a spread would strip, so the merge branch checks the prototype.
+  // Instance class mang hành vi mà spread sẽ làm mất, nên nhánh merge kiểm tra prototype.
   it('treats class instances as payloads, not as envelopes', () => {
     const date = new Date('2026-08-26T00:00:00.000Z');
     expect(wrap(date)).toEqual({ success: true, data: date });

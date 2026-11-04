@@ -1,7 +1,7 @@
 import { OmitType, PartialType } from '@nestjs/swagger';
 import { CreateProductItemDto } from './product-item.dto';
 
-/** Ported from UpdateProductItemRequestDTO: every creatable field except `supplierIds`, which has its own route so an omitting PATCH can't silently detach every supplier, and `itemType`, which is fixed at create (a variant that has held stock must not become a combo). Stock is not here and never was - it moves through sales and stock movements, never an edit. */
+/** Port từ UpdateProductItemRequestDTO. Không có `supplierIds` (route riêng, PATCH thiếu trường không gỡ hết NCC) và `itemType` (cố định lúc tạo). Tồn kho chỉ đổi qua bán hàng và phiếu kho. */
 export class UpdateProductItemDto extends PartialType(
   OmitType(CreateProductItemDto, ['supplierIds', 'itemType'] as const),
 ) {}

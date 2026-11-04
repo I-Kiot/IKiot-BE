@@ -13,9 +13,7 @@ import {
 } from './../src/common/constants/product-status';
 
 /**
- * Khai báo combo trong danh mục (2026-10-20) trên Postgres thật (docker compose up -d): tạo combo,
- * combo lồng combo, sửa thành phần, và các lỗi chặn (vòng lặp, khác tenant, xoá / ngừng món đang nằm
- * trong combo). Tự tạo tenant riêng và dọn sạch, chạy lại bao nhiêu lần cũng được.
+ * Khai báo combo trong danh mục trên Postgres thật: tạo combo, combo lồng combo, sửa thành phần, và các lỗi chặn (vòng lặp, khác tenant, xoá / ngừng món đang nằm trong combo). Tự tạo tenant riêng và dọn sạch.
  */
 describe('ProductService – combo components', () => {
   let prisma: PrismaService;

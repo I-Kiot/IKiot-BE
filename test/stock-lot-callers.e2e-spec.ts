@@ -10,12 +10,10 @@ import { InvoiceReadService } from './../src/modules/invoices/invoices-read.serv
 import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// The callers of InventoryService's lot primitives that predate the order journey - imports,
-// transfers, stocktakes and the till - driven through their real services against Postgres
-// (docker compose up -d). Each step checks the stock, the lots behind it and the ledger.
-// smoke.e2e-spec.ts covers these routes too but has not run since the Location schema
-// changed the wire format (rewriting it is F-1); until then this is what proves the stock
-// paths keep Σ lot.remaining = stock. Creates its own tenant and removes it afterwards.
+// Các nơi gọi primitive lô của InventoryService có từ trước hành trình đơn hàng (nhập, chuyển kho,
+// kiểm kho, quầy), chạy qua service thật trên Postgres (docker compose up -d). Mỗi bước kiểm tồn,
+// các lô phía sau và sổ kho. smoke.e2e-spec.ts cũng phủ các route này, nhưng test này là phần chứng
+// minh các đường tồn kho vẫn giữ Σ lot.remaining = stock. Tự tạo tenant riêng và xóa sau khi chạy.
 describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -53,7 +51,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
       where: { tenantId, locationId, productItemId: itemId },
       _sum: { remainingQuantity: true },
     });
-    // The invariant, checked on every read.
+    // Bất biến này được kiểm ở mọi lần đọc.
     expect(lots._sum.remainingQuantity ?? 0).toBe(row?.stock ?? 0);
     return row?.stock ?? 0;
   }
@@ -141,8 +139,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     });
   });
 
-  // Cleanup must never skip app.close(): AppModule holds crons, Redis and Socket.IO open, and a
-  // throw here would leave jest waiting on them forever.
+  // Dọn dẹp không được bỏ qua app.close(): AppModule đang giữ cron, Redis và Socket.IO; nếu lỗi ở đây jest sẽ chờ mãi.
   afterAll(async () => {
     try {
       await cleanup();
@@ -167,7 +164,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     await prisma.inventory.deleteMany({ where });
     await prisma.notification.deleteMany({ where });
     await prisma.auditLog.deleteMany({ where });
-    // Receiving an import links the variant to its supplier.
+    // Nhận hàng nhập sẽ gắn biến thể với nhà cung cấp.
     await prisma.productItemSupplier.deleteMany({ where: { supplierId } });
     await prisma.supplier.deleteMany({ where });
     await prisma.productItem.deleteMany({ where });
@@ -246,7 +243,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     expect(await stockAt(branchId)).toBe(2);
     expect(order.assigneeId).toBe(userId);
 
-    // A paid till sale is invoiced on the spot.
+    // Bán quầy đã thanh toán được lập hóa đơn ngay.
     const sale = await prisma.invoice.findFirstOrThrow({
       where: { orderId: order.id, type: 'SALE' },
       include: { lines: true },
@@ -255,7 +252,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     expect(sale.invoiceNumber).toMatch(/^HD\d{6}$/);
     expect(sale.lines).toHaveLength(1);
 
-    // GET /invoices: a till sale is a COUNTER invoice, and never shows under ORDERED.
+    // GET /invoices: bán quầy là hóa đơn COUNTER, không bao giờ hiện dưới ORDERED.
     const counter = await invoiceReads.findAll(owner, tenantId, {
       page: 1,
       limit: 20,
@@ -288,7 +285,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     expect(Number(line.unitCostPrice)).toBe(100);
 
     await orders.updateStatus(owner, tenantId, order.id, 'RETURNED');
-    // The issued invoice stands; the return is a negative ADJUSTMENT pointing at it.
+    // Hóa đơn đã phát hành giữ nguyên; hàng trả là một ADJUSTMENT âm trỏ tới nó.
     const adjustment = await prisma.invoice.findFirstOrThrow({
       where: { orderId: order.id, type: 'ADJUSTMENT' },
     });

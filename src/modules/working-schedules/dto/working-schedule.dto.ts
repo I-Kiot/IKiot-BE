@@ -15,12 +15,11 @@ import {
   ScheduleType,
 } from '../working-schedule.constants';
 
-/** One row of the bulk assignment: these people, this shift, this day. */
 export class ScheduleAssignmentDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'Thiếu nhân viên' })
   @IsUUID('4', { each: true })
-  // The old DTO accepted a bare id as well as an array; normalised here so the service only ever sees a list.
+  // DTO cũ nhận cả id đơn lẻ; chuẩn hoá về mảng để service chỉ nhận một dạng.
   @Transform(({ value }: { value: unknown }) =>
     Array.isArray(value) ? value : value === undefined ? value : [value],
   )
@@ -43,7 +42,6 @@ export class ScheduleAssignmentDto {
   scheduleType?: string = ScheduleType.NORMAL;
 }
 
-/** `POST /working-schedules/bulk`. */
 export class BulkCreateWorkingScheduleDto {
   @IsArray({ message: 'Danh sách phân ca phải là một mảng' })
   @ArrayNotEmpty({ message: 'Cần ít nhất một bản ghi phân ca' })
@@ -52,10 +50,9 @@ export class BulkCreateWorkingScheduleDto {
   schedules: ScheduleAssignmentDto[];
 }
 
-/** `PATCH /working-schedules/:id`. One assignment's worth of fields, all required - the old endpoint ran the body through the bulk DTO and replaced every field, so a partial PATCH was never supported. */
+/** PATCH thay toàn bộ các trường (như route cũ), nên không hỗ trợ PATCH từng phần. */
 export class UpdateWorkingScheduleDto extends ScheduleAssignmentDto {}
 
-/** The filters every schedule list shares. */
 export class QueryWorkingScheduleDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -69,7 +66,7 @@ export class QueryWorkingScheduleDto extends PaginationQueryDto {
   @IsUUID()
   warehouseId?: string;
 
-  /** Inclusive; `endDate` covers the whole day, as the old range filter did. */
+  /** Bao gồm cả hai đầu; `endDate` tính đủ cả ngày, như bộ lọc khoảng cũ. */
   @IsOptional()
   @IsDateString(
     {},
@@ -84,7 +81,7 @@ export class QueryWorkingScheduleDto extends PaginationQueryDto {
   )
   endDate?: string;
 
-  // DELETED is absent on purpose: a soft-deleted schedule is not something a filter can ask for. The old service used the same three-value whitelist.
+  // Cố ý không có DELETED: lịch đã xoá mềm không được lọc ra. Whitelist cũ cũng chỉ có ba giá trị.
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : value,

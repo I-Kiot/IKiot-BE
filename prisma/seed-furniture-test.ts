@@ -1,21 +1,6 @@
-// Catalogue, suppliers, customers and opening stock for the manual test of the order journey -
-// a transcription of docs/tai-khoan-test-hanh-trinh.md part 1.5, into the shop that
-// seed-account-role.ts creates (owner "Nguyễn Thị Demo", 0981189856). If that file changes,
-// change this one with it.
-//
-// Run `npx prisma db seed` and `npx tsx prisma/seed-account-role.ts` first, then:
-//
-//   npx tsx prisma/seed-furniture-test.ts
-//
-// Stock enters the way the app puts it there (CLAUDE.md, "Opening stock is not a field"): a
-// RECEIVED IMPORT movement per location, one lot per line, an IMPORT ledger row, the
-// supplier's debt raised - so Σ lot.remaining = stock and the supplier ledger adds up to
-// the 50.100.000 the test file states. `receiveGoods` is a seed-only copy of that write
-// (InventoryService.openLot + SupplierService.charge sit behind Nest DI a tsx script cannot
-// boot); keep the two in step if the receipt changes.
-//
-// Idempotent per part: categories / brand / suppliers / customers / products are found by
-// name, and the opening stock is skipped once the supplier has any movement.
+// Danh mục, nhà cung cấp, khách, tồn đầu để test hành trình đơn (chép từ docs/tai-khoan-test-hanh-trinh.md, phần 1.5). Chạy sau seed-account-role.ts.
+// Tồn đầu đi qua `receiveGoods`, bản sao luồng nhập của app (script tsx không khởi động được DI): mỗi địa điểm một phiếu RECEIVED, một lô, một dòng sổ IMPORT, công nợ NCC, để Σ lot.remaining = stock. Đổi luồng nhập thì sửa cả hai.
+// Idempotent theo từng phần; tồn đầu bỏ qua khi NCC đã có phát sinh.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -75,7 +60,7 @@ type Product = {
   }[];
 };
 
-// VAT is left empty on every variant so an order's total is price × quantity (test file 1.5).
+// VAT để trống ở mọi biến thể, để tổng đơn = đơn giá × số lượng (file test 1.5).
 const PRODUCTS: Product[] = [
   {
     name: 'Bàn làm việc Oak',
@@ -192,7 +177,7 @@ const PRODUCTS: Product[] = [
   },
 ];
 
-/** Test file 1.5.5. TU-HS-3C and KE-5T at Hà Nội are deliberately absent (stock 0 there). */
+/** File test 1.5.5. TU-HS-3C và KE-5T tại Hà Nội cố ý không có (tồn 0). */
 const OPENING_STOCK: Record<'HANOI' | 'HCM', Record<string, number>> = {
   HANOI: {
     'BAN-OAK-120': 10,
@@ -203,7 +188,7 @@ const OPENING_STOCK: Record<'HANOI' | 'HCM', Record<string, number>> = {
   },
   HCM: { 'BAN-OAK-120': 5, 'KE-5T': 3 },
 };
-/** Low-stock threshold at Hà Nội: packing one chair in K1 leaves 1 on the shelf → warning. */
+/** Ngưỡng sắp hết hàng tại Hà Nội: đóng một ghế ở K1 còn 1 trên kệ → cảnh báo. */
 const MIN_STOCK_HANOI: Record<string, number> = {
   'BAN-OAK-120': 2,
   'GHE-ERGO-DEN': 1,
@@ -349,7 +334,6 @@ async function main() {
     );
   }
 
-  // Categories, brand
   const categoryIds = new Map<string, string>();
   for (const name of CATEGORIES) {
     const row = await findOrCreate(
@@ -363,7 +347,6 @@ async function main() {
     () => prisma.brand.create({ data: { tenantId, name: BRAND } }),
   );
 
-  // Suppliers
   const supplierIds = new Map<string, string>();
   for (const s of SUPPLIERS) {
     const row = await findOrCreate(
@@ -371,14 +354,14 @@ async function main() {
         prisma.supplier.findFirst({
           where: { tenantId, supplierName: s.supplierName },
         }),
-      // creditLimit 0 = no limit.
+      // creditLimit 0 nghĩa là không giới hạn.
       () =>
         prisma.supplier.create({ data: { tenantId, ...s, creditLimit: 0 } }),
     );
     supplierIds.set(s.supplierName, row.id);
   }
 
-  // Customers, codes KH000001.. in the order of the test file.
+  // Mã khách KH000001.. theo thứ tự file test.
   let customerCount = await prisma.customer.count({ where: { tenantId } });
   for (const c of CUSTOMERS) {
     const exists = await prisma.customer.findFirst({
@@ -448,7 +431,6 @@ async function main() {
   }
   console.log(`Products: ${createdProducts} created.`);
 
-  // Opening stock, one import per location from NCC Gỗ Việt.
   const goodsSupplierId = supplierIds.get('NCC Gỗ Việt')!;
   const alreadyReceived = await prisma.stockMovementRequest.count({
     where: { tenantId, fromSupplierId: goodsSupplierId },

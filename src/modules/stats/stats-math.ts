@@ -7,7 +7,7 @@ import {
   TZ_OFFSET,
 } from './stats.constants';
 
-/** The arithmetic behind every dashboard number, as pure functions - same shape and reason as `pricing-engine.ts`: these are the rules a shop owner will argue with. */
+/** Số học đằng sau mọi con số dashboard, viết dạng hàm thuần (cùng cách với `pricing-engine.ts`) vì đây là các quy tắc chủ shop hay tranh cãi. */
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -16,7 +16,7 @@ export interface DateRange {
   toDate: Date;
 }
 
-/** A bare `YYYY-MM-DD` means a whole local day, so which end of the range it is decides midnight or last millisecond; anything else goes to `Date` as-is and keeps its own offset. */
+/** `YYYY-MM-DD` trơn là cả ngày địa phương: đầu khoảng thành 00:00, cuối khoảng thành 23:59:59.999. Chuỗi khác đưa thẳng cho `Date` và giữ offset của nó. */
 export function parseBoundary(raw: string, endOfDay: boolean): Date {
   if (DATE_ONLY.test(raw)) {
     const time = endOfDay ? '23:59:59.999' : '00:00:00.000';
@@ -25,7 +25,6 @@ export function parseBoundary(raw: string, endOfDay: boolean): Date {
   return new Date(raw);
 }
 
-/** Defaults: ending now, starting 30 days earlier. */
 export function resolveRange(rawFrom?: string, rawTo?: string): DateRange {
   const toDate = rawTo ? parseBoundary(rawTo, true) : new Date();
   const fromDate = rawFrom
@@ -34,7 +33,7 @@ export function resolveRange(rawFrom?: string, rawTo?: string): DateRange {
   return { fromDate, toDate };
 }
 
-/** The equal-length window immediately before the one asked for, which every `changePct` is measured against. Both windows are inclusive at both ends and touch without overlapping, so the `- 1`s are not decoration. */
+/** Khoảng bằng nhau ngay trước khoảng được hỏi, là mốc cho mọi `changePct`. Hai khoảng đều bao cả hai đầu và liền kề không chồng nhau, nên các `- 1` là cần thiết. */
 export function previousPeriod({ fromDate, toDate }: DateRange): DateRange {
   const span = toDate.getTime() - fromDate.getTime();
   return {
@@ -43,24 +42,23 @@ export function previousPeriod({ fromDate, toDate }: DateRange): DateRange {
   };
 }
 
-/** Period-over-period change to one decimal place; `null` when the previous period was zero, since there is no honest percentage for "went from nothing to something" and 0 would read as flat. */
+/** % thay đổi so với kỳ trước, một chữ số thập phân; `null` khi kỳ trước bằng 0, vì "từ không lên có" không có % trung thực, còn 0 sẽ bị đọc là đi ngang. */
 export function changePct(current: number, previous: number): number | null {
   if (previous === 0) return null;
   return Math.round(((current - previous) / previous) * 1000) / 10;
 }
 
-/** Average order value, rounded to whole đồng - VND has no minor unit. */
+/** Giá trị đơn trung bình, làm tròn đến đồng - VND không có đơn vị lẻ. */
 export function averageOrderValue(revenue: number, orderCount: number): number {
   return orderCount === 0 ? 0 : Math.round(revenue / orderCount);
 }
 
-/** A ratio as a percentage to one decimal, `null` when there is nothing to divide by. */
+/** Tỉ lệ theo %, một chữ số thập phân; `null` khi mẫu bằng 0. */
 export function ratioPct(part: number, whole: number): number | null {
   if (whole === 0) return null;
   return Math.round((part / whole) * 1000) / 10;
 }
 
-/** `[{ status, count }]` → `{ status: count }`, the shape every summary block wants. */
 export function countByKey<K extends string>(
   rows: { key: K | null; count: number }[],
 ): Record<string, number> {
@@ -89,12 +87,12 @@ export interface ComparisonWindow {
 
 const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-/** Midnight of a local (UTC+7) calendar day as an instant; `Date.UTC` normalises month/day overflow, so `m - 3` or `d - 7` need no special-casing. */
+/** Nửa đêm của ngày lịch địa phương (UTC+7) dưới dạng thời điểm. `Date.UTC` tự chuẩn hoá tràn tháng/ngày nên `m - 3` hay `d - 7` không cần xử lý riêng. */
 function localMidnight(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m, d) - TZ_OFFSET_MS);
 }
 
-/** Today, this week (Mon-start), month, quarter and year against the period before, in the shop's local calendar. The previous window is the *same elapsed span* of the previous period (1–15 Oct against 1–15 Sep), capped at that period's end, so a half-finished month is never judged against a whole one. */
+/** Hôm nay, tuần này (bắt đầu thứ Hai), tháng, quý, năm so với kỳ trước, theo lịch địa phương. Kỳ trước lấy đúng *khoảng thời gian đã trôi qua* (1–15/10 so với 1–15/9), không vượt cuối kỳ đó, nên tháng đang dở không bị so với tháng đủ. */
 export function comparisonWindows(now: Date): ComparisonWindow[] {
   const local = new Date(now.getTime() + TZ_OFFSET_MS);
   const y = local.getUTCFullYear();

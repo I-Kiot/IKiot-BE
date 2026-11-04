@@ -6,15 +6,15 @@ import {
 
 const iso = (at: string) => formatBusinessDate(businessDate(new Date(at)));
 
-// Ho Chi Minh City is UTC+7 all year; getting this wrong puts an early-morning drawer onto the previous day's takings, which nobody notices until a till is short by a whole shift.
+// TP.HCM là UTC+7 quanh năm; sai ở đây thì két mở sáng sớm bị gán vào doanh thu hôm trước, và không ai thấy cho tới khi két hụt cả một ca.
 describe('businessDate', () => {
   it('uses the shop local day, not the UTC day', () => {
-    // 17:30 UTC is already 00:30 the next morning in Vietnam.
+    // 17:30 UTC đã là 00:30 sáng hôm sau ở Việt Nam.
     expect(iso('2026-08-26T17:30:00.000Z')).toBe('2026-08-27');
   });
 
   it('keeps late-evening local time on the same day', () => {
-    // 16:59 UTC is 23:59 local - still the 26th.
+    // 16:59 UTC là 23:59 giờ địa phương - vẫn là ngày 26.
     expect(iso('2026-08-26T16:59:00.000Z')).toBe('2026-08-26');
   });
 
@@ -24,7 +24,7 @@ describe('businessDate', () => {
   });
 
   it('handles a day that UTC has not started yet', () => {
-    // 01:00 local on the 1st is 18:00 UTC on the previous month's last day.
+    // 01:00 ngày 1 giờ địa phương là 18:00 UTC ngày cuối tháng trước.
     expect(iso('2026-08-31T18:00:00.000Z')).toBe('2026-09-01');
   });
 
@@ -42,7 +42,7 @@ describe('businessDate', () => {
   });
 });
 
-// The inverse of businessDate, tested against it rather than hand-written offsets: what matters is that the two agree.
+// Nghịch đảo của businessDate, kiểm bằng chính nó thay vì offset viết tay: quan trọng là hai hàm khớp nhau.
 describe('businessDayRange', () => {
   const day = businessDate(new Date('2026-08-26T09:15:00.000Z'));
 
@@ -58,7 +58,7 @@ describe('businessDayRange', () => {
     expect(businessDate(new Date(start.getTime() - 1)).getTime()).toBeLessThan(
       day.getTime(),
     );
-    // Half-open: `end` is already the next day's first instant.
+    // Nửa mở: `end` đã là thời điểm đầu tiên của ngày hôm sau.
     expect(businessDate(new Date(end.getTime() - 1)).getTime()).toBe(
       day.getTime(),
     );
@@ -72,7 +72,7 @@ describe('businessDayRange', () => {
   });
 
   it('survives a daylight-saving transition', () => {
-    // 2026-03-08 is when New York springs forward, so that local day is 23 hours long - Vietnam never does this, but the function is generic.
+    // 2026-03-08 là ngày New York đổi giờ tiết kiệm ánh sáng nên ngày đó dài 23 giờ - Việt Nam không có việc này, nhưng hàm là tổng quát.
     const springForward = new Date(Date.UTC(2026, 2, 8));
     const { start, end } = businessDayRange(springForward, 'America/New_York');
     expect(start.toISOString()).toBe('2026-03-08T05:00:00.000Z');

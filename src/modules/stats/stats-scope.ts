@@ -3,14 +3,14 @@ import { SystemRole } from '../../common/constants/system-role';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Which slice of the tenant a caller's dashboard covers. The old fixed-role branch is replaced by the posting itself: an account attached to a branch or warehouse is scoped to it, one attached to neither sees the tenant. So a cashier granted `reports:read` now sees their own branch rather than every branch's revenue. */
+/** Phạm vi dữ liệu dashboard của người gọi. Tài khoản gắn chi nhánh/kho chỉ thấy nơi đó; không gắn gì thì thấy cả tenant. Nên thủ quỹ có `reports:read` chỉ thấy chi nhánh của mình. */
 
 export interface LocationScope {
   branchId?: string;
   warehouseId?: string;
 }
 
-/** True for the two account kinds that legitimately look across the whole tenant. */
+/** Đúng với hai loại tài khoản được xem toàn tenant. */
 function seesWholeTenant(user: AuthUser): boolean {
   return (
     user.systemRole === SystemRole.TENANT_OWNER ||
@@ -18,7 +18,7 @@ function seesWholeTenant(user: AuthUser): boolean {
   );
 }
 
-/** Scope for anything counted off `Order` - sales only happen at a branch, so a warehouse posting gets an impossible filter and an empty answer, which is far better than reporting the whole tenant's sales. */
+/** Phạm vi cho những gì đếm từ `Order`. Đơn chỉ bán ở chi nhánh, nên tài khoản gắn kho nhận bộ lọc không khớp và kết quả rỗng - tốt hơn nhiều so với báo doanh số cả tenant. */
 export function orderScope(
   user: AuthUser,
   requestedBranchId?: string,
@@ -29,7 +29,7 @@ export function orderScope(
   }
   if (user.warehouseId) return { impossible: true };
   if (!seesWholeTenant(user)) {
-    // Posted nowhere and not an owner: nothing identifies a slice to show.
+    // Không gắn nơi nào và không phải chủ: không có gì xác định phạm vi để hiện.
     throw new ForbiddenException({
       code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
       message: 'This account has not been assigned to a branch',
@@ -38,7 +38,7 @@ export function orderScope(
   return requestedBranchId ? { branchId: requestedBranchId } : {};
 }
 
-/** Scope for anything counted off `CashFlow` or `Inventory`, which exist at branches and warehouses alike. When an owner names both, warehouse wins - the old filter checked it first and the Swagger docs promised that precedence. */
+/** Phạm vi cho những gì đếm từ `CashFlow` hoặc `Inventory`, có ở cả chi nhánh lẫn kho. Khi chủ chọn cả hai, kho được ưu tiên - bộ lọc cũ kiểm tra kho trước và tài liệu Swagger hứa thứ tự đó. */
 export function locationScope(
   user: AuthUser,
   requestedBranchId?: string,
@@ -63,7 +63,7 @@ export function locationScope(
   return {};
 }
 
-/** A posted account may pass its own location as the filter, but naming someone else's is refused rather than ignored - the old service ignored it, so a manager could believe they were looking at another branch while reading their own numbers. */
+/** Tài khoản có gắn nơi làm việc được truyền chính địa điểm của mình làm bộ lọc; chọn địa điểm người khác thì bị từ chối, không bỏ qua, vì bản cũ bỏ qua khiến quản lý tưởng đang xem chi nhánh khác khi đọc số của mình. */
 function assertOwnLocation(
   requested: string | undefined,
   own: string,

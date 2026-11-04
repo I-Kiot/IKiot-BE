@@ -9,7 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { Observable, map } from 'rxjs';
 import { RAW_RESPONSE_KEY } from '../decorators/raw-response.decorator';
 
-/** The shape every route answers with, restored from iKiotMS-BE. */
+/** Hình dạng mọi route trả về, khôi phục từ iKiotMS-BE. */
 export interface ResponseEnvelope {
   success: boolean;
   message?: string;
@@ -17,7 +17,7 @@ export interface ResponseEnvelope {
   [key: string]: unknown;
 }
 
-/** Puts iKiotMS-BE's `{ success, message?, data }` envelope back on every response - spread when the body already carries `data`/`success` (so `paginate()` stays flat), wrapped otherwise. Must be provided before AuditInterceptor, which runs after it on the way out. */
+/** Bọc response thành envelope `{ success, message?, data }`. Nếu body đã có `data`/`success` thì spread để `paginate()` giữ phẳng. Phải đứng trước AuditInterceptor vì nó chạy sau trên đường ra. */
 @Injectable()
 export class ResponseEnvelopeInterceptor implements NestInterceptor<
   unknown,
@@ -28,7 +28,7 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor<
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'http') return next.handle();
 
-    // Handler first, then class - a controller can opt itself out wholesale.
+    // Handler trước, rồi tới class - controller có thể tự bỏ envelope cả lớp.
     const raw = this.reflector.getAllAndOverride<boolean>(RAW_RESPONSE_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -39,7 +39,7 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor<
   }
 
   private wrap(body: unknown): unknown {
-    // A file download is a stream, not JSON - wrapping it would corrupt the response.
+    // Tải file là stream, không phải JSON - bọc lại sẽ làm hỏng response.
     if (body instanceof StreamableFile) return body;
 
     if (body === undefined || body === null) return { success: true };
@@ -51,7 +51,7 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor<
     return { success: true, data: body } satisfies ResponseEnvelope;
   }
 
-  /** Does this body already speak the envelope's language? Plain objects only - a Date or a Prisma Decimal would lose its prototype to the spread. */
+  /** Body này đã mang dạng envelope chưa? Chỉ object thuần - Date hay Prisma Decimal sẽ mất prototype khi spread. */
   private isMergeable(body: unknown): body is Record<string, unknown> {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
       return false;

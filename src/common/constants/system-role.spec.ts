@@ -5,10 +5,7 @@ import { STAFF_BASE_PERMISSIONS } from './system-role';
 const SRC = join(__dirname, '..', '..');
 
 /**
- * `STAFF_BASE_PERMISSIONS` is unioned into every employee's grants before any guard runs,
- * so a wrong key here is a permission handed to the whole shop with no checkbox to take it
- * back. These pin what the set may and may not contain, and that the two places which
- * have to honour it still do.
+ * `STAFF_BASE_PERMISSIONS` được gộp vào quyền mọi nhân viên trước khi guard chạy, nên một key sai là quyền trao cho cả shop. Test chốt những gì bộ quyền được và không được chứa.
  */
 describe('STAFF_BASE_PERMISSIONS', () => {
   it('is made of well-formed resource:action pairs', () => {
@@ -27,9 +24,9 @@ describe('STAFF_BASE_PERMISSIONS', () => {
   });
 
   it.each([
-    // Where the set becomes part of `AuthUser.permissions`.
+    // Nơi bộ quyền trở thành một phần của `AuthUser.permissions`.
     'modules/auth/strategies/jwt.strategy.ts',
-    // Where it is hidden from the role editor and stripped from what a role stores.
+    // Nơi bộ quyền bị ẩn khỏi trình chỉnh role và bị gỡ khỏi những gì role lưu.
     'modules/roles/roles.service.ts',
   ])('%s honours the set', (file) => {
     const text = readFileSync(join(SRC, file), 'utf8');

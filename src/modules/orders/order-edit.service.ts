@@ -34,20 +34,13 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** The deposit an order should carry after an edit. */
 export interface EditedDeposit {
   amount: number;
-  /** Only when the deposit is a percentage. */
   percent: number | null;
 }
 
 /**
- * The deposit after an edit (A-8, contract §2 "Tiền cọc"). A deposit sent with the edit is resolved
- * as on create; otherwise a percentage deposit follows the new grand total and an amount stays as it
- * was. The money already taken does not move with it - recording more or giving some back is E-5's
- * - so if the result differs from what the shop holds, the edit is refused with
- * ORDER_DEPOSIT_CHANGED and both numbers, and the client asks the user (who can resend the deposit
- * as the amount held to keep it).
+ * Cọc sau khi sửa: cọc gửi kèm được xử lý như lúc tạo; không thì cọc theo % bám theo tổng mới, cọc số tiền thì giữ nguyên. Số đã thu không tự đổi, thu thêm hay hoàn bớt là việc của E-5. Nếu kết quả khác số shop đang giữ, lần sửa bị từ chối với `ORDER_DEPOSIT_CHANGED` kèm cả hai số, để client hỏi người dùng.
  */
 export function resolveEditedDeposit(input: {
   sent: { type: string; value: number; method: string } | undefined;
@@ -104,12 +97,9 @@ type ExistingLine = {
 };
 
 /**
- * Editing a journey order before it ships (A-8, contract §2): `PATCH /orders/:id`,
- * `/assignee`, `/priority`. Allowed while CONFIRMED / PACKED / PICKED_UP, never for a till sale.
- * Lines change only while CONFIRMED: after packing, the goods on the shelf are locked to exactly
- * those lines, and re-locking on an edit was judged not worth its bugs (2026-10-06) - cancel and
- * re-create instead. Everything else (person in charge, priority, money, delivery details) can
- * still change until SHIPPING. Nothing here touches stock.
+ * Sửa đơn hành trình trước khi giao (A-8, contract §2): `PATCH /orders/:id`, `/assignee`, `/priority`. Cho phép khi CONFIRMED / PACKED / PICKED_UP, không bao giờ cho đơn bán tại quầy.
+ * Chỉ đổi dòng khi còn CONFIRMED: sau đóng gói, hàng trên kệ khóa đúng các dòng đó, và việc khóa lại khi sửa bị xét là không đáng rủi ro (2026-10-06) nên phải hủy rồi tạo lại.
+ * Các thứ khác (người phụ trách, ưu tiên, tiền, thông tin giao) đổi được tới SHIPPING. Không đụng tới tồn kho.
  */
 @Injectable()
 export class OrderEditService {
@@ -189,7 +179,7 @@ export class OrderEditService {
           })
         : undefined;
 
-    // New lines are built before the transaction, as on create: expanding a combo reads the catalogue.
+    // Dòng mới dựng trước transaction như lúc tạo: mở combo cần đọc danh mục.
     const addedLines = money ? money.lines.filter((line) => !line.id) : [];
     const addedRows =
       addedLines.length > 0
@@ -199,14 +189,14 @@ export class OrderEditService {
           )
         : [];
 
-    // Created before the transaction, as on create: CustomerService owns the code sequence and the one-phone rule.
+    // Tạo khách trước transaction như lúc tạo: CustomerService giữ dãy mã và quy tắc một số điện thoại một khách.
     const typedInCustomerId =
       !dto.customerId && dto.customer
         ? await this.customers.findOrCreateForOrder(tenantId, dto.customer)
         : undefined;
     const customerId = dto.customerId ?? typedInCustomerId;
 
-    // Only a change of lines moves demand on the production list (B-3).
+    // Chỉ đổi dòng mới làm thay đổi nhu cầu trên danh sách sản xuất (B-3).
     const shortage = dto.items
       ? await this.shortages.snapshot(tenantId, [
           ...order.items,
@@ -220,7 +210,7 @@ export class OrderEditService {
       : null;
 
     await this.prisma.$transaction(async (tx) => {
-      // Claimed on the row as read: a pack, a cancel or another edit in between loses this one whole.
+      // Chiếm đơn theo bản ghi vừa đọc: đóng gói, hủy hoặc sửa khác xen giữa thì lần này thua trọn.
       const claimed = await tx.order.updateMany({
         where: {
           id,
@@ -230,7 +220,7 @@ export class OrderEditService {
         },
         data: {
           ...(customerId ? { customerId } : {}),
-          // Required columns ignore a null; the free-text ones take it as "clear".
+          // Cột bắt buộc bỏ qua null; cột ghi chú tự do coi null là "xóa".
           ...sent(dto, ['assigneeId', 'fulfillmentType', 'priority'], false),
           ...sent(
             dto,
@@ -322,9 +312,7 @@ export class OrderEditService {
     return this.reads.findOne(user, tenantId, id);
   }
 
-  // ─── Rules ─────────────────────────────────────────────────────────────────
-
-  /** The order, if this user may edit it now: in their scope, from the journey, not yet shipping. */
+  /** Đơn nếu người này được sửa lúc này: trong phạm vi quyền, thuộc hành trình và chưa giao. */
   private async loadEditable(user: AuthUser, tenantId: string, id: string) {
     const order = await this.prisma.order.findFirst({
       where: { id, tenantId },
@@ -351,7 +339,7 @@ export class OrderEditService {
         message: 'This order does not belong to your branch',
       });
     }
-    // A till sale is paid and gone at the counter; the journey's edit never applies to it.
+    // Đơn bán tại quầy đã thanh toán và giao xong ngay; sửa theo hành trình không áp dụng cho đơn này.
     if (
       order.fulfillmentType === FulfillmentType.TAKEAWAY ||
       !UNSHIPPED_ORDER_STATUSES.includes(order.status)
@@ -367,7 +355,7 @@ export class OrderEditService {
     return order;
   }
 
-  /** A line sent with an `id` must be one of this order's own top-level lines, named once, still the same product. */
+  /** Dòng gửi kèm `id` phải là dòng gốc của đơn này, chỉ nêu một lần và vẫn cùng sản phẩm. */
   private assertLineIds(
     items: readonly UpdateOrderItemDto[],
     byId: ReadonlyMap<string, ExistingLine>,
@@ -392,7 +380,7 @@ export class OrderEditService {
     }
   }
 
-  /** A line the workshop has been asked to make stays on the order until it is taken off the request. */
+  /** Dòng mà xưởng được yêu cầu làm vẫn nằm trên đơn cho tới khi gỡ khỏi yêu cầu. */
   private async assertNotInProduction(
     order: { items: ExistingLine[] },
     removed: readonly ExistingLine[],
@@ -417,7 +405,7 @@ export class OrderEditService {
     }
   }
 
-  /** Changes only the fields given, as long as the order has not started shipping in the meantime. */
+  /** Chỉ đổi các trường được gửi, miễn là đơn chưa bắt đầu giao trong lúc đó. */
   private async claimUnshipped(
     tenantId: string,
     id: string,
@@ -435,12 +423,9 @@ export class OrderEditService {
     }
   }
 
-  // ─── Money and lines ───────────────────────────────────────────────────────
-
   /**
-   * Prices the order again through the create's rules. A field left out of the edit is read off the
-   * order: its lines (an existing line keeps its agreed price unless a new one is sent), its
-   * promotions and its manual discount.
+   * Tính lại giá đơn theo quy tắc lúc tạo. Trường bỏ trống được lấy từ đơn: dòng (dòng cũ giữ giá đã thỏa thuận trừ khi gửi giá mới),
+   * khuyến mãi và giảm giá tay.
    */
   private async reprice(
     tenantId: string,
@@ -493,7 +478,7 @@ export class OrderEditService {
     });
     this.manual.assertSellableLines(priced.lines);
 
-    // A Branch's id is its Location's id, so the branch itself is the last fallback (as on create).
+    // Id Branch là id Location nên chi nhánh là phương án cuối (như lúc tạo).
     const defaultSource =
       order.branch.location.defaultFulfillmentLocationId ?? order.branchId;
     const lines = priced.lines.map((line, index) => {
@@ -501,7 +486,7 @@ export class OrderEditService {
       return {
         ...line,
         id: existing?.id,
-        // The catalogue price snapshotted when the line was first sold stays the line's list price.
+        // Giá danh mục đã chụp lúc dòng được bán lần đầu vẫn là giá niêm yết của dòng.
         listUnitPrice:
           existing?.listUnitPrice != null
             ? Number(existing.listUnitPrice)
@@ -531,9 +516,8 @@ export class OrderEditService {
   }
 
   /**
-   * Writes the repriced lines that already exist: removed lines go (a combo's children with them, by
-   * cascade), a kept line is updated in place - its combo children scaled to the new quantity and
-   * moved to its new ship-from location. New lines are inserted by the caller.
+   * Ghi các dòng đã có nhưng được tính lại giá: dòng bị bỏ thì xóa (con combo đi theo nhờ cascade), dòng giữ thì cập nhật tại chỗ,
+   * con combo co giãn theo số lượng mới và chuyển sang kho xuất mới. Dòng mới do bên gọi insert.
    */
   private async writeLines(
     tx: Prisma.TransactionClient,
@@ -570,7 +554,7 @@ export class OrderEditService {
       if (line.itemType !== OrderLineType.COMBO) continue;
       for (const child of order.items) {
         if (child.parentItemId !== line.id) continue;
-        // A child carries (combo quantity × its own count in the combo), so the count is recovered from the old quantities.
+        // Con mang số lượng = (số combo × số lượng của nó trong combo), nên số đếm được suy ra từ số lượng cũ.
         const perCombo = child.quantity / existing.quantity;
         await tx.orderItem.update({
           where: { id: child.id },
@@ -587,7 +571,7 @@ export class OrderEditService {
   }
 }
 
-/** Where an existing line ships from. A COMBO line stores none - its components carry it - so it is read off the first one that holds stock. */
+/** Kho xuất của dòng đã có. Dòng COMBO không lưu kho (các thành phần mang), nên lấy từ thành phần đầu tiên có hàng. */
 function sourceOf(
   line: ExistingLine,
   all: readonly ExistingLine[],
@@ -600,7 +584,7 @@ function sourceOf(
   );
 }
 
-/** The listed fields of `dto` that were actually sent - a null counting as sent only where `nullable`. */
+/** Các trường trong `dto` mà thực sự được gửi; null chỉ tính là gửi khi trường cho phép null. */
 function sent<T extends object, K extends keyof T>(
   dto: T,
   keys: readonly K[],

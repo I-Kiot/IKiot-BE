@@ -9,12 +9,12 @@ import {
 } from './tenant-select';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Platform-admin CRUD over every tenant. A shop reading or editing its own record goes through `TenantSelfService`, which takes the tenant id off the access token. */
+/** CRUD mọi tenant cho admin nền tảng. Shop tự đọc/sửa hồ sơ của mình đi qua `TenantSelfService`, nơi lấy tenant id từ access token. */
 @Injectable()
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** `hasSepayKey` instead of the key, which never leaves the API. */
+  /** Trả `hasSepayKey` thay cho key; key không bao giờ rời API. */
   async findAll() {
     const rows = await this.prisma.tenant.findMany({
       select: {
@@ -34,7 +34,7 @@ export class TenantService {
     );
   }
 
-  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's not-found error isn't an HttpException, and a row in another tenant must be indistinguishable from one that doesn't exist.
+  // Dùng findFirst và throw tường minh thay vì findFirstOrThrow: lỗi not-found của Prisma không phải HttpException, và row của shop khác phải trông y hệt row không tồn tại.
   async findOne(id: string) {
     const found = await this.prisma.tenant.findFirst({
       where: { id },

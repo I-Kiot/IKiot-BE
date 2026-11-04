@@ -7,17 +7,7 @@ import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filt
 import { PrismaService } from './../src/prisma/prisma.service';
 
 /**
- * F-1: the whole order journey over HTTP, against the real app and Postgres (docker compose up -d).
- * One shop, one sofa nobody has in stock, followed from the order to the buy-again order:
- *
- *   manual order (deposit) → short on the production list → production request → sent →
- *   workshop delivery with a defect → packed → picked up → shipping (stock leaves) → delivered,
- *   cash collected → owner confirms the cash → completed → customer returns a damaged piece →
- *   inspected into the damaged-goods warehouse → buy-again order linked to the return.
- *
- * Each step asserts what the screens read (status, stock check, production list) and what the
- * ledger must show (stock, locked stock, the damaged-goods warehouse). The tests run in order and
- * share state; the suite creates its own tenant and deletes it.
+ * F-1: toàn bộ hành trình đơn qua HTTP trên Postgres thật, từ đơn tay đầu tiên tới đơn mua lại. Mỗi bước kiểm những gì màn hình đọc và sổ kho phải ghi (tồn, tồn đang khoá, kho hàng hỏng). Các test chạy theo thứ tự và chia sẻ state; suite tự tạo tenant và xoá đi.
  */
 jest.setTimeout(120_000);
 
@@ -177,7 +167,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send()
       .expect(201);
-    // The trial allows one warehouse; the journey needs a damaged-goods warehouse beside the main one.
+    // Gói dùng thử chỉ cho một kho; hành trình cần thêm kho hàng hỏng bên cạnh kho chính.
     await prisma.subscription.updateMany({
       where: { tenantId },
       data: { quotaSnapshotMaxWarehouses: 5 },
@@ -456,7 +446,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
 
     expect((await stockAt(damagedId))?.stock).toBe(2);
     expect(await stockAt(warehouseId)).toEqual({ stock: 0, lockedStock: 0 });
-    // Partly returned: the order stays completed.
+    // Trả một phần: đơn vẫn hoàn thành.
     expect((await order()).status).toBe('COMPLETED');
   });
 
@@ -482,7 +472,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     expect(linked.body.data.replacementOrder).toMatchObject({
       id: again.body.data.id,
     });
-    // The new sofa is short again, so it is back on the production list.
+    // Sofa mới lại thiếu nên quay lại danh sách sản xuất.
     expect((await shortRow()).shortQuantity).toBe(1);
   });
 });

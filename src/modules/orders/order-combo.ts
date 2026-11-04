@@ -14,14 +14,10 @@ import {
 } from './combo-expansion';
 import type { PricedLine } from './order-pricing.service';
 
-/** Anything that can read `combo_components`: `PrismaService` or a transaction client. */
 export type ComboGraphReader = Pick<Prisma.TransactionClient, 'comboComponent'>;
 
 /**
- * The combo graph under `comboIds`: for every combo reachable from them, what it directly contains.
- * Loaded one nesting level per query - never one query per combo - and every level is bounded by
- * `MAX_COMBO_DEPTH`. Shared by the order side (expanding a sold combo into lines) and the catalogue
- * side (how many sets of a combo are on the shelf), which must walk the graph the same way.
+ * Đồ thị combo dưới `comboIds`: với mỗi combo tới được, các thành phần trực tiếp. Nạp mỗi tầng một query, mỗi tầng bị chặn bởi `MAX_COMBO_DEPTH`. Phía đơn (mở combo thành dòng) và phía danh mục (đếm số bộ trên kệ) dùng chung, nên hai bên phải duyệt giống hệt nhau.
  */
 export async function loadComboGraph(
   db: ComboGraphReader,
@@ -55,7 +51,7 @@ export async function loadComboGraph(
     });
     for (const id of frontier) childrenOf.set(id, []);
     for (const edge of edges) childrenOf.get(edge.comboItemId)!.push(edge);
-    // A sub-combo already loaded (or a cycle back to one) is not fetched again; `flattenCombo` reports the cycle.
+    // Combo con đã nạp (hoặc vòng quay lại combo đó) không nạp lại; `flattenCombo` là nơi báo lỗi vòng.
     frontier = [
       ...new Set(
         edges
@@ -71,7 +67,6 @@ export async function loadComboGraph(
   return childrenOf;
 }
 
-/** What each COMBO line in the order finally contains, keyed by the combo's variant id (`flattenCombo`). */
 export async function expandCombos(
   db: ComboGraphReader,
   tenantId: string,
@@ -89,13 +84,11 @@ export async function expandCombos(
 }
 
 /**
- * The order's lines as rows: each priced line, and under every COMBO line one child per leaf it
- * finally contains (nested combos already flattened), at price 0 - the combo line carries the money,
- * the children carry the stock and ship from the combo's location. A child is COMBO_COMPONENT, or
- * SERVICE when the leaf is a service; SERVICE lines need no goods, so they ship from nowhere.
+ * Dòng đơn dưới dạng hàng: mỗi dòng có giá; dưới mỗi dòng COMBO là một dòng con cho từng lá đã phẳng hóa, giá 0.
+ * Tiền nằm ở dòng combo, còn con mang tồn kho và xuất từ kho của combo. Con là COMBO_COMPONENT, hoặc SERVICE nếu lá là dịch vụ
+ * (dịch vụ không cần hàng nên không có kho xuất).
  *
- * `sourceLocationId` may be null for every line: the till (`OrderService.createPosSale`) deducts at
- * its own branch on the spot and has never stored a ship-from location.
+ * `sourceLocationId` có thể null ở mọi dòng: quầy (`OrderService.createPosSale`) trừ kho ngay tại chi nhánh và chưa bao giờ lưu kho xuất.
  */
 export function buildOrderItemRows(
   lines: readonly (PricedLine & { sourceLocationId: string | null })[],
@@ -111,7 +104,7 @@ export function buildOrderItemRows(
       productItemId: line.productItemId,
       status: OrderItemStatus.PENDING,
       lineType: line.itemType,
-      // A COMBO line is priced only, so it has no stock to locate; its children do.
+      // Dòng COMBO chỉ có giá nên không có kho để tìm; con của nó thì có.
       sourceLocationId:
         isCombo || line.itemType === OrderLineType.SERVICE
           ? null

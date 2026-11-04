@@ -1,5 +1,4 @@
-// Pure rules for what goes on an invoice, kept apart from the service so they can be unit-tested
-// without a database (same shape as pricing-engine.ts).
+// Quy tắc thuần cho nội dung hoá đơn, tách khỏi service để unit-test không cần DB (cùng kiểu với pricing-engine.ts).
 
 export interface InvoiceableLine {
   quantity: number;
@@ -8,7 +7,7 @@ export interface InvoiceableLine {
   unitPrice: number;
 }
 
-/** What a returned quantity of a line is worth: its share of the line total, so a line discount follows the goods back. */
+/** Giá trị số lượng trả lại của một dòng = phần tương ứng của thành tiền dòng, nên giảm giá theo dòng đi theo hàng trả. */
 export function returnedValue(line: {
   quantity: number;
   lineTotal: number;
@@ -19,8 +18,7 @@ export function returnedValue(line: {
 }
 
 /**
- * The lines of a SALE invoice. Goods that came back before the invoice was issued (a partial return
- * while the order was still on its way) are netted out here rather than invoiced and then adjusted.
+ * Dòng của hoá đơn BÁN. Hàng trả về trước khi xuất hoá đơn (trả một phần khi đơn còn đang giao) được trừ luôn tại đây, không xuất rồi điều chỉnh sau.
  */
 export function saleLines<T extends InvoiceableLine>(lines: T[]) {
   return lines
@@ -38,7 +36,7 @@ export function saleLines<T extends InvoiceableLine>(lines: T[]) {
     .filter(({ quantity }) => quantity > 0);
 }
 
-/** Total of a SALE invoice: the order's total minus what already came back (shipping is not refunded by a goods return). */
+/** Tổng hoá đơn BÁN: tổng đơn trừ phần hàng đã trả (phí ship không hoàn khi trả hàng). */
 export function saleTotal(
   grandTotal: number,
   lines: InvoiceableLine[],
@@ -56,7 +54,6 @@ export function saleTotal(
   return Math.max(0, grandTotal - returned);
 }
 
-/** The next number in a per-shop sequence, from the highest existing one: `HD000041` -> `HD000042`. */
 export function nextInvoiceNumber(prefix: string, highest: number): string {
   return `${prefix}${String(highest + 1).padStart(6, '0')}`;
 }

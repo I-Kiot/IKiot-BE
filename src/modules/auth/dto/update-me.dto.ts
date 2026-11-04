@@ -1,7 +1,7 @@
 import { IsDateString, IsIn, IsOptional, IsString } from 'class-validator';
 import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
-// Field-level write access is enforced in AuthService.updateMe, not here: owners/admins may set every field, STAFF and CUSTOMER only avatarUrl.
+// Quyền ghi từng trường được kiểm tra trong AuthService.updateMe: owner/admin sửa mọi trường, STAFF và CUSTOMER chỉ sửa avatarUrl.
 export class UpdateMeDto {
   @IsOptional()
   @NormalizeEmail()

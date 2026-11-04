@@ -97,7 +97,6 @@ describe('computeStockChecks', () => {
     ...over,
   });
 
-  /** A stand-in for `prisma.inventory` holding the given rows, counting its queries. */
   function inventoryOf(
     rows: {
       locationId: string;
@@ -210,7 +209,7 @@ describe('computeStockChecks', () => {
       { status: OrderStatus.SHIPPING, items: [line('shipped')] },
     ]);
     expect(checks.size).toBe(0);
-    // Nothing to check, so not even one query.
+    // Không có gì để kiểm nên không chạy cả một query.
     expect(findMany).not.toHaveBeenCalled();
   });
 

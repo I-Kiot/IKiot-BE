@@ -33,7 +33,7 @@ interface ResolvedActor {
 
 type AuthedRequest = Request & { user?: AuthUser };
 
-// Ported from iKiotMS-BE's auditMiddleware.js, with two departures: every actor except CUSTOMER is logged, and route-specific wording lives in @AuditTemplate() providers rather than here.
+// Port từ auditMiddleware.js của iKiotMS-BE, khác ở hai điểm: mọi actor trừ CUSTOMER đều được ghi log, và nội dung mô tả riêng từng route nằm ở các provider @AuditTemplate() chứ không ở đây.
 @Injectable()
 export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   private readonly logger = new Logger(AuditInterceptor.name);
@@ -44,7 +44,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     private readonly discovery: DiscoveryService,
   ) {}
 
-  /** Collected once at startup: an @AuditTemplate() provider registers itself by existing, so there is no list in AppModule to keep updated. */
+  /** Thu thập một lần lúc khởi động: provider @AuditTemplate() tự đăng ký chỉ bằng việc tồn tại, nên không có danh sách trong AppModule phải cập nhật. */
   onModuleInit(): void {
     this.descriptors = this.discovery
       .getProviders({ metadataKey: AuditTemplate.KEY })
@@ -108,7 +108,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     });
   }
 
-  /** `request.ip` is already right (Express derives it from X-Forwarded-For only under `trust proxy`); reading the header directly would let a client forge its own audit IP. */
+  /** `request.ip` đã đúng (Express chỉ lấy từ X-Forwarded-For khi bật `trust proxy`); đọc thẳng header sẽ cho client tự giả IP trong audit. */
   private resolveIp(request: Request): string {
     const raw = request.ip ?? request.socket?.remoteAddress ?? '';
     if (!raw) return '127.0.0.1';
@@ -135,7 +135,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       };
     }
 
-    // The login routes are @Public(), so request.user isn't set - resolve the actor from the response body instead.
+    // Route login là @Public() nên request.user không được set - lấy actor từ response body.
     if (!path.includes('/login') || !this.isLoginResponse(body)) return null;
 
     const { user } = body;
@@ -150,7 +150,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     };
   }
 
-  /** The one runtime check between an untyped body and AuditableLoginResponse; AuthService's `satisfies` keeps the two from drifting apart. */
+  /** Kiểm tra runtime duy nhất giữa body không kiểu và AuditableLoginResponse; `satisfies` trong AuthService giữ hai bên không lệch nhau. */
   private isLoginResponse(body: unknown): body is AuditableLoginResponse {
     if (!body || typeof body !== 'object' || !('user' in body)) return false;
     const user = body.user;
@@ -186,7 +186,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       return { action, ...described };
     }
 
-    // Generic fallback: for /admin/<x>/... use <x> as the resource rather than the literal "Admin".
+    // Fallback chung: với /admin/<x>/... dùng <x> làm resource thay vì chữ "Admin".
     const requestBody = (request.body ?? {}) as Record<string, unknown>;
     const parts = path.split('/').filter(Boolean);
     const resourceSegment =

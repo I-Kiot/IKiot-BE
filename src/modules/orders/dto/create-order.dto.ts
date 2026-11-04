@@ -24,7 +24,7 @@ import { OrderItemCustomizationDto } from './order-item-customization.dto';
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** The order journey's two ways of getting goods to a customer. TAKEAWAY is the till's, and the till has its own route. */
+/** Hai cách giao hàng của hành trình đơn. TAKEAWAY thuộc quầy thu ngân, quầy có route riêng. */
 export const JOURNEY_FULFILLMENT_TYPES: readonly string[] = [
   FulfillmentType.STORE_PICKUP,
   FulfillmentType.HOME_DELIVERY,
@@ -39,7 +39,7 @@ export type DepositType = (typeof DepositType)[keyof typeof DepositType];
 
 export const DEPOSIT_TYPES: readonly string[] = Object.values(DepositType);
 
-/** One line of a manual order. A COMBO variant is sent as itself; the server adds its components as child lines. */
+/** Một dòng đơn tay. Combo gửi đúng như chính nó; server tự thêm các thành phần thành dòng con. */
 export class CreateOrderItemDto {
   @IsUUID()
   productItemId: string;
@@ -49,7 +49,7 @@ export class CreateOrderItemDto {
   @Min(1, { message: 'Số lượng phải từ 1 trở lên' })
   quantity: number;
 
-  /** The price agreed with the customer - furniture is often haggled or quoted to measure. Omitted = the catalogue's `retailPrice`, which is also snapshotted as `listUnitPrice` either way. */
+  /** Giá đã thỏa thuận với khách (nội thất hay mặc cả hoặc báo theo số đo). Bỏ trống = `retailPrice` của danh mục, giá đó vẫn được chụp làm `listUnitPrice`. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -62,19 +62,19 @@ export class CreateOrderItemDto {
   @Min(0, { message: 'Số tiền giảm không được âm' })
   discountAmount?: number;
 
-  /** Where the goods are expected to ship from. Omitted = the branch's `defaultFulfillmentLocationId`, else the branch itself. */
+  /** Kho xuất hàng. Bỏ trống = `defaultFulfillmentLocationId` của chi nhánh, không có thì chính chi nhánh. */
   @IsOptional()
   @IsUUID()
   sourceLocationId?: string;
 
-  /** Made to the customer's measure: the line gets a ProductItem of its own in the same transaction as the order (A-4). Later changes go through `PUT /orders/:id/items/:itemId/customization`. */
+  /** Đơn may theo số đo: dòng có ProductItem riêng trong cùng transaction với đơn. Sửa sau qua `PUT /orders/:id/items/:itemId/customization`. */
   @IsOptional()
   @ValidateNested()
   @Type(() => OrderItemCustomizationDto)
   customization?: OrderItemCustomizationDto;
 }
 
-/** A customer typed in on the order form rather than picked from the list. Matched to an existing customer by phone first. */
+/** Khách nhập tay trên form, không chọn từ danh sách. Khớp khách có sẵn theo số điện thoại trước. */
 export class InlineCustomerDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên khách hàng không được để trống' })
@@ -92,14 +92,14 @@ export class InlineCustomerDto {
   address?: string;
 }
 
-/** Money taken when the order is created. Recorded as a `Payment { kind: DEPOSIT }`; the client never sends the amount still owed. */
+/** Tiền thu lúc tạo đơn, ghi thành `Payment { kind: DEPOSIT }`. Client không gửi số còn nợ. */
 export class OrderDepositDto {
   @IsIn(DEPOSIT_TYPES, {
     message: `deposit.type phải là ${DEPOSIT_TYPES.join(', ')}`,
   })
   type: DepositType;
 
-  /** A sum in đồng for AMOUNT, a percentage of the grand total (0 < value ≤ 100) for PERCENT. */
+  /** AMOUNT: số tiền đồng. PERCENT: % tổng đơn (0 < value ≤ 100). */
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0, { message: 'Tiền cọc không được âm' })
@@ -111,12 +111,12 @@ export class OrderDepositDto {
   method: string;
 }
 
-/** `POST /orders` - a manual order from the order journey (contract §2), born CONFIRMED. Totals, the amount due, `status`, `channel`, `confirmedBy` and the order code are the server's. */
+/** `POST /orders` (contract §2): đơn tay, sinh ra ở CONFIRMED. Tổng tiền, status, channel, confirmedBy và mã đơn do server quyết. */
 export class CreateOrderDto {
   @IsUUID()
   branchId: string;
 
-  /** An existing customer. Wins over `customer` when both are sent. */
+  /** Khách có sẵn. Thắng `customer` nếu gửi cả hai. */
   @IsOptional()
   @IsUUID()
   customerId?: string;
@@ -126,7 +126,7 @@ export class CreateOrderDto {
   @Type(() => InlineCustomerDto)
   customer?: InlineCustomerDto;
 
-  /** Required - checked in the service so a missing one answers ORDER_ASSIGNEE_REQUIRED rather than a generic validation error. */
+  /** Bắt buộc. Kiểm trong service để thiếu thì trả `ORDER_ASSIGNEE_REQUIRED` thay vì lỗi validation chung. */
   @IsOptional()
   @IsUUID()
   assigneeId?: string;
@@ -193,7 +193,7 @@ export class CreateOrderDto {
   @Transform(trim)
   deliveryAddress?: string;
 
-  /** The date the customer asked for delivery (`YYYY-MM-DD`). */
+  /** Ngày khách muốn giao (`YYYY-MM-DD`). */
   @IsOptional()
   @IsDateString()
   requestedDeliveryDate?: string;

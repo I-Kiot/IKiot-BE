@@ -52,9 +52,8 @@ const INVOICE_INCLUDE = {
 type InvoiceRow = Prisma.InvoiceGetPayload<{ include: typeof INVOICE_INCLUDE }>;
 
 /**
- * `GET /invoices`, `GET /invoices/:id`. Read-only: an invoice is written only by the order routes that
- * complete, return or cancel an order (`InvoiceService`), never by a request of its own.
- * Visibility is the order's: own branch, or every branch with `orders:view_all`.
+ * Chỉ đọc. Hoá đơn chỉ được ghi bởi route đơn hàng khi hoàn thành, trả hoặc huỷ đơn (`InvoiceService`).
+ * Quyền xem theo đơn: chi nhánh của mình, hoặc mọi chi nhánh nếu có `orders:view_all`.
  */
 @Injectable()
 export class InvoiceReadService {

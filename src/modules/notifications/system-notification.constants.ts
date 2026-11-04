@@ -1,4 +1,4 @@
-/** What the platform operators' inbox is made of: a row is a system notification when `tenantId` and `recipientId` are both null, and this type whitelist is a second, narrower gate so a new `notifySystem` type never silently changes what an operator sees. */
+/** Thông báo hệ thống: row có `tenantId` và `recipientId` đều null. Whitelist type này là lớp lọc thứ hai, để type mới của `notifySystem` không tự động lọt vào feed của operator. */
 export const SystemNotificationType = {
   TRANSACTION: 'SYSTEM_TRANSACTION',
   TENANT_CREATED: 'SYSTEM_TENANT_CREATED',
@@ -10,10 +10,10 @@ export const SYSTEM_NOTIFICATION_TYPES: string[] = Object.values(
   SystemNotificationType,
 );
 
-/** Announcements are not system events and never appear in that feed - an operator wrote this one, and the row exists to record that it was sent. */
+/** Announcement không phải sự kiện hệ thống, không bao giờ xuất hiện trong feed; row chỉ lưu lại việc đã gửi. */
 export const ANNOUNCEMENT_TYPE = 'ANNOUNCEMENT';
 
-/** Who an announcement goes to. `SELECTION` is the only one that reads `targetTenants`. */
+/** Đối tượng nhận thông báo. Chỉ `SELECTION` mới đọc `targetTenants`. */
 export const AnnouncementTarget = {
   ALL: 'ALL',
   SELECTION: 'SELECTION',
@@ -21,7 +21,7 @@ export const AnnouncementTarget = {
 
 export const ANNOUNCEMENT_TARGETS: string[] = Object.values(AnnouncementTarget);
 
-/** The four categories the admin UI offers - documentation, not a validation whitelist, since the value is free text printed straight into the email subject line. */
+/** Bốn category admin UI đưa ra làm gợi ý, không phải whitelist validate: giá trị là free text được in thẳng vào tiêu đề email. */
 export const KNOWN_ANNOUNCEMENT_CATEGORIES = [
   'Maintenance',
   'New feature',

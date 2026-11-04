@@ -2,9 +2,8 @@ import type { NotificationContent } from '../notification-content.type';
 
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')}đ`;
 
-/** Notification copy for the sales domain. */
 export const OrderNotificationTemplates = {
-  /** A SePay transfer landing is the one order event genuinely worth a push: it arrives minutes after the customer walked up, when the cashier is no longer looking at that screen. */
+  /** Tiền chuyển khoản SePay về là sự kiện duy nhất đáng push: đến vài phút sau khi khách đã rời quầy, thu ngân không còn nhìn màn hình. */
   paid: (paymentReference: string, amount: number): NotificationContent => ({
     type: 'ORDER_PAID',
     title: 'Khách đã thanh toán',
@@ -21,11 +20,10 @@ export const OrderNotificationTemplates = {
     type: 'ORDER_CASH_AWAITING_REMITTANCE',
     title: 'Shipper đang giữ tiền mặt',
     description: `Đơn ${orderCode} đã giao, shipper thu ${vnd(amount)} tiền mặt - chờ nộp lại cho chủ.`,
-    // The order page opens its "Xác nhận đã nhận tiền" dialog on this flag (OrderActions).
+    // Trang đơn mở hộp thoại "Xác nhận đã nhận tiền" nhờ flag này (OrderActions).
     link: `/sales/orders/${orderId}?confirmCash=1`,
   }),
 
-  /** Khách chuyển khoản QR lúc giao và tiền đã về: đơn hoàn thành. */
   deliveryTransferReceived: (
     orderCode: string,
     amount: number,

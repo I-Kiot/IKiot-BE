@@ -21,27 +21,25 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Lines that carry goods of their own. A COMBO line is only a price and a SERVICE has nothing to make. */
+/** Dòng có hàng riêng. Dòng COMBO chỉ là giá, SERVICE không có gì để làm. */
 const CUSTOMIZABLE_LINE_TYPES: readonly string[] = [
   OrderLineType.PRODUCT,
   OrderLineType.COMBO_COMPONENT,
 ];
 
-/** Once the workshop has the request, what it was asked to make is fixed (contract §3). */
+/** Khi xưởng đã nhận yêu cầu, thứ được yêu cầu làm bị khóa (contract §3). */
 const LOCKING_PRODUCTION_STATUSES: readonly string[] = [
   ProductionRequestStatus.SENT,
   ProductionRequestStatus.PARTIALLY_RECEIVED,
   ProductionRequestStatus.COMPLETED,
 ];
 
-/** How the named customization fields read as product details on the custom ProductItem. */
 const DETAIL_LABELS = {
   material: 'Chất liệu',
   color: 'Màu sắc',
   fabricCode: 'Mã vải',
 } as const;
 
-/** A customization as sent, or as stored (where an absent field is null). */
 type CustomizationFields = {
   material?: string | null;
   color?: string | null;
@@ -54,7 +52,6 @@ type CustomizationFields = {
   }[];
 };
 
-/** The product details a customization writes: its named fields, then each spec (value and unit together). */
 export function customizationDetails(
   dto: CustomizationFields,
 ): { name: string; value: string; attributeId?: string | null }[] {
@@ -70,7 +67,7 @@ export function customizationDetails(
     if (value) details.push({ name: DETAIL_LABELS[key], value });
   }
   for (const spec of dto.specs ?? []) {
-    // Giá trị của một thuộc tính đứng riêng - đơn vị là của thuộc tính, không gộp vào chuỗi.
+    // Giá trị thuộc tính đứng riêng; đơn vị thuộc về thuộc tính, không gộp vào chuỗi.
     details.push(
       spec.attributeId
         ? { name: spec.name, value: spec.value, attributeId: spec.attributeId }
@@ -83,12 +80,11 @@ export function customizationDetails(
   return details;
 }
 
-/** The detail names a customization writes on its ProductItem - only the fields it actually sets, so a catalogue detail it leaves alone stays. */
+/** Chỉ ghi những trường nó thực sự đặt, để thông số danh mục mà nó không đụng tới được giữ nguyên. */
 function ownedDetailNames(dto: CustomizationFields | null): string[] {
   return dto ? customizationDetails(dto).map((detail) => detail.name) : [];
 }
 
-/** A line as far as customizing it needs. */
 export interface CustomizableLine {
   id: string;
   productItemId: string;
@@ -97,14 +93,11 @@ export interface CustomizableLine {
 }
 
 /**
- * A line made to the customer's measure (A-4, contract §2 `PUT /orders/:id/items/:itemId/customization`).
- * The first time, the line moves to a ProductItem of its own - same product, catalogue price and
- * packages, the agreed dimensions, details and drawings - so the custom piece is stocked, packed,
- * shipped and returned like any SKU, and nothing reserved for the catalogue SKU is touched (nothing
- * is reserved since 2026-10-04 anyway). The `OrderItemCustomization` row stays as the record agreed
- * with the customer; the ProductItem is that record in the catalogue's terms. Lots of a custom item
- * are not tied to the line (`InventoryLot.orderItemId` left empty): the item is the line's alone, so
- * a cancelled or returned piece is ordinary stock at once.
+ * Dòng may theo số đo (A-4, contract §2 `PUT /orders/:id/items/:itemId/customization`).
+ * Lần đầu, dòng chuyển sang một ProductItem riêng (cùng sản phẩm, giá và gói của danh mục; kích thước, chi tiết, bản vẽ đã thỏa thuận)
+ * để hàng may đo được nhập kho, đóng gói, giao, trả như một SKU. Không đụng hàng giữ cho SKU danh mục (từ 2026-10-04 đã không giữ hàng nữa).
+ * Bản ghi `OrderItemCustomization` là thỏa thuận với khách; ProductItem là bản ghi đó theo cách danh mục hiểu.
+ * Lô của hàng may đo không gắn vào dòng (`InventoryLot.orderItemId` để trống) nên hàng bị hủy hoặc trả là tồn kho thường ngay.
  */
 @Injectable()
 export class OrderCustomizationService {
@@ -159,7 +152,7 @@ export class OrderCustomizationService {
         code: ErrorCode.ORDER_ITEM_NOT_FOUND,
         message: 'Order line not found',
       });
-    // Only before packing: a packed line's goods are locked on the shelf, the same rule as A-8's line edits.
+    // Chỉ trước khi đóng gói: hàng của dòng đã đóng gói bị khóa trên kệ, cùng quy tắc sửa dòng ở A-8.
     if (
       order.fulfillmentType === FulfillmentType.TAKEAWAY ||
       order.status !== OrderStatus.CONFIRMED
@@ -172,11 +165,11 @@ export class OrderCustomizationService {
     this.assertCustomizable(line.lineType);
     await this.assertNotLocked(line.id);
 
-    // The line moves to a SKU of its own with no stock, so its row on the production list can tip to short (B-3).
+    // Dòng chuyển sang SKU riêng chưa có tồn, nên dòng của nó trên danh sách sản xuất có thể thành thiếu (B-3).
     const shortage = await this.shortages.snapshot(tenantId, [line]);
 
     await this.prisma.$transaction(async (tx) => {
-      // Claimed on CONFIRMED (bumping updatedAt): a pack in between wins whole, and an A-8 edit read before this one is refused.
+      // Chiếm đơn ở CONFIRMED (cập nhật updatedAt): đóng gói xen giữa thì bên đó thắng trọn, và lần sửa A-8 đọc trước đó bị từ chối.
       const claimed = await tx.order.updateMany({
         where: { id: orderId, tenantId, status: OrderStatus.CONFIRMED },
         data: { updatedAt: new Date() },
@@ -194,7 +187,7 @@ export class OrderCustomizationService {
     return this.reads.findOne(user, tenantId, orderId);
   }
 
-  /** COMBO and SERVICE lines have no goods of their own to make to measure. */
+  /** Dòng COMBO và SERVICE không có hàng riêng để may đo. */
   assertCustomizable(lineType: string) {
     if (!CUSTOMIZABLE_LINE_TYPES.includes(lineType)) {
       throw new BadRequestException({
@@ -205,9 +198,8 @@ export class OrderCustomizationService {
   }
 
   /**
-   * Writes a customization inside the caller's transaction - this route's, or the manual create's
-   * when a line arrives with its specs. The line's first customization gives it its own ProductItem;
-   * a later one rewrites that item's dimensions, details and drawings.
+   * Ghi customization trong transaction của bên gọi: route này, hoặc lúc tạo đơn tay khi dòng gửi kèm thông số.
+   * Lần đầu dòng có ProductItem riêng; các lần sau ghi đè kích thước, chi tiết, bản vẽ của item đó.
    */
   async apply(
     tx: Prisma.TransactionClient,
@@ -258,7 +250,7 @@ export class OrderCustomizationService {
           productId: item.productId,
           productName: item.productName,
           productCode: item.productCode,
-          // Its own SKU (unique per tenant), readable as the catalogue SKU it was made from.
+          // SKU riêng (duy nhất trong tenant), vẫn đọc ra được SKU danh mục nó được làm từ.
           sku: generateReference(`${item.sku ?? item.productCode}-C`, 3),
           description: item.description,
           retailPrice: item.retailPrice,
@@ -293,7 +285,7 @@ export class OrderCustomizationService {
               ...urls.map((url) => ({ url, isThumbnail: false })),
             ].map((image, position) => ({ ...image, position })),
           },
-          // Packed the same way as the piece it is a variant of; packing (C-1) reads these.
+          // Đóng gói giống hệt sản phẩm gốc; bước đóng gói (C-1) đọc các trường này.
           packages: {
             create: item.packages.map(
               ({ position, name, lengthCm, widthCm, heightCm, weightKg }) => ({
@@ -313,7 +305,7 @@ export class OrderCustomizationService {
         where: { id: line.id },
         data: { productItemId: custom.id, sku: custom.sku, isCustom: true },
       });
-      // A request still being drafted for this line now asks for the custom piece; a sent one locked the line already.
+      // Yêu cầu sản xuất đang soạn của dòng này giờ đổi sang hàng may đo; yêu cầu đã gửi thì dòng đã bị khóa từ trước.
       await tx.productionRequestItem.updateMany({
         where: {
           orderItemId: line.id,
@@ -322,7 +314,7 @@ export class OrderCustomizationService {
         data: { productItemId: custom.id },
       });
     } else {
-      // The line already has its own item: replace what the previous customization wrote on it, keep the rest.
+      // Dòng đã có item riêng: thay phần customization trước đã ghi, giữ phần còn lại.
       const stale = new Set([
         ...ownedDetailNames(previous),
         ...ownedDetailNames(dto),
@@ -405,8 +397,8 @@ export class OrderCustomizationService {
   }
 
   /**
-   * Giá trị gốc của từng thuộc tính khách đổi (2026-10-16), để lưu "đổi gì so với bản mẫu". Lần đầu đọc từ SKU mẫu;
-   * dòng đã có SKU custom thì giữ giá trị gốc đã chụp lần trước (SKU custom đã mang giá trị khách đổi). Thuộc tính
+   * Giá trị gốc của từng thuộc tính khách đổi (2026-10-16), để biết "đổi gì so với bản mẫu". Lần đầu đọc từ SKU mẫu;
+   * dòng đã có SKU custom thì giữ giá gốc chụp trước đó (SKU custom đã mang giá khách đổi). Thuộc tính
    * không thuộc sản phẩm của dòng là lỗi.
    */
   private async baseAttributeValues(
@@ -452,7 +444,7 @@ export class OrderCustomizationService {
     return result;
   }
 
-  /** What a sent production request asked the workshop for can no longer change. */
+  /** Khi yêu cầu sản xuất đã gửi, phần xưởng được yêu cầu làm không đổi được nữa. */
   private async assertNotLocked(orderItemId: string) {
     const locked = await this.prisma.productionRequestItem.findFirst({
       where: {

@@ -1,7 +1,7 @@
-/** How much of a supplier's credit limit has to be used before the owners are warned - the hardcoded `0.75` from the old receive path, fired once on the receipt that crosses the line. Applies to supplier imports and workshop receipts alike. */
+/** Tỉ lệ hạn mức công nợ phải dùng tới trước khi cảnh báo chủ shop (`0.75` cứng từ đường nhận hàng cũ), chỉ bắn một lần ở lần nhận vượt ngưỡng. Áp dụng cho cả nhập NCC lẫn nhận từ thợ. */
 export const CREDIT_WARNING_RATIO = 0.75;
 
-/** Did this receipt just push a supplier's debt through the warning line? Edge-triggered like `crossedLowStock`, so it fires only on the crossing receipt; a credit limit of `0` or less means no limit set. */
+/** Lần nhận này có đẩy công nợ NCC vượt ngưỡng cảnh báo không? Bắt cạnh như `crossedLowStock`, chỉ bắn ở đúng lần vượt; hạn mức `0` trở xuống nghĩa là không đặt hạn mức. */
 export function crossedCreditWarning(
   debtAfter: number,
   amount: number,

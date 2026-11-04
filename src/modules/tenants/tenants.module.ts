@@ -6,7 +6,7 @@ import { TenantSelfService } from './tenant-self.service';
 import { SepayAccountSyncService } from './sepay-account-sync.service';
 import { NotificationModule } from '../notifications/notifications.module';
 
-// Two controllers on purpose: `/tenants` is admin CRUD over every shop, `/tenant` is one shop's own settings.
+// Hai controller có chủ đích: `/tenants` là CRUD admin trên mọi shop, `/tenant` là cài đặt của một shop.
 @Module({
   imports: [NotificationModule],
   controllers: [TenantController, TenantSelfController],

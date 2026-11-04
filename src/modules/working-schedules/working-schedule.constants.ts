@@ -1,4 +1,4 @@
-/** NORMAL is a rostered shift; OVERTIME is extra time and is never counted as "late". */
+/** OVERTIME là giờ làm thêm, không bao giờ bị tính là đi muộn. */
 export const ScheduleType = {
   NORMAL: 'NORMAL',
   OVERTIME: 'OVERTIME',
@@ -13,14 +13,14 @@ export const ScheduleStatus = {
   DELETED: 'DELETED',
 } as const;
 
-/** What a client may filter by - DELETED is not a state anyone asks to see. */
+/** Client chỉ được lọc các trạng thái này; DELETED không ai cần xem. */
 export const FILTERABLE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,
   ScheduleStatus.CANCELLED,
 ];
 
-/** Statuses that still occupy a person's time; a CANCELLED or DELETED shift clashes with nothing, which is what makes rescheduling after a cancellation possible. */
+/** Trạng thái còn chiếm giờ của người; CANCELLED và DELETED không xung đột với ca nào, nhờ đó xếp lại được sau khi hủy. */
 export const LIVE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,

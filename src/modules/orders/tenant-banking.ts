@@ -49,7 +49,6 @@ export async function requireTenantBanking(
   };
 }
 
-/** Tên, mã VietQR, mã chứng khoán và BIN của VietinBank. */
 const VIETINBANK_NAMES = new Set(['VIETINBANK', 'ICB', 'CTG', '970415']);
 
 /** VietinBank chỉ cho SePay đọc giao dịch có `SEVQR` trong nội dung. */

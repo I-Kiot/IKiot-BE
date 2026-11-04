@@ -12,14 +12,14 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** A shop's own settings, at the singular `/tenant/*` paths the old API used. The tenant id always comes from `requireTenantId(user)`, so no route here can be pointed at another shop; `/tenants` is the separate admin-only CRUD. */
+/** Cài đặt của chính shop, ở đường dẫn số ít `/tenant/*` như API cũ. Tenant id luôn lấy từ `requireTenantId(user)`, nên không route nào trỏ được sang shop khác; `/tenants` là CRUD riêng cho admin. */
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @Controller('tenant')
 export class TenantSelfController {
   constructor(private readonly service: TenantSelfService) {}
 
-  /** Reading your own shop needs no permission beyond being in it - as in the old API. */
+  /** Xem shop của mình chỉ cần thuộc shop đó, không cần quyền thêm, như API cũ. */
   @Get('me')
   findMine(@CurrentUser() user: AuthUser) {
     return this.service.findMine(requireTenantId(user));
@@ -31,14 +31,14 @@ export class TenantSelfController {
     return this.service.updateMine(requireTenantId(user), dto);
   }
 
-  /** The bank account SePay pays into. Without it `POST /orders` refuses a SEPAY sale. */
+  /** Tài khoản SePay nhận tiền. Thiếu nó thì `POST /orders` từ chối đơn SEPAY. */
   @Permissions('tenants', 'update')
   @Put('banking')
   updateBanking(@CurrentUser() user: AuthUser, @Body() dto: BankingDto) {
     return this.service.updateBanking(requireTenantId(user), dto);
   }
 
-  /** Platform-admin only - see `TenantSelfService.setSepayKey` for why this guard is a fix rather than a port. The tenant id is a path param because an operator is acting on somebody else's shop. */
+  /** Chỉ admin nền tảng. Xem `TenantSelfService.setSepayKey` vì sao guard này là sửa lỗi chứ không phải port. Tenant id nằm trên path vì operator đang thao tác trên shop của người khác. */
   @UseGuards(AdminOnlyGuard)
   @Put(':tenantId/sepay-key')
   setSepayKey(

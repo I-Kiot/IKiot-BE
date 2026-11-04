@@ -33,13 +33,13 @@ export interface SepayWebhookPayload {
   id?: number | string;
 }
 
-/** What POST /webhook/sepay answers with. Always HTTP 200 - see handleSepayWebhook. */
+/** Kết quả trả về cho POST /webhook/sepay. Luôn HTTP 200, xem handleSepayWebhook. */
 export interface SepayWebhookResult {
   success: boolean;
   message?: string;
 }
 
-/** The getting-paid half of the old SubscriptionService: raising an invoice for an upgrade or renewal, and turning SePay's "money arrived" callback into an activated subscription. Split out because plan state, quota gates, invoices and webhook handling barely touch each other. */
+/** Phần thu tiền của SubscriptionService cũ: xuất hoá đơn nâng cấp/gia hạn, và biến callback “tiền đã về” của SePay thành gói được kích hoạt. Tách riêng vì trạng thái gói, hạn mức, hoá đơn và webhook hầu như không dính nhau. */
 @Injectable()
 export class SubscriptionBillingService {
   private readonly logger = new Logger(SubscriptionBillingService.name);
@@ -105,7 +105,7 @@ export class SubscriptionBillingService {
     return this.createPlanInvoice(currentSubscription, currentPlan);
   }
 
-  /** Called by SePay when money lands in iKiot's own bank account. Every outcome except a bad API key resolves normally, so the controller can answer a flat 200 and SePay never retries into one of our bugs; a wrong key is a caller we don't recognise, so it is a real 401. */
+  /** SePay gọi khi tiền về tài khoản ngân hàng của iKiot. Mọi kết quả, trừ API key sai, đều trả về bình thường để controller luôn trả 200 và SePay không retry vào lỗi của ta; key sai là bên gọi lạ nên trả 401 thật. */
   async handleSepayWebhook(
     apiKey: string,
     payload: SepayWebhookPayload,
@@ -131,7 +131,7 @@ export class SubscriptionBillingService {
     }
   }
 
-  /** The webhook's actual work, minus the "never make SePay retry" wrapper around it. */
+  /** Phần việc thật của webhook, không kèm lớp bọc "không để SePay retry" bên ngoài. */
   private async settlePayment(
     payload: SepayWebhookPayload,
   ): Promise<SepayWebhookResult> {
@@ -222,7 +222,7 @@ export class SubscriptionBillingService {
               fromPlanId: oldPlanId,
               toPlanId: plan.id,
               changedAt: new Date(),
-              // No acting user for a webhook-triggered activation - iKiotMS-BE stored tenantId here, which read confusingly in a "changed by user" field.
+              // Kích hoạt do webhook không có người thao tác. Bản cũ ghi tenantId vào đây, dễ bị đọc nhầm thành "người đổi".
               changedById: null,
               note: isRenewal
                 ? `Renewed ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`

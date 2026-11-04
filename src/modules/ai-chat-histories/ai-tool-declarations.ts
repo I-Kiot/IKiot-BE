@@ -1,4 +1,4 @@
-/** What the assistant may look up, described for Gemini: the same thirty tools and wording as `ai.service.js` (the model reasons over that text), with `recordPerPage` renamed to `limit` and dropped filters removed rather than ignored. `permission` is not sent to Gemini - it is the gate `AiToolsService.run` checks. */
+/** Các tool trợ lý, mô tả cho Gemini. Giữ 30 tool và cách diễn đạt như `ai.service.js` vì model suy luận theo chính text này. `permission` không gửi cho Gemini: cổng đó do `AiToolsService.run` kiểm tra. */
 
 export interface ToolDeclaration {
   name: string;
@@ -133,7 +133,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        // Was `keyword` + `role`: roles are tenant-defined rows now, so the model filters by where somebody works instead.
+        // Trước đây là `keyword` + `role`; role giờ do tenant tự định nghĩa nên model lọc theo nơi nhân viên làm việc.
         search: STRING('Từ khóa tìm kiếm (tên, email, số điện thoại)'),
         status: STRING('Lọc theo trạng thái (ACTIVE, INACTIVE)'),
         branchId: STRING('Lọc nhân viên thuộc một chi nhánh'),
@@ -234,7 +234,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        // The old tool searched by `requestNumber`; the ported list endpoint filters by status and movement type.
+        // Tool cũ tìm theo `requestNumber`; endpoint danh sách đã port lọc theo status và loại điều chuyển.
         status: STRING(
           'Trạng thái phiếu (DRAFT, PENDING, SHIPPED, COMPLETED, CANCELLED)',
         ),

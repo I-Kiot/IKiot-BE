@@ -6,7 +6,7 @@ import { OrderModule } from '../orders/orders.module';
 import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
-  // InventoryModule for `returnDrawn`, OrderModule for the branch scope every order-side read shares.
+  // InventoryModule cho `returnDrawn`; OrderModule cho phạm vi chi nhánh mà mọi đọc phía đơn dùng chung.
   imports: [InventoryModule, OrderModule, InvoiceModule],
   controllers: [OrderReturnController],
   providers: [OrderReturnService],

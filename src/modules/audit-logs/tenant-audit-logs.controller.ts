@@ -7,7 +7,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// A tenant's own audit trail, owner-only; if staff ever need it, gate this with @Permissions() against a new `audit_logs:read` entry rather than loosening the guard.
+// Nhật ký của tenant, chỉ owner. Nếu sau này staff cần xem, hãy thêm `audit_logs:read` và dùng @Permissions(), đừng nới lỏng guard.
 @ApiTags('audit-logs')
 @ApiBearerAuth('bearer')
 @UseGuards(OwnerOrAdminGuard)

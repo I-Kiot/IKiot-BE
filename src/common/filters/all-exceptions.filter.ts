@@ -5,7 +5,7 @@ import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../errors/error-codes';
 import { SentryExceptionCaptured } from '@sentry/nestjs';
 
-/** The one place an unhandled error becomes an HTTP response: Prisma and other non-HttpExceptions get real status codes, and the `{ success: false, code?, message, errors? }` half of the envelope is built here. */
+/** Nơi duy nhất biến lỗi thành HTTP response. Lỗi Prisma và lỗi không phải HttpException vẫn có status code thật. */
 const ERROR_LABELS: Record<number, string> = {
   [HttpStatus.BAD_REQUEST]: 'Bad Request',
   [HttpStatus.NOT_FOUND]: 'Not Found',
@@ -13,10 +13,7 @@ const ERROR_LABELS: Record<number, string> = {
 };
 
 /**
- * The failure half of the response envelope. `code` is the stable half of the contract -
- * see `ErrorCode`. It is absent only when an `HttpException` was raised with a bare string
- * body, which now means it came from the framework rather than from this codebase; a client
- * that finds no `code` falls back to `statusCode`.
+ * Nửa lỗi của envelope. `code` là phần ổn định của hợp đồng. Chỉ vắng khi body HttpException là chuỗi trần (lỗi framework); khi đó client dùng `statusCode`.
  */
 interface ErrorEnvelope {
   success: false;
@@ -54,7 +51,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
 
-    // A bug, not a client mistake: log the stack and answer with nothing that could leak an internal message.
+    // Đây là bug, không phải lỗi của client: log stack và trả về thứ không thể làm lộ message nội bộ.
     this.logger.error(
       `Unhandled ${request.method} ${request.originalUrl ?? request.url}`,
       exception instanceof Error ? exception.stack : String(exception),
@@ -68,7 +65,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } satisfies ErrorEnvelope);
   }
 
-  /** An HttpException's body in the envelope: the ValidationPipe's `message` array moves to `errors`, and any other extra keys pass through. */
+  /** Body của HttpException trong envelope: mảng `message` của ValidationPipe chuyển sang `errors`, các key phụ khác giữ nguyên. */
   private envelopeOf(statusCode: number, body: unknown): ErrorEnvelope {
     if (typeof body === 'string') {
       return { success: false, statusCode, message: body };
@@ -103,7 +100,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
   }
 
-  /** The Prisma error codes this app can actually provoke; anything unlisted keeps falling through to a 500. */
+  /** Các mã lỗi Prisma mà app thực sự có thể gây ra; mã không có trong danh sách rơi xuống 500. */
   private translatePrismaError(exception: unknown): {
     statusCode: number;
     code: string;
@@ -111,7 +108,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     error: string;
   } | null {
     if (exception instanceof Prisma.PrismaClientValidationError) {
-      // Wrong shape handed to Prisma - a bad query built from client input.
+      // Sai hình dạng dữ liệu đưa vào Prisma - query hỏng được dựng từ input của client.
       return this.body(
         HttpStatus.BAD_REQUEST,
         ErrorCode.VALIDATION_FAILED,
@@ -165,7 +162,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
   }
 
-  /** `P2002` carries the column(s) that collided - worth showing, it names the field. */
+  /** `P2002` mang các cột bị trùng - đáng hiển thị vì nó chỉ đúng tên trường. */
   private fieldsOf(exception: Prisma.PrismaClientKnownRequestError): string {
     const target = (exception.meta as { target?: unknown } | undefined)?.target;
     if (Array.isArray(target)) return `: ${target.join(', ')}`;
@@ -173,7 +170,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     return '';
   }
 
-  /** Same three-key shape Nest's own HttpException responses use. */
+  /** Cùng bộ ba key mà response HttpException của Nest dùng. */
   private body(statusCode: number, code: string, message: string) {
     return {
       statusCode,

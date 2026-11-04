@@ -10,7 +10,7 @@ const errorsOf = (query: Record<string, string>) =>
 
 describe('StatsQueryDto range', () => {
   it('accepts "today until now" sent before 07:00 local, while UTC is still on yesterday', () => {
-    // 01:03 on 2026-10-21 in Vietnam.
+    // 01:03 ngày 2026-10-21 giờ Việt Nam.
     expect(
       errorsOf({ fromDate: '2026-10-21', toDate: '2026-10-20T18:03:43.000Z' }),
     ).toEqual([]);

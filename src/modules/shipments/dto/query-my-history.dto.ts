@@ -11,10 +11,9 @@ import { SHIPMENT_STATUSES } from '../../../common/constants/shipment-status';
 
 const LOCAL_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** `ACTIVE` = every status that is not final ("cần giao"); the rest are single statuses. */
+/** `ACTIVE` là mọi trạng thái chưa kết thúc ("cần giao"); các giá trị còn lại là từng trạng thái. */
 export const MY_HISTORY_ACTIVE = 'ACTIVE';
 
-/** Query của GET /shipments/mine/history. */
 export class QueryMyHistoryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn([MY_HISTORY_ACTIVE, ...SHIPMENT_STATUSES], {
@@ -32,7 +31,6 @@ export class QueryMyHistoryDto extends PaginationQueryDto {
   @Matches(LOCAL_DAY, { message: 'Ngày kết thúc phải có dạng YYYY-MM-DD' })
   to?: string;
 
-  /** Mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,

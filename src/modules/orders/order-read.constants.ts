@@ -1,9 +1,8 @@
 import { OrderPriority } from '../../common/constants/order-status';
 
-// Constants only the order reads (A-9) need. They live here rather than in common/constants so
-// this task does not edit the shared files; move them there if another module comes to need them.
+// Hằng số chỉ dùng cho đọc đơn (A-9). Đặt ở đây thay vì common/constants để task này không sửa file dùng chung; chuyển đi nếu module khác cần.
 
-/** An order line's `stockCheck.status` (Đủ hàng / Thiếu một phần / Hết hàng): worked out when read against on-shelf stock, never stored - it is not what was set aside for this order. An order's `stockSummary` is its worst line. */
+/** `stockCheck.status` của dòng (Đủ hàng / Thiếu một phần / Hết hàng): tính lúc đọc theo tồn trên kệ, không lưu; không phải số đã giữ cho đơn. `stockSummary` của đơn là dòng tệ nhất. */
 export const StockCheckStatus = {
   ENOUGH: 'ENOUGH',
   PARTIAL: 'PARTIAL',
@@ -16,14 +15,14 @@ export type StockCheckStatus =
 export const STOCK_CHECK_STATUSES: readonly string[] =
   Object.values(StockCheckStatus);
 
-/** Worst first: an order's `stockSummary` is the first of these any of its lines has. */
+/** Xếp từ tệ nhất: `stockSummary` của đơn là giá trị đầu tiên trong danh sách này mà có dòng nào đó mang. */
 export const STOCK_CHECK_SEVERITY: readonly StockCheckStatus[] = [
   StockCheckStatus.OUT,
   StockCheckStatus.PARTIAL,
   StockCheckStatus.ENOUGH,
 ];
 
-/** `Payment.kind` (schema comment: FULL | DEPOSIT | BALANCE | REFUND). BALANCE is what the shipper collects on delivery - the row `collection` and `cashRemittanceStatus` are read from. */
+/** `Payment.kind` (FULL | DEPOSIT | BALANCE | REFUND). BALANCE là khoản shipper thu khi giao; `collection` và `cashRemittanceStatus` đọc từ dòng này. */
 export const PaymentKind = {
   FULL: 'FULL',
   DEPOSIT: 'DEPOSIT',
@@ -33,7 +32,7 @@ export const PaymentKind = {
 
 export type PaymentKind = (typeof PaymentKind)[keyof typeof PaymentKind];
 
-/** What `GET /orders` can be sorted by. Each has one fixed direction - newest first, soonest delivery first, most urgent first - because that is the only order the screens ask for. */
+/** Các kiểu sắp xếp của `GET /orders`. Mỗi kiểu có một chiều cố định (mới nhất, giao sớm nhất, gấp nhất trước) vì đó là thứ màn hình cần. */
 export const ORDER_SORTS = [
   'createdAt',
   'requestedDeliveryDate',
@@ -42,17 +41,17 @@ export const ORDER_SORTS = [
 
 export type OrderSort = (typeof ORDER_SORTS)[number];
 
-/** Most urgent first. `priority` is a plain string column, so the database would sort it alphabetically (HIGH < NORMAL < URGENT); the list walks these buckets in turn instead. */
+/** Gấp nhất trước. `priority` là cột chuỗi nên DB sắp theo bảng chữ cái (HIGH < NORMAL < URGENT); danh sách duyệt lần lượt các nhóm này thay vì nhờ DB. */
 export const PRIORITY_SORT_ORDER: readonly string[] = [
   OrderPriority.URGENT,
   OrderPriority.HIGH,
   OrderPriority.NORMAL,
 ];
 
-/** What the list's `attention` filter and `GET /orders/alerts` flag on an order still waiting to leave: a line short on the shelf, or a customer's delivery date close (or already past). */
+/** Đơn bị gắn cờ "cần chú ý" ở bộ lọc `attention` và `GET /orders/alerts`: có dòng thiếu trên kệ, hoặc ngày giao khách sắp tới (hoặc đã qua). */
 export const ORDER_ATTENTION_KINDS = ['SHORT', 'DUE_SOON'] as const;
 
 export type OrderAttentionKind = (typeof ORDER_ATTENTION_KINDS)[number];
 
-/** "Sắp tới ngày giao": the requested delivery date is today or within this many days after it. An overdue date counts too - it is the most urgent case, not an exempt one. */
+/** "Sắp tới ngày giao": ngày giao là hôm nay hoặc trong vòng ngần này ngày tính từ hôm nay. Ngày đã quá cũng tính: đó là trường hợp gấp nhất, không được miễn. */
 export const DUE_SOON_DAYS = 2;

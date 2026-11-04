@@ -37,11 +37,9 @@ import {
   type StockCheck,
 } from './stock-check';
 
-/** What the list query found, before it is mapped to the contract's shapes. */
 export interface OrderListResult {
   rows: OrderListRow[];
   total: number;
-  /** Keyed by order line id; a line missing from it has `stockCheck: null`. */
   stockChecks: Map<string, StockCheck>;
 }
 
@@ -50,7 +48,6 @@ export interface OrderDetailResult {
   stockChecks: Map<string, StockCheck>;
 }
 
-/** The fields the stockSummary filter sorts and checks candidates by. */
 const STOCK_SUMMARY_CANDIDATE_SELECT = {
   id: true,
   status: true,
@@ -74,18 +71,12 @@ type StockSummaryCandidate = Prisma.OrderGetPayload<{
 }>;
 
 /**
- * `GET /orders` and `GET /orders/:id` for the order journey (A-9, contract §2).
- *
- * Kept apart from OrderService, which is the till's: the reads return a superset of what POS
- * already gets, so the till keeps working off the same two routes, and nothing in OrderService
- * had to change. The branch rule is the same as OrderService's - own branch, or every branch
- * with `orders:view_all` - and must stay so.
+ * `GET /orders` và `GET /orders/:id` của hành trình đơn (A-9). Tách khỏi OrderService (của quầy) để quầy vẫn chạy trên hai route này mà không phải đổi. Quy tắc chi nhánh giống OrderService (chi nhánh của mình, hoặc mọi chi nhánh với `orders:view_all`) và phải giữ như vậy.
  */
 @Injectable()
 export class OrderReadService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** `GET /orders`: `{ data: OrderListItem[], pagination }`. */
   async findAll(user: AuthUser, tenantId: string, query: QueryOrderJourneyDto) {
     const { rows, total, stockChecks } = await this.listRows(
       user,
@@ -101,9 +92,7 @@ export class OrderReadService {
   }
 
   /**
-   * `GET /orders/alerts`: how many orders still waiting to leave need attention, for the sidebar
-   * badge and the banner over the list. Counted under the same scope and the same rules as the
-   * list's `attention` filter, so the number on the badge is the number of rows the click shows.
+   * `GET /orders/alerts`: số đơn chưa giao cần chú ý, cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
    */
   async alerts(user: AuthUser, tenantId: string, branchId?: string) {
     const base = Object.assign(new QueryOrderJourneyDto(), {
@@ -138,13 +127,10 @@ export class OrderReadService {
     return { short, dueSoon, dueSoonDays: DUE_SOON_DAYS };
   }
 
-  /** `GET /orders/:id`: `OrderDetail`. */
   async findOne(user: AuthUser, tenantId: string, id: string) {
     const { row, stockChecks } = await this.findRow(user, tenantId, id);
     return toOrderDetail(row, stockChecks);
   }
-
-  // ─── Queries ───────────────────────────────────────────────────────────────
 
   private async listRows(
     user: AuthUser,
@@ -178,7 +164,7 @@ export class OrderReadService {
     tenantId: string,
     id: string,
   ): Promise<OrderDetailResult> {
-    // Another tenant's order is simply not found (contract §0); another branch's is refused, as OrderService does.
+    // Đơn của tenant khác coi như không tồn tại (contract §0); đơn của chi nhánh khác bị từ chối, như OrderService.
     const row = await this.prisma.order.findFirst({
       where: { id, tenantId },
       include: ORDER_DETAIL_INCLUDE,
@@ -201,8 +187,6 @@ export class OrderReadService {
     const stockChecks = await computeStockChecks(this.prisma, tenantId, [row]);
     return { row, stockChecks };
   }
-
-  // ─── Filters ───────────────────────────────────────────────────────────────
 
   private listWhere(
     user: AuthUser,
@@ -228,7 +212,7 @@ export class OrderReadService {
       and.push({ fulfillmentType: { not: FulfillmentType.TAKEAWAY } });
     }
 
-    // A named customer wins over a free-text search, as in OrderService: asking for both means the id is the specific thing.
+    // Lọc theo khách có tên thắng tìm tự do, như OrderService: gửi cả hai thì mã khách là điều cụ thể hơn.
     if (query.customerId) {
       and.push({ customerId: query.customerId });
     } else if (query.search) {
@@ -256,13 +240,13 @@ export class OrderReadService {
       and.push(remittanceWhere(query.cashRemittanceStatus));
     }
 
-    // stockCheck only exists until an order ships, so neither does a stockSummary to match. The
-    // same goes for both attention kinds: a shipped order can no longer be short or late.
+    // stockCheck chỉ có tới khi đơn giao, nên cũng không có stockSummary để khớp. Hai loại attention cũng vậy:
+    // đơn đã giao không còn thiếu hàng hay trễ nữa.
     if (query.stockSummary || query.attention) {
       and.push({ status: { in: [...UNSHIPPED_ORDER_STATUSES] } });
     }
 
-    // Days are counted between local midnights (the column is a `date`, i.e. a calendar day).
+    // Đếm ngày giữa các nửa đêm giờ địa phương (cột là `date`, tức một ngày lịch).
     if (query.attention === 'DUE_SOON') {
       const cutoff = businessDate();
       cutoff.setUTCDate(cutoff.getUTCDate() + DUE_SOON_DAYS);
@@ -272,7 +256,6 @@ export class OrderReadService {
     return { AND: and };
   }
 
-  /** Same rule as OrderService.branchScope: own branch by default, every branch with `orders:view_all`. */
   private branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
     if (!user.branchId) {
@@ -284,13 +267,8 @@ export class OrderReadService {
     return { branchId: user.branchId };
   }
 
-  // ─── Paging ────────────────────────────────────────────────────────────────
-
   /**
-   * One page sorted most urgent first. `priority` is a string column, so the database would sort
-   * it alphabetically; instead each priority is its own bucket, newest first inside it, and the
-   * page is cut across the buckets in turn - a count per bucket, and at most one read per bucket
-   * the page actually touches.
+   * Trang sắp theo độ gấp (gấp nhất trước). `priority` là cột chuỗi nên DB sắp sai; mỗi mức là một nhóm, mới nhất trước trong nhóm. Trang được cắt qua các nhóm lần lượt: đếm mỗi nhóm, và mỗi nhóm chỉ đọc tối đa một lần.
    */
   private async pageByPriority(
     where: Prisma.OrderWhereInput,
@@ -321,10 +299,7 @@ export class OrderReadService {
   }
 
   /**
-   * The stockSummary filter. A summary is worked out from live stock, not stored, so the database
-   * cannot filter on it: every unshipped order matching the other filters is checked here, then
-   * sorted and paged in memory. Bounded by the orders still waiting to leave, not by history -
-   * fine at a shop's scale; if it ever is not, this is the place to precompute.
+   * Bộ lọc stockSummary. Summary tính từ tồn sống, không lưu nên DB không lọc được: các đơn chưa giao được lọc theo bộ lọc khác rồi mới lọc, sắp và phân trang trong bộ nhớ. Giới hạn theo số đơn chờ giao, không theo lịch sử; ở quy mô một shop thì ổn, nếu không ổn thì tính trước.
    */
   private async listByStockSummary(
     tenantId: string,
@@ -365,14 +340,12 @@ export class OrderReadService {
   }
 }
 
-/** An order's worst line is partly or wholly out on the shelf. */
 function isShort(summary: string | null | undefined): boolean {
   return (
     summary === StockCheckStatus.PARTIAL || summary === StockCheckStatus.OUT
   );
 }
 
-/** Database sort for every `sort` but `priority` (see `pageByPriority`). */
 function orderByFor(
   sort: OrderSort | undefined,
 ): Prisma.OrderOrderByWithRelationInput[] {
@@ -385,7 +358,7 @@ function orderByFor(
   return [{ createdAt: 'desc' }];
 }
 
-/** The same three sorts, in memory, for the stockSummary filter - must agree with `orderByFor` and `pageByPriority`. */
+/** Ba kiểu sắp xếp đó nhưng trong bộ nhớ, cho bộ lọc stockSummary. Phải khớp với `orderByFor` và `pageByPriority`. */
 function compareFor(
   sort: OrderSort | undefined,
 ): (a: StockSummaryCandidate, b: StockSummaryCandidate) => number {
@@ -409,7 +382,7 @@ function compareFor(
   return newestFirst;
 }
 
-/** The `cashRemittanceStatus` filter, read off the order's BALANCE payment. NOT_APPLICABLE is the absence of anything to remit: no BALANCE row, or one that never waited on a shipper. */
+/** Lọc `cashRemittanceStatus` theo Payment BALANCE. NOT_APPLICABLE là không có gì phải nộp: không có dòng BALANCE, hoặc dòng chưa từng chờ shipper nộp. */
 function remittanceWhere(status: string): Prisma.OrderWhereInput {
   if (status === RemittanceStatus.NOT_APPLICABLE) {
     return {

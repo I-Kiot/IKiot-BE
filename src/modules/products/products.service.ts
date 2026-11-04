@@ -51,10 +51,10 @@ import {
   writeItemDetails,
 } from './product-attributes';
 
-/** Prefix of auto-allocated product codes (`SP000001`, ...). */
+/** Tiền tố mã sản phẩm tự cấp (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
 
-/** A variant DTO once `allocateItemCodes` has filled in the two codes. */
+/** DTO phiên bản khi `allocateItemCodes` đã điền đủ hai mã. */
 type ItemWithCodes = CreateProductItemDto & {
   productCode: string;
   sku: string;
@@ -140,7 +140,7 @@ const ITEM_INCLUDE = {
 
 type ItemRow = Prisma.ProductItemGetPayload<{ include: typeof ITEM_INCLUDE }>;
 
-/** One location's share of a variant's stock. */
+/** Phần tồn của một phiên bản tại một địa điểm. */
 export interface StockDetail {
   inventoryId: string;
   stock: number;
@@ -148,33 +148,29 @@ export interface StockDetail {
 }
 
 /**
- * A variant's stock read two ways at once, which is what a location-scoped screen needs.
- *
- * `details` is only the location being viewed - the branch's own shelf, the field
- * `stockDetails` has always meant. `allLocations` is the same variant everywhere in the
- * chain, so a branch holding none of something can still say how many the shop has and
- * whether it is worth requesting a transfer.
+ * Tồn của phiên bản cho màn theo địa điểm: `details` là nơi đang xem, `allLocations` là toàn chuỗi, để biết còn hàng ở đâu khi nơi đang xem hết.
  */
 interface ItemStock {
   details: StockDetail[];
   allLocations: number;
-  /** What a sale may take at the viewed location(s): `stock − lockedStock` per row, floored at 0. `stock` above is the total on hand, packed goods included. */
+  /** Số bán được tại nơi đang xem: `stock − lockedStock` mỗi dòng, không âm. `stock` ở trên là tổng trên tay, kể cả hàng đã đóng gói. */
   available: number;
-  /** The same, over every location. */
+  /** Như trên, nhưng trên mọi địa điểm. */
   availableAllLocations: number;
-  /** Only for a COMBO, which has no rows of its own: how many whole sets its components' shelves cover (`comboSetsAvailable`). Replaces the figures above when present. */
+  /** Chỉ với COMBO (không có dòng riêng): số bộ đủ hàng theo kệ của các thành phần (`comboSetsAvailable`), thay các số trên khi có. */
   sets?: { here: number; allLocations: number };
 }
 
-/** Real port of ProductService: a Product is the catalogue entry, a ProductItem the sellable variant carrying price, SKU and stock. Three deliberate fixes - a subscription is now required to create anything (the old body was wrapped in `if (subscription)` and returned 200 having created nothing), `categoryName` is derived rather than accepted, and deleting a variant checks every table that references it, since those references are real foreign keys now. */
+/**
+ * Port của ProductService: Product là danh mục, ProductItem là phiên bản bán được (giá, SKU, tồn kho).
+ * Khác bản cũ: bắt buộc có gói để tạo, `categoryName` tự suy ra, xoá kiểm mọi FK tham chiếu.
+ */
 @Injectable()
 export class ProductService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptions: SubscriptionService,
   ) {}
-
-  // ─── Products ──────────────────────────────────────────────────────────────
 
   async create(tenantId: string, dto: CreateProductDto) {
     await this.subscriptions.assertQuota(
@@ -254,13 +250,13 @@ export class ProductService {
       this.prisma.product.count({ where }),
     ]);
 
-    // Deliberately no `items` here: a product list is a table of products, and attaching every variant made the payload several times larger. Callers needing variants use /products/search or /products/items.
+    // Không kèm `items`: danh sách là bảng sản phẩm, gắn mọi phiên bản làm payload lớn gấp nhiều lần. Cần phiên bản thì dùng /products/search hoặc /products/items.
     const totals = await this.totalStockByProduct(
       tenantId,
       rows.map((row) => row.id),
       query,
     );
-    // A combo product has no inventory rows of its own, so the query above reads 0 for it. Its total is the sets its variants cover (`stockWithCombos`), summed like any other product's variants.
+    // Combo không có dòng tồn riêng nên truy vấn trên trả 0. Tổng combo là số bộ mà các phiên bản của nó đủ phủ (`stockWithCombos`), cộng như phiên bản thường.
     const comboSets = await this.comboProductTotals(
       tenantId,
       rows
@@ -283,7 +279,7 @@ export class ProductService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** The POS lookup: one term matched against the product name anywhere and against every variant's code, SKU and barcode as a prefix, with the variants returned inline so a specific SKU can be picked straight out. */
+  /** Tìm cho POS: từ khoá khớp tên sản phẩm (bất kỳ vị trí) và khớp đầu mã / SKU / barcode của phiên bản; trả kèm phiên bản để chọn thẳng. */
   async search(tenantId: string, query: SearchProductDto) {
     const where = this.buildProductWhere(tenantId, query);
     if (query.q) {
@@ -348,15 +344,8 @@ export class ProductService {
   }
 
   /**
-   * Flat list of variants for pickers that reference a specific SKU; capped rather than
-   * paginated, because it feeds a dropdown.
-   *
-   * `branchIds` **attaches** each variant's stock at those branches, it does not filter by
-   * it. Filtering was the old behaviour and it hid the catalogue from the screens that need
-   * it most: a promotion for goods arriving next week, or a transfer request for something
-   * the branch has never carried, both start from a variant with no row there. A picker's
-   * job is to show what the shop sells and say how many are where - `stock: 0` answers
-   * that; an absent option does not.
+   * Danh sách phẳng phiên bản cho bộ chọn SKU, giới hạn số dòng thay vì phân trang.
+   * `branchIds` chỉ gắn tồn tại các chi nhánh đó, không lọc: hàng chưa có ở chi nhánh vẫn hiện với `stock: 0`.
    */
   async listItems(tenantId: string, query: QueryProductItemDto) {
     const where: Prisma.ProductItemWhereInput = { tenantId };
@@ -407,7 +396,7 @@ export class ProductService {
       by: ['productItemId'],
       where: {
         tenantId,
-        // Branch ids are Location ids; the kind filter keeps a warehouse id from counting as a branch.
+        // Id chi nhánh là id Location; lọc theo loại để id kho không bị tính là chi nhánh.
         locationId: { in: query.branchIds },
         location: { type: LocationType.BRANCH },
         productItemId: { in: items.map((item) => item.id) },
@@ -424,7 +413,7 @@ export class ProductService {
     }));
   }
 
-  /** Detail: the product, every variant, and where each variant's stock sits. */
+  /** Chi tiết: sản phẩm, mọi phiên bản, và tồn của từng phiên bản ở đâu. */
   async findOne(tenantId: string, id: string, location: LocationRefQueryDto) {
     const product = await this.prisma.product.findFirst({
       where: { id, tenantId },
@@ -473,7 +462,7 @@ export class ProductService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
-    // Prisma's update({ where: { id } }) can't take a non-unique tenant filter, so scope has to be re-checked first or any tenant could write any row by id.
+    // Prisma update({ where: { id } }) không nhận bộ lọc tenant không unique, nên phải kiểm phạm vi trước, không thì tenant nào cũng ghi được dòng theo id.
     const existing = await this.prisma.product.findFirst({
       where: { id, tenantId },
       select: { id: true },
@@ -533,7 +522,7 @@ export class ProductService {
         });
       }
 
-      // ProductItem.productName is a denormalized copy of the product's name, so it has to follow a rename.
+      // ProductItem.productName là bản sao của tên sản phẩm, nên đổi tên phải cập nhật theo.
       if (dto.name) {
         await tx.productItem.updateMany({
           where: { productId: id, tenantId },
@@ -597,7 +586,7 @@ export class ProductService {
     });
   }
 
-  /** Soft delete to DISCONTINUED - order items, stock movements and inventory all hold a foreign key to this product's variants - refused while stock, an unfinished transfer or an unpaid order still makes the product live. */
+  /** Xoá mềm thành DISCONTINUED. Dòng đơn, phiếu kho và tồn kho đều có FK tới phiên bản, nên bị từ chối khi còn tồn, phiếu chưa xong hoặc đơn chưa thanh toán. */
   async discontinue(tenantId: string, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, tenantId },
@@ -631,7 +620,7 @@ export class ProductService {
           where: {
             tenantId,
             status: { in: [...OPEN_MOVEMENT_STATUSES] },
-            // The relation is `details` on StockMovementRequest, `items` on Order.
+            // Quan hệ là `details` trên StockMovementRequest, `items` trên Order.
             details: { some: { productItemId: { in: itemIds } } },
           },
         }),
@@ -665,8 +654,8 @@ export class ProductService {
       }
     }
 
-    // Kiểm combo và ghi trạng thái dưới cùng khoá với việc sửa thành phần / bật lại combo: kiểm ngoài
-    // transaction thì một combo vừa thêm món này (chưa commit) không được đếm, rồi cả hai cùng commit.
+    // Kiểm combo và ghi trạng thái dưới cùng khoá với việc sửa thành phần / bật lại combo, nếu không một combo
+    // vừa thêm món này (chưa commit) sẽ không được đếm.
     await this.prisma.$transaction(async (tx) => {
       await lockComboGraph(tx, tenantId);
       // Combo của sản phẩm khác còn bán mà chứa SKU của sản phẩm này: ngừng nó thì combo bán ra món đã ngừng.
@@ -694,14 +683,12 @@ export class ProductService {
     return this.findOne(tenantId, id, {});
   }
 
-  // ─── Variants ──────────────────────────────────────────────────────────────
-
   async createItem(
     tenantId: string,
     productId: string,
     dto: CreateProductItemDto,
   ) {
-    // The old route sat behind requireActiveSubscription: adding a variant doesn't consume the product quota, but it is still a write to the catalogue.
+    // Bản cũ đặt sau requireActiveSubscription: thêm phiên bản không tốn hạn mức sản phẩm, nhưng vẫn là ghi vào danh mục.
     await this.subscriptions.requireActiveSubscription(tenantId);
 
     const product = await this.prisma.product.findFirst({
@@ -764,7 +751,7 @@ export class ProductService {
           barcode: dto.barcode,
           description: dto.description,
           retailPrice: dto.retailPrice,
-          // A combo's cost is the sum of its components', written by `writeComboComponents`.
+          // Giá vốn combo là tổng của các thành phần, do `writeComboComponents` ghi.
           costPrice:
             existing.itemType === ProductItemType.COMBO
               ? undefined
@@ -773,7 +760,7 @@ export class ProductService {
           vat: dto.vat,
         },
       });
-      // Combos above this variant carry a cost derived from it - re-price them.
+      // Combo phía trên phiên bản này mang giá vốn suy ra từ nó, nên phải tính lại.
       if (
         existing.itemType !== ProductItemType.COMBO &&
         dto.costPrice !== undefined
@@ -781,7 +768,7 @@ export class ProductService {
         await recomputeComboCosts(tx, tenantId, [itemId]);
       }
 
-      // Both collections are replaced wholesale when present, same as the old API: the client sends the list it wants to end up with, not a patch of it.
+      // Hai danh sách được thay toàn bộ khi có gửi, như API cũ: client gửi danh sách cuối cùng, không gửi phần vá.
       if (dto.images) {
         await tx.productItemImage.deleteMany({
           where: { productItemId: itemId },
@@ -811,7 +798,7 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  /** Hard delete of a variant, refused while anything still points at it - the old service checked inventory only, and the other three references are real foreign keys here. */
+  /** Xoá cứng phiên bản, bị từ chối khi còn gì trỏ tới. Bản cũ chỉ kiểm tồn kho; ở đây còn ba tham chiếu FK nữa. */
   async removeItem(tenantId: string, itemId: string) {
     const item = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
@@ -867,12 +854,11 @@ export class ProductService {
       });
     }
 
-    // Images, details and supplier links cascade from the schema.
     await this.prisma.productItem.delete({ where: { id: itemId } });
     return { id: itemId, deleted: true };
   }
 
-  /** Idempotent, like the old `$addToSet`: attaching the same supplier twice is a no-op. */
+  /** Idempotent như `$addToSet` cũ: gắn cùng NCC hai lần không đổi gì. */
   async addSupplierToItem(
     tenantId: string,
     itemId: string,
@@ -910,12 +896,8 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
-
   /**
-   * The combos of `productId` may be sold again only if none of their components belongs to a
-   * discontinued product. Components that are variants of `productId` itself are skipped: they come
-   * back on with it (`discontinue` skips them for the same reason).
+   * Combo của `productId` chỉ bán lại khi không thành phần nào đã ngừng. Thành phần là chính `productId` thì bỏ qua (chúng bật lại cùng nó).
    */
   private async assertCombosSellable(
     tx: Prisma.TransactionClient,
@@ -964,7 +946,7 @@ export class ProductService {
     return this.toItemResponse(item, stock.get(itemId), stock);
   }
 
-  /** Creates a variant with its images, specs, supplier links and opening stock. Its `itemType` is the product's, never the client's choice. */
+  /** Tạo phiên bản kèm ảnh, thuộc tính, NCC và tồn đầu. `itemType` lấy từ sản phẩm, client không chọn. */
   private async insertItem(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -1058,23 +1040,15 @@ export class ProductService {
       };
     }
 
-    // **The location deliberately narrows nothing here.** The catalogue belongs to the shop,
-    // so every branch and warehouse lists every product; what the location changes is the
-    // *number* next to each one (see stockByItem / totalStockByProduct), never whether the
-    // row appears. Filtering by `inventories: { some: … }` is the shape to avoid: it makes
-    // the existence of a stock row answer "does this shop sell it", and a variant nobody has
-    // received yet then reads as "no such product here" instead of "none here yet" - which
-    // is exactly what a branch about to order some needs to see.
+    // Địa điểm cố ý KHÔNG lọc danh sách: danh mục thuộc shop, mọi chi nhánh / kho đều thấy mọi sản phẩm;
+    // địa điểm chỉ đổi con số bên cạnh (xem stockByItem). Không lọc bằng `inventories: { some: … }`, vì khi đó
+    // sản phẩm chưa từng nhập ở đây sẽ biến mất thay vì hiện "chưa có tồn".
     return where;
   }
 
   /**
-   * Where each variant's stock sits, one query for the whole page.
-   *
-   * The query is deliberately **not** narrowed by location: the location splits the rows
-   * afterwards instead. Both numbers a location-scoped screen shows - what this branch holds
-   * and what the whole chain holds - come out of the same rows, so filtering in SQL would
-   * mean a second round trip to recover the total that was just thrown away.
+   * Tồn kho của từng phiên bản trong một query cho cả trang. Cố ý **không** lọc theo địa điểm: hai số
+   * (chi nhánh này / toàn chuỗi) đều lấy từ cùng các dòng, lọc trong SQL sẽ tốn thêm một query để lấy lại tổng.
    */
   private async stockByItem(
     tenantId: string,
@@ -1120,10 +1094,9 @@ export class ProductService {
   }
 
   /**
-   * `stockByItem` for a page that may hold COMBO variants. A combo has no inventory rows, so its
-   * figures are derived: the combo is opened down to its leaves (`flattenCombo`) and the scarcest
-   * leaf's shelf decides how many whole sets there are, at the viewed location and over the chain.
-   * The leaves' stock rides along in the same query as the page's own items.
+   * `stockByItem` cho trang có thể chứa COMBO. Combo không có dòng tồn kho nên số được suy ra: mở xuống
+   * các món lá (`flattenCombo`), món hết trước quyết định số bộ, ở nơi đang xem và toàn chuỗi. Tồn của các
+   * món lá đi chung query với các món của trang.
    */
   private async stockWithCombos(
     tenantId: string,
@@ -1188,7 +1161,6 @@ export class ProductService {
     return stock;
   }
 
-  /** The same two totals per product, without loading the variants themselves. */
   private async totalStockByProduct(
     tenantId: string,
     productIds: string[],
@@ -1219,7 +1191,7 @@ export class ProductService {
     return totals;
   }
 
-  /** One variant's three stock figures, from the rows (or, for a combo, the sets) behind it. The one copy of this arithmetic: an item and a combo's component are reported the same way. */
+  /** Ba số tồn của một phiên bản (combo thì lấy từ số bộ). Đây là bản duy nhất của phép tính; món và thành phần combo báo cùng cách. */
   private stockFigures(stock: ItemStock | undefined) {
     const details = stock?.details ?? [];
     return {
@@ -1274,7 +1246,7 @@ export class ProductService {
     return totals;
   }
 
-  /** Prices are `Decimal` in Postgres and would serialize as strings, but the old API sent numbers the frontend does arithmetic on - converting here keeps that contract in one place. `all` is the stock of every item the page touched, so each component of a combo can carry its own figures. */
+  /** Giá là `Decimal` trong Postgres sẽ thành chuỗi, nhưng FE cần số nên đổi ở đây. `all` là tồn của mọi món trang chạm tới, để mỗi thành phần combo có số riêng. */
   private toItemResponse(
     item: ItemRow,
     stock: ItemStock | undefined,
@@ -1308,10 +1280,8 @@ export class ProductService {
   }
 
   /**
-   * Fills in the codes a client left blank. `productCode` becomes the next `SP000001`-style
-   * number in the tenant (hand-typed codes of other shapes are left alone and don't move the
-   * counter); `sku` defaults to the product code, made unique with a `-2`, `-3` suffix when
-   * that string is already a SKU here or earlier in the same request.
+   * Điền mã client để trống. `productCode` lấy số kế tiếp kiểu `SP000001` của tenant (mã gõ tay khác dạng
+   * không làm nhảy bộ đếm); `sku` mặc định bằng mã sản phẩm, thêm hậu tố `-2`, `-3` nếu đã trùng.
    */
   private async allocateItemCodes(
     tenantId: string,
@@ -1402,7 +1372,7 @@ export class ProductService {
     }
   }
 
-  /** Every supplier a batch of variants names has to be in this tenant. Locations are not named here - a variant is created stocked nowhere, and a stock row appears at a location only when a stock movement puts goods there. */
+  /** Mọi NCC trong lô phiên bản phải thuộc tenant này. Không nêu địa điểm: phiên bản tạo ra chưa có tồn ở đâu, dòng tồn chỉ xuất hiện khi có phiếu kho nhập hàng tới đó. */
   private async assertItemReferencesExist(
     tenantId: string,
     items: CreateProductItemDto[],

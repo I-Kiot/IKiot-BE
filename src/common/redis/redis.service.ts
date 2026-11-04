@@ -7,7 +7,7 @@ import {
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 
-/** The one Redis connection. Redis being down is never fatal: `isReady()` is what callers branch on, and every method answers as though the key simply wasn't there. */
+/** Kết nối Redis duy nhất. Redis chết không bao giờ là lỗi chí mạng: caller rẽ nhánh theo `isReady()`, còn mọi method trả về như thể key không tồn tại. */
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
@@ -26,17 +26,17 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const client: RedisClientType = createClient({
       url,
       socket: {
-        // `rediss://` is the TLS scheme; spread rather than `tls: boolean` because the socket options are a discriminated union on that field.
+        // `rediss://` là scheme TLS; spread thay vì `tls: boolean` vì options của socket là union phân biệt theo trường này.
         ...(url.startsWith('rediss://') ? { tls: true as const } : {}),
         connectTimeout: 10_000,
-        // Give up after three tries: the callers degrade gracefully, and an endless retry loop buries the real logs.
+        // Thử ba lần rồi bỏ: caller tự suy giảm chức năng, còn vòng retry vô hạn sẽ chôn log thật.
         reconnectStrategy: (retries) =>
           retries > 3 ? false : Math.min(retries * 500, 3000),
       },
       pingInterval: 4 * 60 * 1000,
     });
 
-    // Logged once per outage, not once per retry - a reconnect loop otherwise floods the log.
+    // Chỉ log một lần cho mỗi đợt mất kết nối, không log mỗi lần retry - nếu không vòng reconnect sẽ làm ngập log.
     client.on('error', (error: Error) => {
       if (this.loggedError) return;
       this.loggedError = true;
@@ -59,18 +59,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Synchronous on purpose: `quit()` awaits a reply and hangs shutdown when the connection is already gone.
+  // Đồng bộ có chủ đích: `quit()` chờ phản hồi và làm treo shutdown khi kết nối đã mất.
   onModuleDestroy(): void {
     if (!this.client) return;
     try {
       this.client.destroy();
     } catch {
-      // already closed
+      // Đã đóng rồi.
     }
     this.client = null;
   }
 
-  /** Whether Redis is actually usable right now. Callers branch on this. */
+  /** Redis có thực sự dùng được lúc này không. Caller rẽ nhánh theo cái này. */
   isReady(): boolean {
     return this.client?.isReady ?? false;
   }
@@ -84,7 +84,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** `ttlSeconds` is required - nothing this app puts in Redis is allowed to live forever. */
+  /** `ttlSeconds` bắt buộc - không thứ gì app đưa vào Redis được phép sống mãi. */
   async set(key: string, value: string, ttlSeconds: number): Promise<boolean> {
     if (!this.isReady()) return false;
     try {
@@ -100,11 +100,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.client!.del(keys);
     } catch {
-      // nothing to do - the key stays until it expires on its own
+      // Không cần làm gì - key sẽ tự hết hạn.
     }
   }
 
-  /** Every key under a prefix, via SCAN rather than KEYS - KEYS blocks the server, and this runs while people are using the app. */
+  /** Mọi key dưới một prefix, qua SCAN thay vì KEYS - KEYS khoá server, mà hàm này chạy khi người dùng đang dùng app. */
   async keysMatching(pattern: string): Promise<string[]> {
     if (!this.isReady()) return [];
     try {

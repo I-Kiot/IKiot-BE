@@ -1,6 +1,6 @@
 import { validateVietnamPhoneNumber } from './vietnam-phone';
 
-// The phone number is the login handle and the OTP destination, so "accepted but can never receive an SMS" is an account nobody can get into.
+// Số điện thoại là login và nơi nhận OTP, nên "được chấp nhận nhưng không nhận được SMS" là tài khoản không ai vào được.
 describe('validateVietnamPhoneNumber', () => {
   it.each([
     ['Viettel', '0321234567'],
@@ -39,9 +39,8 @@ describe('validateVietnamPhoneNumber', () => {
   it.each(['111', '112', '113', '114', '115'])(
     'rejects the emergency line %s with a reason, not a length complaint',
     (value) => {
-      // Each line has its own wording (111 is the child protection hotline, 112 search and
-      // rescue, 113-115 police / fire / medical), so the test checks the shared reason - it is
-      // a service line, not a phone number - and that it is not a length complaint.
+      // Mỗi số có nội dung riêng (111 bảo vệ trẻ em, 112 cứu nạn, 113-115 công an / cứu hoả / cấp cứu),
+      // nên test chỉ kiểm lý do chung: đây là đường dây dịch vụ, không phải số điện thoại, và không phải lỗi độ dài.
       expect(() => validateVietnamPhoneNumber(value)).toThrow(
         /cannot be an employee mobile number/,
       );

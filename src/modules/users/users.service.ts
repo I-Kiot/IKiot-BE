@@ -26,7 +26,7 @@ import {
   DeleteStaffDto,
   StaffAccountPasswordDto,
 } from './dto/staff-account.dto';
-// `grants()` is static - this is a plain type/constant reference, not an injected dependency.
+// grants() là static nên chỉ import kiểu và hằng, không inject.
 import { ShiftSupervisorService } from '../working-schedules/shift-supervisor.service';
 import { validateVietnamIdentificationId } from './vietnam-identification';
 import { validateVietnamPhoneNumber } from './vietnam-phone';
@@ -43,7 +43,7 @@ const SELECT_SAFE = {
   roleId: true,
   role: { select: { id: true, name: true } },
   status: true,
-  // Answered as `branchId`/`warehouseId` + `branch`/`warehouse` by `toUserResponse` - see there.
+  // Được đổi thành branchId/warehouseId trong toUserResponse.
   location: { select: { id: true, type: true, name: true } },
   workshopId: true,
   workshop: { select: { id: true, supplierName: true } },
@@ -61,7 +61,7 @@ const SELECT_SAFE = {
   createdAt: true,
 } as const;
 
-/** Rebuilds the posting the API has always answered with from the single `location` relation: `branchId`/`warehouseId`, plus names alongside the ids, since the staff list has a "Chi nhánh" column and an id there is unreadable. */
+/** Dựng lại vị trí làm việc từ quan hệ `location` duy nhất thành `branchId`/`warehouseId`, kèm tên bên cạnh id vì cột "Chi nhánh" ở danh sách cần hiển thị tên. */
 function toUserResponse<
   T extends FlatUserProfile & {
     location: { id: string; type: string; name: string } | null;
@@ -70,7 +70,7 @@ function toUserResponse<
   return withNestedProfile(withNamedPosting(row));
 }
 
-/** Staff accounts, covering iKiotMS-BE's whole `/staff` module. A large part of the old service was role-hierarchy plumbing - who may edit whom given BRANCH_MANAGER vs WAREHOUSE_MANAGER vs STAFF - and none of it survives: "who may edit staff" is now one permission, `users:update`. */
+/** Quản lý nhân viên, thay cho toàn bộ module `/staff` của iKiotMS-BE. Phân cấp vai trò cũ (ai được sửa ai theo BRANCH_MANAGER/WAREHOUSE_MANAGER/STAFF) đã bỏ: nay chỉ cần quyền `users:update`. */
 @Injectable()
 export class UserService {
   constructor(
@@ -80,7 +80,7 @@ export class UserService {
     private readonly refreshTokens: RefreshTokenService,
   ) {}
 
-  /** The staff list, paginated and filtered - a port of `getStaffList`, which the first NestJS pass had reduced to every user in the tenant, unbounded. Two rules carry over: only STAFF accounts appear, and the caller is excluded, since this screen is for managing other people. */
+  /** Danh sách nhân viên có phân trang và lọc, port từ `getStaffList` (bản NestJS đầu trả toàn bộ user, không giới hạn). Giữ hai quy tắc: chỉ STAFF, và loại người gọi vì màn này dùng để quản lý người khác. */
   async findAll(tenantId: string, requesterId: string, query: QueryUserDto) {
     const where: Prisma.UserWhereInput = {
       tenantId,
@@ -90,7 +90,7 @@ export class UserService {
     };
 
     if (query.roleId) where.roleId = query.roleId;
-    // One `location_id` column now; asking for both a branch and a warehouse still matches nobody, as the old AND of two columns did.
+    // Giờ chỉ có một cột `location_id`; lọc cả chi nhánh lẫn kho sẽ không khớp ai, như phép AND hai cột cũ.
     const postings = [query.branchId, query.warehouseId].filter(
       (id): id is string => Boolean(id),
     );
@@ -140,10 +140,10 @@ export class UserService {
     return toUserResponse(user);
   }
 
-  /** Hire someone, INACTIVE and without a password - giving them a login is `POST /users/:id/account`, a separate call. See `CreateUserDto`. */
+  /** Tuyển người ở trạng thái INACTIVE, chưa có mật khẩu. Cấp login là `POST /users/:id/account`, gọi riêng. */
   async create(actor: AuthUser, tenantId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
-    // The same subset rule `update` applies: without it, someone could hire a colleague straight into the shop's most privileged role and then switch the login on.
+    // Cùng quy tắc tập quyền như update: nếu không, có thể tuyển thẳng đồng nghiệp vào role đặc quyền nhất rồi bật login.
     await this.assertRoleIsWithinGrant(actor, tenantId, dto.roleId);
     const posting = this.resolvePosting(dto);
     await this.assertWorkplaceBelongsToTenant(
@@ -153,7 +153,7 @@ export class UserService {
     );
     await this.assertWorkshopBelongsToTenant(tenantId, dto.workshopId);
 
-    // Seats are what a plan sells, so this is checked before the row is written rather than when the login is switched on - and it counts the same population the list screen shows.
+    // Seat là thứ gói cước bán, nên kiểm tra trước khi ghi row (không đợi lúc bật login), và đếm cùng tập người mà màn danh sách hiển thị.
     await this.subscriptions.assertQuota(
       tenantId,
       'quotaSnapshotMaxUsers',
@@ -169,7 +169,7 @@ export class UserService {
     );
 
     const phoneNumber = validateVietnamPhoneNumber(dto.phoneNumber);
-    // Not tenant-scoped: the phone number is the login handle for the whole platform.
+    // Không lọc theo tenant: số điện thoại là login chung cho cả nền tảng.
     const existingPhone = await this.prisma.user.findFirst({
       where: { phoneNumber },
     });
@@ -180,7 +180,7 @@ export class UserService {
       });
     }
 
-    // Same trio rule `update` enforces: the citizen ID encodes a century, birth year and sex, and on a create there is no existing row to merge against.
+    // Cùng quy tắc bộ ba như update: số CCCD mã hoá thế kỷ, năm sinh và giới tính; lúc tạo chưa có row để đối chiếu.
     const identificationId = dto.profile?.identificationId
       ? validateVietnamIdentificationId(dto.profile.identificationId, {
           dob: dto.profile.dob ?? null,
@@ -188,7 +188,7 @@ export class UserService {
         })
       : undefined;
 
-    // The same check `update` runs. It used to run only there, so two colleagues could be created on one email address and the clash surfaced only when somebody later edited one of them.
+    // Kiểm tra giống update. Trước đây chỉ update có, nên hai nhân viên có thể tạo trùng email và lỗi chỉ lộ ra khi sửa.
     await this.assertContactDetailsAreFree(tenantId, null, {
       email: dto.email,
       identificationId,
@@ -205,7 +205,7 @@ export class UserService {
         ...posting,
         workshopId: dto.workshopId,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
-        // Flat wins over nested when both are sent - the old `StaffDTO` spelled the name flat and the form still does, while everything else about a person is nested.
+        // Khi gửi cả hai, trường phẳng được ưu tiên: StaffDTO cũ và form hiện tại dùng tên phẳng, còn phần khác lồng trong profile.
         profileFirstName: dto.firstName ?? dto.profile?.firstName,
         profileLastName: dto.lastName ?? dto.profile?.lastName,
         profileAvatarUrl: dto.profile?.avatarUrl,
@@ -221,7 +221,7 @@ export class UserService {
     return toUserResponse(user);
   }
 
-  /** Edit a staff record, ported from `updateStaff` - the first NestJS pass had cut it to four fields, leaving the profile, hire date, pay scheme and account note with no way in. Account lifecycle stays out of here; see UpdateUserDto. */
+  /** Sửa hồ sơ nhân viên. Bản NestJS đầu chỉ còn 4 trường nên không sửa được hồ sơ, ngày vào làm, hình thức lương, ghi chú. Vòng đời tài khoản không nằm ở đây; xem UpdateUserDto. */
   async update(
     actor: AuthUser,
     tenantId: string,
@@ -276,7 +276,7 @@ export class UserService {
     return toUserResponse(updated);
   }
 
-  /** A staff member is posted at exactly one location - the single `location_id` column says so by construction, so naming a branch replaces any warehouse posting and vice versa. Naming both is still refused rather than silently picking one. */
+  /** Nhân viên chỉ thuộc đúng một địa điểm, do cột `location_id` duy nhất đảm bảo: chọn chi nhánh sẽ thay thế kho và ngược lại. Gửi cả hai vẫn bị từ chối thay vì âm thầm chọn một. */
   private resolvePosting(dto: {
     branchId?: string | null;
     warehouseId?: string | null;
@@ -292,7 +292,7 @@ export class UserService {
     return {};
   }
 
-  /** The citizen ID has to agree with the birth date and sex on the same record, and either side of that trio may be the one being edited - so the check runs against the merged result rather than the request alone. */
+  /** CCCD phải khớp ngày sinh và giới tính của cùng bản ghi, và vế nào trong bộ ba cũng có thể là thứ đang sửa, nên kiểm tra trên kết quả đã gộp chứ không chỉ trên request. */
   private resolveIdentificationId(
     current: {
       profileIdentificationId: string | null;
@@ -318,14 +318,13 @@ export class UserService {
     });
   }
 
-  /** Email and citizen ID may not collide with another staff member's, both scoped to the tenant - the old check left `identificationId` global, which let one shop discover that another employs a particular person. */
+  /** Email và CCCD không được trùng với nhân viên khác trong cùng tenant. Bản cũ để `identificationId` toàn cục, khiến shop này dò được ai đang làm ở shop khác. */
   private async assertContactDetailsAreFree(
     tenantId: string,
-    /** The row being edited, excluded from the search. `null` when creating. */
     id: string | null,
     values: { email?: string; identificationId?: string },
   ) {
-    // Spread rather than `id: { not: id }`: with a null id that would read as "id is not null", which is every row - right here only by accident.
+    // Dùng spread thay vì `id: { not: id }`: với id null, điều kiện đó thành "id is not null", khớp mọi row.
     const others = id ? { id: { not: id } } : {};
 
     if (values.email) {
@@ -363,7 +362,7 @@ export class UserService {
     }
   }
 
-  /** Soft delete, and an anonymising one: the row has to stay because orders, stock movements and audit logs hold a foreign key, but the personal data does not, and the phone number is replaced with a unique placeholder so the person can be re-hired under the same number. */
+  /** Xoá mềm kèm ẩn danh: row phải giữ vì đơn hàng, phiếu kho và audit log có FK tới nó, còn dữ liệu cá nhân bị xoá. Số điện thoại thay bằng giá trị duy nhất để tuyển lại được cùng số. */
   async remove(
     actor: AuthUser,
     tenantId: string,
@@ -384,7 +383,7 @@ export class UserService {
           deletedAt: new Date(),
           deletedById: actorId,
           deletionReason: dto.deletionReason?.trim() || null,
-          // Freed for reuse, and no longer a working login.
+          // Giải phóng để dùng lại, và không còn là login hoạt động.
           phoneNumber: `deleted_${target.id}`,
           email: null,
           password: null,
@@ -396,15 +395,13 @@ export class UserService {
       });
     });
 
-    // The row is gone as a login, but the sessions it opened are not - a refresh token still in Redis, and a socket authenticated once at connect. Ending them is the same call everywhere.
+    // Row không còn là login nhưng các phiên đã mở thì chưa: refresh token còn trong Redis, và socket đã xác thực lúc kết nối. Phải kết thúc chúng.
     await this.refreshTokens.revokeAllFor(id);
 
     return { success: true };
   }
 
-  // ─── Account lifecycle ─────────────────────────────────────────────────────
-
-  /** Switch on the login for an employee created without one - the second half of hiring, and the only way a staff account ever gets a password. Reached again after `deactivateAccount` has cleared it. */
+  /** Bật login cho nhân viên chưa có login: nửa sau của tuyển dụng, và là cách duy nhất để tài khoản nhân viên có mật khẩu. Cũng dùng lại sau khi `deactivateAccount` đã xoá mật khẩu. */
   async createAccount(
     actor: AuthUser,
     tenantId: string,
@@ -473,12 +470,12 @@ export class UserService {
       data: { password: await bcrypt.hash(dto.newPassword, BCRYPT_COST) },
       select: SELECT_SAFE,
     });
-    // Same rule `AuthService.resetPassword` follows: a password someone else had to reset may have leaked, so every session it could still reach ends.
+    // Cùng quy tắc `AuthService.resetPassword`: mật khẩu do người khác đặt lại có thể đã bị lộ, nên mọi phiên còn dùng được phải kết thúc.
     await this.refreshTokens.revokeAllFor(id);
     return toUserResponse(updated);
   }
 
-  /** Turn the login off without deleting the person: the password is cleared as well as the status, so any token already in the wild is rejected on the next request and reactivation has to set a fresh one. The old `replacementManagerId` swap is gone - managing a location is `Branch.managerId` now, so this points at `PATCH /branches/:id/manager` instead. */
+  /** Tắt login mà không xoá người: xoá cả mật khẩu lẫn status, nên token đã phát ra bị từ chối ở request kế tiếp; kích hoạt lại phải đặt mật khẩu mới. Việc hoán đổi `replacementManagerId` cũ đã bỏ: quản lý địa điểm là `Branch.managerId`, dùng `PATCH /branches/:id/manager`. */
   async deactivateAccount(actor: AuthUser, tenantId: string, id: string) {
     const staff = await this.requireStaff(tenantId, id);
     await this.assertCanActOnStaff(actor, tenantId, staff, 'deactivate');
@@ -496,15 +493,12 @@ export class UserService {
       data: { status: UserStatus.INACTIVE, password: null },
       select: SELECT_SAFE,
     });
-    // INACTIVE is enough for HTTP, since JwtStrategy re-reads the account every request, but a socket is authenticated once at connect - without this a dismissed employee kept the shop's live feed until they closed the tab.
+    // INACTIVE đủ cho HTTP vì JwtStrategy đọc lại tài khoản mỗi request, nhưng socket chỉ xác thực một lần lúc kết nối. Thiếu bước này, nhân viên đã nghỉ vẫn nhận live feed của shop tới khi đóng tab.
     await this.refreshTokens.revokeAllFor(id);
     return toUserResponse(updated);
   }
 
-  // ─── Shared guards ─────────────────────────────────────────────────────────
-
-  /** The target has to be a STAFF account in this tenant that hasn't been deleted. */
-  /** This endpoint manages other people. `GET /users` already excludes the caller, but the update path did not, so an account holding `users:update` could PATCH its own `roleId` and posting; self-service is `PATCH /auth/me`, which accepts neither. */
+  /** Không cho tự sửa mình ở endpoint này: `GET /users` đã loại người gọi, nhưng đường update thì không, nên tài khoản có `users:update` có thể PATCH `roleId` và vị trí của chính mình. Tự sửa hồ sơ đi qua `PATCH /auth/me`, nơi không nhận hai trường này. */
   private assertNotSelf(actor: AuthUser, id: string) {
     if (actor.userId === id) {
       throw new ForbiddenException({
@@ -514,7 +508,7 @@ export class UserService {
     }
   }
 
-  /** You cannot hand out a permission you do not hold. Without this, `users:update` was a path to every other permission in the shop: assign a colleague the most privileged role, set their password through the route the same permission gates, and sign in as them. The old `validateRoleHierarchy` compared two fixed roles; with tenant-defined roles the comparison is "is this role's grant set inside mine". Owners and platform admins are exempt. */
+  /** Không được trao quyền mình không có. Thiếu bước này, `users:update` là đường tới mọi quyền khác trong shop: gán đồng nghiệp role đặc quyền nhất, đặt mật khẩu họ qua route cùng quyền, rồi đăng nhập thay. Bản cũ so hai role cố định; nay so tập quyền của role với quyền của mình. Owner và admin nền tảng được miễn. */
   private async assertRoleIsWithinGrant(
     actor: AuthUser,
     tenantId: string,
@@ -553,7 +547,7 @@ export class UserService {
     }
   }
 
-  /** The actor's own grants, with a live shift's temporary ones removed: those are right for `PermissionsGuard` but wrong here, since this decides what a person may make permanent on somebody else - counting them would let a supervisor hand a colleague `stock_movement:approve` for good during the one shift they hold it. */
+  /** Quyền của người thao tác, đã bỏ quyền tạm của ca đang chạy. Quyền tạm đúng cho `PermissionsGuard` nhưng sai ở đây, vì đây quyết định cấp vĩnh viễn gì cho người khác: tính cả nó thì trưởng ca có thể cấp `stock_movement:approve` vĩnh viễn ngay trong ca. */
   private ownGrantsOf(actor: AuthUser): Set<string> {
     const held = new Set(actor.permissions);
     for (const key of held) {
@@ -563,7 +557,7 @@ export class UserService {
     return held;
   }
 
-  /** May the actor act on this employee's account at all? The role-subset rule only closed the front door: taking over an account that already holds a stronger role needs no assignment, since `PATCH /users/:id/account/password` overwrites anybody's hash. So every lifecycle path requires the target's current role to be within the actor's grant; owners and admins are exempt, and a fresh hire with no role is within everybody's. */
+  /** Người thao tác có được động vào tài khoản này không? Kiểm tra tập quyền chỉ chặn cửa trước: chiếm tài khoản đã có role mạnh hơn không cần gán gì, vì `PATCH /users/:id/account/password` ghi đè mật khẩu của bất kỳ ai. Nên mọi thao tác vòng đời yêu cầu role hiện tại của đích nằm trong quyền người thao tác; owner/admin được miễn, người chưa có role thì ai cũng được. */
   private async assertCanActOnStaff(
     actor: AuthUser,
     tenantId: string,
@@ -609,7 +603,7 @@ export class UserService {
     }
   }
 
-  /** A location must never be left pointing at a disabled manager; the replacement goes through PATCH /branches/:id/manager, which is the one place that knows the appointment rules. */
+  /** Địa điểm không được trỏ tới quản lý đã bị vô hiệu; thay người phải qua PATCH /branches/:id/manager, nơi duy nhất biết quy tắc bổ nhiệm. */
   private async assertNotAppointedManager(tenantId: string, id: string) {
     const managed = await this.prisma.location.count({
       where: { tenantId, managerId: id },
@@ -634,7 +628,7 @@ export class UserService {
       });
   }
 
-  /** A workshop staff account names a WORKSHOP supplier of its own shop - `users.workshop_id` is a plain FK, so neither the tenant nor the supplier's type is checked by the database. */
+  /** Nhân viên xưởng phải chọn một nhà cung cấp loại WORKSHOP của chính shop. `users.workshop_id` là FK thường, DB không kiểm tra tenant hay loại supplier. */
   private async assertWorkshopBelongsToTenant(
     tenantId: string,
     workshopId: string | null | undefined,

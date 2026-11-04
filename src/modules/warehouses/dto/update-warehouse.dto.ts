@@ -7,7 +7,7 @@ import {
 } from '../../../common/constants/location-status';
 
 export class UpdateWarehouseDto extends PartialType(CreateWarehouseDto) {
-  // DELETED is not accepted here - soft-deleting goes through DELETE /warehouses/:id so `warehouses:delete` actually gates it.
+  // Không nhận DELETED ở đây: xoá mềm đi qua DELETE /warehouses/:id để `warehouses:delete` thực sự kiểm soát.
   @IsOptional()
   @IsIn(SETTABLE_LOCATION_STATUSES, {
     message: `status phải là ${SETTABLE_LOCATION_STATUSES.join(' hoặc ')}`,

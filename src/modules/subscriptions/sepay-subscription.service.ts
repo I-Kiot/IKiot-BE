@@ -5,7 +5,7 @@ import {
 } from '../../common/utils/reference-generator';
 import { normalizeAccountNumber } from '../../common/utils/bank-account';
 
-// Ported from the subscription half of sepayService.js and deliberately not shared with order payments: this one pays into iKiot's own company account, while orders use each tenant's banking fields and a per-tenant webhook key.
+// Port từ phần subscription của sepayService.js. Không dùng chung với thanh toán đơn hàng: gói này trả vào tài khoản công ty iKiot, còn đơn dùng thông tin ngân hàng và webhook key riêng của từng tenant.
 @Injectable()
 export class SepaySubscriptionService {
   generatePaymentReference(): string {
@@ -27,7 +27,7 @@ export class SepaySubscriptionService {
     return Boolean(expectedKey) && receivedKey === expectedKey;
   }
 
-  /** Shops' accounts sit on the same SePay account, so a shop could otherwise pay itself with an `IKMS…` reference and activate a plan. */
+  /** Tài khoản của các shop nằm chung trên SePay, nên nếu không kiểm tra thì shop có thể tự trả bằng nội dung `IKMS…` để kích hoạt gói. */
   isPlatformAccount(payload: {
     accountNumber?: string | null;
     subAccount?: string | null;
@@ -41,7 +41,7 @@ export class SepaySubscriptionService {
     );
   }
 
-  /** {6,10}: refs minted before generateReference standardised on 5 bytes are 6 hex. */
+  /** {6,10}: mã tạo trước khi generateReference chuẩn hoá 5 byte có 6 ký tự hex. */
   extractReference(content = ''): string | null {
     const match = content.match(/IKMS[0-9A-F]{6,10}/i);
     return match ? match[0].toUpperCase() : null;

@@ -11,32 +11,27 @@ import {
   type OrderStepAccess,
 } from '../orders/order-handler';
 
-// Ai được thao tác trên một lần giao đang trên đường, và câu "nhận" lần giao trước khi ghi. Dùng chung cho
-// nhật trình / giao không thành (ShipmentService, C-3) và giao xong / thu tiền (ShipmentDeliveryService, C-5).
+// Kiểm người thao tác trên lần giao đang trên đường, dùng chung cho nhật trình / giao không thành (ShipmentService, C-3)
+// và giao xong / thu tiền (ShipmentDeliveryService, C-5).
 
 /** Lần giao đang trên đường (đơn đã SHIPPING): chỉ lúc này mới ghi nhật trình, báo thất bại, hay giao xong. */
 export const ON_THE_ROAD_STATUSES: readonly string[] = [
   ShipmentStatus.IN_TRANSIT,
   ShipmentStatus.OUT_FOR_DELIVERY,
-  // A failed attempt is still on the road: the goods have not come back, so the shipper may log a new
-  // attempt or deliver after all. Only the shop confirming the return ends it.
+  // Lần giao thất bại vẫn đang trên đường (hàng chưa về shop): shipper còn ghi nhật trình mới hoặc giao lại.
+  // Chỉ khi shop xác nhận hàng đã hoàn về thì mới kết thúc.
   ShipmentStatus.FAILED,
 ];
 
-/** Vì sao người gọi được thao tác: như các bước của đơn, cộng thêm "là shipper của lần giao này". */
 export type ShipmentActorAccess = OrderStepAccess | 'DRIVER';
 
-/** Phần của một lần giao mà việc kiểm tra người thao tác cần đọc. */
 interface ShipmentActorFacts {
   driverId: string | null;
   fulfillment: { locationId: string };
   order: { assigneeId: string | null };
 }
 
-/**
- * Nhật trình và giao không thành (C-3): chủ shop / người phụ trách / `shipments:update` tại kho của
- * fulfillment (như các bước của đơn), hoặc shipper của chính lần giao này.
- */
+/** Ai được ghi nhật trình / báo thất bại (C-3): như các bước của đơn, hoặc shipper của chính lần giao. */
 export function trackingActorAccess(
   user: AuthUser,
   shipment: ShipmentActorFacts,
@@ -57,10 +52,7 @@ export function trackingActorAccess(
 }
 
 /**
- * Shipper lấy hàng (chốt 2026-10-15), giao xong và thu tiền (C-5, chốt 2026-10-06): theo hành trình,
- * shipper của lần giao xác nhận đã lấy / đã giao;
- * người phụ trách đơn (toàn quyền với đơn của mình) và chủ shop cũng được. **Không** có đường "có quyền
- * trong role" – người khác không xác nhận hộ shipper được việc khách đã nhận hàng và trả tiền.
+ * Ai được xác nhận lấy hàng / giao xong / thu tiền (C-5): shipper của lần giao, người phụ trách đơn, chủ shop. Không có đường “có quyền trong role”: người khác không xác nhận hộ việc khách đã nhận hàng và trả tiền.
  */
 export function deliveryActorAccess(
   user: AuthUser,
@@ -89,9 +81,7 @@ export function deliveryActorAccess(
 }
 
 /**
- * Điều kiện ghi một lần giao đang trên đường: lần giao vẫn đang trên đường, đơn vẫn SHIPPING, và người
- * được phép nhờ là người phụ trách / shipper thì vẫn còn là người đó lúc ghi. Hai người cùng bấm (hay một
- * người bấm đúng lúc người khác đổi shipper / người phụ trách) thì câu ghi không trúng dòng nào.
+ * Điều kiện ghi khi lần giao đang trên đường: lần giao vẫn đang đi, đơn vẫn SHIPPING, và người được nhờ vẫn là người phụ trách / shipper lúc ghi. Hai người cùng bấm (hoặc đổi shipper đúng lúc bấm) thì câu ghi không khớp dòng nào.
  */
 export function onTheRoadWhere(
   shipmentId: string,

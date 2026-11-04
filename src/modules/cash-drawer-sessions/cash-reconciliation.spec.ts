@@ -69,7 +69,7 @@ describe('reconcileSession', () => {
   });
 
   it('subtracts change handed back, not just sales rung up', () => {
-    // A cash sale with change writes two rows (INCOME of what was handed over, EXPENSE of the change); counting only the INCOME leg would report every till as over.
+    // Bán tiền mặt có trả lại tiền thừa ghi hai dòng (INCOME số đưa, EXPENSE số thừa); chỉ tính nhánh INCOME sẽ báo mọi két đều dư.
     const result = run({
       finalAmount: 600_000,
       movements: [sale('02:00', 200_000), payout('02:00', 100_000)],
@@ -91,7 +91,7 @@ describe('reconcileSession', () => {
         start('05:00', 'binh', 900_000),
         end('09:00', 'binh', 1_450_000),
       ],
-      // Anh takes 400k of sales and hands over exactly right; Binh takes 600k and is 50k short at handback.
+      // Anh lấy 400k doanh thu và bàn giao đúng; Bình lấy 600k và thiếu 50k khi bàn giao.
       movements: [sale('02:00', 400_000), sale('06:00', 600_000)],
     });
 
@@ -106,7 +106,7 @@ describe('reconcileSession', () => {
   });
 
   it('attributes a movement on a handover boundary to the incoming cashier', () => {
-    // Exactly on the boundary is the case a sort order would silently decide; `from <= at` makes it the incoming shift's.
+    // Đúng ranh giới là trường hợp sort sẽ âm thầm quyết định; `from <= at` gán nó cho ca đến.
     const result = run({
       finalAmount: 900_000,
       shiftLogs: [
@@ -139,7 +139,7 @@ describe('reconcileSession', () => {
         start('07:00', 'binh', 500_000),
         end('09:00', 'binh', 500_000),
       ],
-      // 06:00 is between a handback and the next take: no cashier is answerable for it.
+      // 06:00 nằm giữa lúc bàn giao lại và lúc nhận kế tiếp: không thu ngân nào chịu trách nhiệm.
       movements: [sale('06:00', 300_000)],
     });
 
@@ -170,7 +170,7 @@ describe('reconcileSession', () => {
   });
 
   it('catches the manager recounting a different total than the cashier handed over', () => {
-    // The CLOSING segment makes this visible: no cash moved after the last END, so any difference is the two counts disagreeing.
+    // Đoạn CLOSING làm lộ điều này: không có tiền nào chuyển sau END cuối, nên mọi chênh lệch là do hai lần đếm không khớp.
     const result = run({
       finalAmount: 480_000,
       shiftLogs: [start('01:00', 'anh', 500_000), end('09:00', 'anh', 500_000)],
@@ -187,7 +187,7 @@ describe('reconcileSession', () => {
   });
 
   it('leaves an unfinished session unjudged rather than reporting it short', () => {
-    // A drawer still in someone's hands has no closing count; defaulting it to zero would report every open till as short by its whole float.
+    // Két còn trong tay ai đó chưa có số đếm cuối; coi là 0 sẽ báo mọi két đang mở thiếu cả tiền khởi đầu.
     const result = run({
       finalAmount: null,
       shiftLogs: [start('01:00', 'anh', 500_000)],
@@ -210,7 +210,7 @@ describe('reconcileSession', () => {
   });
 
   it('stops the chain at the first uncounted link', () => {
-    // Nothing after an unknown count can be computed, so there is one `null` segment rather than a tail of invented ones.
+    // Không tính được gì sau một số đếm chưa biết, nên chỉ có một đoạn `null` thay vì chuỗi đoạn bịa ra.
     const result = run({ finalAmount: null });
     expect(result.segments).toHaveLength(1);
     expect(result.segments[0].variance).toBeNull();
@@ -255,7 +255,7 @@ describe('reconcileSession', () => {
     expect(shuffled).toEqual(ordered);
   });
 
-  // The property the whole report rests on: if the segment variances and the session variance disagree, the breakdown is decoration.
+  // Tính chất mà cả báo cáo dựa vào: nếu chênh lệch các đoạn và chênh lệch phiên lệch nhau thì phần chi tiết chỉ là trang trí.
   it.each([
     ['a clean day', 1_500_000, 0],
     ['a shortfall', 1_450_000, -50_000],
@@ -281,7 +281,7 @@ describe('reconcileSession', () => {
   );
 
   it('does not let floating-point sums invent a variance', () => {
-    // Decimal(14,2) comes back through Number(), so hundreds of `.10`s add up to 1234.9999999999998 unless the boundary rounds.
+    // Decimal(14,2) trả về qua Number(), nên hàng trăm số `.10` cộng lại thành 1234.9999999999998 nếu không làm tròn ở ranh giới.
     const movements = Array.from({ length: 300 }, (_unused, index) =>
       sale('02:00', 0.1 + index * 0),
     );

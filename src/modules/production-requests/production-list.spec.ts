@@ -100,7 +100,7 @@ describe('buildProductionList', () => {
   });
 
   it('does not count a packed order short twice: its goods are in total stock', () => {
-    // 1 unit in the shop, already packed (locked) for the PACKED order.
+    // 1 đơn vị trong shop, đã đóng gói (khoá) cho đơn PACKED.
     const rows = build({
       demand: [demand({ orderStatus: OrderStatus.PACKED })],
       stock: [{ locationId: SHOP, productItemId: CABINET, stock: 1 }],
@@ -151,7 +151,7 @@ describe('buildProductionList', () => {
     });
     const customRow = rows.find((row) => row.customOrderItemId === 'oi-custom');
     const standardRow = rows.find((row) => row.customOrderItemId === null);
-    // The two units in stock are somebody else's custom pieces: nobody here can use them.
+    // Hai đơn vị trong kho là hàng tuỳ chỉnh của người khác: không ai ở đây dùng được.
     expect(customRow).toMatchObject({ stock: 0, shortQuantity: 1 });
     expect(standardRow).toMatchObject({ stock: 0, shortQuantity: 1 });
   });

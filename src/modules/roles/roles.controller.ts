@@ -19,11 +19,7 @@ import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 /**
- * Defining roles is owner-only and deliberately outside the permission catalogue: if "edit
- * permissions" were itself grantable, a custom role could grant it to itself and escalate
- * without limit. `OwnerOrAdminGuard` therefore sits on each route rather than on the class -
- * because **reading the list is a different question from editing it**, and one route needs
- * the looser answer.
+ * Chỉ owner được định nghĩa role, và việc này cố ý nằm ngoài catalog quyền: nếu “sửa quyền” là một quyền có thể cấp, role có thể tự cấp nó và leo thang không giới hạn. `OwnerOrAdminGuard` gắn ở từng route chứ không ở class, vì **đọc danh sách khác với sửa**, và có một route cần điều kiện lỏng hơn.
  */
 @ApiTags('roles')
 @ApiBearerAuth('bearer')
@@ -32,13 +28,9 @@ export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 
   /**
-   * The shop's roles, for whoever hires or reassigns staff.
+   * Danh sách role của shop, cho người tuyển hoặc đổi role nhân viên.
    *
-   * **Not owner-only**, unlike everything else here. `POST /users` requires a `roleId`, so a
-   * manager holding `users:create` who cannot read this list cannot hire anybody - the form's
-   * dropdown comes back empty and there is no id to send. Same for `users:update`, which is
-   * how somebody is moved to another role. Naming a role is not editing one: this answers
-   * which roles exist and what each may do; changing that still takes the owner.
+   * **Không chỉ owner.** `POST /users` cần `roleId`: manager có `users:create` mà không đọc được danh sách thì không tuyển được ai. `users:update` cũng vậy vì đó là cách chuyển nhân viên sang role khác. Xem tên role không phải là sửa: route chỉ trả role nào tồn tại; đổi thì vẫn cần owner.
    */
   @Permissions('users', 'create', 'update')
   @Get()
@@ -46,7 +38,7 @@ export class RolesController {
     return this.rolesService.findAll(requireTenantId(user));
   }
 
-  /** The 150-pair catalogue behind the role editor - owner-only, like the editor itself. */
+  /** Catalog quyền đứng sau màn sửa role; chỉ owner, như chính màn đó. */
   @UseGuards(OwnerOrAdminGuard)
   @Get('permission-catalog')
   permissionCatalog() {

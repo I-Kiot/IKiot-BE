@@ -27,7 +27,7 @@ import { PaySupplierDebtDto } from './dto/pay-supplier-debt.dto';
 import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Ported from iKiotMS-BE's SupplierService + SupplierController.
+// Port từ SupplierService + SupplierController của iKiotMS-BE (bản cũ).
 @Injectable()
 export class SupplierService {
   constructor(
@@ -86,7 +86,7 @@ export class SupplierService {
         email: dto.email,
         address: dto.address,
         creditLimit: dto.creditLimit ?? 0,
-        outstandingDebt: 0, // always starts at zero - only stock movements raise it
+        outstandingDebt: 0, // Luôn bắt đầu bằng 0; chỉ nhận hàng mới làm nợ tăng.
       },
     });
   }
@@ -99,7 +99,7 @@ export class SupplierService {
     return this.prisma.supplier.update({ where: { id }, data: dto });
   }
 
-  /** `type` decides which import flow a supplier feeds (`IMPORT_SOURCE_FOR_SUPPLIER_TYPE`), so once an import or a production request names it, switching would leave those documents claiming a flow the supplier no longer belongs to. */
+  /** `type` quyết định NCC thuộc luồng nhập nào (`IMPORT_SOURCE_FOR_SUPPLIER_TYPE`). Đã có phiếu nhập hoặc yêu cầu sản xuất gắn vào thì không đổi được, nếu không các phiếu đó sẽ thuộc luồng mà NCC không còn thuộc. */
   private async assertTypeIsFree(supplierId: string): Promise<void> {
     const [movements, requests] = await Promise.all([
       this.prisma.stockMovementRequest.count({
@@ -126,7 +126,7 @@ export class SupplierService {
       });
     }
 
-    // Supplier has no status column, so this is a hard delete - the rows pointing at it have to be checked first, or Postgres answers with a foreign key violation Nest can only turn into a 500.
+    // Supplier không có cột status nên xoá cứng: phải kiểm các dòng đang trỏ tới trước, nếu không Postgres báo lỗi khoá ngoại và Nest chỉ trả được 500.
     const [items, movements, flows, requests] = await Promise.all([
       this.prisma.productItemSupplier.count({ where: { supplierId: id } }),
       this.prisma.stockMovementRequest.count({
@@ -146,7 +146,7 @@ export class SupplierService {
     return this.prisma.supplier.delete({ where: { id } });
   }
 
-  /** Record a payment against a supplier's outstanding debt: lower the debt and write the matching EXPENSE cash flow in one transaction, then notify the owners. The flow is recorded at tenant level, because paying a supplier is not a branch's till. */
+  /** Ghi một khoản trả nợ NCC: giảm nợ và ghi phiếu chi (EXPENSE) trong một transaction, rồi báo chủ shop. Ghi ở cấp tenant vì trả NCC không phải quỹ của chi nhánh nào. */
   async payDebt(
     tenantId: string,
     actorId: string,
@@ -165,7 +165,7 @@ export class SupplierService {
           message: 'Supplier not found',
         });
 
-      // Conditional update rather than read-check-write: two payments submitted at once would both pass a plain comparison and overdraw the debt.
+      // Dùng UPDATE có điều kiện thay vì đọc-kiểm-ghi: hai khoản trả gửi cùng lúc sẽ cùng qua so sánh thường và làm nợ âm.
       const decremented = await tx.supplier.updateMany({
         where: { id: supplierId, tenantId, outstandingDebt: { gte: amount } },
         data: { outstandingDebt: { decrement: amount } },
@@ -199,7 +199,7 @@ export class SupplierService {
       return { supplier: updated, paymentTransaction: cashFlow };
     });
 
-    // After the commit - notify() never throws, and a failed notification must not undo a recorded payment.
+    // Sau commit: notify() không ném lỗi, và thông báo lỗi không được làm mất khoản trả đã ghi.
     const owners = (await this.notifications.tenantOwners(tenantId)).filter(
       (id) => id !== actorId,
     );
@@ -219,12 +219,10 @@ export class SupplierService {
     return result;
   }
 
-  // ─── Payables: what receiving goods does to a supplier ─────────────────────
-  // Shared by the two flows that receive goods against a supplier - supplier imports
-  // (`/stock-movements`) and workshop receipts (`/production-requests/:id/receive`) - so the
-  // credit rules exist once (coding rule 6). They used to be private to StockMovementService.
+  // Ghi nhận công nợ khi nhận hàng từ NCC, dùng chung cho nhập NCC (`/stock-movements`) và nhận từ thợ
+  // (`/production-requests/:id/receive`), để quy tắc hạn mức chỉ có một nơi (coding rule 6).
 
-  /** The supplier an import draws on, which must belong to the tenant and feed this import flow: a GOODS supplier sells finished goods (SUPPLIER), a WORKSHOP makes them to order (WORKSHOP). A workshop's goods only arrive through a production request, so naming one on a plain import gets its own code. */
+  /** NCC của phiếu nhập: phải thuộc tenant và đúng luồng. GOODS bán hàng có sẵn (SUPPLIER), WORKSHOP làm theo đơn (WORKSHOP). Hàng thợ chỉ về qua yêu cầu sản xuất, nên gọi trong nhập thường có mã lỗi riêng. */
   async requireForImport(
     tenantId: string,
     supplierId: string | null | undefined,
@@ -269,7 +267,7 @@ export class SupplierService {
     return supplier;
   }
 
-  /** Refuses an import that would push the supplier past their credit limit; a limit of 0 or less means no limit, matching how the field is seeded. Advisory - several imports can be open at once, so `charge` re-checks against the debt that actually lands. */
+  /** Từ chối phiếu nhập làm NCC vượt hạn mức; hạn mức `0` trở xuống nghĩa là không giới hạn (khớp cách seed). Chỉ kiểm sơ bộ: nhiều phiếu có thể mở cùng lúc, nên `charge` kiểm lại theo nợ thực tế. */
   assertCreditHeadroom(
     supplier: { creditLimit: Prisma.Decimal; outstandingDebt: Prisma.Decimal },
     amount: number,
@@ -286,7 +284,7 @@ export class SupplierService {
     }
   }
 
-  /** Books received goods against the supplier: debt up, and the variants recorded as things this supplier sells us. The limit is re-checked after the increment and throws to roll the receipt back, since several imports can be open at once; returns the warning to send after commit (`notifyCreditWarning`), or null. Runs inside the caller's transaction. */
+  /** Ghi nhận hàng nhận về: nợ tăng, và các biến thể được ghi là NCC này bán cho mình. Hạn mức kiểm lại sau khi tăng và throw để rollback phiếu nhận (vì nhiều phiếu có thể mở cùng lúc); trả cảnh báo để gửi sau commit (`notifyCreditWarning`) hoặc null. Chạy trong transaction của người gọi. */
   async charge(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -295,7 +293,7 @@ export class SupplierService {
     receivedItemIds: string[],
   ): Promise<NotificationContent | null> {
     if (receivedItemIds.length > 0) {
-      // Idempotent: receiving twice from the same supplier must not fail on the join row.
+      // Idempotent: nhận hai lần từ cùng NCC không được lỗi ở dòng nối.
       await tx.productItemSupplier.createMany({
         data: receivedItemIds.map((productItemId) => ({
           productItemId,
@@ -343,7 +341,7 @@ export class SupplierService {
       : null;
   }
 
-  /** After the commit: the warning `charge` returned goes to the owners, not to the person receiving the goods. Never throws (`notify()` doesn't). */
+  /** Sau commit: cảnh báo `charge` trả về gửi cho chủ shop, không gửi cho người nhận hàng. Không bao giờ ném lỗi (`notify()` cũng vậy). */
   async notifyCreditWarning(
     tenantId: string,
     actorId: string,

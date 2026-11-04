@@ -6,7 +6,7 @@ import { InvoiceReadService } from './invoices-read.service';
 @Module({
   controllers: [InvoiceController],
   providers: [InvoiceService, InvoiceReadService],
-  // InvoiceService is what the order routes call inside their own transactions.
+  // InvoiceService được route đơn hàng gọi trong chính transaction của chúng.
   exports: [InvoiceService],
 })
 export class InvoiceModule {}

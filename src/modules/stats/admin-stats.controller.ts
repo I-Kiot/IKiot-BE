@@ -4,7 +4,7 @@ import { AdminStatsService } from './admin-stats.service';
 import { AdminOverviewQueryDto } from './dto/stats-query.dto';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 
-/** The platform operator's dashboard. The old router's in-handler `role === 'SUPER_ADMIN'` test is `AdminOnlyGuard` here, so a second admin route cannot forget it; no `@Permissions`, since a platform admin holds no tenant role to check against. */
+/** Dashboard của operator nền tảng. `AdminOnlyGuard` ở đây thay cho check `role === 'SUPER_ADMIN'` trong handler của router cũ, nên route admin mới không thể quên nó. Không có `@Permissions` vì admin nền tảng không có role tenant. */
 @ApiTags('stats')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)

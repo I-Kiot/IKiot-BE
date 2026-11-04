@@ -4,15 +4,12 @@ import { LocationType, LOCATION_TYPES } from '../constants/location-type';
 import { ErrorCode } from '../errors/error-codes';
 import type { Prisma } from '../../../generated/prisma/client';
 
-// The one place that knows how a location is referenced. A Branch or Warehouse shares its id
-// with the Location it specializes (CHECK constraints in migration
-// 20260929065032_refactor_location_schema), so a `locationId` on the API is all three at once.
+// Nơi duy nhất biết cách tham chiếu một địa điểm. Branch và Warehouse dùng chung id với Location
+// mà chúng chuyên biệt hoá (CHECK trong migration 20260929065032_refactor_location_schema), nên
+// `locationId` trên API là cả ba cùng lúc.
 
 /**
- * A location filter on the stock reads (`GET /inventory`, `GET /products`, `GET /products/:id`).
- * The two fields are independent - one location, one kind of location, both, or neither -
- * because the id alone already names the Location, so it no longer needs its kind beside it.
- * `locationType` is the schema's own value (`BRANCH` / `WAREHOUSE`).
+ * Bộ lọc địa điểm cho API đọc tồn kho. `locationId` đã xác định Location nên không cần kèm loại; `locationType` là giá trị schema (`BRANCH` / `WAREHOUSE`). Hai trường độc lập.
  */
 export class LocationRefQueryDto {
   @IsOptional()
@@ -26,34 +23,33 @@ export class LocationRefQueryDto {
   locationType?: string;
 }
 
-/** The one shape a location takes in a stock response, as an include fragment: `location: LOCATION_SELECT`. */
+/** Hình dạng địa điểm trong response tồn kho, dưới dạng include fragment: `location: LOCATION_SELECT`. */
 export const LOCATION_SELECT = {
   select: { id: true, type: true, name: true },
 } as const satisfies Prisma.LocationDefaultArgs;
 
 export type LocationRef = Prisma.LocationGetPayload<typeof LOCATION_SELECT>;
 
-/** A location named by the client on a stock write. Only the id: its kind lives on the row, so asking the client for it too would be a second answer that could disagree (coding rule 4). */
+/** Địa điểm client gửi khi ghi tồn kho. Chỉ gửi id: loại nằm sẵn trên dòng, hỏi thêm loại sẽ tạo đáp án thứ hai có thể lệch. */
 export class LocationIdDto {
   @IsUUID()
   locationId: string;
 }
 
-/** Anything that can read locations - `this.prisma` or a transaction client alike (coding rule 16). */
+/** Thứ có thể đọc địa điểm - `this.prisma` hoặc transaction client đều được. */
 type LocationReader = Pick<Prisma.TransactionClient, 'location'>;
 
-/** One end of a stock operation, as the rules need it: which location, and what kind. */
+/** Một đầu của thao tác kho, theo đúng những gì rule cần: địa điểm nào và loại gì. */
 export interface LocationEnd {
   id: string;
   type: string;
 }
 
 /**
- * Every location a request names must exist inside the caller's tenant: the FK would catch a
- * made-up id but knows nothing about tenants. One query however many ids (coding rule 19),
- * after de-duplicating, so a movement naming the same place twice reaches the SAME_LOCATION
- * rule instead of failing here as "not found". Status is deliberately not checked - a
- * soft-deleted location still resolves, as it did before the refactor (plan 2026-09-29, QĐ-2).
+ * Mọi địa điểm request nêu phải nằm trong tenant của người gọi: FK bắt được id bịa nhưng không biết
+ * tenant. Một truy vấn cho mọi id, sau khi khử trùng, nên phiếu chuyển cùng một nơi hai lần vẫn tới
+ * rule SAME_LOCATION thay vì báo "không tìm thấy" ở đây. Cố ý không kiểm tra status: Location đã xoá
+ * mềm vẫn resolve được, như trước refactor (kế hoạch 2026-09-29, QĐ-2).
  */
 export async function resolveLocations(
   db: LocationReader,
@@ -76,24 +72,24 @@ export async function resolveLocations(
   return new Map(rows.map((row) => [row.id, row]));
 }
 
-/** A location reference held in memory as the API thinks of it - exactly one side is ever set. Services reason in this shape; the database stores a single `location_id` plus the Location's `type`. */
+/** Tham chiếu địa điểm trong bộ nhớ theo cách API nghĩ - luôn chỉ một bên có giá trị. Service suy luận theo dạng này; DB lưu một `location_id` cùng `type` của Location. */
 export interface LocationColumns {
   branchId: string | null;
   warehouseId: string | null;
 }
 
-/** Include/select fragment for a `location` relation that brings back what {@link columnsOfLocation} needs. */
+/** Select fragment cho quan hệ `location`, đủ dữ liệu cho {@link columnsOfLocation}. */
 export const LOCATION_TYPE_SELECT = {
   select: { id: true, type: true },
 } as const;
 
-/** The `location` relation as loaded with {@link LOCATION_TYPE_SELECT}. */
+/** Quan hệ `location` đã load bằng {@link LOCATION_TYPE_SELECT}. */
 export interface LocationTypeRow {
   id: string;
   type: string;
 }
 
-/** A loaded `location` relation -> in-memory pair. */
+/** Quan hệ `location` đã load -> cặp trong bộ nhớ. */
 export function columnsOfLocation(
   location: LocationTypeRow | null | undefined,
 ): LocationColumns {
@@ -106,7 +102,7 @@ export function columnsOfLocation(
   return { branchId: null, warehouseId: null };
 }
 
-/** In-memory pair -> the `{ locationId, locationType }` reference `stats` still answers with. Null when it names neither. */
+/** Cặp trong bộ nhớ -> tham chiếu `{ locationId, locationType }` mà `stats` vẫn trả về. Null khi không gán gì. */
 export function toLocationRef(
   row: LocationColumns,
 ): { locationId: string; locationType: LocationType } | null {
@@ -122,12 +118,12 @@ export function toLocationRef(
   return null;
 }
 
-/** A loaded `location` relation straight to the API's reference. */
+/** Quan hệ `location` đã load, đi thẳng ra tham chiếu của API. */
 export function locationRefOf(location: LocationTypeRow | null | undefined) {
   return toLocationRef(columnsOfLocation(location));
 }
 
-/** A {@link LocationRefQueryDto} as a Prisma `where` fragment over a model with a `location` relation - spread it into a filter; it narrows by location, by kind, both, or not at all. */
+/** {@link LocationRefQueryDto} thành fragment `where` của Prisma trên model có quan hệ `location`; spread vào filter. Lọc theo địa điểm, theo loại, cả hai hoặc không. */
 export function locationWhere(
   query: LocationRefQueryDto,
 ): Pick<Prisma.InventoryWhereInput, 'locationId' | 'location'> {
@@ -138,13 +134,12 @@ export function locationWhere(
 }
 
 /**
- * The same narrowing as `locationWhere`, but as a predicate over rows already in memory.
+ * Cùng phép lọc như `locationWhere`, nhưng là predicate trên các dòng đã có trong bộ nhớ.
  *
- * Reads that report "stock here" *and* "stock across the chain" load every location's rows
- * in one query and split them afterwards, so the split has to follow exactly the rule the
- * `where` fragment above would have applied - which is why it lives next to it rather than
- * being spelled out at the call site. A row must carry `locationId` *and* `location.type`:
- * selecting only one of them would make the "here" figure silently 0.
+ * Các đọc vừa báo "tồn tại đây" vừa báo "tồn toàn chuỗi" load dòng của mọi địa điểm trong một
+ * truy vấn rồi tách sau, nên phép tách phải đúng quy tắc của fragment `where` ở trên - vì vậy nó
+ * nằm cạnh đó thay vì viết tại chỗ gọi. Dòng phải có cả `locationId` *và* `location.type`: chỉ
+ * chọn một trong hai thì số "tại đây" sẽ lặng lẽ thành 0.
  */
 export function locationMatcher(
   query: LocationRefQueryDto,
@@ -154,22 +149,22 @@ export function locationMatcher(
     (!query.locationType || row.location.type === query.locationType);
 }
 
-/** Select fragment for a `branch` relation whose name the response shows - the name lives on the Location now, not the Branch. Pair with {@link namedBranch}. */
+/** Select fragment cho quan hệ `branch` mà response hiển thị tên - tên giờ nằm ở Location, không ở Branch. Dùng với {@link namedBranch}. */
 export const BRANCH_NAME_SELECT = {
   select: { id: true, location: { select: { name: true } } },
 } as const;
 
-/** `{ id, location: { name } }` -> the `{ id, name }` the API has always answered with. */
+/** `{ id, location: { name } }` -> `{ id, name }` mà API vẫn trả về từ trước tới nay. */
 export function namedBranch(
   branch: { id: string; location: { name: string } } | null | undefined,
 ): { id: string; name: string } | null {
   return branch ? { id: branch.id, name: branch.location.name } : null;
 }
 
-/** Spread into a User `select`/`include` wherever the old code read `branchId`/`warehouseId` off the user. Pair with {@link withPosting}. */
+/** Spread vào `select`/`include` của User ở mọi chỗ code cũ đọc `branchId`/`warehouseId` từ user. Dùng với {@link withPosting}. */
 export const USER_POSTING_SELECT = { location: LOCATION_TYPE_SELECT } as const;
 
-/** A row loaded with {@link USER_POSTING_SELECT} -> the same row carrying `branchId`/`warehouseId` again, so scope checks written against that pair keep working. */
+/** Row load bằng {@link USER_POSTING_SELECT} -> cùng row, có lại `branchId`/`warehouseId`, để check scope viết theo cặp đó vẫn chạy. */
 export function withPosting<T extends { location: LocationTypeRow | null }>(
   row: T,
 ): Omit<T, 'location'> & LocationColumns {
@@ -177,7 +172,7 @@ export function withPosting<T extends { location: LocationTypeRow | null }>(
   return { ...rest, ...columnsOfLocation(location) };
 }
 
-/** A `{ branchId?, warehouseId? }` scope as a filter on a model's single `locationId` column. Naming both still matches nothing, as the old AND over two columns did. */
+/** Scope `{ branchId?, warehouseId? }` thành filter trên cột `locationId` duy nhất của model. Nêu cả hai vẫn không khớp gì, như AND trên hai cột cũ. */
 export function postingWhere(scope: {
   branchId?: string | null;
   warehouseId?: string | null;
@@ -190,7 +185,7 @@ export function postingWhere(scope: {
     : {};
 }
 
-/** Like {@link withPosting}, but for responses that also embed the workplace itself as `branch` / `warehouse` (id, name, ...) - the shape the staff screens have always read. Select `location: { select: { id, type, ...whatever to embed } }`. */
+/** Giống {@link withPosting}, nhưng cho response còn nhúng nơi làm việc dưới `branch` / `warehouse` (id, tên, ...) - hình dạng màn nhân viên vẫn đọc. Select `location: { select: { id, type, ...những gì cần nhúng } }`. */
 export function withNamedPosting<
   T extends { location: LocationTypeRow | null },
 >(

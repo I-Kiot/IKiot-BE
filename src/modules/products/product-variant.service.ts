@@ -19,13 +19,8 @@ export type ResolvedVariant = {
 };
 
 /**
- * Từ một SKU gốc và các thuộc tính bị đổi, tìm SKU đúng bộ thuộc tính đó (2026-10-16, YCSX đổi thuộc tính):
- * không đổi gì → chính SKU gốc; có SKU anh em (cùng sản phẩm) mang đúng bộ giá trị → dùng lại nó; không có →
- * tạo SKU mới sao chép SKU gốc (giá, giá vốn, kích thước, kiện, ảnh, nhà cung cấp) với các giá trị mới.
- * Hàng làm ra phải đúng một SKU, nếu không tồn kho của SKU gốc sẽ lệch với hàng thật trên kệ.
- *
- * `retailPrice` chỉ được gửi khi người dùng tick "cập nhật giá mới": áp vào SKU kết quả (mới hay cũ). Tạo SKU
- * cần `products:create`, đổi giá cần `products:update` - YCSX không được thành cửa sau để sửa danh mục hàng.
+ * Tìm SKU đúng bộ thuộc tính khi đổi thuộc tính: giữ SKU gốc, dùng SKU anh em cùng bộ, hoặc tạo mới.
+ * Đúng một SKU cho mỗi hàng làm ra, nếu không tồn kho lệch với kệ. `retailPrice` cần `products:update`.
  */
 @Injectable()
 export class ProductVariantService {
@@ -207,7 +202,6 @@ export class ProductVariantService {
     });
   }
 
-  /** SKU gốc kèm mọi thứ một SKU mới sao chép từ nó. */
   private loadBase(tenantId: string, id: string) {
     return this.prisma.productItem.findFirst({
       where: { id, tenantId },

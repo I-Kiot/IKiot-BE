@@ -1,6 +1,6 @@
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Every Tenant column except `bankingSepayWebhookApiKey`, which is a shared secret that identifies a tenant to the payment webhook - anyone holding one can settle that shop's orders. Prisma has no `select: false`, so the safe columns are listed instead of the secret: a column added later stays invisible until someone adds it here. Shared by `TenantService` and `TenantSelfService` so the two can't disagree. */
+/** Mọi cột Tenant trừ `bankingSepayWebhookApiKey`: key là bí mật dùng chung để định danh shop với webhook thanh toán, ai có key có thể chốt đơn của shop. Prisma không có `select: false`, nên liệt kê cột an toàn thay vì loại trừ key; cột thêm sau này sẽ bị ẩn tới khi được thêm vào đây. */
 export const TENANT_SELECT = {
   id: true,
   name: true,
@@ -16,7 +16,7 @@ export const TENANT_SELECT = {
   updatedAt: true,
 } as const satisfies Prisma.TenantSelect;
 
-/** Linked by a per-shop webhook key, or by the sync seeing the account on the platform's SePay. The rule behind every `hasSepayKey`. */
+/** Liên kết qua webhook key riêng của shop, hoặc qua việc sync thấy tài khoản trên SePay của nền tảng. Quy tắc đứng sau mọi `hasSepayKey`. */
 export function isSepayLinked(tenant: {
   bankingSepayWebhookApiKey: string | null;
   bankingSepayLinkedAt: Date | null;
@@ -26,14 +26,13 @@ export function isSepayLinked(tenant: {
   );
 }
 
-/** The flat banking columns, as the schema stores them. */
 export interface FlatTenantBanking {
   bankingAccountNumber?: string | null;
   bankingBankName?: string | null;
   bankingAccountName?: string | null;
 }
 
-/** Swaps the three `banking*` columns for one nested `banking` object. The write side has always been nested, and the read side answering flat is why the settings screen read `tenant.banking.bankName` and got `undefined`. Same call `withNestedProfile` makes for a staff member. */
+/** Gom ba cột `banking*` phẳng thành object `banking` lồng. Chiều ghi vốn đã lồng; chiều đọc trả phẳng là lý do màn cài đặt đọc `tenant.banking.bankName` ra `undefined`. Cùng cách với `withNestedProfile` của nhân viên. */
 export function withNestedBanking<T extends FlatTenantBanking>(
   tenant: T,
 ): Omit<T, keyof FlatTenantBanking> & {

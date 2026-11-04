@@ -29,7 +29,7 @@ class SetReplacementOrderDto {
   orderId: string;
 }
 
-/** "Đơn hoàn hàng", opened by hand for any channel; GOOD lines go back to a sellable location, DAMAGED ones to its damaged-goods location (contract §5, D-5). */
+/** Đơn hoàn hàng, mở tay cho mọi kênh. Dòng GOOD về kho bán được, dòng DAMAGED về kho hàng hỏng của kho đó (contract §5, D-5). */
 @ApiTags('order-returns')
 @ApiBearerAuth('bearer')
 @Controller('order-returns')
@@ -51,13 +51,13 @@ export class OrderReturnController {
     return this.service.findOne(user, requireTenantId(user), id);
   }
 
-  /** No @Permissions on purpose: `returns:create` OR the order's person in charge may open one, which a single guard action cannot say - the service checks it (ORDER_RETURN_DENIED). */
+  /** Cố ý không có @Permissions: `returns:create` hoặc người phụ trách đơn đều mở được, một hành động guard không diễn đạt được; service kiểm (ORDER_RETURN_DENIED). */
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderReturnDto) {
     return this.service.create(user, requireTenantId(user), dto);
   }
 
-  /** No @Permissions on purpose, like `create`: the order's person in charge OR anyone who can read the order - the service checks it. */
+  /** Cố ý không có @Permissions, như `create`: người phụ trách đơn hoặc ai xem được đơn; service kiểm. */
   @HttpCode(HttpStatus.OK)
   @Post('confirm-failed-delivery')
   confirmFailedDelivery(

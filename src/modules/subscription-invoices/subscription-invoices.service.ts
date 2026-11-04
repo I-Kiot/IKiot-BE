@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Read-only from this module's controller: invoices are only ever written by SubscriptionService, which talks to the table directly, matching how iKiotMS-BE used the Mongoose model for writes.
+// Chỉ đọc từ controller của module này: invoice chỉ được ghi bởi SubscriptionService (ghi thẳng vào bảng), giống cách iKiotMS-BE ghi qua model Mongoose.
 @Injectable()
 export class SubscriptionInvoiceService {
   constructor(private readonly prisma: PrismaService) {}

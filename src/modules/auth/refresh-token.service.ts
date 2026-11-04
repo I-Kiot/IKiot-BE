@@ -6,12 +6,11 @@ import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 import { refreshTokenSecret } from '../../common/config/env';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Seven days, the window iKiotMS-BE's RefreshToken documents carried. */
+/** Bảy ngày, khớp thời hạn RefreshToken của iKiotMS-BE. */
 export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 interface RefreshPayload {
   sub: string;
-  /** Which stored session this token is; the id is the Redis key's tail. */
   jti: string;
   type: 'refresh';
 }
@@ -22,7 +21,7 @@ interface StoredSession {
   issuedAt: number;
 }
 
-/** Refresh tokens in Redis, keeping every behaviour of iKiotMS-BE's Mongo collection: a key per token (`refresh:<userId>:<jti>`), Redis expiry for the TTL index, deletion instead of `isRevoked`, and a SCAN for "log this user out everywhere". If Redis is down every key reads as missing, so refresh fails and the user re-authenticates - a cache outage must not hand out sessions it cannot revoke. */
+/** Refresh token lưu trong Redis, mỗi token một key `refresh:<userId>:<jti>`; xoá key để thu hồi, SCAN để đăng xuất mọi nơi. Redis lỗi thì coi như không có key, refresh thất bại: không cấp phiên mà không thu hồi được. */
 @Injectable()
 export class RefreshTokenService {
   private readonly logger = new Logger(RefreshTokenService.name);
@@ -41,7 +40,6 @@ export class RefreshTokenService {
     return refreshTokenSecret();
   }
 
-  /** Mints a refresh token and records the session it stands for. */
   async issue(userId: string, userAgent?: string): Promise<string> {
     const jti = randomUUID();
     const token = this.jwt.sign(
@@ -60,7 +58,7 @@ export class RefreshTokenService {
       REFRESH_TOKEN_TTL_SECONDS,
     );
     if (!stored) {
-      // Handing back a token we cannot revoke is worse than none: the access token still works, so the caller is logged in, just not refreshable.
+      // Trả token không thu hồi được còn tệ hơn không trả: access token vẫn dùng được nên user vẫn đăng nhập, chỉ không refresh được.
       this.logger.warn(
         'Refresh token was not stored (Redis unavailable) - session will not be refreshable',
       );
@@ -68,7 +66,7 @@ export class RefreshTokenService {
     return token;
   }
 
-  /** Rotates a refresh token - verifies it, revokes the one presented, issues a new pair - so a second use of a long-lived bearer credential is a plain failure. */
+  /** Xoay vòng refresh token: kiểm tra, thu hồi token đã gửi, cấp cặp mới. Dùng lại token này sẽ thất bại. */
   async rotate(
     token: string,
     userAgent?: string,
@@ -92,7 +90,7 @@ export class RefreshTokenService {
     return { userId: payload.sub, refreshToken };
   }
 
-  /** Logout. Silently does nothing for a token that is already gone or unparseable. */
+  /** Không làm gì nếu token đã mất hoặc không parse được. */
   async revoke(userId: string, token: string): Promise<void> {
     let payload: RefreshPayload;
     try {
@@ -100,12 +98,12 @@ export class RefreshTokenService {
     } catch {
       return;
     }
-    // Only the owner may revoke it, and the controller takes `userId` from the access token rather than the body.
+    // Chỉ chủ token mới được thu hồi; controller lấy userId từ access token, không từ body.
     if (payload.sub !== userId) return;
     await this.redis.del(this.key(userId, payload.jti));
   }
 
-  /** Ends every session a user has, on both transports. Deleting the Redis keys covers HTTP; the Socket.IO disconnect is folded in here because it is the leg every caller forgot, leaving a deactivated account still streaming the shop's live feed. */
+  /** Kết thúc mọi phiên của user trên cả HTTP và Socket.IO. Socket.IO được ngắt ngay đây vì caller nào cũng quên, khiến tài khoản đã khoá vẫn nhận live feed của shop. */
   async revokeAllFor(userId: string): Promise<void> {
     const keys = await this.redis.keysMatching(`refresh:${userId}:*`);
     await this.redis.del(...keys);
@@ -124,7 +122,7 @@ export class RefreshTokenService {
         message: 'Invalid refresh token',
       });
     }
-    // Refresh and access tokens are signed by different secrets only when REFRESH_TOKEN_SECRET is set, so this check is what stops an access token being replayed as a refresh one.
+    // Access và refresh token chỉ khác secret khi có REFRESH_TOKEN_SECRET, nên check này chặn việc dùng access token làm refresh token.
     if (payload.type !== 'refresh' || !payload.jti || !payload.sub) {
       throw new UnauthorizedException({
         code: ErrorCode.REFRESH_TOKEN_INVALID,
@@ -134,7 +132,7 @@ export class RefreshTokenService {
     return payload;
   }
 
-  /** Carries the original user agent across a rotation, as the old code did. */
+  /** Giữ user agent gốc qua lần xoay vòng (như code cũ). */
   private userAgentOf(stored: string): string | undefined {
     try {
       return (JSON.parse(stored) as StoredSession).userAgent ?? undefined;

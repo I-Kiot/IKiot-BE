@@ -143,7 +143,7 @@ describe('collectionOf', () => {
   });
 
   it('does not invent a collection for an order that never shipped', () => {
-    // A till sale is COMPLETED with nothing due and no shipment - not a delivery.
+    // Đơn bán tại quầy là COMPLETED, không còn gì phải thu và không có shipment: không phải đơn giao hàng.
     expect(collectionOf(order(OrderStatus.COMPLETED, [], null), 0)).toBeNull();
   });
 });

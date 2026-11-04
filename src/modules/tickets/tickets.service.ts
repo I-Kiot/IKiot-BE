@@ -24,12 +24,12 @@ import type { CreateTicketDto, ReplyTicketDto } from './dto/ticket.dto';
 import { DEFAULT_TICKET_PRIORITY, TicketStatus } from './ticket.constants';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Messages come back oldest-first so the thread reads top-to-bottom; the old embedded array got insertion order for free, here it has to be asked for. */
+/** Tin nhắn trả về cũ nhất trước để đọc từ trên xuống. Bản cũ nhúng mảng nên có sẵn thứ tự; ở đây phải yêu cầu rõ. */
 const WITH_MESSAGES = {
   messages: { orderBy: { createdAt: 'asc' } },
 } as const;
 
-/** Support threads between a shop and the platform operators. Two things carried over unchanged: a ticket belongs to the shop rather than the person who filed it (so `/tickets/my` filters on `tenantId`), and `isDeletedByTenant` is the only delete - it hides the thread from the shop while operators keep seeing it. What changed: the old routes ran on bare `verifyJwt`, so any authenticated account could read or soft-delete any ticket it could name. */
+/** Luồng hỗ trợ giữa shop và operator. Ticket thuộc shop chứ không thuộc người tạo (nên `/tickets/my` lọc theo `tenantId`); `isDeletedByTenant` là cách xoá duy nhất, ẩn với shop nhưng operator vẫn thấy. Route cũ chỉ có `verifyJwt`, nên mọi tài khoản đăng nhập đều đọc hoặc xoá mềm được ticket bất kỳ. */
 @Injectable()
 export class TicketService {
   constructor(
@@ -38,12 +38,10 @@ export class TicketService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
-  /** How a sender is labelled on a message. The expression is ported as written, but the old JWT payload carried neither `profile` nor `email`, so every production message is stamped with a phone number; it resolves properly here only because `JwtStrategy` re-reads the user each request. */
+  /** Nhãn người gửi trên tin nhắn. JWT cũ không có `profile` hay `email`, nên mọi tin nhắn production từng bị gắn số điện thoại. Ở đây hiển thị đúng vì `JwtStrategy` đọc lại user mỗi request. */
   private senderName(user: AuthUser): string {
     return user.displayName ?? user.email ?? user.phoneNumber;
   }
-
-  // ─── Shop side ─────────────────────────────────────────────────────────────
 
   async create(tenantId: string, user: AuthUser, dto: CreateTicketDto) {
     const tenant = await this.prisma.tenant.findUnique({
@@ -52,10 +50,10 @@ export class TicketService {
     });
     const tenantName = tenant?.name ?? 'Unknown Store';
 
-    // The old scheme recycled every ~16.7 minutes against a unique column; this is the same generator every other reference code uses.
+    // Bản cũ tái sử dụng mã sau ~16,7 phút trên cột unique; ở đây dùng chung generator với mọi mã tham chiếu khác.
     const ticketId = generateReference(REFERENCE_PREFIX.TICKET);
 
-    // The opening description is stored twice on purpose: on the ticket, where the list view reads it, and as the first message, so the thread is self-contained.
+    // Nội dung mở đầu được lưu hai lần có chủ đích: trên ticket (danh sách đọc từ đây) và là tin nhắn đầu tiên (thread tự đủ nghĩa).
     const ticket = await this.prisma.ticket.create({
       data: {
         ticketId,
@@ -89,7 +87,6 @@ export class TicketService {
     return ticket;
   }
 
-  /** Every thread the shop can still see, most recently active first. */
   findMine(tenantId: string) {
     return this.prisma.ticket.findMany({
       where: { tenantId, isDeletedByTenant: false },
@@ -120,7 +117,7 @@ export class TicketService {
       });
     }
 
-    // Back to OPEN: the shop has said something, so the thread needs an operator again.
+    // Shop vừa nhắn nên đưa về OPEN để operator xử lý lại.
     const ticket = await this.appendMessage(
       id,
       user,
@@ -131,8 +128,6 @@ export class TicketService {
     this.realtime.emitToRoom('admin', 'ticket-update', ticket);
     return ticket;
   }
-
-  // ─── Shared by both sides ──────────────────────────────────────────────────
 
   async findOne(user: AuthUser, id: string) {
     const ticket = await this.prisma.ticket.findUnique({
@@ -148,7 +143,7 @@ export class TicketService {
     return ticket;
   }
 
-  /** Soft delete. The old controller set `isDeletedByTenant` whoever the caller was, so an operator deleting a thread also hides it from the shop - ported as-is, with the admin list as the counterweight. */
+  /** Soft delete. Bản cũ set `isDeletedByTenant` bất kể người gọi là ai, nên operator xoá thread cũng ẩn nó khỏi shop. Giữ nguyên hành vi này; bù lại là danh sách admin vẫn hiện thread. */
   async remove(user: AuthUser, id: string) {
     const found = await this.prisma.ticket.findUnique({
       where: { id },
@@ -167,7 +162,7 @@ export class TicketService {
       include: WITH_MESSAGES,
     });
 
-    // Two different events: the shop's list drops the row, the admin's list re-renders it with a "deleted" badge.
+    // Hai event khác nhau: danh sách shop bỏ dòng này, danh sách admin hiển thị lại với badge "đã xoá".
     this.realtime.emitToRoom(`tenant:${ticket.tenantId}`, 'ticket-delete', {
       id,
     });
@@ -176,9 +171,7 @@ export class TicketService {
     return { message: 'Đã xoá yêu cầu hỗ trợ', data: ticket };
   }
 
-  // ─── Operator side ─────────────────────────────────────────────────────────
-
-  /** Deliberately unfiltered, including threads the shop has deleted - operators need the whole history, and the admin UI renders deleted ones with a badge. */
+  /** Cố ý không lọc, kể cả thread shop đã xoá: operator cần toàn bộ lịch sử, admin UI hiện thread đã xoá kèm badge. */
   async findAllAdmin(query: PaginationQueryDto) {
     const { page, limit } = query;
     const [tickets, total] = await Promise.all([
@@ -210,7 +203,7 @@ export class TicketService {
       ticket,
     );
 
-    // The owner filed this and went back to running a shop, so the socket event only lands if the app is open - the inbox row is what actually reaches them.
+    // Chủ shop đã tạo ticket rồi quay lại việc kinh doanh, nên event socket chỉ tới khi app đang mở; dòng inbox mới là thứ thực sự tới được họ.
     const owners = await this.notifications.tenantOwners(ticket.tenantId);
     await this.notifications.notify({
       tenantId: ticket.tenantId,
@@ -241,9 +234,7 @@ export class TicketService {
     return ticket;
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
-
-  /** One write for the message plus the status the sender's turn implies. The status is always written even when unchanged, so `@updatedAt` bumps and the thread rises to the top of both lists. */
+  /** Một lần ghi cho tin nhắn và trạng thái theo lượt người gửi. Status luôn được ghi kể cả khi không đổi, để `@updatedAt` tăng và thread lên đầu cả hai danh sách. */
   private appendMessage(
     id: string,
     user: AuthUser,
@@ -279,7 +270,6 @@ export class TicketService {
       });
   }
 
-  /** A platform operator reaches every thread; anyone else only their own shop's. */
   private assertCanReach(user: AuthUser, ownerTenantId: string): void {
     if (user.systemRole === SystemRole.ADMIN) return;
     if (user.tenantId !== ownerTenantId) {

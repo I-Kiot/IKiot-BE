@@ -17,10 +17,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Kiểm thử đọc đơn (A-9, `GET /orders`, `GET /orders/:id` qua OrderReadService) trên Postgres thật:
- * lọc, sắp xếp (kể cả priority không theo alphabet và cắt trang qua các nhóm), stockSummary,
- * phạm vi chi nhánh, và hình dạng OrderListItem / OrderDetail. Tự tạo tenant riêng và dọn sạch,
- * nên chạy lại bao nhiêu lần cũng được.
+ * Đọc đơn (A-9, OrderReadService) trên Postgres thật: lọc, sắp xếp (priority không theo alphabet, cắt trang qua các nhóm), stockSummary, phạm vi chi nhánh, và hình dạng OrderListItem / OrderDetail. Tự tạo tenant riêng và dọn sạch.
  */
 describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
   let prisma: PrismaService;

@@ -8,14 +8,14 @@ import { v2 as cloudinary } from 'cloudinary';
 import type { UploadApiResponse } from 'cloudinary';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Folder, formats and size limit ported verbatim from iKiotMS-BE's UploadController. */
+/** Thư mục, định dạng và giới hạn dung lượng giữ nguyên từ UploadController của iKiotMS-BE. */
 export const UPLOAD_FOLDER = 'ikiot_uploads';
 export const ALLOWED_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'gif'] as const;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const ALLOWED_MIME = new Set(ALLOWED_FORMATS.map((f) => `image/${f}`));
 
-/** Image uploads to Cloudinary. The old module piped the request straight through `multer-storage-cloudinary`; here the file arrives in memory and goes up with `upload_stream` - same folder, formats, 5MB ceiling and `{ url }` response, one fewer dependency, and validation that can return a real 400. Nothing is uploaded when Cloudinary is unconfigured, which the old module only discovered as a 500 on first use. */
+/** Upload ảnh lên Cloudinary. Bản cũ đẩy request thẳng qua `multer-storage-cloudinary`; ở đây file nằm trong bộ nhớ rồi gửi bằng `upload_stream`, cùng thư mục, định dạng, trần 5MB và response `{ url }`, bớt một dependency, và validate trả được 400 thật. Không upload gì khi Cloudinary chưa cấu hình; bản cũ chỉ phát hiện điều này khi lỗi 500 ở lần dùng đầu. */
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
@@ -84,7 +84,7 @@ export class UploadService {
       });
     });
 
-    // `secure_url` is the https one - the same value the old module returned as `req.file.path`.
+    // `secure_url` là URL https, cùng giá trị bản cũ trả về ở `req.file.path`.
     return { url: result.secure_url };
   }
 }

@@ -16,11 +16,10 @@ import {
 } from './../src/common/constants/order-status';
 import { ErrorCode } from './../src/common/errors/error-codes';
 
-// Drives InventoryService's stock primitives against real Postgres (docker compose up -d):
-// lots, the ledger, and the invariant every one of them must keep - Σ lot.remaining = stock.
-// Packing an order locks its goods off the shelf (lockStock, locked_stock); they leave stock only
-// when the order moves to SHIPPING (shipLockedStock). Creates its own tenant and removes
-// everything it wrote, so it is safe to re-run.
+// Gọi primitive tồn kho của InventoryService trên Postgres thật (docker compose up -d): lô, sổ kho,
+// và bất biến mọi thao tác phải giữ - Σ lot.remaining = stock. Đóng gói khóa hàng khỏi kệ
+// (lockStock, locked_stock); hàng chỉ rời tồn khi đơn chuyển sang SHIPPING (shipLockedStock).
+// Tự tạo tenant riêng và xóa mọi thứ đã ghi, nên chạy lại được.
 describe('InventoryService stock primitives (lots, ledger)', () => {
   let prisma: PrismaService;
   let inventory: InventoryService;
@@ -198,7 +197,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     await assertInvariants();
   });
 
-  // Goods leaving the shelf with an order line on the ledger (a till sale goes this way).
+  // Hàng rời kệ kèm dòng đơn trong sổ kho (bán quầy cũng đi đường này).
   const shipLine = (orderItemId: string) =>
     run((tx) =>
       inventory.deductStock(tx, {
@@ -218,7 +217,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
 
   it('never sells below zero when several orders ship the last items at once', async () => {
     const attempts = await Promise.allSettled(lines.map(shipLine));
-    // 5 in stock, three lines of 3: only one fits.
+    // Có 5 trong kho, ba dòng mỗi dòng 3: chỉ một dòng vừa.
     expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
     const refused = attempts.find((a) => a.status === 'rejected');
     expect((refused as PromiseRejectedResult).reason.response.code).toBe(
@@ -239,7 +238,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
       include: { lot: true },
       orderBy: { balanceAfter: 'desc' },
     });
-    // The 2 @100 lot (older) empties first, then 1 @200.
+    // Lô 2 @100 (cũ hơn) hết trước, rồi tới 1 @200.
     expect(
       sales.map((s) => [s.quantity, Number(s.lot.unitCost), s.balanceAfter]),
     ).toEqual([
@@ -277,7 +276,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     });
     expect(line.unitCostPrice).toBeNull();
 
-    // Nothing more is out for that line.
+    // Dòng đó không còn hàng nào đi ra nữa.
     await expect(
       run((tx) =>
         inventory.returnDrawn(tx, {
@@ -334,7 +333,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     await assertInvariants();
   });
 
-  // Packing → shipping (2026-10-04). Here the branch holds 4, nothing locked.
+  // Đóng gói → vận chuyển (2026-10-04). Ở đây chi nhánh giữ 4, chưa khóa gì.
   const lock = (quantity: number) =>
     run((tx) => inventory.lockStock(tx, [{ ...key, quantity, label: 'Bàn' }]));
   const ledgerCount = () =>
@@ -348,7 +347,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     expect(await stockRow()).toMatchObject({ stock: 4, lockedStock: 3 });
     expect(await ledgerCount()).toBe(before);
 
-    // Only the shelf (1) can be sold or transferred - the packed 3 are not for sale.
+    // Chỉ phần trên kệ (1) được bán hoặc chuyển; 3 cái đã đóng gói thì không.
     await expect(
       run((tx) =>
         inventory.deductStock(tx, {
@@ -379,7 +378,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
         message: expect.stringMatching(/Bàn B.*Bàn C/),
       },
     });
-    // The transaction rolled back, so the line that did fit is not left locked either.
+    // Transaction rollback nên dòng vừa được cũng không bị khóa lại.
     expect((await stockRow()).lockedStock).toBe(3);
   });
 
@@ -430,7 +429,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     expect(sales.reduce((sum, row) => sum + row.quantity, 0)).toBe(-3);
     expect(await ledgerCount()).toBeGreaterThan(before);
 
-    // Nothing is locked any more, so nothing more can ship as packed.
+    // Không còn gì bị khóa nên không còn gì để giao theo kiện đã đóng.
     await expect(
       run((tx) =>
         inventory.shipLockedStock(tx, {
@@ -464,7 +463,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
       });
     expect((await low()).data).toHaveLength(0);
 
-    // 6 in total, 3 packed: the total is above 4 but the shelf (3) is not.
+    // Tổng 6, 3 đã đóng gói: tổng vượt 4 nhưng kệ (3) thì không.
     const [{ row }] = await lock(3);
     expect(inventory.lowStockCrossing(row, -3)).not.toBeNull();
     const { data } = await low();

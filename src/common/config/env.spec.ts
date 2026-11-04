@@ -7,7 +7,7 @@ import {
   validateEnv,
 } from './env';
 
-/** Each test gets a clean copy of `process.env`, or the first test to set a variable decides the rest. */
+/** Mỗi test có một bản sao `process.env` sạch; nếu không, test đầu tiên set biến sẽ quyết định các test sau. */
 const ORIGINAL = process.env;
 
 beforeEach(() => {
@@ -22,7 +22,7 @@ afterAll(() => {
   process.env = ORIGINAL;
 });
 
-/** Silent, so a passing run isn't buried in the "optional variable missing" warnings. */
+/** Im lặng, để lần chạy pass không bị lấp bởi cảnh báo "thiếu biến tuỳ chọn". */
 const quiet = () => {
   const logger = new Logger('EnvSpec');
   jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
@@ -30,7 +30,7 @@ const quiet = () => {
 };
 
 describe('accessTokenSecret', () => {
-  // The precedence iKiotMS-BE used: reversing it deploys green and then rejects every login.
+  // Thứ tự ưu tiên của iKiotMS-BE: đảo ngược thì deploy vẫn xanh nhưng mọi lần đăng nhập đều bị từ chối.
   it('prefers ACCESS_TOKEN_SECRET over JWT_SECRET', () => {
     process.env.ACCESS_TOKEN_SECRET = 'from-access';
     process.env.JWT_SECRET = 'from-jwt';
@@ -42,7 +42,7 @@ describe('accessTokenSecret', () => {
     expect(accessTokenSecret()).toBe('from-jwt');
   });
 
-  // Whitespace is not a secret: a blank value must not count as set and win over a real JWT_SECRET.
+  // Khoảng trắng không phải secret: giá trị rỗng không được tính là đã set và đè lên JWT_SECRET thật.
   it('treats a blank value as unset', () => {
     process.env.ACCESS_TOKEN_SECRET = '   ';
     process.env.JWT_SECRET = 'from-jwt';
@@ -96,7 +96,7 @@ describe('validateEnv', () => {
     expect(() => validateEnv(quiet())).toThrow('DATABASE_URL');
   });
 
-  // An empty signing key verifies tokens nobody legitimate issued.
+  // Khoá ký rỗng sẽ xác thực những token mà không ai hợp lệ đã cấp.
   it('refuses to start with no token secret at all', () => {
     process.env.DATABASE_URL = 'postgresql://localhost/db';
     delete process.env.JWT_SECRET;
@@ -110,7 +110,7 @@ describe('validateEnv', () => {
       process.env.JWT_SECRET = 'secret';
     });
 
-    // Open CORS plus credentials lets any site on the internet call this API with a visitor's session.
+    // CORS mở kèm credentials cho phép mọi site gọi API này bằng phiên của khách truy cập.
     it('refuses an open CORS policy', () => {
       expect(() => validateEnv(quiet())).toThrow('CORS_ORIGIN');
     });

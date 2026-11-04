@@ -21,14 +21,14 @@ import {
 import type { ChatDto, RenameConversationDto } from './dto/ai-chat.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** One stored turn. Matches Gemini's own shape so the transcript replays without mapping. */
+/** Một lượt đã lưu. Khớp shape của Gemini để transcript phát lại không cần map. */
 interface StoredMessage {
   role: 'user' | 'model';
   parts: { text: string }[];
   createdAt: string;
 }
 
-/** Conversations with the assistant, ported from `AIService`: the transcript is a whole-read `jsonb` column holding only `{ role, parts }`, and every query is scoped by tenant *and* user. */
+/** Hội thoại với trợ lý, port từ AIService: transcript là cột jsonb đọc nguyên khối, chỉ chứa `{ role, parts }`; mọi truy vấn lọc theo cả tenant và user. */
 @Injectable()
 export class AIChatHistoryService {
   private readonly logger = new Logger(AIChatHistoryService.name);
@@ -39,13 +39,11 @@ export class AIChatHistoryService {
     private readonly tools: AiToolsService,
   ) {}
 
-  // ─── Chat ──────────────────────────────────────────────────────────────────
-
   async chat(user: AuthUser, dto: ChatDto) {
     const tenantId = requireTenantId(user);
 
     if (!this.agent.isConfigured()) {
-      // A 503, not the friendly fallback: an unset API key is an operator's problem, and burying it in a chat bubble is how it stays unfixed.
+      // Trả 503 chứ không trả câu fallback thân thiện: API key chưa set là lỗi của operator; giấu trong bong bóng chat thì lỗi sẽ không ai sửa.
       throw new ServiceUnavailableException({
         code: ErrorCode.AI_NOT_CONFIGURED,
         message: 'The AI assistant is not configured on this server',
@@ -77,7 +75,7 @@ export class AIChatHistoryService {
         `Answered in ${result.steps} step(s) on route ${result.route}`,
       );
     } catch (error) {
-      // The transcript is saved either way - a question with no answer beside it looks like the message was never sent.
+      // Transcript luôn được lưu, kể cả khi lỗi: câu hỏi không có câu trả lời đi kèm trông như chưa từng được gửi.
       this.logger.error(
         'Chat execution failed',
         error instanceof Error ? error.stack : error,
@@ -98,7 +96,7 @@ export class AIChatHistoryService {
     };
   }
 
-  /** An unknown or absent `conversationId` starts a new thread rather than failing. */
+  /** `conversationId` không tồn tại hoặc không gửi thì mở thread mới thay vì báo lỗi. */
   private async findOrStart(tenantId: string, userId: string, dto: ChatDto) {
     if (dto.conversationId) {
       const existing = await this.prisma.aIChatHistory.findFirst({
@@ -131,12 +129,12 @@ export class AIChatHistoryService {
     ];
     return this.prisma.aIChatHistory.update({
       where: { id },
-      // A Json column, so Prisma wants InputJsonValue; the shapes match, TypeScript just cannot see it.
+      // Cột Json nên Prisma cần InputJsonValue; shape thì khớp, chỉ là TypeScript không nhận ra.
       data: { messages: messages as unknown as Prisma.InputJsonValue },
     });
   }
 
-  /** The last few turns, flattened, for the intent classifier's prompt. */
+  /** Vài lượt gần nhất, nối thành text, dùng cho prompt phân loại. */
   private summarize(history: StoredMessage[]): string {
     return history
       .slice(-ROUTING_HISTORY_MESSAGES)
@@ -149,7 +147,7 @@ export class AIChatHistoryService {
       .join('\n');
   }
 
-  /** `messages` is `Json`, so a row written by an older version has to degrade to an empty history rather than crash the request. */
+  /** `messages` là Json: row do phiên bản cũ ghi phải được coi là lịch sử rỗng, không làm crash request. */
   private messagesOf(row: { messages: unknown }): StoredMessage[] {
     if (!Array.isArray(row.messages)) return [];
     return row.messages.filter(
@@ -161,9 +159,7 @@ export class AIChatHistoryService {
     );
   }
 
-  // ─── Conversations ─────────────────────────────────────────────────────────
-
-  /** Titles only - the transcript is fetched one conversation at a time. */
+  /** Chỉ lấy tiêu đề; transcript được lấy từng cuộc một. */
   async findAll(user: AuthUser, query: PaginationQueryDto) {
     const tenantId = requireTenantId(user);
     const where = { tenantId, userId: user.userId };

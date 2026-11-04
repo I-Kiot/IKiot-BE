@@ -9,7 +9,7 @@ import {
 
 const S = OrderStatus;
 
-// The journey diagram in contract §2, written out as the only steps that exist.
+// Sơ đồ hành trình ở contract §2, viết ra thành các bước duy nhất có thật.
 const ALLOWED: [string, OrderStatus][] = [
   [S.PENDING_CONFIRMATION, S.CONFIRMED],
   [S.PENDING_CONFIRMATION, S.CANCELLED],

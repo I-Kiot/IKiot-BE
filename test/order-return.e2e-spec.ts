@@ -39,10 +39,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Hoàn hàng (D-5, OrderReturnService) trên Postgres thật: tạo đơn hoàn → nhận hàng → kiểm từng
- * dòng. GOOD cộng lại tồn bán được, DAMAGED vào kho hàng hỏng của kho xuất; vượt số lượng, đơn
- * chưa trừ kho, người không có quyền đều bị chặn. `ship` (C-2) chưa có route nên test tự trừ tồn
- * bằng `shipLockedStock` đúng như C-2 sẽ làm. Tự tạo tenant riêng và dọn sạch.
+ * Hoàn hàng (D-5) trên Postgres thật: tạo đơn hoàn → nhận hàng → kiểm từng dòng. GOOD cộng lại tồn bán được, DAMAGED vào kho hàng hỏng; vượt số lượng, đơn chưa trừ kho, người không có quyền đều bị chặn. `ship` (C-2) chưa có route nên test tự trừ tồn bằng `shipLockedStock`. Tự tạo tenant riêng và dọn sạch.
  */
 describe('/order-returns – OrderReturnService', () => {
   let prisma: PrismaService;
@@ -85,7 +82,7 @@ describe('/order-returns – OrderReturnService', () => {
       })
     )?.stock ?? 0;
 
-  /** A shipped order: packed, then deducted the way `ship` will (SALE ledger with the order line). */
+  /** Đơn đã giao: đóng gói rồi trừ kho như `ship` sẽ làm (sổ SALE kèm dòng đơn). */
   const shippedOrder = async (quantity = 2, assigneeId = ownerId) => {
     const created = await manual.create(owner, tenantId, {
       branchId,
@@ -295,7 +292,7 @@ describe('/order-returns – OrderReturnService', () => {
     const created = await open(orderId, lineId, 2);
     expect(created.status).toBe(OrderReturnStatus.REQUESTED);
     expect(created.code).toMatch(/^DH-HOAN-/);
-    expect(await stockAt(warehouseId)).toBe(before - 2); // nothing moves yet
+    expect(await stockAt(warehouseId)).toBe(before - 2);
 
     const received = await returns.receive(owner, tenantId, created.id);
     expect(received.status).toBe(OrderReturnStatus.INSPECTING);
@@ -339,7 +336,7 @@ describe('/order-returns – OrderReturnService', () => {
       items: [{ orderItemId: lineId, condition: ReturnCondition.DAMAGED }],
     });
 
-    expect(await stockAt(warehouseId)).toBe(before - 3); // not sellable stock
+    expect(await stockAt(warehouseId)).toBe(before - 3); // Không phải tồn bán được
     expect(await stockAt(damagedId)).toBe(1);
     const row = await prisma.orderReturnItem.findFirstOrThrow({
       where: { returnId: created.id },
@@ -446,7 +443,7 @@ describe('/order-returns – OrderReturnService', () => {
     await expect(open(orderId, lineId, 3)).rejects.toMatchObject({
       response: { code: ErrorCode.ORDER_RETURN_QTY_EXCEEDS },
     });
-    // An open return speaks for its quantity: 2 of 2 are taken, so even 1 more is too many.
+    // Phiếu đang mở đã giữ số lượng: 2/2 đã bị giữ nên thêm 1 nữa cũng là thừa.
     await open(orderId, lineId, 2);
     await expect(open(orderId, lineId, 1)).rejects.toMatchObject({
       response: { code: ErrorCode.ORDER_RETURN_QTY_EXCEEDS },
@@ -483,7 +480,6 @@ describe('/order-returns – OrderReturnService', () => {
         response: { code: ErrorCode.ORDER_RETURN_STATUS_INVALID },
       });
     }
-    // Its quantity is free again.
     await expect(open(orderId, lineId, 1)).resolves.toBeDefined();
   });
 

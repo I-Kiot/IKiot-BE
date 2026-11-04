@@ -15,7 +15,7 @@ import {
 } from 'class-validator';
 import { ProductItemType } from '../../../common/constants/product-status';
 
-/** One image on a product or a variant; Mongo stored these inline and Postgres splits them into a child table, but the API keeps the same array of objects. */
+/** Một ảnh của sản phẩm hoặc phiên bản. Postgres tách thành bảng con, API vẫn giữ mảng object như cũ. */
 export class ProductImageDto {
   @IsString()
   @IsNotEmpty({ message: 'Ảnh phải có url' })
@@ -26,7 +26,7 @@ export class ProductImageDto {
   isThumbnail?: boolean;
 }
 
-/** One attribute of a product ("Màu", "Kích thước" in cm). `id` keeps an existing one on update (rename / new unit); without it a new attribute is added. */
+/** Một thuộc tính của sản phẩm. `id` giữ dòng cũ khi cập nhật (đổi tên / đơn vị); không có thì thêm mới. */
 export class ProductAttributeDto {
   @IsOptional()
   @IsUUID()
@@ -41,7 +41,7 @@ export class ProductAttributeDto {
   unit?: string;
 }
 
-/** One spec row on a variant ("Màu" / "Đỏ"). `productDetails` in the old API. The name is matched to the product's attribute of that name (created when new). */
+/** Một dòng giá trị trên phiên bản (VD "Màu" / "Đỏ"), khớp với thuộc tính cùng tên của sản phẩm (tạo nếu chưa có). */
 export class ProductItemDetailDto {
   @IsOptional()
   @IsString()
@@ -52,8 +52,8 @@ export class ProductItemDetailDto {
   value?: string;
 }
 
-/** One component of a combo: `quantity` of `componentItemId` in one combo. The component may itself be a COMBO (nested combo). */
-/** Most of one component a combo may hold. The FE combo form caps its input the same way. */
+/** Một thành phần combo. Thành phần có thể là COMBO khác (combo lồng nhau). */
+/** Số lượng tối đa của một thành phần trong combo; FE cũng chặn đúng mức này. */
 export const MAX_COMBO_COMPONENT_QUANTITY = 999;
 
 export class ComboComponentDto {
@@ -63,25 +63,25 @@ export class ComboComponentDto {
   @Type(() => Number)
   @IsInt()
   @Min(1, { message: 'Số lượng trong combo phải từ 1' })
-  // Chặn trước khi tới cột int4 - tràn số ở DB chỉ ra một lỗi chung chung. 999 / món là quá đủ cho một bộ.
+  // Chặn trước cột int4, vì tràn số ở DB chỉ báo lỗi chung chung. 999 mỗi món là quá đủ cho một bộ.
   @Max(MAX_COMBO_COMPONENT_QUANTITY, {
     message: `Số lượng trong combo tối đa ${MAX_COMBO_COMPONENT_QUANTITY}`,
   })
   quantity: number;
 }
 
-/** A variant (ProductItem / SKU), ported from CreateProductItemRequestDTO - which the old code also duplicated by hand inside CreateProductRequestDTO, where the two had already diverged. */
+/** Một phiên bản (ProductItem / SKU), port từ CreateProductItemRequestDTO. */
 export class CreateProductItemDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên mặt hàng không được để trống' })
   productName: string;
 
-  /** Optional since 2026-09-12: left blank, the service allocates `SP000001`-style codes per tenant. */
+  /** Bỏ trống thì service tự cấp mã `SP000001` theo tenant (từ 2026-09-12). */
   @IsOptional()
   @IsString()
   productCode?: string;
 
-  /** Optional since 2026-09-12: left blank it follows `productCode` (kept unique per tenant). */
+  /** Bỏ trống thì theo `productCode` (vẫn unique theo tenant). */
   @IsOptional()
   @IsString()
   sku?: string;
@@ -91,7 +91,7 @@ export class CreateProductItemDto {
   @Min(0, { message: 'Giá bán không được âm' })
   retailPrice: number;
 
-  /** Required on a PRODUCT / SERVICE. Ignored on a COMBO: its cost is the sum of its components' costs, computed by the server. */
+  /** Bắt buộc với PRODUCT / SERVICE. COMBO bỏ qua: giá vốn là tổng thành phần, server tự tính. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -110,7 +110,7 @@ export class CreateProductItemDto {
   @IsString()
   warrantyPeriod?: string;
 
-  /** Percent, 0–100. Spelled `VAT` in the old API; the column is `vat`. */
+  /** Phần trăm, 0–100. API cũ ghi `VAT`, cột là `vat`. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -130,20 +130,20 @@ export class CreateProductItemDto {
   @Type(() => ProductImageDto)
   images?: ProductImageDto[];
 
-  /** Suppliers this variant can be bought from. New here: the old API only allowed attaching a supplier afterwards. */
+  /** NCC có thể mua phiên bản này. Mới so với API cũ (cũ chỉ gắn NCC sau khi tạo). */
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
   supplierIds?: string[];
 
-  /** Optional and redundant since 2026-10-23: the server takes it from the product's `productType`, and a value that differs is a 400 `PRODUCT_ITEM_TYPE_MISMATCH`. Fixed at create: a variant that has held stock must not turn into a combo. */
+  /** Không bắt buộc (từ 2026-10-23): server lấy từ `productType`, lệch thì 400 `PRODUCT_ITEM_TYPE_MISMATCH`. Cố định lúc tạo, vì phiên bản đã có tồn kho không được thành combo. */
   @IsOptional()
   @IsIn(Object.values(ProductItemType), {
     message: `itemType phải là ${Object.values(ProductItemType).join(', ')}`,
   })
   itemType?: ProductItemType;
 
-  /** Required on a COMBO, refused on anything else. Replaced wholesale on update. */
+  /** Bắt buộc với COMBO, các loại khác bị từ chối. Cập nhật thì thay toàn bộ. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

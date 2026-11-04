@@ -44,7 +44,6 @@ const STAFF_SELECT = {
   phoneNumber: true,
   profileFirstName: true,
   profileLastName: true,
-  // Answered as branchId/warehouseId again by withPosting.
   ...USER_POSTING_SELECT,
 } as const;
 
@@ -57,7 +56,6 @@ type ScheduleRow = Prisma.WorkingScheduleGetPayload<{
   include: typeof SCHEDULE_INCLUDE;
 }>;
 
-/** One assignment, resolved to real instants and ready to be written. */
 interface ResolvedAssignment {
   userIds: string[];
   shiftTemplateId: string;
@@ -67,7 +65,10 @@ interface ResolvedAssignment {
   endAt: Date;
 }
 
-/** Who works when. A schedule is one shift on one day with several people on it, and assignment is bulk by design, since a manager rosters a week at a time. Two things the old service carried are deliberately gone: `deduplicateWorkingSchedules` (~150 lines that normalised duplicates in the response and forced in-memory pagination - Postgres forbids them with a partial unique index instead), and `validateRoleHierarchy`, whose roles no longer exist. */
+/**
+ * Lịch làm việc là một ca trong một ngày có nhiều người; phân ca theo lô vì quản lý xếp cả tuần một lần.
+ * Đã bỏ có chủ đích `deduplicateWorkingSchedules` (Postgres chặn trùng bằng partial unique index) và `validateRoleHierarchy` (các role đó không còn).
+ */
 @Injectable()
 export class WorkingScheduleService {
   constructor(
@@ -76,9 +77,7 @@ export class WorkingScheduleService {
     private readonly notifications: NotificationService,
   ) {}
 
-  // ─── Create / update ───────────────────────────────────────────────────────
-
-  /** Rosters a batch of shifts. Assignments landing on the same slot are merged into one schedule rather than written twice, which is what makes "add Bình to Tuesday's morning shift" work when that shift is already rostered. */
+  /** Các dòng rơi vào cùng một slot được gộp thành một lịch, không ghi hai lần; nhờ vậy thêm người vào ca đã có sẵn vẫn hoạt động. */
   async createBulk(
     tenantId: string,
     actorId: string,
@@ -93,7 +92,7 @@ export class WorkingScheduleService {
       saved.push(await this.upsertSlot(tenantId, actorId, assignment));
     }
 
-    // One notification per person, not per row: rostering a week creates five schedules for the same employee. The actor is excluded - you don't need telling about the roster you just wrote.
+    // Mỗi người nhận một thông báo, không theo từng dòng (xếp một tuần tạo nhiều lịch cho cùng một người). Bỏ qua người thực hiện.
     const recipients = [
       ...new Set(
         saved.flatMap((row) => row.assignedUsers.map((a) => a.userId)),
@@ -111,7 +110,6 @@ export class WorkingScheduleService {
     };
   }
 
-  /** Replaces one schedule's people, shift and day. */
   async update(
     tenantId: string,
     actorId: string,
@@ -157,8 +155,6 @@ export class WorkingScheduleService {
     };
   }
 
-  // ─── Reads ─────────────────────────────────────────────────────────────────
-
   async findAll(tenantId: string, query: QueryWorkingScheduleDto) {
     const where = this.buildWhere(tenantId, query);
 
@@ -181,7 +177,6 @@ export class WorkingScheduleService {
     return paginate(decorated, total, query.page, query.limit);
   }
 
-  /** `GET /working-schedules/me` - the caller's own roster, trimmed to just them. */
   async findMine(
     tenantId: string,
     userId: string,
@@ -199,7 +194,7 @@ export class WorkingScheduleService {
     };
   }
 
-  /** The shift this person is in right now, if any. Answers `{ data: null }` rather than a 404 - a till asks this on startup and "you are not on shift" is a normal answer - with `serverTime` alongside so the client needn't trust its own clock. */
+  /** Trả `{ data: null }` thay vì 404 vì không có ca là kết quả bình thường (máy bán hàng hỏi lúc khởi động). Kèm `serverTime` để client không phải tin đồng hồ của mình. */
   async findCurrent(tenantId: string, userId: string) {
     const now = new Date();
     const schedule = await this.prisma.workingSchedule.findFirst({
@@ -225,7 +220,7 @@ export class WorkingScheduleService {
     return { data: decorated, serverTime: now.toISOString() };
   }
 
-  /** The branch / warehouse views. The old routes were two near-identical wrappers that each answered 400 when their id was missing; here it is a required query param, so the validation layer says so. */
+  /** Chi nhánh/kho là query param bắt buộc (route cũ trả 400 khi thiếu); validation lo việc báo lỗi. */
   async findByLocation(
     tenantId: string,
     query: QueryWorkingScheduleDto,
@@ -259,7 +254,6 @@ export class WorkingScheduleService {
     return decorated;
   }
 
-  /** One person's slice of one schedule, without the rest of the team. */
   async findUserDetail(tenantId: string, id: string, userId: string) {
     const schedule = await this.findOne(tenantId, id);
     const user = schedule.assignedUsers.find(
@@ -275,8 +269,6 @@ export class WorkingScheduleService {
     const { assignedUsers: _assigned, ...rest } = schedule;
     return { ...rest, user };
   }
-
-  // ─── Delete ────────────────────────────────────────────────────────────────
 
   async remove(tenantId: string, id: string) {
     const schedule = await this.prisma.workingSchedule.findFirst({
@@ -302,7 +294,7 @@ export class WorkingScheduleService {
     return { message: 'Xóa lịch làm việc thành công', data: { id } };
   }
 
-  /** Takes one person off a shift; removing the last person deletes it, since an empty schedule is nobody working. */
+  /** Gỡ một người khỏi ca; gỡ người cuối cùng thì xoá cả ca, vì ca rỗng nghĩa là không ai làm. */
   async removeUser(tenantId: string, id: string, userId: string) {
     const schedule = await this.prisma.workingSchedule.findFirst({
       where: {
@@ -333,9 +325,6 @@ export class WorkingScheduleService {
     };
   }
 
-  // ─── Assignment resolution ─────────────────────────────────────────────────
-
-  /** Validates the people and templates, then works out the real instants for each row. */
   private async resolveAssignments(
     tenantId: string,
     assignments: ScheduleAssignmentDto[],
@@ -364,7 +353,7 @@ export class WorkingScheduleService {
     });
   }
 
-  /** Everyone rostered has to be an active STAFF account in this tenant - what remains of the old check once `validateRoleHierarchy` is dropped. */
+  /** Mọi người được xếp ca phải là tài khoản STAFF đang hoạt động trong tenant; đây là phần còn lại của kiểm tra cũ sau khi bỏ `validateRoleHierarchy`. */
   private async assertStaffOfTenant(tenantId: string, userIds: string[]) {
     if (userIds.length === 0) return;
     const found = await this.prisma.user.count({
@@ -383,7 +372,6 @@ export class WorkingScheduleService {
     }
   }
 
-  /** Rows describing the same slot become one row with everyone on it. */
   private mergeBySlot(assignments: ResolvedAssignment[]): ResolvedAssignment[] {
     const bySlot = new Map<string, ResolvedAssignment>();
     for (const assignment of assignments) {
@@ -407,7 +395,6 @@ export class WorkingScheduleService {
     return [...bySlot.values()];
   }
 
-  /** Adds to the schedule already on this slot, or creates it. */
   private async upsertSlot(
     tenantId: string,
     actorId: string,
@@ -446,7 +433,7 @@ export class WorkingScheduleService {
       });
     }
 
-    // `skipDuplicates` is the join table's equivalent of the old `$addToSet`: re-rostering somebody already on the shift is a no-op, not an error.
+    // `skipDuplicates` thay cho `$addToSet` cũ: xếp lại người đã có trong ca là no-op, không phải lỗi.
     const already = new Set(existing.assignedUsers.map((a) => a.userId));
     const toAdd = assignment.userIds.filter((id) => !already.has(id));
     return this.prisma.workingSchedule.update({
@@ -464,7 +451,7 @@ export class WorkingScheduleService {
     });
   }
 
-  /** Nobody may be on two overlapping shifts. The old service ran an O(n²) sweep plus a query per person; this is one query per assignment, and the in-batch case is covered because each is checked against what the loop has already saved. */
+  /** Không ai được ở hai ca chồng nhau. Mỗi assignment một query; trường hợp trùng trong cùng batch được bắt vì dòng sau đối chiếu với dòng đã lưu trước đó. */
   private async assertNoOverlap(
     tenantId: string,
     assignment: ResolvedAssignment,
@@ -478,7 +465,7 @@ export class WorkingScheduleService {
         assignedUsers: { some: { userId: { in: assignment.userIds } } },
         startAt: { lt: assignment.endAt },
         endAt: { gt: assignment.startAt },
-        // The same slot is a merge, not a clash - that is how adding a person to an existing shift works.
+        // Cùng slot là gộp, không phải trùng - đó là cách thêm người vào ca đã có.
         NOT: {
           shiftTemplateId: assignment.shiftTemplateId,
           workDate: assignment.workDate,
@@ -509,7 +496,6 @@ export class WorkingScheduleService {
     };
     if (query.scheduleType) where.scheduleType = query.scheduleType;
 
-    // "Whose schedules" is a fact about the people on them, so it is one relation filter rather than the old fetch-ids-then-intersect-in-memory two-step.
     const assigned: Prisma.WorkingScheduleUserWhereInput = {};
     if (query.userId) assigned.userId = query.userId;
     if (query.branchId || query.warehouseId) {
@@ -537,7 +523,7 @@ export class WorkingScheduleService {
       const range: Prisma.DateTimeFilter = {};
       if (query.startDate) range.gte = workDateOf(query.startDate);
       if (query.endDate) {
-        // Exclusive upper bound one day on, so `endDate` itself is included.
+        // Biên trên mở: lùi sang ngày kế tiếp để `endDate` vẫn được tính đủ cả ngày.
         const next = workDateOf(query.endDate);
         next.setUTCDate(next.getUTCDate() + 1);
         range.lt = next;
@@ -550,7 +536,6 @@ export class WorkingScheduleService {
 
   // ─── Decoration ────────────────────────────────────────────────────────────
 
-  /** Adds what a schedule row can't answer on its own: what kind of day it falls on. */
   private async decorate(tenantId: string, rows: ScheduleRow[]) {
     if (rows.length === 0) return [];
 
@@ -570,7 +555,7 @@ export class WorkingScheduleService {
           holidayName: holiday?.name ?? null,
           holidayType: holiday?.type ?? null,
         },
-        // Same nesting the `/users` responses use - a staff member's name is under `profile` on the wire wherever it appears.
+        // Cùng cấu trúc lồng với `/users`: tên nhân viên nằm dưới `profile` ở mọi nơi.
         assignedUsers: row.assignedUsers.map((assigned) =>
           withNestedProfile(withPosting(assigned.user)),
         ),
@@ -606,7 +591,6 @@ export class WorkingScheduleService {
     );
   }
 
-  /** Shift template times go out as `HH:mm`, and the join rows flatten to their users. */
   private toResponse(row: ScheduleRow) {
     const { shiftTemplate, assignedUsers, ...rest } = row;
     return {

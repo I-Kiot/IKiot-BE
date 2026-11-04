@@ -38,7 +38,7 @@ export class AuthController {
     return this.authService.sendOtp(dto);
   }
 
-  /** Whether a phone number / shop name is free, for the registration form - public by necessity, since it is asked before an account exists. */
+  /** Kiểm tra số điện thoại / tên shop còn trống, cho form đăng ký. Public vì được hỏi trước khi có tài khoản. */
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('check-availability')
@@ -46,7 +46,7 @@ export class AuthController {
     return this.authService.checkAvailability(dto);
   }
 
-  // `user-agent` is recorded against the session, as iKiotMS-BE stored it on the RefreshToken document - it is what makes a device list possible later.
+  // Lưu user-agent vào phiên (như iKiotMS-BE), để sau này có danh sách thiết bị.
   @Public()
   @Post('register')
   register(
@@ -71,7 +71,6 @@ export class AuthController {
     return this.authService.firebaseLogin(dto, userAgent);
   }
 
-  /** Trades a refresh token for a fresh pair. The presented token is revoked. */
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
@@ -82,16 +81,13 @@ export class AuthController {
     return this.authService.refresh(dto.refreshToken, userAgent);
   }
 
-  /** Ends this session. Authenticated, so the session ended is provably the caller's. */
+  /** Kết thúc phiên hiện tại. Phải đăng nhập nên phiên bị kết thúc chắc chắn là của người gọi. */
   @ApiBearerAuth('bearer')
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   logout(@CurrentUser() user: AuthUser, @Body() dto: LogoutDto) {
     return this.authService.logout(user.userId, dto.refreshToken);
   }
-
-  // ─── Forgot password ───────────────────────────────────────────────────────
-  // Three public steps: send a code, trade it for a short-lived reset token, trade that for a new password.
 
   @Public()
   @HttpCode(HttpStatus.OK)

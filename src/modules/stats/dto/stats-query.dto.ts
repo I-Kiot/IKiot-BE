@@ -30,7 +30,7 @@ const upper = () =>
     typeof value === 'string' ? value.toUpperCase() : value,
   );
 
-/** `fromDate` must not come after `toDate` - a range validator rather than a field one, because neither bound is wrong on its own. Compared through `resolveRange`, the parse the query itself uses: `new Date('2026-10-21')` is UTC midnight, 07:00 local, so "today until now" sent between 00:00 and 07:00 local was refused as backwards. */
+/** `fromDate` không được sau `toDate`. Validator cho cả khoảng chứ không từng trường, vì từng đầu mút riêng đều hợp lệ. So sánh qua `resolveRange` (cùng cách query parse): `new Date('2026-10-21')` là nửa đêm UTC = 07:00 giờ VN, nên “hôm nay đến bây giờ” gửi lúc 00:00–07:00 từng bị báo ngược. */
 @ValidatorConstraint({ name: 'rangeIsForwards' })
 class RangeIsForwards implements ValidatorConstraintInterface {
   validate(_: unknown, args: ValidationArguments): boolean {
@@ -44,7 +44,7 @@ class RangeIsForwards implements ValidatorConstraintInterface {
   }
 }
 
-/** The query every dashboard endpoint shares, split per route so each documents only what it reads (the old single DTO is why `?sortBy=` silently did nothing on `/stats/overview`). Both bounds take a full ISO timestamp or a bare `YYYY-MM-DD`, which means the whole local day - truncating `toDate` to midnight would drop a day of sales. */
+/** Query dùng chung cho mọi endpoint dashboard, tách theo route để mỗi route chỉ nhận phần nó đọc (DTO gộp cũ làm `?sortBy=` bị bỏ qua lặng lẽ ở `/stats/overview`). Hai đầu nhận ISO timestamp đầy đủ hoặc `YYYY-MM-DD` (ngày địa phương); cắt `toDate` về nửa đêm sẽ mất một ngày bán hàng. */
 export class StatsQueryDto {
   @IsOptional()
   @IsISO8601({ strict: false }, { message: 'fromDate không hợp lệ' })
@@ -59,7 +59,7 @@ export class StatsQueryDto {
   @IsString()
   branchId?: string;
 
-  /** Resolved defaults - call this instead of reading the two raw strings. */
+  /** Khoảng đã áp mặc định - gọi hàm này thay vì đọc hai chuỗi thô. */
   range(): DateRange {
     return resolveRange(this.fromDate, this.toDate);
   }
@@ -73,7 +73,7 @@ export class RevenueSeriesQueryDto extends StatsQueryDto {
   groupBy?: GroupBy = GroupBy.DAY;
 }
 
-/** Cashflow endpoints add a warehouse filter - money moves at warehouses too, sales don't. */
+/** Endpoint dòng tiền thêm bộ lọc kho - tiền cũng đi qua kho, còn bán hàng thì không. */
 export class CashflowQueryDto extends StatsQueryDto {
   @IsOptional()
   @IsString()
@@ -140,14 +140,14 @@ export class TopCustomersQueryDto extends StatsQueryDto {
   limit: number = 5;
 }
 
-/** Only a location filter: the comparison windows are fixed calendar milestones, not a range the caller picks. */
+/** Chỉ có bộ lọc địa điểm: các mốc so sánh là mốc lịch cố định, không phải khoảng do người gọi chọn. */
 export class RevenueComparisonQueryDto {
   @IsOptional()
   @IsString()
   branchId?: string;
 }
 
-/** No date range: stock is a level, not a flow - it is only ever "right now". */
+/** Không có khoảng ngày: tồn kho là mức tại một thời điểm, không phải luồng - luôn là "ngay bây giờ". */
 export class InventoryStatsQueryDto {
   @IsOptional()
   @IsString()
@@ -183,7 +183,7 @@ export class SlowProductsQueryDto extends StatsQueryDto {
   limit: number = 5;
 }
 
-/** The platform overview looks across tenants, so it has no location filter at all. */
+/** Tổng quan nền tảng nhìn xuyên tenant nên không có bộ lọc địa điểm. */
 export class AdminOverviewQueryDto {
   @IsOptional()
   @IsISO8601({ strict: false }, { message: 'fromDate không hợp lệ' })

@@ -1,4 +1,4 @@
-/** Product lifecycle. DISCONTINUED is the soft delete, since order items, stock movements and inventory all point at variants. */
+/** Vòng đời sản phẩm. DISCONTINUED là xoá mềm, vì dòng đơn, phiếu kho và tồn kho vẫn trỏ tới biến thể. */
 export const ProductStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',
@@ -7,26 +7,25 @@ export const ProductStatus = {
 
 export type ProductStatus = (typeof ProductStatus)[keyof typeof ProductStatus];
 
-/** What a client may set directly - DISCONTINUED is reachable only via DELETE. */
+/** Trạng thái client được đặt trực tiếp - DISCONTINUED chỉ đạt được qua DELETE. */
 export const SETTABLE_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
 ];
 
-/** What a list endpoint may be filtered by. */
 export const FILTERABLE_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
   ProductStatus.DISCONTINUED,
 ];
 
-/** Statuses that still count against the plan's `maxProducts` quota - a discontinued product frees its slot. */
+/** Trạng thái còn tính vào hạn mức `maxProducts` của gói - sản phẩm ngừng bán thì trả lại suất. */
 export const QUOTA_COUNTED_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
 ];
 
-/** `ProductItem.itemType`. Only a PRODUCT holds stock of its own: a COMBO is priced as a set and stocked through its components, and a SERVICE needs no goods at all. */
+/** `ProductItem.itemType`. Chỉ PRODUCT tự giữ kho: COMBO được tính giá như một bộ và giữ kho qua thành phần; SERVICE không cần hàng. */
 export const ProductItemType = {
   PRODUCT: 'PRODUCT',
   COMBO: 'COMBO',
@@ -37,9 +36,7 @@ export type ProductItemType =
   (typeof ProductItemType)[keyof typeof ProductItemType];
 
 /**
- * `Product.productType` (2026-10-23): which screen a product lives on - `/products` lists PRODUCT
- * and SERVICE, `/combos` lists COMBO. Fixed at create, like `itemType`: turning a product that has
- * held stock into a combo would strand that stock.
+ * `Product.productType`: `/products` liệt kê PRODUCT và SERVICE, `/combos` liệt kê COMBO. Cố định khi tạo, như `itemType`: đổi sản phẩm đã có tồn thành combo sẽ làm mất số tồn đó.
  */
 export const ProductType = {
   PRODUCT: 'PRODUCT',
@@ -52,16 +49,13 @@ export type ProductType = (typeof ProductType)[keyof typeof ProductType];
 export const PRODUCT_TYPES: readonly string[] = Object.values(ProductType);
 
 /**
- * The SKU type every variant of a product of this type must have - the one copy of the rule.
- * It is one-to-one on purpose: a COMBO variant inside a PRODUCT product would sit on the
- * products screen while being a combo, which is what the product-level type exists to stop.
- * `itemType` stays on `product_items` because orders, stock and combo expansion read it per line.
+ * Loại SKU mà mọi biến thể của sản phẩm loại này phải có. Quan hệ 1-1 có chủ ý, để chặn biến thể COMBO nằm trong sản phẩm PRODUCT. `itemType` vẫn nằm trên `product_items` vì đơn, kho và mở rộng combo đọc theo từng dòng.
  */
 export function itemTypeFor(productType: ProductType): ProductItemType {
   return productType;
 }
 
-/** Whether a variant of this type may have stock rows and lots. The one copy of "only a PRODUCT holds stock". */
+/** Biến thể loại này có được có dòng tồn kho và lot hay không. Bản duy nhất của quy tắc "chỉ PRODUCT giữ kho". */
 export function holdsStock(itemType: string): boolean {
   return itemType === ProductItemType.PRODUCT;
 }

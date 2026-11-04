@@ -62,7 +62,7 @@ const SESSION_INCLUDE = {
   currentStaff: { select: STAFF_SELECT },
   finalLogManager: { select: STAFF_SELECT },
   shiftLogs: {
-    // `id` is only a tie-break so two logs a microsecond apart come back in a stable order; what actually keeps duplicates out is the guard in submitShiftLog.
+    // `id` chỉ để phá thế hoà khi hai log cách nhau một micro-giây vẫn trả về theo thứ tự ổn định; thứ thực sự chặn trùng là guard trong submitShiftLog.
     orderBy: [{ loggedAt: 'asc' }, { id: 'asc' }],
     include: {
       staff: { select: STAFF_SELECT },
@@ -75,7 +75,7 @@ type SessionRow = Prisma.CashDrawerSessionGetPayload<{
   include: typeof SESSION_INCLUDE;
 }>;
 
-/** Only the columns the variance report needs, over a range that may be a year long. */
+/** Chỉ các cột báo cáo chênh lệch cần, trên khoảng có thể dài cả năm. */
 const VARIANCE_SELECT = {
   id: true,
   branchId: true,
@@ -90,7 +90,6 @@ type VarianceRow = Prisma.CashDrawerSessionGetPayload<{
   select: typeof VARIANCE_SELECT;
 }>;
 
-/** One branch's cash total for one trading day, as Postgres groups it. */
 interface CashDayRow {
   branchId: string;
   day: string;
@@ -100,20 +99,18 @@ interface CashDayRow {
 }
 
 const DEFAULT_REPORT_DAYS = 30;
-/** A year and a day: the report loads every session in the range before paging, so the totals describe the range rather than the current page, and that trade needs a ceiling. */
+/** Một năm và một ngày: báo cáo tải mọi phiên trong khoảng trước khi phân trang, nên tổng phản ánh cả khoảng chứ không phải trang hiện tại; đánh đổi đó cần một trần. */
 const MAX_REPORT_DAYS = 366;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** Real port of CashDrawerService: one branch's till for one trading day, opened with a counted float, passed between cashiers by shift logs, closed once with a counted total, so a shortfall can be narrowed to a shift. One session per branch per day and at most one OPEN session are both enforced by unique indexes; the branch comes from where the account is posted, and `cash_drawers:read` vs `read_own` decides how much of it they see. */
+/** Két của một chi nhánh trong một ngày: mở với số đã đếm, chuyển giữa thu ngân qua shift log, chốt một lần. Unique index ép một phiên mỗi chi nhánh mỗi ngày và tối đa một phiên OPEN. Chi nhánh lấy từ nơi tài khoản được gán; `cash_drawers:read` hay `read_own` quyết định thấy bao nhiêu. */
 @Injectable()
 export class CashDrawerSessionService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // ─── Open ──────────────────────────────────────────────────────────────────
-
   async open(user: AuthUser, dto: OpenCashDrawerDto) {
     const tenantId = this.tenantOf(user);
-    // required = true, so this is never null here.
+    // required = true nên ở đây không bao giờ null.
     const branchId = this.resolveBranch(user, dto.branchId)!;
     await this.assertBranchAndStaff(tenantId, branchId, dto.staffId);
 
@@ -132,7 +129,7 @@ export class CashDrawerSessionService {
       });
       return this.toResponse(created);
     } catch (error) {
-      // Either invariant can be the one that fired - a drawer already open, or today's session already closed - and both mean the same thing at the till.
+      // Cả hai bất biến đều có thể là cái bị kích hoạt (két đã mở, hoặc phiên hôm nay đã đóng), và tại quầy cả hai đều có nghĩa như nhau.
       if (this.isUniqueViolation(error)) {
         throw new ConflictException({
           code: ErrorCode.CASH_DRAWER_ALREADY_OPEN,
@@ -144,9 +141,6 @@ export class CashDrawerSessionService {
     }
   }
 
-  // ─── Reads ─────────────────────────────────────────────────────────────────
-
-  /** The drawer currently open at a branch - what a till asks for on startup. */
   async current(user: AuthUser, requestedBranchId?: string) {
     const tenantId = this.tenantOf(user);
     const branchId = this.resolveBranch(user, requestedBranchId)!;
@@ -197,7 +191,7 @@ export class CashDrawerSessionService {
       this.prisma.cashDrawerSession.count({ where }),
     ]);
 
-    // The old list dropped shiftLogs to keep the payload small; the summary keeps the useful part (how many shifts, who holds it) without the full history.
+    // Danh sách cũ bỏ shiftLogs cho gọn payload; phần tóm tắt giữ ý hữu ích (bao nhiêu ca, ai đang giữ) mà không kèm toàn bộ lịch sử.
     return paginate(
       rows.map((row) => this.toSummary(row)),
       total,
@@ -210,9 +204,7 @@ export class CashDrawerSessionService {
     return this.toResponse(await this.findRow(user, id));
   }
 
-  // ─── Reconciliation ────────────────────────────────────────────────────────
-
-  /** What the drawer should hold against what was counted, broken down by shift - the subtraction neither codebase ever made, so a till could close half a million đồng short in silence. Cash only: a card or SePay sale never enters the drawer, so non-cash takings are returned as context and never inside the variance. */
+  /** Tiền mặt lẽ ra phải có so với số đã đếm, chia theo ca. Chỉ tính tiền mặt: thẻ và SePay không vào két, doanh thu không tiền mặt chỉ để làm ngữ cảnh, không nằm trong chênh lệch. */
   async reconcile(user: AuthUser, id: string) {
     const session = await this.findRow(user, id);
     const window = businessDayRange(session.businessDate);
@@ -230,7 +222,7 @@ export class CashDrawerSessionService {
         by: ['paymentMethod', 'flowType'],
         where: {
           ...this.dayFlowWhere(session.tenantId, session.branchId, window),
-          // `NOT`, not `paymentMethod: { not: 'CASH' }` - the column is nullable and Prisma's `not` drops NULLs, so an unrecorded method would be reported nowhere.
+          // `NOT` chứ không phải `paymentMethod: { not: 'CASH' }` - cột này nullable và `not` của Prisma bỏ qua NULL, nên phương thức chưa ghi sẽ không được báo ở đâu.
           NOT: { paymentMethod: PaymentMethod.CASH },
         },
         _sum: { amount: true },
@@ -263,7 +255,7 @@ export class CashDrawerSessionService {
         businessDate: session.businessDate,
         status: session.status,
       },
-      // The exact instants the totals cover, so a disagreement about a receipt near midnight can be settled by looking.
+      // Thời điểm chính xác mà tổng bao phủ, để tranh cãi về biên lai gần nửa đêm có thể được giải quyết bằng cách xem lại.
       window,
       ...result,
       segments: result.segments.map((segment) =>
@@ -278,7 +270,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** The same subtraction over a range of days: two queries whatever the range, then filtering and paging in memory, so `varianceOnly` and the totals describe the whole range rather than one page. */
+  /** Cùng phép trừ trên khoảng nhiều ngày: hai query bất kể khoảng nào, rồi lọc và phân trang trên bộ nhớ, để `varianceOnly` và tổng phản ánh cả khoảng chứ không chỉ một trang. */
   async report(user: AuthUser, query: QueryCashVarianceDto) {
     const tenantId = this.tenantOf(user);
     const branchId = this.resolveBranch(user, query.branchId, false);
@@ -322,12 +314,12 @@ export class CashDrawerSessionService {
         query.limit,
       ),
       period: { fromDate, toDate },
-      // Over every session the filter matched, not over the page.
+      // Trên mọi phiên khớp bộ lọc, không phải trên trang.
       totals: this.reportTotals(rows),
     };
   }
 
-  /** Defaults to the last 30 trading days, and refuses a range it would have to page. */
+  /** Mặc định 30 ngày giao dịch gần nhất, và từ chối khoảng phải phân trang. */
   private reportRange(query: QueryCashVarianceDto): {
     fromDate: Date;
     toDate: Date;
@@ -355,7 +347,7 @@ export class CashDrawerSessionService {
     return { fromDate, toDate };
   }
 
-  /** Cash in and out per branch per trading day, bucketed by `AT TIME ZONE` in Postgres so a 23:30 sale isn't filed under tomorrow; the `created_at` bounds stay a plain range so the index is still usable. */
+  /** Thu chi tiền mặt theo chi nhánh theo ngày giao dịch, nhóm bằng `AT TIME ZONE` trong Postgres để giao dịch 23:30 không bị xếp sang ngày mai; điều kiện `created_at` giữ là khoảng thường để index vẫn dùng được. */
   private async cashByBusinessDay(
     tenantId: string,
     branchId: string | null,
@@ -412,7 +404,7 @@ export class CashDrawerSessionService {
   }
 
   private reportTotals(rows: { variance: number | null }[]) {
-    // A session nobody has closed has no counted total, so it is neither balanced nor off - counted separately rather than folded into either tally.
+    // Phiên chưa ai đóng không có tổng đếm nên không được coi là khớp hay lệch; đếm riêng, không cộng vào tổng nào.
     const settled = rows.filter((row) => row.variance !== null);
     const off = settled.filter((row) => row.variance !== 0);
     return {
@@ -441,7 +433,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** Which cash rows belong to one branch's trading day. `branchId` is required, so branchless EXPENSE rows (a supplier paid in cash) are not counted - a shop paying a supplier from the drawer shows that day short, and rightly so. */
+  /** Dòng tiền thuộc một ngày giao dịch của một chi nhánh. `branchId` bắt buộc, nên chi EXPENSE không gắn chi nhánh (trả nhà cung cấp bằng tiền mặt) không được tính; shop trả NCC từ két thì ngày đó sẽ thiếu, và điều đó là đúng. */
   private dayFlowWhere(
     tenantId: string,
     branchId: string,
@@ -449,13 +441,13 @@ export class CashDrawerSessionService {
   ): Prisma.CashFlowWhereInput {
     return {
       tenantId,
-      // A branch's id is its Location id, which is what a cash flow records.
+      // id chi nhánh chính là id Location, cũng là thứ cash flow ghi lại.
       locationId: branchId,
       createdAt: { gte: window.start, lt: window.end },
     };
   }
 
-  /** A uuid tells a manager nothing; the report names the cashier. */
+  /** UUID không nói lên gì cho quản lý; báo cáo ghi tên thu ngân. */
   private nameStaff(segment: CashSegment, session: SessionRow) {
     const log = session.shiftLogs.find(
       (row) => row.staffId === segment.staffId,
@@ -463,9 +455,7 @@ export class CashDrawerSessionService {
     return { ...segment, staff: log?.staff ?? null };
   }
 
-  // ─── Shift logs ────────────────────────────────────────────────────────────
-
-  /** Records a cashier taking the drawer or handing it back. The sequence is checked rather than assumed - a START only opens the session or follows an END that named this person - because otherwise a shortfall becomes unattributable. */
+  /** Ghi nhận thu ngân nhận két hoặc trả lại. Thứ tự được kiểm chứ không giả định: START chỉ mở phiên hoặc nối sau một END đã chỉ định người này, vì nếu không thì thiếu hụt sẽ không quy được trách nhiệm. */
   async submitShiftLog(user: AuthUser, id: string, dto: SubmitShiftLogDto) {
     const tenantId = this.tenantOf(user);
     const session = await this.findRow(user, id);
@@ -528,11 +518,11 @@ export class CashDrawerSessionService {
       );
     }
 
-    // Who holds the drawer once this log is written; written unconditionally, which is load-bearing - see below.
+    // Ai giữ két sau khi log này được ghi; ghi vô điều kiện, và điều này là then chốt (xem bên dưới).
     const nextHolder = dto.nextStaffId ?? user.userId;
 
     await this.prisma.$transaction(async (tx) => {
-      // Guarded on the state we read, and `data` must never be empty: `updateMany({ data: {} })` matches the row without touching `@updatedAt`, so a double tap or client retry would insert twice. iKiotMS-BE got this free from `$push` on an embedded array.
+      // Điều kiện theo trạng thái đã đọc, và `data` không bao giờ được rỗng: `updateMany({ data: {} })` khớp dòng nhưng không đụng `@updatedAt`, nên bấm đúp hoặc client retry sẽ insert hai lần. iKiotMS-BE có được điều này miễn phí nhờ `$push` trên mảng nhúng.
       const claimed = await tx.cashDrawerSession.updateMany({
         where: {
           id,
@@ -566,7 +556,7 @@ export class CashDrawerSessionService {
     return this.toResponse(await this.findRow(user, id));
   }
 
-  /** Closes the day with a counted total. Refused unless the last log is an `END` from the holder naming nobody to take over - that log is the handover to the manager. */
+  /** Chốt ngày với tổng đã đếm. Bị từ chối trừ khi log cuối là `END` của người đang giữ két và không chỉ định ai nhận; log đó là bàn giao cho quản lý. */
   async finalize(user: AuthUser, id: string, dto: FinalizeCashDrawerDto) {
     const tenantId = this.tenantOf(user);
     const session = await this.findRow(user, id);
@@ -616,8 +606,6 @@ export class CashDrawerSessionService {
     return this.toResponse(await this.findRow(user, id));
   }
 
-  // ─── Access ────────────────────────────────────────────────────────────────
-
   private tenantOf(user: AuthUser): string {
     if (!user.tenantId) {
       throw new ForbiddenException({
@@ -628,14 +616,14 @@ export class CashDrawerSessionService {
     return user.tenantId;
   }
 
-  /** Which branch's drawer this call is about, or `null` for every branch: a posting wins (naming another is a 403), an owner may name one, and anyone else with no posting is refused rather than falling through to "no filter". Never `''`, which would one day land in a `where` as a real id. */
+  /** Két của chi nhánh nào đang được gọi tới, hoặc `null` nếu là mọi chi nhánh. Có phân công thì phân công thắng (chỉ định chi nhánh khác là 403); owner được chỉ định một chi nhánh; ai không có phân công thì bị từ chối thay vì rơi vào "không lọc". Không bao giờ là `''`, vì nó sẽ thành id thật trong `where`. */
   private resolveBranch(
     user: AuthUser,
     requested: string | undefined,
     required = true,
   ): string | null {
     if (user.branchId) {
-      // A shift supervisor reaches the branch their live shift covers - already intersected with their posting, but checked so the rule reads the same as in stock movements.
+      // Trưởng ca đến được chi nhánh mà ca đang làm bao phủ. Đã giao với phân công của họ, nhưng vẫn kiểm để quy tắc đọc giống với stock movements.
       const allowed =
         requested === user.branchId ||
         supervisesLocation(user.shiftSupervision, {
@@ -671,7 +659,7 @@ export class CashDrawerSessionService {
     return null;
   }
 
-  /** Whether this account sees every session at the branch (`cash_drawers:read`) or only the ones it worked (`read_own`). */
+  /** Tài khoản này thấy mọi phiên của chi nhánh (`cash_drawers:read`) hay chỉ những phiên chính họ làm (`read_own`). */
   private ownershipFilter(user: AuthUser): Prisma.CashDrawerSessionWhereInput {
     if (can(user, 'cash_drawers', 'read')) return {};
     return {
@@ -701,9 +689,7 @@ export class CashDrawerSessionService {
     return session;
   }
 
-  // ─── Guards ────────────────────────────────────────────────────────────────
-
-  /** The branch has to be live and the cashier has to actually work there - what remains of the old check once its STAFF-family role test is dropped. */
+  /** Chi nhánh phải đang hoạt động và thu ngân phải thực sự làm việc tại đó; đây là phần còn lại của kiểm tra cũ sau khi bỏ kiểm tra role họ STAFF. */
   private async assertBranchAndStaff(
     tenantId: string,
     branchId: string,
@@ -753,8 +739,6 @@ export class CashDrawerSessionService {
     );
   }
 
-  // ─── Shapes ────────────────────────────────────────────────────────────────
-
   private toResponse(session: SessionRow) {
     const {
       openingAmount,
@@ -767,7 +751,7 @@ export class CashDrawerSessionService {
       currentStaff,
       ...rest
     } = session;
-    // People come back with a nested `profile`, like every other user payload, so the screen can print a name instead of a generic label.
+    // Người dùng trả về với `profile` lồng nhau như mọi payload user khác, để màn hình in được tên thay vì nhãn chung.
     const person = <T extends FlatUserProfile | null>(row: T) =>
       row ? withNestedProfile(row) : row;
 
@@ -777,7 +761,7 @@ export class CashDrawerSessionService {
       openedBy: person(openedBy),
       currentStaff: person(currentStaff),
       openingAmount: Number(openingAmount),
-      // Re-nested: the columns are flat but the API kept iKiotMS-BE's `finalLog` object.
+      // Đã lồng lại: các cột phẳng, nhưng API vẫn giữ object `finalLog` của iKiotMS-BE.
       finalLog:
         finalLogAmount === null
           ? null
@@ -796,7 +780,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** List rows: everything except the shift-log history, which is what detail is for. */
+  /** Dòng danh sách: mọi thứ trừ lịch sử shift log, vốn dành cho chi tiết. */
   private toSummary(session: SessionRow) {
     const { shiftLogs, ...rest } = this.toResponse(session);
     return { ...rest, shiftLogCount: shiftLogs.length };

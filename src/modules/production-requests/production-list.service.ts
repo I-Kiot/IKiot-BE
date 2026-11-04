@@ -33,15 +33,15 @@ import {
   type ProductionListEntry,
 } from './production-list';
 
-/** Which rows to load. `locationIds: null` = every location, and only then the lines with no source location chosen yet (they belong to no location a staff account could be posted at). */
+/** Dòng cần tải. `locationIds: null` = mọi địa điểm, và chỉ khi đó mới lấy dòng chưa chọn kho nguồn (chúng không thuộc địa điểm nào nhân viên có thể được gắn vào). */
 interface ListScope {
   locationIds: string[] | null;
   productItemIds?: string[];
-  /** Pairs to list even with no demand or request behind them - the catalogue view. */
+  /** Cặp cần liệt kê dù không có nhu cầu hay yêu cầu nào phía sau – chế độ danh mục. */
   catalogue?: { locationId: string; productItemId: string }[];
 }
 
-/** A (location, SKU) pair an order edit touched - what B-3 compares before and after. */
+/** Cặp (địa điểm, SKU) mà lần sửa đơn chạm tới; B-3 so sánh trước và sau. */
 export interface StockPair {
   locationId: string | null;
   productItemId: string;
@@ -77,11 +77,9 @@ const CUSTOMIZATION_SELECT = {
 } as const satisfies Prisma.OrderItemCustomizationDefaultArgs;
 
 /**
- * "Danh sách cần sản xuất" (hành trình GĐ1 – Bước 4, contract §3 `GET /production-list`). There
- * is no table: every row is recomputed from the open orders, the stock and the open production
- * requests each time it is read, so it can never disagree with them. The arithmetic is in
- * `production-list.ts`; this service only loads the rows - in two rounds of queries however many
- * rows there are (coding rule 19) - and decorates the result.
+ * "Danh sách cần sản xuất" (hành trình GĐ1 – Bước 4, contract §3 `GET /production-list`). Không có bảng: mỗi dòng được tính lại
+ * từ đơn đang mở, tồn kho và yêu cầu sản xuất đang mở mỗi lần đọc, nên không thể lệch với chúng. Phép tính nằm ở `production-list.ts`;
+ * service này chỉ tải dòng (hai vòng query bất kể số dòng, coding rule 19) và trang trí kết quả.
  */
 @Injectable()
 export class ProductionListService {
@@ -99,8 +97,7 @@ export class ProductionListService {
         message: 'You can only see the production list of your own location',
       });
     }
-    // An id that is not this shop's would otherwise just filter everything out, and an empty
-    // list reads as "nothing to make" - a stale location in the client looked exactly like that.
+    // Id không thuộc shop này sẽ lọc hết mọi dòng, và danh sách rỗng bị hiểu là "không có gì để làm" – địa điểm cũ ở client từng cho đúng kết quả đó.
     if (query.locationId) {
       await resolveLocations(this.prisma, tenantId, [query.locationId]);
     }
@@ -133,7 +130,7 @@ export class ProductionListService {
         : await this.compute(tenantId, {
             locationIds,
             productItemIds,
-            // Short rows always come from demand, so the catalogue is only needed to show the rest.
+            // Dòng thiếu luôn đến từ nhu cầu, nên danh mục chỉ cần để hiện phần còn lại.
             catalogue: onlyShort
               ? undefined
               : await this.cataloguePairs(
@@ -149,8 +146,7 @@ export class ProductionListService {
         (!onlyShort || row.shortQuantity > 0) &&
         (!query.hasOpenRequest || row.requests.length > 0),
     );
-    // `compareRows` already put short rows and rows with orders first; the rest tie, so they
-    // are ordered by name here, where the names are known.
+    // `compareRows` đã đưa dòng thiếu và dòng có đơn lên trước; phần còn lại bằng nhau nên xếp theo tên ở đây, vì tên chỉ biết ở đây.
     const rank = new Map(filtered.map((row, index) => [row.key, index]));
     const rows = (await this.decorate(tenantId, filtered)).sort((a, b) => {
       const ra = rank.get(a.key)!;
@@ -172,12 +168,12 @@ export class ProductionListService {
         query.page,
         query.limit,
       ),
-      // For the filter's badge: how many rows need ordering, whatever filter is on.
+      // Cho huy hiệu của bộ lọc: số dòng cần đặt, bất kể bộ lọc nào đang bật.
       summary: { shortRows },
     };
   }
 
-  /** Every producible SKU (a PRODUCT not discontinued, of a product marked `isManufacturable`) at every sellable location in scope - what "order anything" lists. */
+  /** Mọi SKU sản xuất được (PRODUCT chưa ngừng, của sản phẩm có `isManufacturable`) ở mọi địa điểm bán được trong phạm vi – thứ "đặt bất kỳ gì" liệt kê. */
   private async cataloguePairs(
     tenantId: string,
     locationIds: string[] | null,
@@ -215,10 +211,8 @@ export class ProductionListService {
   }
 
   /**
-   * B-3: how short each touched pair is right now, keyed by `rowKey` (a pair's custom rows
-   * included). An order edit takes one snapshot before its change and hands it to
-   * `notifyNewShortages` after the commit. The hook belongs in the order module (track A) -
-   * this is the half it calls.
+   * B-3: mỗi cặp bị chạm đang thiếu bao nhiêu ngay bây giờ, khoá bởi `rowKey` (gồm cả dòng tuỳ chỉnh của cặp). Lần sửa đơn
+   * chụp một snapshot trước khi đổi và đưa cho `notifyNewShortages` sau commit. Hook thuộc module đơn (track A); đây là nửa nó gọi.
    */
   async shortagesFor(
     tenantId: string,
@@ -228,7 +222,7 @@ export class ProductionListService {
     return new Map(entries.map((row) => [row.key, row.shortQuantity]));
   }
 
-  /** After the commit, re-reads the same pairs and tells each location's managers about every row that just became short (`crossedShortage`). Never throws. */
+  /** Sau commit, đọc lại các cặp đó và báo quản lý từng địa điểm về mỗi dòng vừa thành thiếu (`crossedShortage`). Không bao giờ ném lỗi. */
   async notifyNewShortages(
     tenantId: string,
     pairs: StockPair[],
@@ -267,11 +261,11 @@ export class ProductionListService {
         });
       }
     } catch {
-      // A missed warning must never undo or fail the order edit that triggered it.
+      // Cảnh báo lỡ không được làm hỏng hay huỷ lần sửa đơn đã kích hoạt nó.
     }
   }
 
-  /** The rows of exactly these (location, SKU) pairs - standard and custom alike. */
+  /** Các dòng đúng những cặp (địa điểm, SKU) này, cả chuẩn lẫn tuỳ chỉnh. */
   private async entriesFor(
     tenantId: string,
     pairs: StockPair[],
@@ -289,7 +283,7 @@ export class ProductionListService {
     );
   }
 
-  /** `null` = every location (owner/admin). A staff account sees the location it is posted at, and one posted nowhere sees nothing - the cash-drawer rule: no posting must not fall through to "no filter". */
+  /** `null` = mọi địa điểm (chủ/admin). Nhân viên chỉ thấy địa điểm được gắn; chưa gắn nơi nào thì không thấy gì, không được rơi xuống "không lọc" (quy tắc két tiền). */
   readableLocations(user: AuthUser): string[] | null {
     const own = postingOf(user);
     if (!own) return null;
@@ -301,8 +295,6 @@ export class ProductionListService {
     }
     return [own.locationId];
   }
-
-  // ─── Loading ───────────────────────────────────────────────────────────────
 
   private async compute(
     tenantId: string,
@@ -318,7 +310,7 @@ export class ProductionListService {
           ...itemFilter,
           status: OrderItemStatus.PENDING,
           lineType: { in: [...STOCKED_LINE_TYPES] },
-          // A counter sale (TAKEAWAY) is paid and deducted on the spot - it never waits on a workshop.
+          // Bán tại quầy (TAKEAWAY) được trả và trừ kho ngay, không bao giờ chờ xưởng.
           order: {
             tenantId,
             status: { in: [...UNSHIPPED_ORDER_STATUSES] },
@@ -392,7 +384,7 @@ export class ProductionListService {
     }
     if (productItemIds.size === 0) return [];
 
-    // Superset (every listed location × every listed SKU); the pure function only reads the pairs it needs.
+    // Tập trên (mọi địa điểm × mọi SKU đã liệt kê); hàm thuần chỉ đọc các cặp nó cần.
     const pairWhere = {
       tenantId,
       locationId: { in: [...locationIds] },
@@ -458,7 +450,7 @@ export class ProductionListService {
     });
   }
 
-  /** Names for every id in the rows: locations, SKUs, the people in charge, and the custom specs - one query each. */
+  /** Tên cho mọi id trong dòng: địa điểm, SKU, người phụ trách, thông số tuỳ chỉnh; mỗi loại một query. */
   private async decorate(tenantId: string, entries: ProductionListEntry[]) {
     if (entries.length === 0) return [];
 

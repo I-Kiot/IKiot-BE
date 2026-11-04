@@ -48,7 +48,7 @@ import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of OrderController plus the order journey's routes, and the SePay webhook. There is no DELETE: a sale that shouldn't have happened is CANCELLED or RETURNED, both of which leave a trail. */
+/** Bản port của OrderController, cộng các route hành trình và webhook SePay. Không có DELETE: đơn không nên có thì chuyển sang CANCELLED hoặc RETURNED, cả hai đều để lại dấu vết. */
 @ApiTags('orders')
 @ApiBearerAuth('bearer')
 @Controller('orders')
@@ -65,28 +65,28 @@ export class OrderController {
     private readonly remittances: OrderRemittanceService,
   ) {}
 
-  /** A-2: a manual order in the order journey, born CONFIRMED with a person in charge (contract §2). */
+  /** Đơn tay (A-2): sinh ra ở CONFIRMED, có người phụ trách (contract §2). */
   @Permissions('orders', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
     return this.manualOrders.create(user, requireTenantId(user), dto);
   }
 
-  /** The till's sale: paid and deducted on the spot, outside the journey. It was `POST /orders` until A-2 gave that route to the journey. */
+  /** Bán tại quầy: thu và trừ kho ngay, nằm ngoài hành trình. Trước A-2 route này là `POST /orders`. */
   @Permissions('orders', 'create')
   @Post('pos')
   createPosSale(@CurrentUser() user: AuthUser, @Body() dto: CreatePosOrderDto) {
     return this.service.createPosSale(user, requireTenantId(user), dto);
   }
 
-  /** A-9: the order-journey list (contract §2), a superset of what POS reads off it. */
+  /** Danh sách hành trình (A-9), là tập cha của những gì POS đang đọc từ route này. */
   @Permissions('orders', 'read')
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderJourneyDto) {
     return this.reads.findAll(user, requireTenantId(user), query);
   }
 
-  /** Counts of orders needing attention (short on the shelf, delivery date near). Declared above `:id` or it is read as an order id. */
+  /** Số đơn cần chú ý (thiếu hàng trên kệ, sắp tới ngày giao). Khai báo trên `:id`, nếu không sẽ bị đọc thành mã đơn. */
   @Permissions('orders', 'read')
   @Get('alerts')
   alerts(
@@ -96,7 +96,6 @@ export class OrderController {
     return this.reads.alerts(user, requireTenantId(user), branchId);
   }
 
-  /** A-9: `OrderDetail` (contract §2). */
   @Permissions('orders', 'read')
   @Get(':id')
   findOne(
@@ -106,7 +105,7 @@ export class OrderController {
     return this.reads.findOne(user, requireTenantId(user), id);
   }
 
-  /** A-8: edit a journey order before it ships. Lines only while CONFIRMED - once packed they are locked to the shelf (contract §2). */
+  /** Sửa đơn hành trình trước khi giao (A-8). Chỉ sửa dòng khi còn CONFIRMED; đã đóng gói thì hàng bị khóa trên kệ (contract §2). */
   @Permissions('orders', 'update')
   @Patch(':id')
   update(
@@ -117,7 +116,7 @@ export class OrderController {
     return this.edits.update(user, requireTenantId(user), id, dto);
   }
 
-  /** A-8: hand the order to another person in charge without opening the edit form. */
+  /** Đổi người phụ trách mà không cần mở form sửa (A-8). */
   @Permissions('orders', 'update')
   @Patch(':id/assignee')
   setAssignee(
@@ -128,7 +127,7 @@ export class OrderController {
     return this.edits.setAssignee(user, requireTenantId(user), id, dto);
   }
 
-  /** A-8: re-tag the order's priority from the list. */
+  /** Đổi mức ưu tiên của đơn từ danh sách (A-8). */
   @Permissions('orders', 'update')
   @Patch(':id/priority')
   setPriority(
@@ -139,7 +138,7 @@ export class OrderController {
     return this.edits.setPriority(user, requireTenantId(user), id, dto);
   }
 
-  /** A-4: make a line to the customer's measure. The first time it gets a ProductItem of its own; only while CONFIRMED, and fixed once a production request for it is sent. */
+  /** Làm dòng thành đơn may theo số đo (A-4). Lần đầu dòng có ProductItem riêng; chỉ khi còn CONFIRMED, và bị khóa khi yêu cầu sản xuất của dòng đã gửi. */
   @Permissions('orders', 'update')
   @Put(':id/items/:itemId/customization')
   customize(
@@ -157,7 +156,7 @@ export class OrderController {
     );
   }
 
-  /** A-10: the owner confirms the shipper handed back all the cash collected on delivery - RECEIVED → COMPLETED. Its own permission: counting cash is not editing orders. */
+  /** Chủ xác nhận shipper đã nộp đủ tiền thu khi giao (RECEIVED → COMPLETED). Có quyền riêng: đếm tiền không phải là sửa đơn. */
   @Permissions('orders', 'confirm_cash')
   @HttpCode(HttpStatus.OK)
   @Post(':id/confirm-remittance')
@@ -185,10 +184,7 @@ export class OrderController {
   }
 
   /**
-   * Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. **Cố ý không có
-   * `@Permissions`**: người phụ trách đơn đóng được đơn của mình mà không cần quyền trong role (chốt
-   * 2026-10-06), nên quyền được kiểm trong service – chủ shop, người phụ trách, hoặc `orders:pack` tại
-   * kho xuất (`assertOrderStepAccess`). `pack` vẫn là quyền riêng: người đóng gói không sửa được đơn.
+   * Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. **Cố ý không có `@Permissions`**: người phụ trách đóng được đơn của mình mà không cần quyền trong role (2026-10-06), nên quyền kiểm trong service (`assertOrderStepAccess`): chủ shop, người phụ trách, hoặc `orders:pack` tại kho xuất. `pack` vẫn là quyền riêng để người đóng gói không sửa được đơn.
    */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pack')
@@ -201,9 +197,7 @@ export class OrderController {
   }
 
   /**
-   * C-2: PICKED_UP → SHIPPING, bước trừ tồn kho (trừ đúng phần đã khoá lúc đóng gói). **Cố ý không có
-   * `@Permissions`**, cùng lý do với `pack`: chủ shop, người phụ trách, hoặc `orders:ship` tại kho của
-   * fulfillment – kiểm trong `ShipmentService.shipOrder`.
+   * C-2: PICKED_UP → SHIPPING, bước trừ tồn kho (đúng phần đã khoá lúc đóng gói). **Cố ý không có `@Permissions`**, cùng lý do với `pack`: chủ shop, người phụ trách, hoặc `orders:ship` tại kho của fulfillment, kiểm trong `ShipmentService.shipOrder`.
    */
   @HttpCode(HttpStatus.OK)
   @Post(':id/ship')
@@ -215,7 +209,7 @@ export class OrderController {
     return this.shipments.shipOrder(user, requireTenantId(user), id, dto);
   }
 
-  /** A-5: cancel a journey order before its goods leave stock (CONFIRMED / PACKED / PICKED_UP). A packed order's lock goes back to the shelf; a deposit is refunded by the amount the caller names. */
+  /** Hủy đơn hành trình trước khi hàng rời kho (A-5): CONFIRMED / PACKED / PICKED_UP. Đơn đã đóng gói thì hàng khóa trả về kệ; cọc hoàn theo số tiền người gọi chỉ định. */
   @Permissions('orders', 'update')
   @HttpCode(HttpStatus.OK)
   @Post(':id/cancel')
@@ -227,7 +221,7 @@ export class OrderController {
     return this.cancels.cancel(user, requireTenantId(user), id, dto);
   }
 
-  /** Settles a SePay order paid some other way. Either permission is enough, matching the old `authorize("orders", ["update", "pay_offline"])`, so a role holding only `orders:update` doesn't lose it to the port. */
+  /** Chốt đơn SePay đã trả bằng cách khác. Có một trong hai quyền là đủ, khớp với authorize orders update / pay_offline cũ, để role chỉ có `orders:update` không mất quyền khi port sang. */
   @Permissions('orders', 'update', 'pay_offline')
   @HttpCode(HttpStatus.OK)
   @Post(':id/pay-offline')
@@ -246,7 +240,7 @@ export class OrderController {
   }
 }
 
-/** Answers 200 for every outcome, since SePay retries anything else. The reference is looked up inside the resolved tenant only, so money in shop B's account can't settle shop A's order. */
+/** Luôn trả 200 vì SePay retry mọi mã khác. Mã tham chiếu chỉ tra trong tenant đã xác định, nên tiền vào tài khoản shop B không chốt được đơn của shop A. */
 @ApiTags('orders')
 @Controller('webhook/sepay')
 export class SepayOrderWebhookController {
@@ -267,7 +261,7 @@ export class SepayOrderWebhookController {
     try {
       if (payload.transferType !== 'in') return { success: true };
 
-      // SePay sends "Apikey <key>", not "Bearer <key>".
+      // SePay gửi "Apikey <key>", không phải "Bearer <key>".
       const apiKey = authHeader?.replace(/^Apikey\s+/i, '').trim() ?? '';
       const tenant = await this.sepay.resolveTenant(apiKey, payload);
       if (!tenant) {
@@ -281,7 +275,7 @@ export class SepayOrderWebhookController {
         return { success: false, message: 'No order reference found' };
       }
 
-      // SePay sends its transaction id as a number; `null` rather than `''` for a malformed call, since an empty string would read as "we have the id" to anyone reconciling.
+      // SePay gửi mã giao dịch dạng số; request sai thì trả `null` chứ không phải `''`, vì chuỗi rỗng sẽ bị người đối soát hiểu là "đã có mã".
       const transactionId =
         typeof payload.id === 'string' || typeof payload.id === 'number'
           ? String(payload.id)

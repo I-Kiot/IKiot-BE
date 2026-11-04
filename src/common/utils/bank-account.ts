@@ -1,4 +1,4 @@
-/** One spelling, so what a shop typed, what SePay lists and what a webhook sends compare equal. Letters stay: a virtual account may carry them. */
+/** Một cách viết duy nhất, để thứ shop gõ, thứ SePay liệt kê và thứ webhook gửi về so khớp được với nhau. Giữ lại chữ cái vì tài khoản ảo có thể có chữ. */
 export function normalizeAccountNumber(
   value: string | null | undefined,
 ): string {

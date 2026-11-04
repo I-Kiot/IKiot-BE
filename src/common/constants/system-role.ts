@@ -1,4 +1,4 @@
-/** Coarse account kind. ADMIN and TENANT_OWNER are always full-access and never rows in Role; STAFF holds a tenant-defined Role; CUSTOMER is fixed and minimal. */
+/** Loại tài khoản tổng quát. ADMIN và TENANT_OWNER luôn full quyền và không bao giờ là dòng trong Role; STAFF giữ một Role do tenant định nghĩa; CUSTOMER cố định và tối thiểu. */
 export const SystemRole = {
   ADMIN: 'ADMIN',
   TENANT_OWNER: 'TENANT_OWNER',
@@ -8,7 +8,7 @@ export const SystemRole = {
 
 export type SystemRole = (typeof SystemRole)[keyof typeof SystemRole];
 
-/** Fixed, hardcoded grants for CUSTOMER accounts - never routed through Role/RolePermission. */
+/** Quyền cố định, gắn cứng cho tài khoản CUSTOMER - không đi qua Role/RolePermission. */
 export const CUSTOMER_PERMISSIONS: ReadonlySet<string> = new Set([
   'profile:read',
 ]);
@@ -20,10 +20,10 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   'brands:read',
   'schedules:read_own',
   'cash_drawers:read_own',
-  // The branch / warehouse an employee is posted to (2026-10-07). Without it, a role with no `branches:read` had no branch to pick on the order form and the location switcher had no name to show - for the one place the account already works at.
+  // Chi nhánh / kho được gán cho nhân viên. Thiếu quyền này, role không có chi nhánh để chọn trên form đơn và switcher không có tên để hiện.
   'branches:read_own',
   'warehouses:read_own',
-  // Looking up and adding a customer (2026-10-21). Anyone selling needs both, a customer can walk up to any employee, and a role that missed one left its holders with a customer page that answered 403. Edit and delete stay grantable.
+  // Tìm và thêm khách. Ai bán hàng cũng cần cả hai; role thiếu một trong hai sẽ thấy trang khách trả 403. Sửa và xoá cấp riêng.
   'customers:read',
   'customers:create',
 ]);

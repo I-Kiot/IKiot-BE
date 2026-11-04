@@ -1,15 +1,15 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** The production list, filtered to one row - where every production notification points (contract §3). */
+/** Danh sách sản xuất đã lọc đúng một dòng; mọi thông báo sản xuất đều trỏ về đây (contract §3). */
 const listLink = (locationId: string | null, productItemId: string) => {
   const params = new URLSearchParams({ productItemId });
   if (locationId) params.set('locationId', locationId);
   return `/exchange/production-list?${params.toString()}`;
 };
 
-/** Notification copy for the workshop / production domain (hành trình GĐ1 – Bước 4). */
+/** Nội dung thông báo sản xuất / xưởng (hành trình GĐ1 – Bước 4). */
 export const ProductionRequestNotificationTemplates = {
-  /** A row just went from nothing short to short (edge-triggered, `crossedShortage`) - sent to whoever looks after that location. */
+  /** Chỉ gửi khi dòng vừa chuyển từ đủ hàng sang thiếu (`crossedShortage`, edge-triggered), không gửi lặp lại. Gửi cho người phụ trách location đó. */
   shortageDetected: (args: {
     label: string;
     locationName: string | null;
@@ -23,7 +23,7 @@ export const ProductionRequestNotificationTemplates = {
     link: listLink(args.locationId, args.productItemId),
   }),
 
-  /** Workshop goods arrived for a SKU some orders are waiting on - to the people in charge of those orders, so they can pack. */
+  /** Hàng xưởng về cho SKU mà có đơn đang chờ; gửi người phụ trách các đơn đó để họ đóng gói. */
   goodsArrived: (args: {
     label: string;
     quantity: number;
@@ -38,7 +38,7 @@ export const ProductionRequestNotificationTemplates = {
     link: listLink(args.locationId, args.productItemId),
   }),
 
-  /** A workshop wrote a delivery note - to the receiving location's managers, who must count the goods and confirm before stock rises. */
+  /** Xưởng lập phiếu giao; gửi manager của location nhận, họ phải đếm và xác nhận trước khi tồn kho tăng. */
   deliveryCreated: (args: {
     deliveryCode: string;
     requestCode: string;
@@ -52,7 +52,7 @@ export const ProductionRequestNotificationTemplates = {
     link: `/exchange/production-deliveries?status=PENDING`,
   }),
 
-  /** The location confirmed a delivery note - to the workshop's staff. */
+  /** Location đã xác nhận phiếu giao; gửi nhân viên xưởng. */
   deliveryReceived: (args: {
     deliveryCode: string;
     requestCode: string;
@@ -66,7 +66,7 @@ export const ProductionRequestNotificationTemplates = {
     link: `/workshop`,
   }),
 
-  /** A delivery note was cancelled - to the other side (the workshop if the location refused it, the location if the workshop withdrew it). */
+  /** Phiếu giao bị hủy; gửi bên còn lại (xưởng nếu location từ chối, location nếu xưởng rút lại). */
   deliveryCancelled: (args: {
     deliveryCode: string;
     requestCode: string;

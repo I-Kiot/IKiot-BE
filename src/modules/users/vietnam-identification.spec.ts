@@ -1,11 +1,11 @@
 import { validateVietnamIdentificationId } from './vietnam-identification';
 
-// 079 = TP.HCM. Digit 4: 0 = male born 1900s, 1 = female born 1900s, 2 = male born 2000s.
+// 079 = TP.HCM. Số thứ 4: 0 = nam sinh 1900s, 1 = nữ sinh 1900s, 2 = nam sinh 2000s.
 const MALE_1995 = '079095001234';
 const FEMALE_1995 = '079195001234';
 const MALE_2001 = '079201001234';
 
-// The point is catching a typo at data-entry time: the CCCD, birth date and sex are only worth storing if they agree.
+// Mục đích là bắt lỗi gõ nhầm lúc nhập liệu: CCCD, ngày sinh và giới tính chỉ đáng lưu khi khớp nhau.
 describe('validateVietnamIdentificationId', () => {
   it('accepts a well-formed number with no profile to cross-check', () => {
     expect(validateVietnamIdentificationId(MALE_1995)).toBe(MALE_1995);

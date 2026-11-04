@@ -5,16 +5,15 @@ import { IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
 
-/** Ported from InventoryQueryDTO, composed with `IntersectionType` so the "one implies the other" rule stays in `LocationRefQueryDto` and the two can't drift. */
+/** Ghép bằng `IntersectionType` để luật "cái này kéo theo cái kia" chỉ nằm ở `LocationRefQueryDto`, không lệch nhau. */
 export class QueryInventoryDto extends IntersectionType(
   PaginationQueryDto,
   LocationRefQueryDto,
 ) {
-  /** Only lines at or below their own `minStock`, ignoring lines with the alert off. */
+  /** Chỉ dòng ≤ `minStock` của chính nó, bỏ qua dòng đã tắt cảnh báo. */
   @BooleanQuery()
   isLowStock?: boolean;
 
-  /** Partial, case-insensitive match on the variant's SKU or product name. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>

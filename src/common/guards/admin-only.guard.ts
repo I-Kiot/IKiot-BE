@@ -8,7 +8,7 @@ import type { AuthUser } from '../types/auth-user.type';
 import { SystemRole } from '../constants/system-role';
 import { ErrorCode } from '../errors/error-codes';
 
-// Platform-admin-only routes; unlike OwnerOrAdminGuard, TENANT_OWNER does NOT pass here.
+// Route chỉ dành cho admin nền tảng; khác OwnerOrAdminGuard, TENANT_OWNER KHÔNG qua được ở đây.
 @Injectable()
 export class AdminOnlyGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {

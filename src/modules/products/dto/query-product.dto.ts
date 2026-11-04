@@ -19,7 +19,7 @@ import {
   ProductType,
 } from '../../../common/constants/product-status';
 
-/** `?productType=PRODUCT,SERVICE` - one value or a comma list; omitted means every type. */
+/** `?productType=PRODUCT,SERVICE`, một giá trị hoặc danh sách phẩy. Bỏ trống = mọi loại. */
 function ProductTypesQuery(): PropertyDecorator {
   return applyDecorators(
     IsOptional(),
@@ -33,7 +33,6 @@ function ProductTypesQuery(): PropertyDecorator {
   );
 }
 
-/** The filters `GET /products` and `GET /products/search` share. */
 export class ProductFilterDto extends IntersectionType(
   PaginationQueryDto,
   LocationRefQueryDto,
@@ -42,7 +41,6 @@ export class ProductFilterDto extends IntersectionType(
   @IsUUID()
   categoryId?: string;
 
-  /** Products with at least one variant supplied by this supplier. */
   @IsOptional()
   @IsUUID()
   supplierId?: string;
@@ -53,22 +51,19 @@ export class ProductFilterDto extends IntersectionType(
   })
   status?: string;
 
-  /** `isManufacturable=true` chỉ lấy sản phẩm đặt xưởng được - ô tìm hàng của form YCSX dùng nó. Bỏ trống = không lọc. */
+  /** `isManufacturable=true` chỉ lấy hàng đặt xưởng được (ô tìm của form YCSX). Bỏ trống = không lọc. */
   @BooleanQuery()
   isManufacturable?: boolean;
 
   /**
-   * No default on purpose (2026-10-23): the till, the order dialogs and the combo picker search
-   * every type through these routes, so each screen names the types it lists - `/products`
-   * sends `PRODUCT,SERVICE`, `/combos` sends `COMBO`.
+   * Không có mặc định (2026-10-23): POS, dialog đơn và bộ chọn combo đều tìm mọi loại qua route này,
+   * nên mỗi màn tự nêu loại nó cần (`/products` gửi `PRODUCT,SERVICE`, `/combos` gửi `COMBO`).
    */
   @ProductTypesQuery()
   productType?: ProductType[];
 }
 
-/** Ported from iKiotMS-BE's ProductQueryDTO. */
 export class QueryProductDto extends ProductFilterDto {
-  /** Partial, case-insensitive match on the product name. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -77,9 +72,9 @@ export class QueryProductDto extends ProductFilterDto {
   search?: string;
 }
 
-/** Ported from ProductSearchQueryDTO - the POS lookup, matching one term against the product name and every variant's code/SKU/barcode, with the variants returned inline. */
+/** Tìm nhanh cho POS: một từ khoá khớp tên sản phẩm và mã / SKU / barcode của mọi phiên bản, trả kèm phiên bản. */
 export class SearchProductDto extends ProductFilterDto {
-  /** One character is enough (2026-10-18): the till wants results as soon as the first letter is typed. The old DTO demanded two because a one-character prefix matches much of the catalogue; the page size already caps the cost. */
+  /** Một ký tự là đủ (2026-10-18), POS cần kết quả ngay từ chữ đầu. Trang đã giới hạn chi phí nên không cần ép 2 ký tự. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -88,7 +83,7 @@ export class SearchProductDto extends ProductFilterDto {
   q?: string;
 }
 
-/** Ported from `listAllProductItems`: a flat list of variants for pickers that reference a specific SKU, since `GET /products` deliberately doesn't attach variants. */
+/** Danh sách phẳng các phiên bản cho bộ chọn theo SKU, vì `GET /products` cố ý không gắn phiên bản. */
 export class QueryProductItemDto {
   @IsOptional()
   @IsString()
@@ -97,7 +92,7 @@ export class QueryProductItemDto {
   )
   search?: string;
 
-  /** Attaches each variant's stock at these branches as `stock` (0 when the branch has no row yet). It does not narrow the list - a picker has to be able to reach goods the branch has never carried. */
+  /** Gắn tồn kho tại các chi nhánh này vào `stock` (0 nếu chưa có dòng). Không lọc danh sách, vì bộ chọn phải thấy cả hàng chi nhánh chưa từng có. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.split(',').filter(Boolean) : value,
@@ -105,15 +100,14 @@ export class QueryProductItemDto {
   @IsUUID('4', { each: true })
   branchIds?: string[];
 
-  /** `excludeDiscontinued=true` bỏ phiên bản của hàng đã ngừng kinh doanh - bộ chọn món combo dùng nó, để `limit` áp lên hàng chọn được. Bỏ trống = không lọc. */
+  /** `excludeDiscontinued=true` bỏ phiên bản của hàng đã ngừng, để `limit` chỉ đếm hàng chọn được. Bỏ trống = không lọc. */
   @BooleanQuery()
   excludeDiscontinued?: boolean;
 
-  /** Variants of products of these types only; omitted = every type. */
   @ProductTypesQuery()
   productType?: ProductType[];
 
-  // Not PaginationQueryDto: this feeds a dropdown, not a table - no page, just the same 200/500 default and cap the old service applied.
+  // Không dùng PaginationQueryDto: đây là dropdown, không phải bảng nên không có trang, chỉ giữ mặc định và trần 200/500 như cũ.
   @IsOptional()
   @Type(() => Number)
   @IsInt()

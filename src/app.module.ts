@@ -47,7 +47,6 @@ import { UploadModule } from './modules/uploads/uploads.module';
 import { UserModule } from './modules/users/users.module';
 import { WarehouseModule } from './modules/warehouses/warehouses.module';
 import { WorkingScheduleModule } from './modules/working-schedules/working-schedules.module';
-// Order journey (2026-10-02): registered in Phase 0 so the parallel tracks never edit this file.
 import { FulfillmentModule } from './modules/fulfillments/fulfillments.module';
 import { OrderReturnModule } from './modules/order-returns/order-returns.module';
 import { ProductionRequestModule } from './modules/production-requests/production-requests.module';
@@ -59,7 +58,6 @@ import { SentryModule } from '@sentry/nestjs/setup';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
-    // Lets AuditInterceptor find every @AuditTemplate() provider on its own.
     DiscoveryModule,
     PrismaModule,
     RedisModule,
@@ -104,14 +102,14 @@ import { SentryModule } from '@sentry/nestjs/setup';
   controllers: [AppController],
   providers: [
     AppService,
-    // Order matters: JwtAuthGuard populates request.user before PermissionsGuard reads it.
+    // Thứ tự quan trọng: JwtAuthGuard phải điền request.user trước khi PermissionsGuard đọc.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
-    // Registered first so it wraps last: AuditInterceptor's tap must still see the raw login body it reads the actor from.
+    // Đăng ký đầu tiên để bọc ngoài cùng: tap của AuditInterceptor vẫn phải thấy body đăng nhập thô mà nó lấy actor từ đó.
     { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
-    // Domain audit descriptions come from @AuditTemplate() providers; this interceptor stays generic.
+    // Mô tả audit theo từng domain lấy từ provider @AuditTemplate(); interceptor này giữ tính chung.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
-    // Last line of defence: turns Prisma and other non-HttpException errors into real status codes.
+    // Lớp cuối cùng: đổi lỗi Prisma và các lỗi không phải HttpException thành status code thật.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

@@ -23,7 +23,8 @@ import { ShipmentModule } from '../shipments/shipments.module';
 import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
-  // InventoryModule for the stock decrement and low-stock rule, NotificationModule for the "customer paid" push, PromotionModule so an order prices its discounts through the same engine /promotions/calculate uses, FulfillmentModule for POST /orders/:id/pack (C-1), ShipmentModule for POST /orders/:id/ship (C-2), CustomerModule for the customer a manual order types in (A-2).
+  // InventoryModule: trừ kho và quy tắc tồn thấp. PromotionModule: đơn tính KM qua cùng engine với /promotions/calculate.
+  // FulfillmentModule (đóng gói C-1), ShipmentModule (giao C-2), CustomerModule (khách của đơn tay A-2).
   imports: [
     InventoryModule,
     NotificationModule,
@@ -31,9 +32,9 @@ import { InvoiceModule } from '../invoices/invoices.module';
     FulfillmentModule,
     ShipmentModule,
     CustomerModule,
-    // InvoiceService: every order has an invoice, issued when the order is COMPLETED.
+    // InvoiceService: mọi đơn đều có hóa đơn, phát hành khi đơn COMPLETED.
     InvoiceModule,
-    // ProductionListService, for the shortage alert when an order changes demand (B-3).
+    // ProductionListService cho cảnh báo thiếu hàng khi đơn đổi nhu cầu (B-3).
     ProductionRequestModule,
   ],
   controllers: [OrderController, SepayOrderWebhookController],

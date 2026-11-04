@@ -18,7 +18,7 @@ import { UpdateTenantDto } from './dto/update-tenants.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 
-// Generated CRUD, not a real port yet. Platform-admin only, and that has to be a guard rather than `@Permissions`: `Tenant` has no `tenantId` to scope by, and PermissionsGuard short-circuits TENANT_OWNER, so `@Permissions('tenants', …)` alone let any shop owner edit every other tenant. The decorators stay so the pairs keep their route in scripts/check-permissions.js; the guard is what keeps tenants out.
+// CRUD sinh tự động, chưa phải port thật. Chỉ admin nền tảng, và phải là guard chứ không phải `@Permissions`: `Tenant` không có `tenantId` để lọc, còn PermissionsGuard bỏ qua TENANT_OWNER, nên chỉ `@Permissions('tenants', …)` thì chủ shop nào cũng sửa được shop khác. Decorator giữ để cặp quyền có route trong scripts/check-permissions.js; guard mới là thứ chặn.
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)
@@ -35,7 +35,7 @@ export class TenantController {
     return this.service.findAll();
   }
 
-  /** Re-reads SePay now instead of waiting for the 10-minute cron. */
+  /** Đọc lại SePay ngay, thay vì chờ cron 10 phút. */
   @Permissions('tenants', 'update')
   @Post('sepay-sync')
   @HttpCode(HttpStatus.OK)

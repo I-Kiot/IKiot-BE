@@ -28,11 +28,7 @@ import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 /**
- * Lấy hàng & giao hàng (contract §4). Mọi route dưới đây **cố ý không có `@Permissions`**: người phụ
- * trách đơn làm được mọi bước của đơn mình mà không cần quyền trong role, shipper xem và ghi nhật trình
- * shipment của mình (chốt 2026-10-06), và guard chạy trước khi biết đơn / shipment là của ai. Quyền được
- * kiểm trong service: `assertOrderStepAccess` cho các bước của đơn, `visibleWhere` cho việc xem,
- * `deliveryActorAccess` cho lấy hàng / giao xong / thu tiền.
+ * Lấy hàng & giao hàng (contract §4). Route dưới đây **cố ý không có `@Permissions`**: guard chạy trước khi biết đơn / shipment của ai, nên quyền kiểm trong service: `assertOrderStepAccess` (bước của đơn), `visibleWhere` (xem), `deliveryActorAccess` (lấy hàng / giao xong / thu tiền).
  */
 @ApiTags('shipments')
 @ApiBearerAuth('bearer')

@@ -15,7 +15,7 @@ import { DeviceTokenDto } from './dto/device-token.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Own inbox only: every method scopes to the caller. There is no cross-user listing here - use notify() from another service to write, this controller only reads and acknowledges.
+// Chỉ inbox của chính người gọi: mọi method đều lọc theo user. Không có listing xuyên user; muốn ghi thì gọi notify() từ service khác.
 @ApiTags('notifications')
 @ApiBearerAuth('bearer')
 @Controller('notifications')

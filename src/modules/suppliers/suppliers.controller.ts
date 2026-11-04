@@ -22,7 +22,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Ported from the supplier module - the only product-attribute module that carries real business logic (payables).
+// Port từ module nhà cung cấp của bản cũ (công nợ phải trả).
 @ApiTags('suppliers')
 @ApiBearerAuth('bearer')
 @Controller('suppliers')
@@ -73,7 +73,7 @@ export class SupplierController {
 
   @Permissions('suppliers', 'pay_debt')
   @Post(':id/payments')
-  // 200, not Nest's default 201 for POST: iKiotMS-BE answered 200 here and the frontend checks the status code.
+  // Trả 200 chứ không phải 201 mặc định của POST: bản cũ trả 200 và FE kiểm mã trạng thái.
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Thanh toán công nợ nhà cung cấp',

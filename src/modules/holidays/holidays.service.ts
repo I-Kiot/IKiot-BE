@@ -23,7 +23,7 @@ import {
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** The tenant's public-holiday calendar. Every row is `type: PUBLIC_HOLIDAY` with `branchId: null`, and `isManuallyEdited` is load-bearing: anything a human touches is stamped with it and the sync then leaves that row alone forever. */
+/** Lịch ngày lễ của tenant: mọi dòng là `PUBLIC_HOLIDAY` với `branchId: null`. `isManuallyEdited` quan trọng: dòng người dùng sửa được đánh dấu và sync bỏ qua vĩnh viễn. */
 @Injectable()
 export class HolidayService {
   constructor(private readonly prisma: PrismaService) {}
@@ -44,7 +44,6 @@ export class HolidayService {
     const [rows, total] = await Promise.all([
       this.prisma.holiday.findMany({
         where,
-        // Chronological, not newest-first: this is a calendar, and it is read in order.
         orderBy: { date: 'asc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -68,7 +67,6 @@ export class HolidayService {
           branchId: null,
           isActive: dto.isActive ?? true,
           source: HolidaySource.MANUAL,
-          // Hand-made from the start, so the sync never touches it.
           isManuallyEdited: true,
         },
       }),
@@ -97,7 +95,7 @@ export class HolidayService {
     );
   }
 
-  /** Switching a holiday off is its own route - see UpdateHolidayDto. */
+  /** Bật/tắt là route riêng (`ToggleHolidayStatusDto`), không nằm trong PATCH. */
   async updateStatus(
     tenantId: string,
     id: string,
@@ -110,7 +108,7 @@ export class HolidayService {
     });
   }
 
-  /** Hard delete, as the old service did: nothing holds a foreign key to a Holiday, so there is no trail to preserve and a row deleted by mistake comes back on the next sync. */
+  /** Xoá cứng như service cũ: không có foreign key nào trỏ tới Holiday, nên không cần giữ vết; xoá nhầm thì lần sync sau sẽ đưa lại. */
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
     return this.prisma.holiday.delete({ where: { id } });
@@ -128,7 +126,7 @@ export class HolidayService {
     return holiday;
   }
 
-  /** `@Matches` proves the shape; this proves the day exists (rejects `2026-02-31`). */
+  /** `@Matches` chỉ kiểm tra định dạng; hàm này kiểm tra ngày có thật không (chặn `2026-02-31`). */
   private assertRealDate(value: string): void {
     if (!isRealCalendarDate(value)) {
       throw new BadRequestException({
@@ -138,7 +136,7 @@ export class HolidayService {
     }
   }
 
-  /** Turns the P2002 from `@@unique([tenantId, date, branchId, type])` into the old service's message; the index only works because of the partial-index migration, since a NULL `branchId` would constrain nothing. */
+  /** Đổi P2002 của `@@unique([tenantId, date, branchId, type])` thành thông báo của service cũ. Index chỉ có tác dụng nhờ migration partial index, vì `branchId` NULL sẽ không ràng buộc gì. */
   private async guardDuplicate<T>(write: () => Promise<T>): Promise<T> {
     try {
       return await write();

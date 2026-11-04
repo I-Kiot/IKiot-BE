@@ -6,20 +6,18 @@ import {
 } from '../production-requests/production-list.service';
 import { STOCKED_LINE_TYPES } from '../../common/constants/order-status';
 
-/** What an order write looked like before it ran: the (location, SKU) pairs it was about to touch and how short each was. */
+/** Trạng thái trước khi ghi đơn: các cặp (kho, SKU) sắp bị chạm và mỗi cặp đang thiếu bao nhiêu. */
 export interface ShortageSnapshot {
   pairs: StockPair[];
   before: Map<string, number> | null;
 }
 
-/** A line as far as the shortage alert needs it. */
 interface PairLine {
   productItemId: string;
   sourceLocationId?: string | null;
   lineType?: string | null;
 }
 
-/** The (location, SKU) pairs of the lines that hold stock, once each. */
 export function stockPairsOf(lines: readonly PairLine[]): StockPair[] {
   const seen = new Map<string, StockPair>();
   for (const line of lines) {
@@ -34,12 +32,10 @@ export function stockPairsOf(lines: readonly PairLine[]): StockPair[] {
 }
 
 /**
- * The order side of the shortage alert (B-3, contract §3): a manual create, an edit of the lines or a
- * line made custom can tip a (location, SKU) row of the production list from enough to short, and the
- * people looking after that location are told once, when it tips - not on every order after. The
- * list and the message are `ProductionListService`'s; this only takes the "before" snapshot ahead of
- * the write and hands it back after the commit, re-reading the order's lines so a line that moved to
- * a custom SKU inside the transaction is compared too. A side-channel: it never fails the order.
+ * Phía đơn của cảnh báo thiếu hàng (B-3, contract §3): tạo đơn tay, sửa dòng hoặc làm dòng thành may đo có thể đẩy một dòng (kho, SKU)
+ * trên danh sách sản xuất từ đủ sang thiếu. Người phụ trách kho đó được báo đúng một lần lúc nó chuyển trạng thái, không báo cho mọi đơn sau đó.
+ * Danh sách và nội dung thông báo thuộc `ProductionListService`; file này chỉ chụp trạng thái "trước" trước khi ghi và trả lại sau khi commit,
+ * đọc lại dòng đơn để dòng vừa chuyển sang SKU custom trong transaction cũng được so sánh. Chỉ là kênh phụ: không bao giờ làm hỏng đơn.
  */
 @Injectable()
 export class OrderShortageAlerts {
@@ -67,7 +63,7 @@ export class OrderShortageAlerts {
     }
   }
 
-  /** After the commit: every pair the order touched, before or after, compared with the snapshot. */
+  /** Sau commit: so mọi cặp đơn đã chạm (trước và sau) với snapshot. */
   async notify(
     tenantId: string,
     orderId: string,

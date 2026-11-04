@@ -48,7 +48,6 @@ import {
   namedBranch,
 } from '../../common/dto/location-ref.dto';
 
-/** The one customer every tenant gets for free, for sales with nobody attached. */
 const WALK_IN_CUSTOMER_CODE = 'KH_VANGLAI';
 const WALK_IN_CUSTOMER_NAME = 'Khách vãng lai';
 
@@ -73,7 +72,7 @@ const ORDER_INCLUDE = {
 
 type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
 
-/** Real port of OrderService. Selling moves money and stock at once, so every method here works out the numbers, writes them in one transaction, and only then tells a human. The total is computed, never accepted - the old API stored the client's `grandTotal` - and so is the discount: the client names its promotions and `OrderPricingService.priceOrder` runs them through the same engine `/promotions/calculate` uses. */
+/** Bản port của OrderService. Bán hàng đổi tiền và tồn kho ngay, nên mỗi hàm tính số, ghi trong một transaction rồi mới báo người. Tổng tiền do server tính, không nhận từ client; giảm giá cũng vậy: client chỉ nêu khuyến mãi, `OrderPricingService.priceOrder` chạy qua cùng engine của `/promotions/calculate`. */
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
@@ -88,16 +87,14 @@ export class OrderService {
     private readonly invoices: InvoiceService,
   ) {}
 
-  // ─── Create ────────────────────────────────────────────────────────────────
-
-  /** A till sale (`POST /orders/pos`): paid and deducted on the spot, outside the order journey. The journey's own manual create is `ManualOrderService.create` (`POST /orders`). */
+  /** Bán tại quầy (`POST /orders/pos`): thu và trừ kho ngay, nằm ngoài hành trình đơn. Tạo đơn tay của hành trình là `ManualOrderService.create` (`POST /orders`). */
   async createPosSale(
     user: AuthUser,
     tenantId: string,
     dto: CreatePosOrderDto,
   ) {
     const userId = user.userId;
-    // Writing a sale is scoped exactly like reading one: `create` never received the caller, so a cashier could book an order against another branch - drawing down that branch's stock and ledger, and unable to see the row afterwards to undo it.
+    // Ghi đơn phải có phạm vi giống lúc đọc: trước đây `create` không nhận người gọi nên thu ngân có thể lên đơn cho chi nhánh khác, trừ tồn và sổ của chi nhánh đó, rồi không thấy đơn để hoàn tác.
     const scope = this.branchScope(user);
     if (scope.branchId !== undefined && dto.branchId !== scope.branchId) {
       throw new ForbiddenException({
@@ -131,16 +128,16 @@ export class OrderService {
       discountValue,
     );
 
-    // A COMBO in the basket is priced as a set but holds no stock of its own: it is opened into the goods it finally contains (nested combos flattened), and those children are what leave the shelf below. Done before the transaction, as on the journey's create - expanding reads the catalogue.
+    // Combo trong giỏ tính giá như một bộ nhưng không có tồn riêng: được mở thành các dòng thực tế (lá đã phẳng hoá), và chính các lá này rời kho bên dưới. Làm trước transaction vì mở combo cần đọc danh mục.
     const components = await expandCombos(this.prisma, tenantId, lines);
-    // The till deducts at its own branch on the spot and has never stored a ship-from location or a VAT rate on its lines; both are left unset so a combo does not change how the other lines of a till sale are stored or invoiced.
+    // Quầy trừ kho ngay tại chi nhánh và chưa bao giờ lưu kho xuất hay thuế VAT trên dòng; hai trường này để trống để combo không làm đổi cách lưu hay xuất hóa đơn các dòng khác của đơn quầy.
     const itemRows = buildOrderItemRows(
       lines.map((line) => ({ ...line, sourceLocationId: null })),
       components,
       (line) => this.pricing.lineTotalOf(line),
     ).map((row) => ({ ...row, vatRate: undefined }));
 
-    // Cash tendered has to at least cover the bill - the difference between "change" and a silent shortfall booked as revenue.
+    // Tiền khách đưa phải ít nhất đủ trả hóa đơn, để chênh lệch là "tiền thừa" chứ không phải thiếu âm thầm bị ghi thành doanh thu.
     if (dto.customerPay !== undefined && dto.customerPay < grandTotal) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_CUSTOMER_PAY_TOO_LOW,
@@ -158,7 +155,7 @@ export class OrderService {
     const paymentReference = this.sepay.generateOrderReference();
 
     const { order, crossings } = await this.prisma.$transaction(async (tx) => {
-      // Resolved inside the transaction: a walk-in row created for an order that then fails would otherwise be left behind.
+      // Tìm khách vãng lai trong transaction: nếu tạo ngoài thì khi đơn lỗi, dòng khách đó sẽ còn lại.
       const customerId =
         dto.customerId ?? (await this.resolveWalkInCustomer(tx, tenantId));
 
@@ -168,7 +165,7 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
-          // A till sale is confirmed and handled by whoever rings it up - the orders_assignee_required CHECK needs a person in charge on every non-draft order. The journey's manual orders name theirs explicitly (`ManualOrderService`).
+          // Đơn quầy được xác nhận và xử lý bởi người lên đơn; ràng buộc `orders_assignee_required` yêu cầu mọi đơn không phải nháp có người phụ trách. Đơn tay của hành trình chỉ định người phụ trách rõ ràng (`ManualOrderService`).
           assigneeId: userId,
           confirmedById: userId,
           confirmedAt: new Date(),
@@ -178,7 +175,7 @@ export class OrderService {
             status === OrderStatus.COMPLETED
               ? OrderPaymentStatus.PAID
               : OrderPaymentStatus.UNPAID,
-          // The till's reference doubles as its order code, so a receipt and a bank transfer name the sale the same way.
+          // Mã tham chiếu của quầy đồng thời là mã đơn, để hóa đơn và chuyển khoản gọi tên đơn giống nhau.
           code: paymentReference,
           paymentMethod: dto.paymentMethod,
           paymentReference,
@@ -188,22 +185,22 @@ export class OrderService {
           note: dto.note,
           discountType,
           discountValue,
-          // One statement for every line, so a combo's children can name a parent inserted alongside them.
+          // Một câu INSERT cho mọi dòng để con của combo tham chiếu được cha được chèn cùng lúc.
           items: { createMany: { data: itemRows } },
           appliedPromotions: { create: appliedPromotions },
         },
         include: ORDER_INCLUDE,
       });
 
-      // Selling takes stock off the shelf, so it watches the low-stock threshold exactly like a transfer does, and `deductStock` is also what enforces "is there enough" without a check-then-decrement race.
+      // Bán làm giảm tồn nên theo dõi ngưỡng tồn thấp giống như chuyển kho; `deductStock` cũng là chỗ kiểm "đủ hàng không" mà không có race giữa kiểm tra và trừ.
       const lowStock: (Inventory | null)[] = [];
-      // Only lines that hold goods leave the shelf: a COMBO parent is a price and a SERVICE has nothing to take, so the children of a combo are deducted and their parent is not. Each ledger row names its own order line (not a SKU: one SKU can now sit on a standalone line and under a combo at once), so the line's cost of goods sold is known.
+      // Chỉ dòng có hàng mới rời kệ: dòng COMBO cha chỉ là giá, SERVICE không có gì để lấy, nên các con của combo bị trừ còn cha thì không. Mỗi dòng sổ ghi tên dòng đơn của nó (không phải SKU: một SKU giờ có thể vừa nằm dòng riêng vừa nằm trong combo), để biết giá vốn của dòng.
       for (const item of created.items) {
         if (!STOCKED_LINE_TYPES.includes(item.lineType)) continue;
         const after = await this.inventory.deductStock(tx, {
           tenantId,
           productItemId: item.productItemId,
-          locationId: dto.branchId, // a Branch's id is its Location's id
+          locationId: dto.branchId, // id Branch cũng là id Location
           quantity: item.quantity,
           label: item.sku ?? item.productItemId,
           ledger: {
@@ -221,7 +218,7 @@ export class OrderService {
         await this.writeSaleCashFlows(tx, created, dto.paymentMethod, userId);
       }
 
-      // A till sale has its invoice from the start: issued on the spot when it is already paid, PENDING while a SePay transfer is awaited (the webhook issues it).
+      // Đơn quầy có hóa đơn ngay từ đầu: phát hành luôn nếu đã trả, PENDING trong khi chờ chuyển khoản SePay (webhook sẽ phát hành).
       await this.invoices.ensurePending(tx, created.id);
       if (status === OrderStatus.COMPLETED) {
         await this.invoices.issueForOrder(tx, created.id, userId);
@@ -241,14 +238,12 @@ export class OrderService {
     };
   }
 
-  // ─── Reads ─────────────────────────────────────────────────────────────────
-
   async findAll(user: AuthUser, tenantId: string, query: QueryOrderDto) {
     const scope = this.branchScope(user);
     const where: Prisma.OrderWhereInput = { tenantId, ...scope };
     if (query.status) where.status = query.status;
     if (query.paymentMethod) where.paymentMethod = query.paymentMethod;
-    // Narrows, never replaces - `findOne` already refused a foreign branch, so the list endpoint being redirected by a query string was the outlier.
+    // Chỉ thu hẹp, không thay thế: `findOne` đã từ chối chi nhánh lạ, nên việc danh sách bị đổi phạm vi qua query string mới là chỗ bất thường.
     const branchId = narrowToScope(
       scope.branchId,
       query.branchId,
@@ -256,7 +251,7 @@ export class OrderService {
     );
     if (branchId) where.branchId = branchId;
 
-    // A named customer wins over a free-text search, as in the old service: asking for both means the id is the specific thing.
+    // Lọc theo khách có tên thắng tìm tự do, như service cũ: gửi cả hai thì mã khách là điều cụ thể hơn.
     if (query.customerId) {
       where.customerId = query.customerId;
     } else if (query.search) {
@@ -298,12 +293,12 @@ export class OrderService {
     return this.toResponse(await this.findRow(user, tenantId, id));
   }
 
-  /** Which branches this account may see sales from: its own by default, everything with `orders:view_all`. iKiotMS-BE didn't scope this at all, and the permission has sat in the catalog unused - the same shape `stock-movements` already uses. */
-  /** Which branch's orders this account may read or write: its own, or every one with `orders:view_all`. Shared with `ManualOrderService`, so both creates refuse another branch by the same rule. */
+  /** Tài khoản này xem được đơn của chi nhánh nào: mặc định của mình, có `orders:view_all` thì mọi chi nhánh. iKiotMS-BE cũ không phân phạm vi này, quyền nằm trong danh mục mà không dùng; cách làm giống `stock-movements`. */
+  /** Tài khoản này đọc/ghi được đơn của chi nhánh nào: của mình, hoặc mọi chi nhánh với `orders:view_all`. Dùng chung với `ManualOrderService` để hai bên tạo đơn từ chối chi nhánh khác theo cùng quy tắc. */
   branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
     if (!user.branchId) {
-      // Not posted anywhere, and no view_all: no branch's sales are theirs to read.
+      // Không gắn chi nhánh nào và không có view_all: không đọc được đơn của chi nhánh nào.
       throw new ForbiddenException({
         code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
         message: 'This account has not been assigned to a branch',
@@ -312,9 +307,7 @@ export class OrderService {
     return { branchId: user.branchId };
   }
 
-  // ─── Status ────────────────────────────────────────────────────────────────
-
-  /** Moves an order along its lifecycle, putting stock and money where the new state says they should be. The status write is conditional on the status we read, so two tills pressing the button at once can't both apply their side effects. */
+  /** Chuyển đơn sang trạng thái mới, đưa tồn kho và tiền về đúng theo trạng thái đó. Lệnh ghi có điều kiện theo status đã đọc, nên hai quầy bấm cùng lúc không thể cùng áp dụng hiệu ứng phụ. */
   async updateStatus(
     user: AuthUser,
     tenantId: string,
@@ -323,7 +316,7 @@ export class OrderService {
   ) {
     const order = await this.findRow(user, tenantId, id);
 
-    // The till's state machine only: an order-journey order moving to RETURNED here would put every line back at the branch and skip `order-returns` entirely. Journey orders move through their own routes (`assertTransition`).
+    // Chỉ máy trạng thái của quầy: đơn hành trình chuyển sang RETURNED ở đây sẽ trả mọi dòng về chi nhánh và bỏ qua `order-returns` hoàn toàn. Đơn hành trình chuyển qua route riêng (`assertTransition`).
     const allowed =
       order.fulfillmentType === FulfillmentType.TAKEAWAY
         ? (VALID_ORDER_TRANSITIONS[order.status] ?? [])
@@ -354,20 +347,20 @@ export class OrderService {
         });
       }
 
-      // No low-stock watch here on purpose: cancelling and returning only put stock back, and a rising level can't cross the threshold downwards.
+      // Cố ý không theo dõi tồn thấp ở đây: hủy và trả chỉ làm tồn tăng, mà tồn tăng thì không thể rơi xuống dưới ngưỡng.
       if (
         newStatus === OrderStatus.CANCELLED ||
         newStatus === OrderStatus.RETURNED
       ) {
-        // Back into the lots the sale drew from. A sale rung up before lots existed (2026-10-02) has no ledger rows to follow and comes back as an OPENING lot.
-        // Only lines that took goods put goods back. A COMBO parent never drew anything, so without this filter `ifNeverDrawn` would open a lot for the combo's own SKU - stock for a variant that is not allowed to have any.
+        // Trả về đúng các lô mà đơn đã lấy. Đơn lên trước khi có lô (2026-10-02) không có dòng sổ để theo, nên trả về thành lô OPENING.
+        // Chỉ dòng đã lấy hàng mới được trả hàng. Combo cha chưa bao giờ lấy gì; nếu không lọc, `ifNeverDrawn` sẽ mở một lô cho SKU của combo, tức tồn cho một biến thể không được phép có tồn.
         for (const line of order.items.filter((item) =>
           STOCKED_LINE_TYPES.includes(item.lineType),
         )) {
           await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            toLocationId: order.branchId, // a Branch's id is its Location's id
+            toLocationId: order.branchId, // id Branch cũng là id Location
             quantity: Number(line.quantity),
             drawnBy: { orderItemId: line.id },
             ledger: {
@@ -411,7 +404,7 @@ export class OrderService {
         await tx.cashFlow.create({
           data: {
             tenantId,
-            // The order's branch id is its Location id - what the ledger books against.
+            // Id chi nhánh của đơn cũng là id Location, là nơi sổ ghi nhận.
             locationId: order.branchId,
             orderId: order.id,
             createdById: order.userId,
@@ -433,7 +426,7 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  /** Settles a SePay order paid another way, conditional on it still being PENDING and still SEPAY so it can't race the webhook into charging twice. */
+  /** Chốt đơn SePay đã trả bằng cách khác. Có điều kiện: đơn vẫn PENDING và vẫn SEPAY, để không chạy đua với webhook làm thu hai lần. */
   async payOffline(
     user: AuthUser,
     tenantId: string,
@@ -498,7 +491,7 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  /** The SePay webhook's side of a transfer landing. Returns `null` rather than throwing when there is nothing to settle, so the controller can answer 200 and stop the retries; an already-settled order is logged loudly, because somebody has to refund by hand. */
+  /** Phần webhook SePay xử lý khi tiền về. Trả `null` thay vì ném lỗi khi không có gì để chốt, để controller trả 200 và SePay thôi retry; đơn đã chốt rồi thì ghi log to vì phải có người hoàn tiền bằng tay. */
   async completeSepayOrder(
     tenantId: string,
     paymentReference: string,
@@ -562,7 +555,7 @@ export class OrderService {
           amount: transferAmount,
           paymentMethod: PaymentMethod.SEPAY,
           paymentReference: settled.paymentReference,
-          // Stored on both rows, as iKiotMS-BE did: the order answers "was this paid", the cash flow is what a reconciliation against the bank statement reads.
+          // Lưu ở cả hai dòng như iKiotMS-BE cũ: đơn trả lời "đã trả chưa", còn dòng dòng tiền là thứ đối soát với sao kê ngân hàng đọc.
           sepayTransactionId,
           description: `SePay - ${settled.paymentReference}`,
         },
@@ -575,7 +568,7 @@ export class OrderService {
 
     this.announcePaid(updated, transferAmount, PaymentMethod.SEPAY);
 
-    // Worth a real notification, unlike the rest of the order flow: the confirmation arrives minutes later, when the cashier is no longer watching that screen.
+    // Đáng gửi thông báo thật, khác các bước còn lại của hành trình: xác nhận đến sau vài phút, lúc thu ngân không còn nhìn màn hình đó nữa.
     const managers = await this.notifications.managersOfLocation({
       tenantId: updated.tenantId,
       locationId: updated.branchId,
@@ -593,8 +586,6 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
-
   async assertCustomerExists(tenantId: string, customerId: string) {
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, tenantId, isDeleted: false },
@@ -607,7 +598,7 @@ export class OrderService {
       });
   }
 
-  /** A sale with nobody attached still needs a customer row, so each tenant gets one walk-in record created on first use - an `upsert`, since two anonymous sales at once would both find nothing and both insert. */
+  /** Đơn không gắn khách vẫn cần một dòng khách, nên mỗi tenant có một khách vãng lai, tạo ở lần dùng đầu. Dùng `upsert` vì hai đơn ẩn danh cùng lúc sẽ cùng không thấy gì và cùng insert. */
   async resolveWalkInCustomer(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -632,7 +623,7 @@ export class OrderService {
     return customer.id;
   }
 
-  /** The money rows for a completed sale. A cash sale with change is two rows, since the drawer really took the full note and handed some back; only the income row carries `orderId`, so `@@unique([orderId, flowType])` still holds when a RETURN writes its own EXPENSE row. */
+  /** Các dòng tiền của đơn hoàn tất. Bán tiền mặt có thối là hai dòng, vì ngăn kéo thật sự nhận đủ tờ tiền rồi trả lại một phần; chỉ dòng thu có `orderId`, để `@@unique([orderId, flowType])` vẫn đúng khi RETURN ghi dòng EXPENSE riêng. */
   private async writeSaleCashFlows(
     tx: Prisma.TransactionClient,
     order: {
@@ -645,7 +636,7 @@ export class OrderService {
       paymentReference: string | null;
     },
     paymentMethod: string | null,
-    // Null for an order synced from a sales channel - nobody at the till created it.
+    // Null với đơn đồng bộ từ kênh bán hàng, vì không ai ở quầy tạo nó.
     createdById: string | null,
   ) {
     const change = Number(order.change ?? 0);
@@ -684,7 +675,7 @@ export class OrderService {
     }
   }
 
-  /** Tells the shop floor an order just got paid. The old `order:<id>` room is gone - the gateway only puts sockets in rooms the server chose - so this goes to the tenant room with the order id in the payload. */
+  /** Báo cho màn hình cửa hàng biết đơn vừa được thanh toán. Room `order:<id>` cũ đã bỏ vì gateway chỉ đưa socket vào room do server chọn, nên gửi vào room tenant với mã đơn trong payload. */
   private announcePaid(
     order: { id: string; tenantId: string; status: string },
     paidAmount: number,
@@ -698,7 +689,7 @@ export class OrderService {
     });
   }
 
-  /** One order, and the check that this account may touch it - read or write. The branch check used to live in `findOne` alone, so an account could RETURN an order it wasn't allowed to see, crediting that branch's stock back and posting a refund to its ledger. */
+  /** Lấy một đơn và kiểm tra tài khoản này được đọc hay ghi nó không. Kiểm tra chi nhánh từng chỉ nằm trong `findOne`, nên một tài khoản có thể RETURN đơn mình không được xem, trả tồn về chi nhánh đó và ghi hoàn tiền vào sổ của nó. */
   private async findRow(
     user: AuthUser,
     tenantId: string,
@@ -724,7 +715,7 @@ export class OrderService {
     return order;
   }
 
-  /** Decimals become numbers - the till does arithmetic on them. */
+  /** Chuyển Decimal thành number vì quầy tính toán trên chúng. */
   private toResponse(order: OrderRow) {
     const { grandTotal, customerPay, change, discountValue, items, ...rest } =
       order;

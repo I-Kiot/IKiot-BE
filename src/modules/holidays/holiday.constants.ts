@@ -1,4 +1,4 @@
-/** Where a holiday row came from. Persisted values - add, never rename. */
+/** Nguồn gốc dòng ngày lễ. Giá trị đã lưu trong DB: chỉ thêm, không đổi tên. */
 export const HolidaySource = {
   GOOGLE_CALENDAR: 'GOOGLE_CALENDAR',
   MANUAL: 'MANUAL',
@@ -6,18 +6,17 @@ export const HolidaySource = {
 
 export const HOLIDAY_SOURCES = Object.values(HolidaySource);
 
-/** `PUBLIC_HOLIDAY` is the only type these routes touch; `COMPANY_HOLIDAY` exists in the schema for a per-branch closure feature that was never built. */
+/** Các route này chỉ đụng `PUBLIC_HOLIDAY`; `COMPANY_HOLIDAY` có trong schema cho tính năng nghỉ theo chi nhánh chưa từng được làm. */
 export const HolidayType = {
   PUBLIC_HOLIDAY: 'PUBLIC_HOLIDAY',
   COMPANY_HOLIDAY: 'COMPANY_HOLIDAY',
 } as const;
 
-/** A `YYYY-MM-DD` string as the UTC midnight a Postgres `date` column wants - the unique index, the sync's existence check and the year filter all have to agree on what midnight means. */
+/** `YYYY-MM-DD` thành nửa đêm UTC như cột `date` Postgres. Unique index, kiểm tra tồn tại khi sync và bộ lọc năm phải thống nhất cùng một nửa đêm. */
 export function holidayDate(text: string): Date {
   return new Date(`${text}T00:00:00.000Z`);
 }
 
-/** The half-open UTC range covering one calendar year, for the `year` filter. */
 export function yearRange(year: number): { gte: Date; lt: Date } {
   return {
     gte: new Date(Date.UTC(year, 0, 1)),

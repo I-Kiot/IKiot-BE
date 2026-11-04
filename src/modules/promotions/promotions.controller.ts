@@ -24,7 +24,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of PromotionController - the same nine routes and permissions. `/candidates`, `/calculate` and `/apply` are POSTs because they carry a cart; only `/apply` writes. */
+/** Port từ PromotionController - cùng chín route và permission. `/candidates`, `/calculate`, `/apply` dùng POST vì mang theo giỏ hàng; chỉ `/apply` ghi dữ liệu. */
 @ApiTags('promotions')
 @ApiBearerAuth('bearer')
 @Controller('promotions')
@@ -43,9 +43,9 @@ export class PromotionController {
     return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  // The three cart endpoints are declared above `:id`: being POST they cannot actually collide with it, but keeping them together reads better.
+  // Ba route giỏ hàng khai báo trên `:id`: là POST nên không thể thực sự trùng với `:id`, nhưng gom lại cho dễ đọc.
 
-  /** Browse: every candidate for this cart, eligible or not, with the reason. */
+  /** Liệt kê mọi ứng viên cho giỏ này, đủ hoặc không đủ điều kiện, kèm lý do. */
   @Permissions('promotions', 'calculate')
   @HttpCode(HttpStatus.OK)
   @Post('candidates')
@@ -53,7 +53,7 @@ export class PromotionController {
     return this.service.listCandidates(requireTenantId(user), dto);
   }
 
-  /** Preview only - nothing is written. */
+  /** Chỉ xem trước, không ghi gì. */
   @Permissions('promotions', 'calculate')
   @HttpCode(HttpStatus.OK)
   @Post('calculate')
@@ -61,7 +61,7 @@ export class PromotionController {
     return this.service.calculate(requireTenantId(user), dto);
   }
 
-  /** Commits the discount against an order: usage counts move, logs are written. */
+  /** Ghi nhận mức giảm vào đơn: số lần dùng tăng và log được ghi. */
   @Permissions('promotions', 'apply')
   @HttpCode(HttpStatus.OK)
   @Post('apply')
@@ -78,7 +78,6 @@ export class PromotionController {
     return this.service.findOne(user, requireTenantId(user), id);
   }
 
-  /** Where this promotion has actually been used, and for how much. */
   @Permissions('promotions', 'read')
   @Get(':id/logs')
   findLogs(
@@ -99,7 +98,7 @@ export class PromotionController {
     return this.service.update(user, requireTenantId(user), id, dto);
   }
 
-  /** Soft delete - sets status to INACTIVE. See PromotionService.deactivate. */
+  /** Xoá mềm: chuyển status sang INACTIVE. Xem PromotionService.deactivate. */
   @Permissions('promotions', 'delete')
   @Delete(':id')
   deactivate(

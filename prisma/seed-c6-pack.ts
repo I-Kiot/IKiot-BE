@@ -120,7 +120,7 @@ async function main() {
   const missing = skus.filter((s) => !bySku.has(s));
   if (missing.length) throw new Error(`Không tìm thấy SKU: ${missing.join(', ')}`);
 
-  // 1. Tồn kho ở kho tổng - chỉ khi SKU chưa có dòng tồn ở đó.
+  // Tồn kho ở kho riêng C-6 - chỉ nhập khi SKU chưa có dòng tồn ở đó.
   for (const [sku, quantity] of Object.entries(STOCK)) {
     const item = bySku.get(sku)!;
     const existing = await prisma.inventory.findFirst({
@@ -149,7 +149,6 @@ async function main() {
     console.log(`Tồn ${sku}: nhập ${quantity} vào ${warehouse.name}.`);
   }
 
-  // 2. Sofa giao thành 2 kiện.
   const sofa = bySku.get(TWO_PACKAGE_SKU)!;
   if ((await prisma.productPackage.count({ where: { productItemId: sofa.id } })) === 0) {
     await prisma.productPackage.createMany({
@@ -161,7 +160,6 @@ async function main() {
     console.log(`${TWO_PACKAGE_SKU}: khai báo 2 kiện.`);
   }
 
-  // 3. Khách và các đơn CONFIRMED.
   const customer =
     (await prisma.customer.findFirst({ where: { tenantId, name: CUSTOMER_NAME } })) ??
     (await prisma.customer.create({ data: { tenantId, name: CUSTOMER_NAME } }));

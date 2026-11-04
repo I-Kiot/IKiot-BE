@@ -35,10 +35,7 @@ type NotifyArgs = {
 };
 
 /**
- * Cảnh báo thiếu hàng phía đơn (B-3, OrderShortageAlerts) trên Postgres thật (docker compose up -d):
- * tạo đơn / sửa dòng / làm dòng custom làm một dòng của danh sách cần sản xuất chuyển từ đủ sang
- * thiếu thì báo người quản lý nơi xuất – một lần, lúc chuyển; dòng vốn đã thiếu thì không báo lại;
- * và cảnh báo hỏng không làm hỏng đơn. Tự tạo tenant riêng và dọn sạch.
+ * Cảnh báo thiếu hàng phía đơn (B-3) trên Postgres thật: tạo đơn, sửa dòng, làm dòng custom khiến một dòng danh sách cần sản xuất từ đủ chuyển sang thiếu thì báo người quản lý nơi xuất, một lần lúc chuyển; dòng vốn đã thiếu không báo lại. Cảnh báo hỏng không làm hỏng đơn. Tự tạo tenant riêng và dọn sạch.
  */
 describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   let prisma: PrismaService;
@@ -79,7 +76,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
       })
     ).id;
 
-  /** The shortage alerts sent since the last reset, as (SKU, recipients). */
+  /** Các cảnh báo thiếu hàng đã gửi từ lần reset gần nhất, dạng (SKU, người nhận). */
   const shortageAlerts = () =>
     notify.mock.calls
       .map(([args]) => args)
@@ -176,7 +173,6 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
     await prisma.customer.create({
       data: { id: customerId, tenantId, name: 'Khách' },
     });
-    // Sofa: 3 on the shelf. Table: none.
     await prisma.$transaction((tx) =>
       inventory.openLot(tx, {
         tenantId,
@@ -222,7 +218,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
     await prisma.$disconnect();
   });
 
-  // Order matters: each test leaves demand on the list for the next.
+  // Thứ tự quan trọng: mỗi test để lại nhu cầu trên danh sách cho test sau.
 
   it('says nothing while the shelf covers the order', async () => {
     await createOrder({ items: [{ productItemId: sofaId, quantity: 2 }] });
@@ -248,11 +244,11 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
     const id = await createOrder({
       items: [{ productItemId: tableId, quantity: 1 }],
     });
-    // Table: no stock at all, so the create itself tipped it.
+    // Bàn chưa có tồn nên chính lúc tạo đơn đã làm nó thiếu.
     expect(shortageAlerts().map((a) => a.referenceId)).toEqual([tableId]);
     notify.mockReset();
 
-    // Back to sofa only: no new shortage (sofa was short already).
+    // Bàn đã thiếu sẵn: đổi số lượng không tạo cảnh báo mới.
     const line = await prisma.orderItem.findFirstOrThrow({
       where: { orderId: id },
     });
@@ -263,7 +259,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   });
 
   it('fires for a line made to measure, which moves to a SKU with no stock', async () => {
-    // A fresh SKU: the create tips it short; making the line custom moves the demand to a new SKU, short in turn.
+    // SKU mới: lúc tạo đơn đã thiếu; làm dòng thành custom chuyển nhu cầu sang SKU mới, và SKU đó cũng thiếu.
     const benchId = randomUUID();
     await prisma.productItem.create({
       data: {

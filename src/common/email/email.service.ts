@@ -15,7 +15,7 @@ interface AnnouncementData {
   category: string;
 }
 
-// Ported from iKiotMS-BE's emailService.js; both senders keep the original HTML and swallow their own failures.
+// Port từ emailService.js của iKiotMS-BE; cả hai hàm gửi giữ nguyên HTML gốc và tự nuốt lỗi của mình.
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -76,7 +76,7 @@ export class EmailService {
         `,
       });
     } catch (error) {
-      // A reminder email failing must never break the cron run for the other tenants.
+      // Email nhắc gia hạn lỗi không được làm hỏng lượt cron của các tenant khác.
       this.logger.error(
         `Failed to send subscription reminder to ${to}`,
         error instanceof Error ? error.stack : error,
@@ -84,7 +84,7 @@ export class EmailService {
     }
   }
 
-  /** One operator-composed announcement to one shop owner; `category` is free text that lands in the subject line. */
+  /** Một thông báo do vận hành soạn, gửi cho một chủ shop; `category` là chữ tự do và nằm trong tiêu đề email. */
   async sendSystemNotificationEmail(
     to: string,
     data: AnnouncementData,
@@ -118,7 +118,7 @@ export class EmailService {
         `,
       });
     } catch (error) {
-      // One bad address must not stop the batch - the caller doesn't await, so a rejection would go unhandled.
+      // Một địa chỉ lỗi không được dừng cả đợt - người gọi không await, nên lỗi sẽ không được xử lý.
       this.logger.error(
         `Failed to send announcement email to ${to}`,
         error instanceof Error ? error.stack : error,

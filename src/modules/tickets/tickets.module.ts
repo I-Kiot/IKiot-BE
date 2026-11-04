@@ -4,7 +4,7 @@ import { AdminTicketController } from './admin-tickets.controller';
 import { TicketService } from './tickets.service';
 import { NotificationModule } from '../notifications/notifications.module';
 
-// NotificationModule for both directions of a support thread: notifySystem() tells the operators a ticket was opened, notify()/tenantOwners() tells the shop it was answered.
+// NotificationModule cho cả hai chiều của thread: notifySystem() báo operator khi có ticket mới, notify()/tenantOwners() báo shop khi được trả lời.
 @Module({
   imports: [NotificationModule],
   controllers: [TicketController, AdminTicketController],

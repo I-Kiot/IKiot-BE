@@ -21,7 +21,7 @@ import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// No class-level prefix: routes mix /subscription/* with a standalone /webhook/sepay path, as the old router did. Buying, upgrading and renewing spend the tenant's money, so they need `subscriptions:manage` - until 2026-08-20 they carried no @Permissions at all, leaving any staff account able to start a paid upgrade.
+// Không có prefix ở cấp class: route trộn `/subscription/*` với `/webhook/sepay`, như router cũ. Mua, nâng cấp, gia hạn tiêu tiền của tenant nên cần `subscriptions:manage`; trước 2026-08-20 các route này không có @Permissions nên mọi nhân viên đều bắt đầu nâng cấp trả phí được.
 @ApiTags('subscriptions')
 @Controller()
 export class SubscriptionController {
@@ -48,7 +48,7 @@ export class SubscriptionController {
     return this.subscriptionService.checkTrialStatus(requireTenantId(user));
   }
 
-  /** The current plan itself, for the billing screen. `status` above answers "is it live and for how long"; this answers "which plan, on what terms". */
+  /** Gói hiện tại, cho màn billing. `status` trả lời "còn hiệu lực và còn bao lâu"; route này trả lời "gói nào, với điều khoản gì". */
   @ApiBearerAuth('bearer')
   @Permissions('subscriptions', 'read')
   @Get('subscription/current')
@@ -106,7 +106,7 @@ export class SubscriptionController {
     return { message: `Successfully upgraded to ${dto.planCode}`, data };
   }
 
-  // Called by SePay when money arrives in iKiot's own account. Answers 200 for every outcome so SePay never retries on our bugs, except a bad API key, where the service throws a 401.
+  // SePay gọi khi tiền về tài khoản của iKiot. Luôn trả 200 để SePay không retry vào lỗi của ta, trừ API key sai: service ném 401.
   @RawResponse()
   @Public()
   @HttpCode(HttpStatus.OK)

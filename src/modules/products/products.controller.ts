@@ -30,7 +30,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of ProductController. Every route here is newly permission-gated - the old module registered all eleven on bare `verifyJwt`, so any logged-in account, a CUSTOMER included, could edit the whole catalogue. Two paths drop their `/delete` suffix, which nothing else used. */
+/** Port của ProductController. Mọi route có permission riêng: module cũ chỉ kiểm JWT nên mọi tài khoản (cả CUSTOMER) đều sửa được danh mục. Hai đường bỏ hậu tố `/delete`. */
 @ApiTags('products')
 @ApiBearerAuth('bearer')
 @Controller('products')
@@ -49,7 +49,7 @@ export class ProductController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  // `items` and `search` must stay above `:id` or the router matches them as a product id and every call 404s.
+  // `items` và `search` phải nằm trên `:id`, nếu không router coi chúng là product id và mọi lần gọi 404.
   @Permissions('products', 'read')
   @Get('items')
   listItems(
@@ -85,7 +85,7 @@ export class ProductController {
     return this.service.update(requireTenantId(user), id, dto);
   }
 
-  /** Thêm một thuộc tính cho sản phẩm (nút "Thêm thuộc tính" ở màn chỉnh sửa theo đơn và YCSX). Trùng tên thì trả thuộc tính đã có. */
+  /** Thêm thuộc tính cho sản phẩm (nút "Thêm thuộc tính" ở màn đơn và YCSX). Trùng tên thì trả thuộc tính có sẵn. */
   @Permissions('products', 'update')
   @Post(':id/attributes')
   addAttribute(
@@ -96,7 +96,6 @@ export class ProductController {
     return this.service.addAttribute(requireTenantId(user), id, dto);
   }
 
-  /** Soft delete - sets status to DISCONTINUED. See ProductService.discontinue. */
   @Permissions('products', 'delete')
   @Delete(':id')
   discontinue(
@@ -106,9 +105,7 @@ export class ProductController {
     return this.service.discontinue(requireTenantId(user), id);
   }
 
-  // ─── Variants ──────────────────────────────────────────────────────────────
-
-  // These are three segments deep, so they can't collide with the two-segment `/products/:id` whatever the declaration order - only `GET items` and `GET search` needed hoisting.
+  // Route ba đoạn nên không đụng `/products/:id`; chỉ `GET items` và `GET search` cần đặt trên.
   @Permissions('products', 'update')
   @Patch('items/:itemId')
   updateItem(

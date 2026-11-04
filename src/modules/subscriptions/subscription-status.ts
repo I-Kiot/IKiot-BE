@@ -1,6 +1,5 @@
 import { addDays, GRACE_PERIOD_DAYS } from './subscription.constants';
 
-/** The lifecycle a Subscription.status moves through. */
 export const SubscriptionStatus = {
   TRIAL: 'TRIAL',
   ACTIVE: 'ACTIVE',
@@ -12,14 +11,13 @@ export const SubscriptionStatus = {
 export type SubscriptionStatus =
   (typeof SubscriptionStatus)[keyof typeof SubscriptionStatus];
 
-/** Only the three fields the transition rules look at. */
 export interface SubscriptionTerm {
   status: string;
   endDate: Date;
   trialEndDate: Date | null;
 }
 
-/** THE expiry rules, the single copy in the codebase: the status a subscription should be in at `now`. Applied lazily by `settleSubscription()` on every read and nightly by the cron. The two used to carry hand-written copies and had already drifted - never re-implement this at a call site. */
+/** Quy tắc hết hạn DUY NHẤT trong codebase: trạng thái gói phải có tại `now`. Áp dụng lười bởi `settleSubscription()` mỗi lần đọc, và cron chạy hằng đêm. Hai bản viết tay trước đây đã lệch nhau: không viết lại ở chỗ gọi. */
 export function nextSubscriptionStatus(
   subscription: SubscriptionTerm,
   now: Date,
@@ -34,15 +32,15 @@ export function nextSubscriptionStatus(
     subscription.status !== SubscriptionStatus.ACTIVE &&
     subscription.status !== SubscriptionStatus.PAST_DUE
   ) {
-    // EXPIRED and CANCELLED are terminal - only a payment moves them, not the clock.
+    // EXPIRED và CANCELLED là trạng thái cuối: chỉ thanh toán mới đổi được, đồng hồ thì không.
     return subscription.status;
   }
 
-  // Past the grace period that follows the paid term: no longer recoverable.
+  // Đã qua thời gian ân hạn sau kỳ trả phí: không còn khôi phục được.
   if (subscription.endDate < addDays(now, -GRACE_PERIOD_DAYS)) {
     return SubscriptionStatus.EXPIRED;
   }
-  // Term is over but still inside the grace period: keep serving the tenant.
+  // Hết kỳ nhưng còn trong thời gian ân hạn: vẫn phục vụ shop.
   if (now > subscription.endDate) return SubscriptionStatus.PAST_DUE;
 
   return subscription.status;

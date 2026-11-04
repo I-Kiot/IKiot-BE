@@ -12,7 +12,7 @@ import { LocationType, isReturnDirection } from '../constants/location-type';
 const BRANCH = '11111111-1111-4111-8111-111111111111';
 const WAREHOUSE = '22222222-2222-4222-8222-222222222222';
 
-// Guards that the branch/warehouse pair other modules still reason in and the DB's single `location_id` + `Location.type` stay in step.
+// Chốt rằng cặp branch/warehouse mà các module khác vẫn suy luận theo luôn khớp với cột `location_id` duy nhất và `Location.type` trong DB.
 describe('location reference mapping', () => {
   it('answers the pair as a { locationId, locationType } reference', () => {
     expect(toLocationRef({ branchId: BRANCH, warehouseId: null })).toEqual({
@@ -43,8 +43,8 @@ describe('location reference mapping', () => {
   });
 });
 
-// `locationWhere` filters in SQL, `locationMatcher` in memory - stock reads rely on both
-// answering the same question, so every case checks the two side by side.
+// `locationWhere` lọc trong SQL, `locationMatcher` lọc trong bộ nhớ. Đọc tồn kho dựa vào cả hai
+// để trả lời cùng một câu hỏi, nên mỗi case kiểm tra song song cả hai.
 describe('location filter', () => {
   const rows = [
     { locationId: BRANCH, location: { type: LocationType.BRANCH } },
@@ -61,7 +61,7 @@ describe('location filter', () => {
       { location: { type: LocationType.WAREHOUSE } },
     ],
     [
-      // The two conditions are ANDed: a branch's id with the warehouse kind matches nothing.
+      // Hai điều kiện được AND: id của chi nhánh cùng loại kho thì không khớp gì.
       'id and kind that disagree',
       { locationId: BRANCH, locationType: LocationType.WAREHOUSE },
       [],

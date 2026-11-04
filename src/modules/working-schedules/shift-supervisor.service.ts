@@ -9,9 +9,12 @@ import {
   columnsOfLocation,
 } from '../../common/dto/location-ref.dto';
 
-/** The extra permissions a STAFF account holds only while the shift they are running is actually running (iKiotMS-BE's `managedScheduleAccess`): whoever is `managedBy` on a live schedule can open the till, receive stock and settle supplier paperwork at their own location without a permanent grant. Three things keep it narrow - only SCHEDULED shifts whose window contains now, only the fixed `TEMPORARY_PERMISSIONS` set, and only locations on both the shift and the supervisor's own posting. `suppliers` is the exception to the last, since supplier records are tenant-wide. */
+/**
+ * Quyền tạm của STAFF chỉ có khi ca họ đang quản lý đang chạy (`managedScheduleAccess` của iKiotMS-BE): người được `managedBy` trên lịch đang chạy được mở két, nhận hàng, thanh toán nhà cung cấp tại địa điểm của mình mà không cần quyền cố định.
+ * Ba ràng buộc giữ phạm vi hẹp: chỉ ca SCHEDULED đang bao trùm thời điểm hiện tại; chỉ bộ `TEMPORARY_PERMISSIONS`; chỉ địa điểm vừa thuộc ca vừa thuộc posting của người giám sát. `suppliers` là ngoại lệ của ràng buộc cuối vì NCC là dữ liệu toàn tenant.
+ */
 
-/** Exactly the old `TEMPORARY_PERMISSIONS`. Widening this widens what a shift can grant. */
+/** Đúng bằng `TEMPORARY_PERMISSIONS` cũ. Nới rộng danh sách này là nới rộng những gì một ca được cấp. */
 export const TEMPORARY_PERMISSIONS: Readonly<
   Record<string, readonly string[]>
 > = Object.freeze({
@@ -27,7 +30,6 @@ export const TEMPORARY_PERMISSIONS: Readonly<
   ]),
 });
 
-/** Every `"<resource>:<action>"` a live shift can add. */
 const TEMPORARY_KEYS: ReadonlySet<string> = new Set(
   Object.entries(TEMPORARY_PERMISSIONS).flatMap(([resource, actions]) =>
     actions.map((action) => `${resource}:${action}`),
@@ -38,12 +40,11 @@ const TEMPORARY_KEYS: ReadonlySet<string> = new Set(
 export class ShiftSupervisorService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Whether a pair is one a shift could ever grant - cheap pre-check before querying. */
   static grants(resource: string, action: string): boolean {
     return TEMPORARY_KEYS.has(`${resource}:${action}`);
   }
 
-  /** Resolves the caller's live supervision, or `null`. Called from `JwtStrategy` on every request, so it is one query plus the posting `JwtStrategy` already has and passes in. */
+  /** Gọi từ `JwtStrategy` ở mọi request nên chỉ tốn một query, dùng posting mà `JwtStrategy` đã có sẵn. */
   async resolve(
     user: {
       userId: string;
@@ -77,7 +78,7 @@ export class ShiftSupervisorService {
     });
     if (schedules.length === 0) return null;
 
-    // Where the shift's people work…
+    // Nơi những người trong ca làm việc…
     const branchIds = new Set<string>();
     const warehouseIds = new Set<string>();
     for (const schedule of schedules) {
@@ -88,7 +89,7 @@ export class ShiftSupervisorService {
       }
     }
 
-    // …intersected with where the supervisor themselves works: supervising a shift that includes somebody from another branch must not reach into that branch.
+    // …giao với nơi chính người giám sát làm việc: ca có người từ chi nhánh khác không được với tới chi nhánh đó.
     for (const branchId of branchIds) {
       if (branchId !== user.branchId) branchIds.delete(branchId);
     }
@@ -109,7 +110,6 @@ export class ShiftSupervisorService {
     };
   }
 
-  /** The permission keys a resolved supervision contributes. */
   static keysFor(access: ShiftSupervisorAccess | null): string[] {
     if (!access) return [];
     return [
@@ -120,7 +120,7 @@ export class ShiftSupervisorService {
   }
 }
 
-/** May this account act at this location because of a shift it is running right now? The one seam `StockMovementService.canActAt()` and `CashDrawerSessionService.resolveBranch()` widen through. */
+/** Điểm duy nhất để `StockMovementService.canActAt()` và `CashDrawerSessionService.resolveBranch()` nới quyền theo ca đang chạy. */
 export function supervisesLocation(
   access: ShiftSupervisorAccess | null | undefined,
   location: { branchId: string | null; warehouseId: string | null },

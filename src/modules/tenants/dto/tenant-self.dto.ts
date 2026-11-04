@@ -6,7 +6,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-/** The bank account a shop receives SePay payments into. All three or none. */
+/** Tài khoản nhận tiền SePay của shop. Phải đủ cả ba trường hoặc không có. */
 export class BankingDto {
   @IsString()
   @IsNotEmpty({ message: 'Số tài khoản không được để trống' })
@@ -21,7 +21,7 @@ export class BankingDto {
   accountName: string;
 }
 
-/** `PUT /tenant/me` - the shop editing its own record. `status` is deliberately absent: iKiotMS-BE passed the body straight through, so a SUSPENDED shop could set itself back to ACTIVE. */
+/** `PUT /tenant/me`: shop tự sửa hồ sơ. Cố ý không có `status`: bản cũ truyền thẳng body, nên shop đang SUSPENDED có thể tự chuyển về ACTIVE. */
 export class UpdateMyTenantDto {
   @IsOptional()
   @IsString()
@@ -46,7 +46,6 @@ export class UpdateMyTenantDto {
   banking?: BankingDto;
 }
 
-/** `PUT /tenant/:tenantId/sepay-key` - platform-admin only. */
 export class SetSepayKeyDto {
   @IsString()
   @IsNotEmpty({ message: 'sepayWebhookApiKey không được để trống' })

@@ -12,9 +12,9 @@ import { INACTIVE_USER_STATUSES } from '../constants/user-status';
 import { SystemRole } from '../constants/system-role';
 import { socketCorsOrigins } from '../config/env';
 
-// Ported from iKiotMS-BE's socketService.js with a fix: rooms are joined server-side from the JWT, so there is no client-driven `join` to eavesdrop with.
+// Port từ socketService.js của iKiotMS-BE, có một sửa lỗi: room được join ở server từ JWT, không còn event `join` do client điều khiển để nghe trộm.
 @Injectable()
-// Same origin list the HTTP side uses - it used to read FRONTEND_URL while main.ts read CORS_ORIGIN, so locking down the API left the socket open.
+// Cùng danh sách origin với HTTP. Trước đây đọc FRONTEND_URL trong khi main.ts đọc CORS_ORIGIN, nên khoá API rồi socket vẫn mở.
 @WebSocketGateway({ cors: { origin: socketCorsOrigins() } })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -36,7 +36,7 @@ export class RealtimeGateway
         select: { id: true, tenantId: true, systemRole: true, status: true },
       });
       if (!user) throw new Error('User not found');
-      // An access token outlives a deactivation, so the account is checked at handshake too - otherwise a dismissed employee keeps the shop's live feed.
+      // Access token còn sống sau khi bị vô hiệu, nên tài khoản cũng được kiểm tra lúc handshake - nếu không, nhân viên đã nghỉ vẫn giữ feed trực tiếp của shop.
       if (INACTIVE_USER_STATUSES.has(user.status)) {
         throw new Error('Account is not active');
       }
@@ -53,15 +53,15 @@ export class RealtimeGateway
   }
 
   handleDisconnect() {
-    // socket.io leaves every room automatically on disconnect - nothing to do here.
+    // socket.io tự rời mọi room khi ngắt kết nối - không cần làm gì ở đây.
   }
 
-  /** Drops every socket this user has open: the account is only checked at handshake, so a live socket would otherwise outlive the deactivation the HTTP side already enforces. */
+  /** Ngắt mọi socket đang mở của user này: tài khoản chỉ được kiểm tra lúc handshake, nên socket đang sống sẽ sống qua việc vô hiệu mà HTTP đã áp dụng. */
   disconnectUser(userId: string): void {
     this.server?.in(`user:${userId}`).disconnectSockets(true);
   }
 
-  /** The one emit primitive every other service should use - never touch `server` directly. */
+  /** Primitive emit duy nhất mà service khác nên dùng - không bao giờ đụng trực tiếp `server`. */
   emitToRoom(room: string, event: string, payload: unknown): void {
     this.server?.to(room).emit(event, payload);
   }

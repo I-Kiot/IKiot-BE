@@ -2,10 +2,9 @@ import { BadRequestException } from '@nestjs/common';
 import { OrderLineType } from '../../common/constants/order-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** How deep combos may nest (a combo inside a combo inside ...). Deep enough for "phòng ngủ = bộ giường + bộ tủ", shallow enough that a mistake in the catalogue is caught instead of walked. */
+/** Độ lồng tối đa của combo. Đủ cho "phòng ngủ = bộ giường + bộ tủ", đủ nông để lỗi trong danh mục bị bắt thay vì bị duyệt qua. */
 export const MAX_COMBO_DEPTH = 5;
 
-/** The variant a combo component names - the fields an order line snapshots. */
 export interface ComboItem {
   id: string;
   sku: string | null;
@@ -14,14 +13,12 @@ export interface ComboItem {
   itemType: string;
 }
 
-/** One `ComboComponent` row: `quantity` of `componentItem` in one `comboItemId`. */
 export interface ComboEdge {
   comboItemId: string;
   quantity: number;
   componentItem: ComboItem;
 }
 
-/** One thing a combo finally hands the customer, and how many of it go in one combo. */
 export interface ComboLeaf {
   item: ComboItem;
   quantity: number;
@@ -31,11 +28,7 @@ const invalid = (message: string) =>
   new BadRequestException({ code: ErrorCode.ORDER_COMBO_INVALID, message });
 
 /**
- * What one `comboId` is made of, all the way down. A component that is itself a COMBO is opened
- * in turn and its quantities multiplied through, so the order only ever carries leaves (PRODUCT,
- * SERVICE) under the combo it sold - pack, ship and the production list then work exactly as for
- * a one-level combo. The same leaf reached two ways is merged into one line. A combo with no
- * components, a combo that contains itself, or nesting past `MAX_COMBO_DEPTH` is refused.
+ * Mở combo xuống các lá (PRODUCT, SERVICE), nhân số lượng qua từng tầng, để đơn chỉ mang lá. Cùng một lá qua nhiều đường thì gộp một dòng. Combo rỗng, tự chứa hoặc lồng quá `MAX_COMBO_DEPTH` đều bị từ chối.
  */
 export function flattenCombo(
   comboId: string,

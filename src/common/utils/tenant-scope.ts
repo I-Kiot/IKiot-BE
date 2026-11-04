@@ -3,9 +3,9 @@ import { SystemRole } from '../constants/system-role';
 import type { AuthUser } from '../types/auth-user.type';
 import { ErrorCode } from '../errors/error-codes';
 
-// The tenant is derived from the authenticated user, never taken from the client; ADMIN alone (no tenant of its own) may still name one explicitly.
+// Tenant luôn suy ra từ user đã xác thực, không lấy từ client; chỉ ADMIN (không có tenant riêng) mới được nêu tenant tường minh.
 
-/** Tenant filter for reads: `undefined` for an ADMIN who named no tenant, meaning every tenant; the caller's own tenant for everyone else. */
+/** Filter tenant cho đọc: `undefined` với ADMIN không nêu tenant, nghĩa là mọi tenant; với người khác là tenant của chính họ. */
 export function resolveTenantScope(
   user: AuthUser,
   requested?: string,
@@ -26,11 +26,11 @@ export function resolveTenantScope(
   return user.tenantId;
 }
 
-/** Tenant for writes - same rules, but "every tenant" is not a valid answer, so an ADMIN must name one. */
+/** Tenant cho ghi - cùng quy tắc, nhưng "mọi tenant" không hợp lệ, nên ADMIN phải nêu một tenant. */
 export function requireTenantId(user: AuthUser, requested?: string): string {
   const tenantId = resolveTenantScope(user, requested);
   if (!tenantId) {
-    // Deliberately vague about how to name the tenant: only the generated CRUD routes accept `?tenantId=`.
+    // Cố ý mơ hồ về cách nêu tenant: chỉ các route CRUD tự sinh mới nhận `?tenantId=`.
     throw new BadRequestException({
       code: ErrorCode.TENANT_ID_REQUIRED,
       message:

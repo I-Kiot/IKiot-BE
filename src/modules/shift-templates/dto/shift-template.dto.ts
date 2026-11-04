@@ -8,7 +8,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** Ported from `ShiftTemplateDTO`; create and update take the same body, so a PATCH replaces every field rather than merging. `endTime` before `startTime` is deliberately allowed - a night shift is 22:00–06:00, and `WorkingScheduleService` reads that case to roll `endAt` onto the next day. */
+/** Create và update dùng chung body, nên PATCH thay mọi trường. `endTime` trước `startTime` được phép có chủ đích: đó là ca đêm 22:00–06:00, `WorkingScheduleService` dựa vào đó để đẩy `endAt` sang ngày hôm sau. */
 export class ShiftTemplateDto {
   @IsString()
   @trim()
@@ -31,7 +31,6 @@ export class ShiftTemplateDto {
 }
 
 export class QueryShiftTemplateDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on the template's name. */
   @IsOptional()
   @IsString()
   @trim()

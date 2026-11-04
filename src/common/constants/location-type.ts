@@ -1,9 +1,5 @@
 /**
- * A location's type - one constant and one spelling for the database and the API alike (plan
- * 2026-09-29). Uppercase because `Location.type` stores it that way, held to exactly these two
- * by the CHECK `locations_type_known`: the backend follows the schema rather than translating
- * it, and the frontend follows the backend. It replaced a lowercase API spelling that sat
- * beside a separate uppercase `LocationKind` - two names for one thing.
+ * Loại địa điểm, một cách viết cho cả DB lẫn API. CHECK `locations_type_known` ép đúng hai giá trị này, nên backend theo schema và frontend theo backend. Không đặt thêm tên khác cho cùng khái niệm.
  */
 export const LocationType = {
   BRANCH: 'BRANCH',
@@ -15,10 +11,7 @@ export type LocationType = (typeof LocationType)[keyof typeof LocationType];
 export const LOCATION_TYPES: readonly string[] = Object.values(LocationType);
 
 /**
- * Directions that make a transfer a RETURN rather than an EXPORT. Only branch → warehouse:
- * whether sending goods to any other kind of place counts as a return is a business decision
- * nobody has made (plan 2026-09-29, QĐ-1). The label is all this decides - EXPORT and RETURN
- * move stock identically.
+ * Chỉ chi nhánh → kho được tính là TRẢ HÀNG thay vì XUẤT; các chiều khác chưa có quyết định nghiệp vụ (QĐ-1). Nhãn là thứ duy nhất nó quyết định, còn kho đều di chuyển như nhau.
  */
 const RETURN_DIRECTIONS: ReadonlyArray<readonly [string, string]> = [
   [LocationType.BRANCH, LocationType.WAREHOUSE],

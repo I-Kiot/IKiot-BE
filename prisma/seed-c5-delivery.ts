@@ -134,7 +134,6 @@ async function main() {
     (await prisma.customer.findFirst({ where: { tenantId, name: CUSTOMER_NAME } })) ??
     (await prisma.customer.create({ data: { tenantId, name: CUSTOMER_NAME } }));
 
-  // 2. Các đơn đã ở "Đang vận chuyển".
   for (const scenario of SCENARIOS) {
     if (await prisma.order.findFirst({ where: { tenantId, code: scenario.code } })) {
       console.log(`${scenario.code}: đã có - bỏ qua.`);
@@ -169,7 +168,6 @@ async function createShippingOrder(input: {
   const now = new Date();
 
   await prisma.$transaction(async (tx) => {
-    // Đơn: đã xác nhận, đã ship; chủ shop vừa tạo vừa phụ trách.
     const order = await tx.order.create({
       data: {
         tenantId,
@@ -232,7 +230,6 @@ async function createShippingOrder(input: {
       },
     });
 
-    // Phiếu đóng hàng đã bàn giao ở kho tổng.
     const fulfillment = await tx.fulfillment.create({
       data: {
         tenantId,
@@ -256,7 +253,6 @@ async function createShippingOrder(input: {
       select: { id: true },
     });
 
-    // Lần giao nội bộ đang trên đường, shipper là chủ shop.
     await tx.shipment.create({
       data: {
         tenantId,

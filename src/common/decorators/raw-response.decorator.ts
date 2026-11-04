@@ -2,5 +2,5 @@ import { SetMetadata } from '@nestjs/common';
 
 export const RAW_RESPONSE_KEY = 'rawResponse';
 
-/** Opts a route out of the `{ success, message?, data }` envelope - for bodies somebody else owns, such as a payment webhook or an infrastructure probe. */
+/** Bỏ route khỏi envelope `{ success, message?, data }` - dành cho body do bên khác quyết định, như webhook thanh toán hay probe hạ tầng. */
 export const RawResponse = () => SetMetadata(RAW_RESPONSE_KEY, true);

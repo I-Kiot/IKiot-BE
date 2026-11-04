@@ -52,7 +52,7 @@ type Ctor<T> = new () => T;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Every tool's required permission - the security boundary of the whole AI feature: the old implementation ran every tool as TENANT_OWNER, making the assistant a back door around every read rule. */
+/** Quyền cần có cho từng tool - ranh giới bảo mật của cả tính năng AI. Bản cũ chạy mọi tool dưới TENANT_OWNER, khiến trợ lý thành cửa hậu vượt mọi quy tắc đọc dữ liệu. */
 const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   searchProducts: ['products', 'read'],
   getProductStockLevel: ['products', 'read'],
@@ -83,7 +83,7 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getTenantTickets: ['tickets', 'read'],
 };
 
-/** The thirty read-only lookups the assistant can make: each delegates to the module that owns the question, and model arguments are coerced through the same DTO the REST endpoint validates. */
+/** 30 tra cứu chỉ đọc mà trợ lý được thực hiện: mỗi tool ủy quyền cho module sở hữu câu hỏi đó, và tham số model đưa vào được ép kiểu qua cùng DTO mà endpoint REST validate. */
 @Injectable()
 export class AiToolsService {
   private readonly logger = new Logger(AiToolsService.name);
@@ -109,7 +109,7 @@ export class AiToolsService {
     private readonly stats: StatsService,
   ) {}
 
-  /** Run one tool call. Never throws - the loop needs a value to hand back either way, and "you have no permission" is something the model can usefully say. */
+  /** Chạy một tool call. Không bao giờ throw: vòng lặp luôn cần một giá trị trả về, và "không có quyền" là điều model có thể nói lại một cách hữu ích. */
   async run(
     user: AuthUser,
     name: string,
@@ -141,7 +141,6 @@ export class AiToolsService {
     const tenantId = requireTenantId(user);
 
     switch (name) {
-      // ─── Catalogue ───────────────────────────────────────────────────────
       case 'searchProducts':
         return this.products.findAll(
           tenantId,
@@ -174,7 +173,6 @@ export class AiToolsService {
           await this.dto(QueryInventoryDto, args),
         );
 
-      // ─── Customers ───────────────────────────────────────────────────────
       case 'searchCustomers':
         return this.customers.findAll(
           tenantId,
@@ -187,7 +185,7 @@ export class AiToolsService {
           this.str(args.customerId),
         );
         const customer = await this.customers.findOne(tenantId, customerId);
-        // Orders go through OrderService so the caller's posting narrows them, exactly as on `GET /orders`.
+        // Đơn đi qua OrderService để phạm vi quyền của người gọi thu hẹp kết quả, giống hệt `GET /orders`.
         const history = await this.orders.findAll(
           user,
           tenantId,
@@ -204,7 +202,6 @@ export class AiToolsService {
         };
       }
 
-      // ─── Org ─────────────────────────────────────────────────────────────
       case 'getBranchList':
         return this.branches.findAll(user, tenantId, this.locationQuery(args));
 
@@ -221,7 +218,6 @@ export class AiToolsService {
           await this.dto(QuerySupplierDto, args),
         );
 
-      // ─── People ──────────────────────────────────────────────────────────
       case 'getStaffList':
         return this.users.findAll(
           tenantId,
@@ -235,7 +231,6 @@ export class AiToolsService {
           await this.dto(QueryWorkingScheduleDto, args),
         );
 
-      // ─── Selling ─────────────────────────────────────────────────────────
       case 'searchOrders':
         return this.orders.findAll(
           user,
@@ -277,7 +272,6 @@ export class AiToolsService {
           await this.dto(QueryStockMovementDto, args),
         );
 
-      // ─── Reporting ───────────────────────────────────────────────────────
       case 'getRevenueOverview':
         return this.stats.getOverview(
           user,
@@ -330,12 +324,11 @@ export class AiToolsService {
         };
       }
 
-      // ─── Housekeeping ────────────────────────────────────────────────────
       case 'getTenantSubscriptionInfo':
         return this.subscriptions.checkTrialStatus(tenantId);
 
       case 'getTenantTickets': {
-        // TicketService has no filtered list, so the tool narrows the result itself rather than adding a route nothing else needs.
+        // TicketService không có danh sách lọc, nên tool tự lọc kết quả thay vì thêm một route mà không nơi nào khác cần.
         const all = await this.tickets.findMine(tenantId);
         const status = this.str(args.status, false);
         const filtered = status
@@ -360,9 +353,7 @@ export class AiToolsService {
     }
   }
 
-  // ─── Argument handling ─────────────────────────────────────────────────────
-
-  /** Model output -> a validated DTO instance, using the same class the HTTP layer validates, so a tool can never be looser than its endpoint. */
+  /** Output của model -> instance DTO đã validate, dùng đúng class mà tầng HTTP validate, nên tool không bao giờ lỏng hơn endpoint. */
   private async dto<T extends object>(
     ctor: Ctor<T>,
     args: ToolArgs,
@@ -384,7 +375,7 @@ export class AiToolsService {
     return instance;
   }
 
-  /** Branches and warehouses take a plain paginated search, not a generated DTO. */
+  /** Chi nhánh và kho dùng tìm kiếm phân trang đơn giản, không dùng DTO sinh ra. */
   private locationQuery(args: ToolArgs) {
     return {
       search: this.str(args.search, false),
@@ -393,7 +384,7 @@ export class AiToolsService {
     };
   }
 
-  /** Reports default to month-to-date rather than the stats module's rolling 30 days: "doanh thu tháng này" is the question people actually ask an assistant. */
+  /** Báo cáo mặc định tính từ đầu tháng đến hiện tại, không dùng 30 ngày cuộn của module stats: "doanh thu tháng này" là câu người dùng hỏi trợ lý nhiều nhất. */
   private withMonthToDate(args: ToolArgs): ToolArgs {
     if (args.fromDate && args.toDate) return args;
     const now = new Date();
@@ -416,8 +407,7 @@ export class AiToolsService {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
-  // ─── Fuzzy id resolution ───────────────────────────────────────────────────
-  // The model is handed names and codes rather than uuids, so each of these accepts either.
+  // Model nhận tên và mã thay vì uuid, nên mỗi hàm dưới đây chấp nhận cả hai.
 
   private async resolveProductId(tenantId: string, term: string) {
     if (UUID.test(term)) return term;
@@ -441,7 +431,7 @@ export class AiToolsService {
     return first.id;
   }
 
-  /** An order code (`paymentReference`) is unique across every tenant, so the tenant filter here is what stops one shop reading another's order by guessing a code. */
+  /** Mã đơn (`paymentReference`) là duy nhất trên mọi tenant, nên filter tenant ở đây là thứ ngăn một shop đọc đơn của shop khác bằng cách đoán mã. */
   private async resolveOrderId(tenantId: string, term: string) {
     if (UUID.test(term)) return term;
     const order = await this.prisma.order.findFirst({

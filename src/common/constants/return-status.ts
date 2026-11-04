@@ -1,7 +1,7 @@
-/** An OrderReturn ("đơn hoàn hàng"), created by hand for any channel (docs/hanh-trinh-don-hang.md GĐ2). The stock moves when it is inspected, which completes it; "restocked" vs "recorded as damaged" is per line (`condition`), not a status. */
+/** Đơn hoàn hàng (OrderReturn), tạo tay cho mọi kênh. Hàng đổi kho khi được kiểm tra, và kiểm tra cũng hoàn tất đơn. Nhập lại hay ghi nhận hỏng là theo từng dòng (`condition`), không phải trạng thái. */
 export const OrderReturnStatus = {
   REQUESTED: 'REQUESTED',
-  /** The goods are back at the shop and being checked. */
+  /** Hàng đã về shop và đang được kiểm. */
   INSPECTING: 'INSPECTING',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
@@ -24,7 +24,7 @@ export type OrderReturnReason =
 export const ORDER_RETURN_REASONS: readonly string[] =
   Object.values(OrderReturnReason);
 
-/** Set per line at inspection. GOOD goes back to a sellable location; DAMAGED goes to that location's damaged-goods location (`Location.damagedLocationId`, `isSellable = false`). */
+/** Đặt theo từng dòng khi kiểm tra. GOOD về địa điểm bán được; DAMAGED về kho hàng hỏng của địa điểm đó (`Location.damagedLocationId`, `isSellable = false`). */
 export const ReturnCondition = {
   GOOD: 'GOOD',
   DAMAGED: 'DAMAGED',

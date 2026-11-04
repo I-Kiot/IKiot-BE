@@ -6,7 +6,7 @@ import { NotificationModule } from '../notifications/notifications.module';
 @Module({
   imports: [NotificationModule],
   controllers: [InventoryController],
-  // Exported for ProductModule (opening stock) and for Order and StockMovement (adjustStock / lowStockCrossing / notifyLowStock).
+  // Export cho ProductModule (tồn đầu) và Order / StockMovement (lowStockCrossing / notifyLowStock).
   providers: [InventoryService],
   exports: [InventoryService],
 })

@@ -4,28 +4,23 @@ import {
   ProductionRequestStatus,
 } from '../../common/constants/production-request-status';
 
-// The production list (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4, contract §3) as pure functions:
-// no database, so every rule about "how many are short" is unit-tested on its own, the way
-// pricing-engine.ts and payroll-math.ts are. The service loads the rows and decorates the result.
+// Danh sách cần sản xuất (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4, contract §3) dưới dạng hàm thuần, không DB,
+// để mọi quy tắc "thiếu bao nhiêu" được unit test riêng. Service tải dòng và trang trí kết quả.
 //
-// Every manufacturable SKU (`Product.isManufacturable`, since 2026-10-13 - before it, every SKU)
-// can be ordered from a workshop, short or not (2026-10-05): the list is that catalogue at each
-// location, and "how many are short" is one column of it plus a filter, with the short rows
-// sorted first. Short rows come from demand, so a SKU bought only from suppliers still shows up
-// when an order is short of it; the row carries `isManufacturable: false` and is restocked
-// through an import ("Tạo đơn nhập hàng"), never a request.
+// Mọi SKU sản xuất được (`Product.isManufacturable`, từ 2026-10-13; trước đó là mọi SKU) đều đặt được từ xưởng, thiếu hay không
+// (2026-10-05): danh sách là danh mục đó ở mỗi địa điểm, "thiếu bao nhiêu" là một cột kèm bộ lọc, dòng thiếu lên trước.
+// Dòng thiếu lấy từ nhu cầu, nên SKU chỉ mua từ NCC vẫn hiện khi đơn bị thiếu; dòng mang `isManufacturable: false` và được
+// nhập lại qua đơn nhập hàng ("Tạo đơn nhập hàng"), không bao giờ qua yêu cầu.
 //
-// One row is one (location, SKU) - or, for a piece made to one order line's own design, one
-// (location, SKU, order line): a custom piece is only ever for that line, so it can neither be
-// covered by shelf stock nor cover anybody else's demand.
+// Một dòng là một (địa điểm, SKU), hoặc với hàng làm theo thiết kế của một dòng đơn là (địa điểm, SKU, dòng đơn):
+// hàng tuỳ chỉnh chỉ dành cho dòng đó, nên không được phủ bằng hàng trên kệ, cũng không phủ nhu cầu của ai khác.
 //
 //   shortQuantity = max(0, demand − stock − onOrder − draft)
 //
-// `stock` is the TOTAL stock (`inventories.stock`), not the shelf (`stock − locked_stock`):
-// demand includes lines of orders already PACKED / PICKED_UP, and their goods are exactly what
-// `locked_stock` holds. Subtracting the shelf would count those orders short a second time.
+// `stock` là TỔNG tồn (`inventories.stock`), không phải phần trên kệ (`stock − locked_stock`): nhu cầu gồm cả dòng của
+// đơn đã PACKED / PICKED_UP, và đúng hàng đó nằm trong `locked_stock`. Trừ phần trên kệ sẽ tính các đơn đó thiếu lần thứ hai.
 
-/** One unshipped, stocked order line - the demand. `locationId` null = no source location chosen yet. */
+/** Một dòng đơn chưa giao, đã có hàng – là nhu cầu. `locationId` null = chưa chọn kho nguồn. */
 export interface DemandLine {
   orderItemId: string;
   orderId: string;
@@ -40,14 +35,14 @@ export interface DemandLine {
   isCustom: boolean;
 }
 
-/** `inventories.stock` at one place. */
+/** `inventories.stock` tại một nơi. */
 export interface StockLevelRow {
   locationId: string;
   productItemId: string;
   stock: number;
 }
 
-/** What is left of a lot made for one custom order line (`inventory_lots.order_item_id`). Part of `stock`, but nobody else's. */
+/** Phần còn lại của lot làm cho một dòng đơn tuỳ chỉnh (`inventory_lots.order_item_id`). Nằm trong `stock`, nhưng không của ai khác. */
 export interface CustomLotRow {
   locationId: string;
   productItemId: string;
@@ -55,7 +50,7 @@ export interface CustomLotRow {
   remaining: number;
 }
 
-/** One line of an open production request (DRAFT, SENT or PARTIALLY_RECEIVED). */
+/** Một dòng của yêu cầu sản xuất đang mở (DRAFT, SENT hoặc PARTIALLY_RECEIVED). */
 export interface RequestLine {
   requestId: string;
   code: string;
@@ -64,7 +59,7 @@ export interface RequestLine {
   expectedReadyDate: Date | null;
   locationId: string;
   productItemId: string;
-  /** Set only when the line makes a custom piece for this order line - a standard line linked to an order counts toward the standard row. */
+  /** Chỉ có khi dòng làm bản tuỳ chỉnh cho dòng đơn này; dòng chuẩn gắn với đơn thì tính vào dòng chuẩn. */
   customOrderItemId: string | null;
   quantity: number;
   receivedQuantity: number;
@@ -74,14 +69,14 @@ export interface ProductionListEntry {
   key: string;
   locationId: string | null;
   productItemId: string;
-  /** The order line a custom row is for; null on a standard row. */
+  /** Dòng đơn mà dòng tuỳ chỉnh phục vụ; null với dòng chuẩn. */
   customOrderItemId: string | null;
   stock: number;
   demandQuantity: number;
   onOrderQuantity: number;
   draftQuantity: number;
   shortQuantity: number;
-  /** Most urgent first: priority, then the delivery date the customer asked for. */
+  /** Gấp nhất lên trước: ưu tiên, rồi ngày khách yêu cầu giao. */
   orders: DemandLine[];
   requests: (RequestLine & { outstanding: number })[];
 }
@@ -97,12 +92,12 @@ export function rowKey(
 const stockKey = (locationId: string, productItemId: string) =>
   `${locationId}|${productItemId}`;
 
-/** Higher = more urgent. ORDER_PRIORITIES is listed lowest first; an unknown value sorts as the lowest. */
+/** Số cao hơn = gấp hơn. ORDER_PRIORITIES liệt kê từ thấp tới cao; giá trị lạ được xếp thấp nhất. */
 function priorityRank(priority: string): number {
   return Math.max(0, ORDER_PRIORITIES.indexOf(priority));
 }
 
-/** Who goes first when several orders want the same goods: priority tag, then the earliest delivery date asked for (none = last), then the order code for a stable result. */
+/** Ai đi trước khi nhiều đơn cần cùng hàng: nhãn ưu tiên, rồi ngày giao sớm nhất (không có = cuối), rồi mã đơn để kết quả ổn định. */
 export function compareUrgency(a: DemandLine, b: DemandLine): number {
   const byPriority = priorityRank(b.priority) - priorityRank(a.priority);
   if (byPriority !== 0) return byPriority;
@@ -112,7 +107,7 @@ export function compareUrgency(a: DemandLine, b: DemandLine): number {
   return a.orderCode.localeCompare(b.orderCode);
 }
 
-/** The whole list. Rows come from the demand, from open requests and from `catalogue` - the (location, SKU) pairs to list even with nothing going on, so anything can be ordered. Short rows first (most urgent order first, then the largest gap), then rows with orders behind them; rows that tie keep their input order, which the caller sorts by name. */
+/** Toàn bộ danh sách. Dòng lấy từ nhu cầu, yêu cầu đang mở và `catalogue` (các cặp cần liệt kê dù chưa có gì, để đặt được bất kỳ thứ gì). Dòng thiếu lên trước (đơn gấp nhất trước, rồi khoảng thiếu lớn nhất), rồi tới dòng có đơn; dòng bằng nhau giữ thứ tự đầu vào, người gọi sắp theo tên. */
 export function buildProductionList(input: {
   demand: DemandLine[];
   stock: StockLevelRow[];
@@ -124,7 +119,7 @@ export function buildProductionList(input: {
   for (const row of input.stock) {
     totalStock.set(stockKey(row.locationId, row.productItemId), row.stock);
   }
-  // Custom pieces are inside `stock` but reserved by construction for their own line.
+  // Hàng tuỳ chỉnh nằm trong `stock` nhưng theo cấu trúc đã dành cho dòng đơn của nó.
   const customTotal = new Map<string, number>();
   const customByLine = new Map<string, number>();
   for (const lot of input.customLots) {
@@ -207,7 +202,7 @@ export function buildProductionList(input: {
   return [...rows.values()].sort(compareRows);
 }
 
-/** Short first, then rows with orders; within each, the most urgent order, then the largest gap. 0 for two rows with no orders - the caller orders those by name. */
+/** Thiếu trước, rồi dòng có đơn; trong mỗi nhóm, đơn gấp nhất, rồi khoảng thiếu lớn nhất. 0 cho hai dòng không có đơn – người gọi sắp hai dòng đó theo tên. */
 export function compareRows(
   a: ProductionListEntry,
   b: ProductionListEntry,
@@ -225,7 +220,7 @@ export function compareRows(
   return b.shortQuantity - a.shortQuantity;
 }
 
-/** Did this change just make a row short? Edge-triggered like `crossedLowStock` and `crossedCreditWarning`: it fires on the edit that opens the gap, not on every later edit while the gap stays open - or the people watching the list mute it on day one. */
+/** Thay đổi này vừa làm dòng thiếu hàng à? Bắt cạnh như `crossedLowStock` và `crossedCreditWarning`: chỉ bắn ở lần sửa mở ra khoảng thiếu, không bắn ở mọi lần sửa sau khi khoảng thiếu còn mở – nếu không người theo dõi danh sách sẽ tắt nó ngay ngày đầu. */
 export function crossedShortage(before: number, after: number): boolean {
   return before <= 0 && after > 0;
 }

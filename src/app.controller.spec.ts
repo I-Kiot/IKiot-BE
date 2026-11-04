@@ -33,7 +33,7 @@ describe('pendingMigrations', () => {
   });
 
   it('ignores migrations the database has but this build does not ship', () => {
-    // An older image talking to a newer database is a rollback, not a missing migration.
+    // Image cũ chạy trên DB mới là rollback, không phải thiếu migration.
     expect(pendingMigrations(['1_init'], ['1_init', '2_lots'])).toEqual([]);
   });
 });

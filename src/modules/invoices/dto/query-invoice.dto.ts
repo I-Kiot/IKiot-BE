@@ -12,7 +12,7 @@ import {
   InvoiceType,
 } from '../../../common/constants/invoice-status';
 
-/** COUNTER = rung up at the till (order `fulfillmentType` TAKEAWAY); ORDERED = an order taken to be fulfilled later. */
+/** COUNTER = bán tại quầy (fulfillmentType TAKEAWAY); ORDERED = đơn nhận để giao sau. */
 export const INVOICE_KINDS = ['COUNTER', 'ORDERED'] as const;
 export type InvoiceKind = (typeof INVOICE_KINDS)[number];
 
@@ -29,7 +29,6 @@ export class QueryInvoiceDto extends PaginationQueryDto {
   @IsIn(INVOICE_KINDS)
   kind?: InvoiceKind;
 
-  /** The order's way of reaching the customer: TAKEAWAY (till) | STORE_PICKUP | HOME_DELIVERY. */
   @IsOptional()
   @IsIn(FULFILLMENT_TYPES)
   fulfillmentType?: string;
@@ -38,12 +37,11 @@ export class QueryInvoiceDto extends PaginationQueryDto {
   @IsUUID()
   branchId?: string;
 
-  /** Invoice number, order code, customer name or phone. */
+  /** Tìm theo số hoá đơn, mã đơn, tên hoặc SĐT khách. */
   @IsOptional()
   @IsString()
   search?: string;
 
-  /** Creation-date window. */
   @IsOptional()
   @IsDateString()
   fromDate?: string;

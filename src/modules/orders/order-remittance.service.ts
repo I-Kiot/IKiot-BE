@@ -23,13 +23,7 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 /**
- * `POST /orders/:id/confirm-remittance` (A-10, contract §2 and §4): the last step of a cash delivery.
- * Delivery (C-5) left the order RECEIVED with the cash it collected as a `BALANCE` payment whose
- * `remittanceStatus` is PENDING - the money is in the shipper's hands. The owner (`orders:confirm_cash`)
- * counts what was handed back; only the full amount settles it (contract: the owner must receive all
- * of it), and then the payment is RECEIVED and the order COMPLETED. A short hand-over is refused and
- * stays visible as pending - how a shortfall is booked is not decided yet. No `CashFlow` row is
- * written here: that is E-5's, as for every other payment of the journey.
+ * `POST /orders/:id/confirm-remittance` (A-10): bước cuối khi đơn thu tiền lúc giao. Tiền shipper thu nằm ở Payment `BALANCE` PENDING (đang ở tay shipper). Chủ chỉ chốt khi nhận đủ; khi đó Payment thành RECEIVED và đơn COMPLETED. Nộp thiếu bị từ chối. `CashFlow` do E-5 ghi, không ở đây.
  */
 @Injectable()
 export class OrderRemittanceService {
@@ -74,7 +68,7 @@ export class OrderRemittanceService {
         message: 'This order does not belong to your branch',
       });
     }
-    // A QR delivery is RECEIVED too, but its money comes through the SePay webhook, not a shipper.
+    // Giao bằng QR cũng là RECEIVED, nhưng tiền đến qua webhook SePay chứ không qua shipper.
     if (order.status !== OrderStatus.RECEIVED || order.payments.length === 0) {
       throw new ConflictException({
         code: ErrorCode.ORDER_REMITTANCE_NOT_PENDING,
@@ -96,7 +90,7 @@ export class OrderRemittanceService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // Claimed on RECEIVED: a return or a second confirmation in between loses this one whole.
+      // Chiếm đơn ở RECEIVED: trả hàng hoặc xác nhận lần hai xen giữa thì lần này thua trọn.
       const claimed = await tx.order.updateMany({
         where: { id, tenantId, status: OrderStatus.RECEIVED },
         data: { status: OrderStatus.COMPLETED },
@@ -118,7 +112,7 @@ export class OrderRemittanceService {
             remittanceStatus: RemittanceStatus.RECEIVED,
             remittanceConfirmedById: user.userId,
             remittanceConfirmedAt: now,
-            // The collector's own note is kept; the owner's is added under it.
+            // Ghi chú của người thu được giữ nguyên; ghi chú của chủ thêm vào bên dưới.
             ...(dto.note
               ? {
                   note: payment.note
