@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { geminiModel } from './ai-chat.constants';
 
-/** The transcript shape both Gemini and our own storage use; `parts` is a union in the real API, and these are the three members this agent produces. */
+/** Shape transcript mà cả Gemini lẫn bộ lưu của mình dùng; `parts` là union trong API thật, còn đây là ba loại mà agent này tạo ra. */
 export interface TextPart {
   text: string;
 }
@@ -22,20 +22,20 @@ export interface Content {
 export interface GenerateOptions {
   contents: Content[] | string;
   systemInstruction?: string;
-  /** Custom function tools; mutually exclusive with `googleSearch` - see AgentRoute. */
+  /** Custom function tool; không dùng chung với `googleSearch` - xem AgentRoute. */
   functionDeclarations?: unknown[];
   googleSearch?: boolean;
 }
 
 export interface GenerateResult {
-  /** Concatenated text of the answer, empty when the model asked for tools instead. */
+  /** Nội dung text của câu trả lời; rỗng khi model yêu cầu tool. */
   text: string;
-  /** The model's turn, echoed back into `contents` before tool results are appended. */
+  /** Lượt của model, được đưa lại vào `contents` trước khi nối kết quả tool. */
   content: Content | null;
   functionCalls: { name: string; args: Record<string, unknown> }[];
 }
 
-/** The seam between the agent and Google, so the ReAct loop can be unit-tested against a scripted client with no network and no API key. */
+/** Ranh giới giữa agent và Google, để vòng lặp ReAct test được với client giả, không cần mạng hay API key. */
 export abstract class GeminiClient {
   abstract isConfigured(): boolean;
   abstract generate(options: GenerateOptions): Promise<GenerateResult>;
@@ -54,7 +54,7 @@ export class GoogleGeminiClient extends GeminiClient {
     return Boolean(process.env.GEMINI_API_KEY);
   }
 
-  /** Built on first use, not in the constructor - the app must boot without an API key. */
+  /** Khởi tạo ở lần dùng đầu, không trong constructor: app phải boot được khi chưa có API key. */
   private sdk(): GoogleGenAI {
     if (!this.client) {
       this.client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });

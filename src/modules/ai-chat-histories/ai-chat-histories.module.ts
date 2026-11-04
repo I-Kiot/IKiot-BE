@@ -23,7 +23,7 @@ import { CashDrawerSessionModule } from '../cash-drawer-sessions/cash-drawer-ses
 import { TicketModule } from '../tickets/tickets.module';
 import { StatsModule } from '../stats/stats.module';
 
-/** Imports seventeen modules on purpose: the assistant reads the product through the services that own each question, so its numbers cannot drift from the dashboard's. `GeminiClient` is abstract so tests can script it. */
+/** Import 17 module có chủ đích: trợ lý đọc dữ liệu qua chính các service sở hữu từng câu hỏi, nên số liệu không lệch với dashboard. `GeminiClient` là abstract để test có thể giả lập. */
 @Module({
   imports: [
     ProductModule,

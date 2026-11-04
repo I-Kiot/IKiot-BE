@@ -1,28 +1,27 @@
-/** Ported from iKiotMS-BE's ai.service.js. The prompts are business copy - they decide what the assistant will and will not do - so they live here rather than inside the orchestration. */
+/** Port từ ai.service.js của iKiotMS-BE. Prompt là copy nghiệp vụ, quyết định trợ lý được và không được làm gì, nên đặt ở đây thay vì trong logic điều phối. */
 
-/** Overridable because a model name is an operational detail; read at call time, since module constants are evaluated before ConfigModule has loaded `.env`. */
+/** Cho phép ghi đè vì tên model là chi tiết vận hành; đọc lúc gọi hàm vì hằng số module được tính trước khi ConfigModule nạp `.env`. */
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 export function geminiModel(): string {
   return process.env.GEMINI_MODEL ?? DEFAULT_GEMINI_MODEL;
 }
 
-/** How many model turns one question may take - each turn is either a batch of tool calls or the final answer. */
+/** Số lượt model một câu hỏi được dùng; mỗi lượt là một batch tool call hoặc câu trả lời cuối. */
 export const MAX_AGENT_STEPS = 10;
 
-/** Title for a brand-new conversation is the first message, cut to this. */
+/** Tiêu đề của hội thoại mới là tin nhắn đầu tiên, cắt tới độ dài này. */
 export const TITLE_MAX_LENGTH = 30;
 
-/** How many past messages the intent classifier is shown. */
 export const ROUTING_HISTORY_MESSAGES = 6;
 
-/** Gemini will not combine custom function tools with Google Search grounding in one request, so the question is classified first and exactly one of the two is armed. */
+/** Gemini không kết hợp custom function tool với Google Search grounding trong một request, nên câu hỏi được phân loại trước và chỉ bật đúng một trong hai. */
 export const AgentRoute = {
-  /** The shop's own data. Custom tools armed, search off. */
+  /** Dữ liệu của shop. Bật custom tool, tắt search. */
   INTERNAL_DATA: 'INTERNAL_DATA',
-  /** The outside world. Google Search grounding armed, custom tools off. */
+  /** Thế giới bên ngoài. Bật Google Search grounding, tắt custom tool. */
   EXTERNAL_SEARCH: 'EXTERNAL_SEARCH',
-  /** Neither - chat, advice, greetings. No tools at all. */
+  /** Không cái nào - chat, tư vấn, chào hỏi. Không bật tool nào. */
   GENERAL_LLM: 'GENERAL_LLM',
 } as const;
 
@@ -50,6 +49,6 @@ ${historyText ? `Lịch sử trò chuyện gần đây:\n${historyText}\n` : ''}
 Câu hỏi của người dùng: "${message}"`;
 }
 
-/** What the user sees when the model or a tool blows up; the conversation is still saved with this as the reply, so no question is left dangling. */
+/** Người dùng thấy câu này khi model hoặc tool lỗi; hội thoại vẫn được lưu với câu này làm trả lời, nên không câu hỏi nào bị bỏ lửng. */
 export const FALLBACK_REPLY =
   'Xin lỗi, tôi đang có chút xíu việc bận ngay lúc này. Hãy nhờ tôi vào một lúc sau nha.';

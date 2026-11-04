@@ -18,7 +18,7 @@ import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** The operators' half. The old controller re-checked `role === 'SUPER_ADMIN'` in each handler; that is the guard now, which is also why these routes carry no `@Permissions`. */
+/** Phía operator. Controller cũ tự check `role === 'SUPER_ADMIN'` trong từng handler; giờ guard làm việc đó, nên các route này không có `@Permissions`. */
 @ApiTags('tickets')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)

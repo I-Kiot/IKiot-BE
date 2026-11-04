@@ -1,8 +1,8 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Notification copy for support threads. The two sides never notify symmetrically on purpose: operators live in the admin console, so a system notification is enough, while the shop owner who filed the ticket has closed the laptop. */
+/** Copy cho ticket hỗ trợ. Hai phía cố ý không thông báo đối xứng: operator làm việc trong admin console nên system notification là đủ; chủ shop đã tắt máy nên cần thông báo đến inbox/push. */
 export const TicketNotificationTemplates = {
-  /** To the platform operators: a shop has opened a thread. */
+  /** Gửi cho operator của nền tảng: một shop vừa mở một luồng hỗ trợ. */
   created: (
     tenantName: string,
     ticketId: string,
@@ -13,7 +13,7 @@ export const TicketNotificationTemplates = {
     description: `Cửa hàng "${tenantName}" đã gửi yêu cầu hỗ trợ mã ${ticketId}: "${title}"`,
   }),
 
-  /** Back to the shop's owners once support has answered. */
+  /** Gửi lại cho chủ shop khi bộ phận hỗ trợ đã trả lời. */
   replied: (title: string): NotificationContent => ({
     type: 'TICKET_REPLIED',
     title: 'Yêu cầu hỗ trợ đã được phản hồi',

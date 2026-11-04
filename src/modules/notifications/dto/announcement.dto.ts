@@ -22,7 +22,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** `POST /admin/notifications` - an operator writing to shop owners by email. `category` stays free text, as in the old model, because it is printed into the subject line and the admin console is the only client. */
+/** `POST /admin/notifications`: operator gửi email tới chủ shop. `category` giữ dạng free text như model cũ vì được in thẳng vào tiêu đề email, và admin console là client duy nhất. */
 export class ComposeAnnouncementDto {
   @IsString()
   @trim()
@@ -47,7 +47,7 @@ export class ComposeAnnouncementDto {
   })
   targetType: string;
 
-  /** Read and stored only when `targetType` is `SELECTION`, so an `ALL` announcement can't keep a row claiming a narrower audience than it had. An empty selection is allowed, as before: it saves, mails nobody, and says so. */
+  /** Chỉ đọc và lưu khi `targetType` là `SELECTION`, để announcement `ALL` không giữ danh sách tenant gây hiểu nhầm. Danh sách rỗng vẫn được lưu, nhưng không gửi cho ai. */
   @ValidateIf(
     (dto: ComposeAnnouncementDto) =>
       dto.targetType === AnnouncementTarget.SELECTION,

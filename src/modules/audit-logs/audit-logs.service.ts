@@ -3,17 +3,17 @@ import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 
-// AuditLog rows are written only by AuditInterceptor, so there is deliberately no create/update/delete here - same as iKiotMS-BE's read-only audit module.
+// Chỉ AuditInterceptor ghi AuditLog, nên cố ý không có create/update/delete ở đây (giống module audit chỉ-đọc của iKiotMS-BE).
 @Injectable()
 export class AuditLogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Platform-wide, unscoped - GET /admin/audit-logs (AdminOnlyGuard). */
+  /** Toàn nền tảng, không lọc theo tenant - GET /admin/audit-logs (AdminOnlyGuard). */
   findAllAdmin(query: QueryAuditLogDto) {
     return this.query(this.buildWhere(query), query);
   }
 
-  /** One tenant's own trail - GET /audit-logs (OwnerOrAdminGuard). */
+  /** Nhật ký của riêng một tenant - GET /audit-logs (OwnerOrAdminGuard). */
   findForTenant(tenantId: string, query: QueryAuditLogDto) {
     return this.query({ ...this.buildWhere(query), tenantId }, query);
   }

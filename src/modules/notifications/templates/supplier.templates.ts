@@ -2,7 +2,6 @@ import type { NotificationContent } from '../notification-content.type';
 
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')} VNĐ`;
 
-/** Notification copy for the supplier/payables domain. */
 export const SupplierNotificationTemplates = {
   debtPaid: (
     supplierName: string,
@@ -15,7 +14,7 @@ export const SupplierNotificationTemplates = {
     link: '/suppliers',
   }),
 
-  /** Sent once, on the receipt that pushes a supplier's debt past the warning ratio - to owners, not to the person receiving the goods. */
+  /** Chỉ gửi một lần, ở phiếu nhập làm công nợ NCC vượt ngưỡng cảnh báo; gửi cho chủ, không gửi người nhận hàng. */
   creditLimitWarning: (
     supplierName: string,
     outstandingDebt: number,

@@ -8,7 +8,7 @@ import {
 import { TOOL_DECLARATIONS } from './ai-tool-declarations';
 import { GeminiClient, type Content } from './gemini.client';
 
-/** What the agent needs to reach the shop's data, supplied by the caller. */
+/** Hàm truy cập dữ liệu shop do caller cung cấp. */
 export interface ToolRunner {
   (
     name: string,
@@ -19,11 +19,11 @@ export interface ToolRunner {
 export interface AgentResult {
   answer: string;
   route: AgentRoute;
-  /** Model turns consumed - one per request, so 1 means it answered without any tool. */
+  /** Số lượt model đã dùng, mỗi request một lượt; 1 nghĩa là trả lời không cần tool. */
   steps: number;
 }
 
-/** The ReAct loop, ported from the body of `AIService.chat` and split out so it can be tested against a scripted `GeminiClient`. */
+/** Vòng lặp ReAct, port từ thân `AIService.chat` và tách riêng để test được với `GeminiClient` giả. */
 @Injectable()
 export class AiAgentService {
   private readonly logger = new Logger(AiAgentService.name);
@@ -34,7 +34,7 @@ export class AiAgentService {
     return this.gemini.isConfigured();
   }
 
-  /** Decide which of the three worlds a question belongs to; a failure falls back to GENERAL_LLM, which arms no tools and still answers. */
+  /** Xác định câu hỏi thuộc nhóm nào; lỗi thì rơi về GENERAL_LLM, nhóm này không bật tool nhưng vẫn trả lời được. */
   async classify(historyText: string, message: string): Promise<AgentRoute> {
     try {
       const { text } = await this.gemini.generate({
@@ -57,7 +57,7 @@ export class AiAgentService {
     return AgentRoute.GENERAL_LLM;
   }
 
-  /** Run the conversation to an answer. The exit condition is a flag, not the step counter - the old loop discarded an answer that arrived on its last allowed turn. */
+  /** Chạy hội thoại đến khi có câu trả lời. Điều kiện thoát là một cờ, không phải bộ đếm bước: vòng lặp cũ bỏ câu trả lời đến ở lượt cho phép cuối. */
   async run(
     contents: Content[],
     route: AgentRoute,
@@ -76,7 +76,7 @@ export class AiAgentService {
 
       const response = await this.gemini.generate({ ...options, contents });
 
-      // Tool calls only mean anything on the internal-data route; elsewhere whatever the model returns is the answer.
+      // Tool call chỉ có nghĩa ở route INTERNAL_DATA; ở route khác, mọi thứ model trả về là câu trả lời.
       if (
         route === AgentRoute.INTERNAL_DATA &&
         response.functionCalls.length > 0
@@ -94,7 +94,7 @@ export class AiAgentService {
           }),
         );
 
-        // The model's own turn has to go back in before its results, or the next request has tool answers with nothing that asked for them.
+        // Lượt của model phải được đưa vào trước kết quả tool, nếu không request sau có tool answer không có call tương ứng.
         if (response.content) contents.push(response.content);
         contents.push({ role: 'user', parts: responses });
         continue;
