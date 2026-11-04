@@ -246,7 +246,7 @@ export class OrderController {
   }
 }
 
-/** The SePay order webhook, on its own controller because its path lives outside `/orders`. It answers 200 for every outcome, since SePay retries anything else; there is no shared secret, because the API key *is* the tenant lookup. */
+/** Answers 200 for every outcome, since SePay retries anything else. The reference is looked up inside the resolved tenant only, so money in shop B's account can't settle shop A's order. */
 @ApiTags('orders')
 @Controller('webhook/sepay')
 export class SepayOrderWebhookController {
@@ -269,8 +269,10 @@ export class SepayOrderWebhookController {
 
       // SePay sends "Apikey <key>", not "Bearer <key>".
       const apiKey = authHeader?.replace(/^Apikey\s+/i, '').trim() ?? '';
-      const tenant = await this.sepay.findTenantByWebhookKey(apiKey);
-      if (!tenant) return { success: false, message: 'Unknown API key' };
+      const tenant = await this.sepay.resolveTenant(apiKey, payload);
+      if (!tenant) {
+        return { success: false, message: 'Unknown API key or account' };
+      }
 
       const reference = this.sepay.extractOrderReference(
         typeof payload.content === 'string' ? payload.content : '',

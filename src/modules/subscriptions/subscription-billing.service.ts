@@ -25,6 +25,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
 
 export interface SepayWebhookPayload {
   transferType?: string;
+  accountNumber?: string | null;
+  subAccount?: string | null;
   content?: string;
   transferAmount?: number;
   referenceCode?: string;
@@ -134,6 +136,10 @@ export class SubscriptionBillingService {
     payload: SepayWebhookPayload,
   ): Promise<SepayWebhookResult> {
     if (payload.transferType !== 'in') return { success: true };
+
+    if (!this.sepay.isPlatformAccount(payload)) {
+      return { success: true, message: 'Not the platform account - ignored' };
+    }
 
     const paymentReference = this.sepay.extractReference(payload.content ?? '');
     if (!paymentReference) {

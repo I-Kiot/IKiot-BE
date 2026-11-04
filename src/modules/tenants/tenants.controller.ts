@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -10,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TenantService } from './tenants.service';
+import { SepayAccountSyncService } from './sepay-account-sync.service';
 import { CreateTenantDto } from './dto/create-tenants.dto';
 import { UpdateTenantDto } from './dto/update-tenants.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -21,12 +24,23 @@ import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 @UseGuards(AdminOnlyGuard)
 @Controller('tenants')
 export class TenantController {
-  constructor(private readonly service: TenantService) {}
+  constructor(
+    private readonly service: TenantService,
+    private readonly sepaySync: SepayAccountSyncService,
+  ) {}
 
   @Permissions('tenants', 'read')
   @Get()
   findAll() {
     return this.service.findAll();
+  }
+
+  /** Re-reads SePay now instead of waiting for the 10-minute cron. */
+  @Permissions('tenants', 'update')
+  @Post('sepay-sync')
+  @HttpCode(HttpStatus.OK)
+  syncSepay() {
+    return this.sepaySync.sync();
   }
 
   @Permissions('tenants', 'read')

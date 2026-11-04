@@ -15,6 +15,7 @@ import { PaymentMethod } from '../../common/constants/payment-method';
 import {
   FulfillmentType,
   STOCKED_LINE_TYPES,
+  OrderPaymentStatus,
 } from '../../common/constants/order-status';
 import {
   InventoryRefType,
@@ -173,6 +174,10 @@ export class OrderService {
           confirmedAt: new Date(),
           fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
+          paymentStatus:
+            status === OrderStatus.COMPLETED
+              ? OrderPaymentStatus.PAID
+              : OrderPaymentStatus.UNPAID,
           // The till's reference doubles as its order code, so a receipt and a bank transfer name the sale the same way.
           code: paymentReference,
           paymentMethod: dto.paymentMethod,
@@ -333,7 +338,14 @@ export class OrderService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
         where: { id, status: order.status },
-        data: { status: newStatus },
+        data: {
+          status: newStatus,
+          ...(newStatus === OrderStatus.COMPLETED
+            ? { paymentStatus: OrderPaymentStatus.PAID }
+            : newStatus === OrderStatus.RETURNED
+              ? { paymentStatus: OrderPaymentStatus.REFUNDED }
+              : {}),
+        },
       });
       if (claimed.count === 0) {
         throw new ConflictException({
@@ -459,6 +471,7 @@ export class OrderService {
         },
         data: {
           status: OrderStatus.COMPLETED,
+          paymentStatus: OrderPaymentStatus.PAID,
           paymentMethod,
           customerPay,
           change: Math.max(0, customerPay - grandTotal),
@@ -527,7 +540,11 @@ export class OrderService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
         where: { id: pending.id, status: OrderStatus.PENDING },
-        data: { status: OrderStatus.COMPLETED, sepayTransactionId },
+        data: {
+          status: OrderStatus.COMPLETED,
+          paymentStatus: OrderPaymentStatus.PAID,
+          sepayTransactionId,
+        },
       });
       if (claimed.count === 0) return null;
 

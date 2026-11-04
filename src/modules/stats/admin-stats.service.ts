@@ -64,11 +64,16 @@ export class AdminStatsService {
       this.revenueSeries(range, groupBy),
       this.tenantGrowth(range, groupBy),
       this.prisma.ticket.groupBy({ by: ['status'], _count: { _all: true } }),
-      // "Has an operator linked this shop to SePay yet" - an empty string counts as not linked, same as the old `$ifNull` guard.
+      // Count form of `isSepayLinked`; an empty key counts as not linked.
       this.prisma.tenant.count({
         where: {
-          bankingSepayWebhookApiKey: { not: null },
-          NOT: { bankingSepayWebhookApiKey: '' },
+          OR: [
+            {
+              bankingSepayWebhookApiKey: { not: null },
+              NOT: { bankingSepayWebhookApiKey: '' },
+            },
+            { bankingSepayLinkedAt: { not: null } },
+          ],
         },
       }),
       this.topTenants(),

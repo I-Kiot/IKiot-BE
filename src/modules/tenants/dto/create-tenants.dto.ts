@@ -1,6 +1,6 @@
 import { IsOptional, IsString } from 'class-validator';
 
-/** Reachable only through the `AdminOnlyGuard`-gated `/tenants` controller. `bankingSepayWebhookApiKey` is writable here on purpose, replacing the old SUPER_ADMIN-only route, and is never read back. */
+/** Admin-only. Banking is not here: `PUT /tenant/banking` and `PUT /tenant/:id/sepay-key` hold the rules for it. */
 export class CreateTenantDto {
   @IsString()
   name: string;
@@ -23,21 +23,4 @@ export class CreateTenantDto {
   @IsOptional()
   @IsString()
   taxNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  bankingAccountNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  bankingBankName?: string;
-
-  @IsOptional()
-  @IsString()
-  bankingAccountName?: string;
-
-  /** Platform-admin write only, never returned. See the class comment. */
-  @IsOptional()
-  @IsString()
-  bankingSepayWebhookApiKey?: string;
 }

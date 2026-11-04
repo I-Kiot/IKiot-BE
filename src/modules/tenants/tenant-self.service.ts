@@ -1,10 +1,25 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { TenantNotificationTemplates } from '../notifications/templates/tenant.templates';
-import { TENANT_SELECT, withNestedBanking } from './tenant-select';
+import {
+  TENANT_SELECT,
+  isSepayLinked,
+  withNestedBanking,
+} from './tenant-select';
 import { BankingDto, UpdateMyTenantDto } from './dto/tenant-self.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { normalizeAccountNumber } from '../../common/utils/bank-account';
+import { OrderStatus } from '../../common/constants/order-status';
+import {
+  PaymentMethod,
+  PaymentRecordStatus,
+} from '../../common/constants/payment-method';
+import { SepayAccountSyncService } from './sepay-account-sync.service';
 
 interface BankingSnapshot {
   bankingAccountNumber: string | null;
@@ -26,19 +41,24 @@ function hasBankInfo(banking: BankingSnapshot) {
   return Boolean(banking.bankingAccountNumber && banking.bankingBankName);
 }
 
-/** A shop reading and editing its own record, kept separate from the platform-admin `TenantService` because it never takes a tenant id from the caller. This is what makes SePay order payments usable at all - until these routes were ported the banking fields could only be set by writing to the database by hand - and the two notifications here are the manual linking workflow. */
+/** A shop reading and editing its own record. Never takes a tenant id from the caller; `TenantService` is the admin side. */
 @Injectable()
 export class TenantSelfService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
+    private readonly sepaySync: SepayAccountSyncService,
   ) {}
 
   /** The shop's own record, with `hasSepayKey` instead of the key itself: the settings screen needs to show whether the account is linked, and nothing needs the secret back. */
   async findMine(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
-      select: { ...TENANT_SELECT, bankingSepayWebhookApiKey: true },
+      select: {
+        ...TENANT_SELECT,
+        bankingSepayWebhookApiKey: true,
+        bankingSepayLinkedAt: true,
+      },
     });
     if (!tenant)
       throw new NotFoundException({
@@ -46,16 +66,22 @@ export class TenantSelfService {
         message: 'Shop not found',
       });
 
-    const { bankingSepayWebhookApiKey, ...rest } = tenant;
+    const { bankingSepayWebhookApiKey, bankingSepayLinkedAt, ...rest } = tenant;
     return {
       ...withNestedBanking(rest),
-      hasSepayKey: Boolean(bankingSepayWebhookApiKey),
+      hasSepayKey: isSepayLinked({
+        bankingSepayWebhookApiKey,
+        bankingSepayLinkedAt,
+      }),
     };
   }
 
   /** `PUT /tenant/me`. Sends the operators a heads-up when the bank account changes. */
   async updateMine(tenantId: string, dto: UpdateMyTenantDto) {
     const before = await this.bankingOf(tenantId);
+    const banking = dto.banking
+      ? await this.bankingWrite(tenantId, before, dto.banking)
+      : {};
 
     const tenant = await this.prisma.tenant.update({
       where: { id: tenantId },
@@ -64,18 +90,12 @@ export class TenantSelfService {
         phoneNumber: dto.phoneNumber,
         mainAddress: dto.mainAddress,
         taxNumber: dto.taxNumber,
-        ...(dto.banking
-          ? {
-              bankingAccountNumber: dto.banking.accountNumber,
-              bankingBankName: dto.banking.bankName,
-              bankingAccountName: dto.banking.accountName,
-            }
-          : {}),
+        ...banking,
       },
       select: TENANT_SELECT,
     });
 
-    if (dto.banking) await this.announceBankChange(before, tenant);
+    if (dto.banking) await this.afterBankChange(before, tenant);
     return withNestedBanking(tenant);
   }
 
@@ -85,19 +105,88 @@ export class TenantSelfService {
 
     const tenant = await this.prisma.tenant.update({
       where: { id: tenantId },
-      data: {
-        bankingAccountNumber: dto.accountNumber,
-        bankingBankName: dto.bankName,
-        bankingAccountName: dto.accountName,
-      },
+      data: await this.bankingWrite(tenantId, before, dto),
       select: TENANT_SELECT,
     });
 
-    await this.announceBankChange(before, tenant);
+    await this.afterBankChange(before, tenant);
     return withNestedBanking(tenant);
   }
 
-  /** Records the SePay webhook key an operator has provisioned for a shop and tells the owners they can take QR payments. Platform-admin only: iKiotMS-BE's comment said SUPER_ADMIN but nothing checked it, so any account with `tenants:update` could write any shop's key - and that key is what identifies a tenant to the payment webhook. */
+  /** The webhook finds a shop by its account, so a number belongs to one shop and can't move while a QR printed with it awaits payment. SePay watched the old number, so changing it unlinks the shop. */
+  private async bankingWrite(
+    tenantId: string,
+    before: BankingSnapshot,
+    dto: BankingDto,
+  ) {
+    const accountNumber = normalizeAccountNumber(dto.accountNumber);
+    const numberChanged =
+      accountNumber !== normalizeAccountNumber(before.bankingAccountNumber);
+
+    if (numberChanged) {
+      const taken = await this.prisma.tenant.findFirst({
+        where: { bankingAccountNumber: accountNumber, id: { not: tenantId } },
+        select: { id: true },
+      });
+      if (taken) {
+        throw new ConflictException({
+          code: ErrorCode.TENANT_BANKING_ACCOUNT_TAKEN,
+          message: 'Another shop already receives payments into this account',
+        });
+      }
+      if (before.bankingAccountNumber) {
+        await this.assertNoPendingSepay(tenantId);
+      }
+    }
+
+    return {
+      bankingAccountNumber: accountNumber,
+      bankingBankName: dto.bankName,
+      bankingAccountName: dto.accountName,
+      ...(numberChanged
+        ? { bankingSepayLinkedAt: null, bankingSepayWebhookApiKey: null }
+        : {}),
+    };
+  }
+
+  private async assertNoPendingSepay(tenantId: string) {
+    const [orders, payments] = await Promise.all([
+      this.prisma.order.count({
+        where: {
+          tenantId,
+          status: OrderStatus.PENDING,
+          paymentMethod: PaymentMethod.SEPAY,
+        },
+      }),
+      this.prisma.payment.count({
+        where: {
+          tenantId,
+          method: PaymentMethod.SEPAY,
+          status: PaymentRecordStatus.PENDING,
+        },
+      }),
+    ]);
+    if (orders + payments > 0) {
+      throw new ConflictException({
+        code: ErrorCode.TENANT_BANKING_HAS_PENDING_SEPAY,
+        message: `The shop has ${orders + payments} SePay payment(s) still waiting on the current account`,
+        errors: { pendingOrders: orders, pendingPayments: payments },
+      });
+    }
+  }
+
+  /** Not awaited: the save must not wait on SePay. The owner hears through `SEPAY_LINKED`. */
+  private async afterBankChange(
+    before: BankingSnapshot,
+    after: BankingSnapshot & { name: string },
+  ) {
+    await this.announceBankChange(before, after);
+    if (bankingChanged(before, after) && hasBankInfo(after)) {
+      void this.sepaySync.syncQuietly();
+    }
+  }
+
+  /** Admin-only: the key identifies a tenant to the payment webhook. */
   async setSepayKey(tenantId: string, sepayWebhookApiKey: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
