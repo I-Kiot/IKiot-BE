@@ -9,9 +9,9 @@ import {
 import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { StaffProfileDto } from './update-user.dto';
 
-/** Puts a person on the books, INACTIVE and with no password: hiring someone and giving them a login are separate acts, so `POST /users/:id/account` is a separate call, and `deactivateAccount` parks somebody back in this state. Everything `UpdateUserDto` accepts is accepted here too - the first NestJS pass carried only seven fields, so the hire form's citizen ID, address, pay scheme and the rest were silently dropped by `whitelist: true` behind an HTTP 200. */
+/** Tạo người ở trạng thái INACTIVE, chưa có mật khẩu: tuyển người và cấp login là hai việc tách nhau, cấp login qua `POST /users/:id/account`. Mọi trường của `UpdateUserDto` đều được nhận ở đây; bản NestJS đầu chỉ nhận 7 trường, nên CCCD, địa chỉ, hình thức lương bị `whitelist: true` bỏ im lặng mà vẫn trả 200. */
 export class CreateUserDto {
-  /** Shape is checked in the service by `validateVietnamPhoneNumber`: it is the login handle and the OTP destination, so it has to be a number that can actually receive an SMS. */
+  /** Định dạng được `validateVietnamPhoneNumber` kiểm tra trong service: đây là login và nơi nhận OTP nên phải là số nhận được SMS. */
   @IsString()
   phoneNumber: string;
 
@@ -30,7 +30,7 @@ export class CreateUserDto {
   @IsUUID()
   warehouseId?: string;
 
-  /** Workshop staff: the WORKSHOP supplier this person works for. They then see that workshop's production requests at every location and can write delivery notes (with `production:deliver`). */
+  /** Nhân viên xưởng: nhà cung cấp loại WORKSHOP mà người này làm việc. Họ thấy yêu cầu sản xuất của xưởng đó ở mọi địa điểm và ghi được phiếu giao (cần `production:deliver`). */
   @IsOptional()
   @IsUUID()
   workshopId?: string;
@@ -47,7 +47,7 @@ export class CreateUserDto {
   @IsDateString()
   hireDate?: string;
 
-  /** The personal details, the same nested object `PATCH /users/:id` takes. `firstName`/`lastName` are also accepted flat, as the old `StaffDTO` spelled them, and the service prefers whichever is set. */
+  /** Thông tin cá nhân, cùng object lồng như `PATCH /users/:id`. `firstName`/`lastName` cũng nhận dạng phẳng (như `StaffDTO` cũ); service ưu tiên cái nào được gửi. */
   @IsOptional()
   @ValidateNested()
   @Type(() => StaffProfileDto)

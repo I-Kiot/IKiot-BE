@@ -15,11 +15,11 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
 @Module({
   imports: [
     PassportModule,
-    // Shared with PushService - one Firebase Admin app for the whole process.
+    // Dùng chung với PushService: một Firebase Admin app cho cả process.
     FirebaseModule,
-    // JwtStrategy resolves shift-supervisor rights on every request - see its comment.
+    // JwtStrategy kiểm tra quyền trưởng ca ở mỗi request.
     WorkingScheduleModule,
-    /** `registerAsync` so the factory runs after ConfigModule has read `.env` - a synchronous `register()` would sign with an empty secret - and the key comes from `accessTokenSecret()` so signer and JwtStrategy cannot diverge. */
+    /** Dùng registerAsync để factory chạy sau khi ConfigModule đọc .env (register() đồng bộ sẽ ký bằng secret rỗng). Key lấy từ accessTokenSecret() để signer và JwtStrategy không lệch nhau. */
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -37,7 +37,7 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
     RefreshTokenService,
     EsmsService,
   ],
-  // RefreshTokenService is exported so `users` can end a staff member's sessions on deactivate/delete - one revocation seam, not a second copy.
+  // Export RefreshTokenService để users thu hồi phiên của nhân viên khi khoá/xoá: một điểm thu hồi duy nhất.
   exports: [AuthService, RefreshTokenService],
 })
 export class AuthModule {}

@@ -23,7 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Staff accounts - iKiotMS-BE's `/staff` module, at `/users`, keeping the old sub-paths for the account lifecycle. The old `GET /staff/roles` is not reproduced: roles are tenant-defined rows, so `GET /roles` is the answer. All of these are `users:update` rather than `staff:update`, since two catalog resources for one thing is how a permission ends up granted in one place and checked in the other. */
+/** Nhân viên, nằm ở `/users`, giữ các sub-path của vòng đời tài khoản. Không có `GET /staff/roles` cũ: role là row do tenant định nghĩa, dùng `GET /roles`. Tất cả dùng `users:update` thay vì `staff:update`: hai resource cho cùng một việc sẽ khiến quyền cấp ở chỗ này và kiểm tra ở chỗ khác. */
 @ApiTags('users')
 @ApiBearerAuth('bearer')
 @Controller('users')
@@ -77,9 +77,6 @@ export class UserController {
     );
   }
 
-  // ─── Account lifecycle ─────────────────────────────────────────────────────
-
-  /** Switch on the login for an employee who was recorded without one. */
   @Permissions('users', 'update')
   @Post(':id/account')
   createAccount(

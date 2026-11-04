@@ -14,7 +14,7 @@ export class RegisterDto {
   @MinLength(6)
   password: string;
 
-  // Verified against OtpService before the tenant/owner are created; in dev without eSMS credentials the code is logged to the console instead of sent.
+  // Được xác minh qua OtpService trước khi tạo tenant/owner; dev không có credential eSMS thì mã chỉ được log ra console.
   @IsString()
   otpCode: string;
 

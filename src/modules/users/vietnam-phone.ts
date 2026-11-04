@@ -1,11 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Mobile prefixes actually issued in Vietnam after the 2018 renumbering: Viettel 03x, Vietnamobile 05x, Mobifone 07x, Vinaphone 08x and the legacy 09x block. */
+/** Đầu số di động thực tế được cấp ở Việt Nam sau đợt đổi số 2018: Viettel 03x, Vietnamobile 05x, Mobifone 07x, Vinaphone 08x và dải 09x cũ. */
 const VIETNAM_MOBILE_PHONE_REGEX =
   /^(?:03[2-9]|05[25689]|07[06789]|08[1-9]|09\d)\d{7}$/;
 
-/** Ranges that look like a mobile number but can never be one; each carries its own message, because "invalid phone number" is useless when the number is a real working line. */
+/** Các dải trông như số di động nhưng không bao giờ là số di động. Mỗi dải có message riêng, vì "số không hợp lệ" vô nghĩa khi đó là một đường dây đang hoạt động. */
 const RESERVED_RANGES: readonly { pattern: RegExp; reason: string }[] = [
   {
     pattern: /^065\d{7}$/,
@@ -54,7 +54,7 @@ const RESERVED_RANGES: readonly { pattern: RegExp; reason: string }[] = [
   },
 ];
 
-/** Validates a Vietnamese mobile number for a staff account. The phone number is the login handle and the OTP destination, so a number that can't receive an SMS is an account nobody can ever get into. Returns the trimmed number. */
+/** Kiểm tra số di động cho tài khoản nhân viên. Số điện thoại là login và nơi nhận OTP, nên số không nhận được SMS sẽ tạo ra tài khoản không ai vào được. Trả về số đã trim. */
 export function validateVietnamPhoneNumber(phoneNumber: string): string {
   const value = phoneNumber.trim();
 
@@ -65,7 +65,7 @@ export function validateVietnamPhoneNumber(phoneNumber: string): string {
     });
   }
 
-  // Checked before the shape rules on purpose: an emergency line is three digits, so "must be 10 digits" would fire first and explain nothing.
+  // Cố ý kiểm tra trước quy tắc định dạng: số khẩn cấp chỉ có 3 chữ số, nếu "phải đủ 10 số" chạy trước thì báo lỗi vô nghĩa.
   const reserved = RESERVED_RANGES.find(({ pattern }) => pattern.test(value));
   if (reserved)
     throw new BadRequestException({

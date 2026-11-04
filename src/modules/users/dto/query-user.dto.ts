@@ -3,9 +3,8 @@ import { IsIn, IsOptional, IsString, IsUUID } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { SETTABLE_USER_STATUSES } from '../../../common/constants/user-status';
 
-/** Ported from the filters `getStaffList` accepted, with two renames for consistency with every other list endpoint (`recordPerPage` → `limit`, `keyword` → `search`); the old fixed-enum `role` filter is `roleId`, since roles are tenant-defined rows now. */
+/** Bộ lọc của `getStaffList`, đổi tên cho nhất quán với các list khác (`recordPerPage` → `limit`, `keyword` → `search`). Bộ lọc `role` enum cũ nay là `roleId`, vì role là row do tenant định nghĩa. */
 export class QueryUserDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on email, phone number, first or last name. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -13,7 +12,7 @@ export class QueryUserDto extends PaginationQueryDto {
   )
   search?: string;
 
-  // DELETED is absent on purpose: deleted staff are anonymised and never listed.
+  // Không có DELETED là chủ đích: nhân viên đã xoá bị ẩn danh và không bao giờ hiện trong danh sách.
   @IsOptional()
   @IsIn(SETTABLE_USER_STATUSES)
   status?: string;

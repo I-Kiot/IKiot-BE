@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
-// eSMS SendMultipleMessage V4 (JSON) endpoint - ported 1:1 from iKiotMS-BE's esmsService.js.
+// Endpoint eSMS V4 (JSON), port 1:1 từ esmsService.js của iKiotMS-BE.
 const ESMS_ENDPOINT =
   'https://rest.esms.vn/MainService.svc/json/SendMultipleMessage_V4_post_json/';
 
@@ -19,7 +19,7 @@ export class EsmsService {
     return Boolean(process.env.ESMS_API_KEY && process.env.ESMS_SECRET_KEY);
   }
 
-  /** Converts any VN phone form (+84…, 84…, 0…) to the local 0-prefixed form eSMS expects. */
+  /** Đổi số VN (+84…, 84…, 0…) về dạng bắt đầu bằng 0 mà eSMS yêu cầu. */
   toLocalVN(phone: string): string {
     const p = String(phone || '')
       .trim()

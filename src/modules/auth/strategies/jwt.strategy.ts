@@ -33,7 +33,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  // Re-fetches the user and their current Role grants on every request rather than trusting cached JWT claims: with tenant-editable roles, a revoked permission must take effect immediately.
+  // Đọc lại user và quyền Role ở mỗi request, không tin claim đã cache trong JWT: role do tenant chỉnh được, quyền bị thu hồi phải có hiệu lực ngay.
   async validate(payload: JwtPayload): Promise<AuthUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
@@ -54,10 +54,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         message: 'Account is not active',
       });
 
-    // AuthUser keeps the branch/warehouse split every scope check is written against; the row stores one `location_id` and the Location's type says which side it is.
+    // AuthUser tách branch/warehouse vì mọi kiểm tra phạm vi dựa trên hai trường này; DB chỉ lưu một `location_id`, loại của Location cho biết thuộc bên nào.
     const { branchId, warehouseId } = columnsOfLocation(user.location);
 
-    // Whoever is running a shift right now holds a fixed extra set of permissions for as long as it runs - resolved per request so a shift that ended two minutes ago grants nothing.
+    // Trưởng ca đang chạy có thêm quyền cố định trong suốt ca; tính lại ở mỗi request để ca vừa kết thúc không còn cấp quyền.
     const supervision = await this.shiftSupervisor.resolve({
       userId: user.id,
       tenantId: user.tenantId,

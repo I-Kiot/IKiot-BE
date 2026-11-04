@@ -21,7 +21,7 @@ export class RolesService {
       where: { tenantId },
       include: {
         permissions: { select: { resource: true, action: true } },
-        // Soft-deleted accounts keep their roleId; the "in use" figure must not count them.
+        // Tài khoản đã xoá mềm vẫn giữ roleId; số "đang dùng" không được tính chúng.
         _count: {
           select: { users: { where: { status: { not: UserStatus.DELETED } } } },
         },
@@ -77,7 +77,7 @@ export class RolesService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateRoleDto) {
-    await this.findOne(tenantId, id); // 404s if missing or belongs to another tenant
+    await this.findOne(tenantId, id);
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -105,7 +105,7 @@ export class RolesService {
 
   async remove(tenantId: string, id: string) {
     const role = await this.findOne(tenantId, id);
-    // Only living accounts block the delete; a soft-deleted employee still carries the roleId (it's an FK), so those rows are detached below rather than counted.
+    // Chỉ tài khoản còn hoạt động mới chặn việc xoá; nhân viên đã xoá mềm vẫn giữ roleId (là FK) nên các row đó được gỡ ở dưới, không đếm.
     const assignedCount = await this.prisma.user.count({
       where: { roleId: role.id, status: { not: UserStatus.DELETED } },
     });

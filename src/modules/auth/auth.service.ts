@@ -39,18 +39,17 @@ import { LOCATION_SELECT } from '../../common/dto/location-ref.dto';
 
 const BCRYPT_COST = 10;
 
-// Nơi làm việc của tài khoản, kèm vào mọi user trả về cho phiên đăng nhập.
-// `locationId` alone does not say whether the posting is a branch or a warehouse, and the dashboard scopes every screen by that - its location switcher showed "the whole chain" to every STAFF account until this was added. The shape is the schema's own `{ id, type, name }`; the client maps it, the API does not grow `branchId`/`warehouseId` back.
+// Kèm vào user trả về: chỉ `locationId` không cho biết là chi nhánh hay kho, mà dashboard cần để lọc theo phạm vi. Dạng `{ id, type, name }` theo schema; không thêm lại `branchId`/`warehouseId`.
 const SESSION_USER_INCLUDE = {
   location: LOCATION_SELECT,
-  // Workshop staff (2026-10-09): the dashboard routes them to the workshop screen and names it.
+  // Nhân viên xưởng: dashboard dùng để chuyển sang màn hình xưởng.
   workshop: { select: { id: true, supplierName: true } },
 } as const;
 
-// Stamped into the reset token and checked again when it is redeemed, so an ordinary access token posted to /auth/reset-password is not mistaken for permission.
+// Đánh dấu vào reset token và kiểm tra lại khi dùng, để access token thông thường gửi tới /auth/reset-password không bị coi là quyền đặt lại mật khẩu.
 const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';
 
-// Same wording as iKiotMS-BE's AuthService: "mobile" is employee-only, "web" allows everyone except CUSTOMER.
+// Giống AuthService của iKiotMS-BE: "mobile" chỉ dành cho nhân viên, "web" cho mọi tài khoản trừ CUSTOMER.
 const ROLE_DENIED_MOBILE = 'This app is for employees and managers only';
 const ROLE_DENIED_WEB = 'A customer account cannot sign in here';
 
@@ -84,7 +83,7 @@ export class AuthService {
         message: 'Tenant name is already taken',
       });
 
-    // Verify the phone was confirmed via /auth/send-otp before creating any records - mirrors iKiotMS-BE's register.
+    // Phải xác minh OTP trước khi tạo bất kỳ bản ghi nào.
     await this.otp.verifyOtp(dto.phoneNumber, dto.otpCode);
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -153,7 +152,7 @@ export class AuthService {
     } satisfies AuditableLoginResponse;
   }
 
-  /** The signed-in account with the permissions it holds right now, reused from `JwtStrategy.validate()`. Empty for ADMIN/TENANT_OWNER (they short-circuit the guard), and a supervisor's extra keys expire by the clock - this is a snapshot for drawing a UI, not the authority. */
+  /** Quyền hiện có của tài khoản đang đăng nhập. Rỗng với ADMIN/TENANT_OWNER (guard bỏ qua); quyền phụ của trưởng ca hết hạn theo thời gian. Chỉ để vẽ UI, không phải nguồn phân quyền. */
   async me(authUser: AuthUser) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: authUser.userId },
@@ -228,12 +227,12 @@ export class AuthService {
       where: { id: userId },
       data: { password: passwordHash },
     });
-    // Every other session ends with the old password; an already-issued access token stays valid until it expires, as in the old system.
+    // Các phiên khác bị thu hồi; access token đã cấp vẫn dùng được tới khi hết hạn (như hệ thống cũ).
     await this.refreshTokens.revokeAllFor(userId);
     return { success: true };
   }
 
-  /** Logs a user in via a Google (Firebase) ID token, resolved by the token's email - no auto-provisioning, and `platform` picks the role gate ("mobile" is STAFF-only). */
+  /** Đăng nhập bằng Firebase ID token (Google), khớp user theo email, không tự tạo tài khoản. `platform` quyết định cổng vai trò ("mobile" chỉ STAFF). */
   async firebaseLogin(dto: FirebaseLoginDto, userAgent?: string) {
     if (!this.firebase.isConfigured()) {
       throw new UnauthorizedException({
@@ -305,13 +304,10 @@ export class AuthService {
     } satisfies AuditableLoginResponse;
   }
 
-  // ─── Session lifecycle ─────────────────────────────────────────────────────
-
-  /** Trades a refresh token for a fresh pair; the presented token is revoked as part of the swap - see `RefreshTokenService.rotate`. */
   async refresh(refreshToken: string, userAgent?: string) {
     const rotated = await this.refreshTokens.rotate(refreshToken, userAgent);
 
-    // The user is re-read to check the account is still usable: a token minted before a suspension must not survive it, and JwtStrategy only covers the access token.
+    // Đọc lại user để chắc tài khoản còn dùng được: token cấp trước khi bị khoá không được sống sót qua đó, vì JwtStrategy chỉ kiểm tra access token.
     const user = await this.prisma.user.findUnique({
       where: { id: rotated.userId },
       select: { id: true, status: true },
@@ -330,15 +326,12 @@ export class AuthService {
     };
   }
 
-  /** Ends one session. Ported from `AuthService.logout`. */
   async logout(userId: string, refreshToken?: string) {
     if (refreshToken) await this.refreshTokens.revoke(userId, refreshToken);
     return { success: true };
   }
 
-  // ─── Forgot password ───────────────────────────────────────────────────────
-
-  /** The account a password-reset step may act on. One message for "no such number" and "account is locked", since a public endpoint that told them apart would reveal which numbers are registered. */
+  /** Tài khoản được phép qua bước đặt lại mật khẩu. Cùng một thông báo cho "không tồn tại" và "bị khoá", vì endpoint public mà phân biệt được sẽ lộ số điện thoại nào đã đăng ký. */
   private async resettableUser(phoneNumber: string) {
     const phone = phoneNumber.trim();
     if (!phone) {
@@ -369,7 +362,7 @@ export class AuthService {
     };
   }
 
-  /** Exchanges a verified OTP for a 15-minute reset token stamped `type: 'password_reset'`, which is re-checked in `resetPassword`. */
+  /** Đổi OTP đã xác minh lấy reset token có `type: 'password_reset'`, được `resetPassword` kiểm tra lại. */
   async verifyForgotPasswordOtp(dto: VerifyForgotPasswordOtpDto) {
     const user = await this.resettableUser(dto.phoneNumber);
     await this.otp.verifyOtp(dto.phoneNumber, dto.otpCode);
@@ -417,7 +410,7 @@ export class AuthService {
       where: { id: user.id },
       data: { password: await bcrypt.hash(dto.newPassword, BCRYPT_COST) },
     });
-    // Resetting a password is what you do when it leaked, so every session it could have reached ends with it.
+    // Đặt lại mật khẩu thường do lộ mật khẩu, nên thu hồi mọi phiên có thể đã dùng mật khẩu cũ.
     await this.refreshTokens.revokeAllFor(user.id);
 
     return {
@@ -425,7 +418,7 @@ export class AuthService {
     };
   }
 
-  /** Whether a phone number or shop name is already taken - a deliberate existence oracle, but only for the two fields the registration form must check before it can submit. */
+  /** Kiểm tra số điện thoại hoặc tên shop đã tồn tại chưa. Lộ sự tồn tại là chủ đích, chỉ cho hai trường form đăng ký cần kiểm tra trước khi submit. */
   async checkAvailability(dto: CheckAvailabilityDto) {
     const [phoneTaken, tenantTaken] = await Promise.all([
       dto.phoneNumber
@@ -452,7 +445,7 @@ export class AuthService {
     return this.jwt.sign({ sub: userId });
   }
 
-  /** Strips the password hash and nests the flat `profile_*` columns the way `/users` answers them, so the dashboard reads `user.profile.firstName` from `/auth/me` and `/auth/login` alike (until 2026-09-12 these two were the only user payloads still flat, which left the sidebar and account settings without a name). */
+  /** Bỏ password hash và gom cột `profile_*` thành object `profile` như `/users`, để dashboard đọc `user.profile.firstName` ở cả `/auth/me` và `/auth/login`. */
   private toPublicUser<
     T extends { password?: string | null } & FlatUserProfile,
   >(user: T) {

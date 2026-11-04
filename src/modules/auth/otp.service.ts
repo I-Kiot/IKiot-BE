@@ -17,7 +17,7 @@ interface OtpEntry {
   expiresAt: number;
 }
 
-/** OTP codes in Redis, keyed by `normalizePhone` so a code requested as `0912345678` still verifies as `+84912345678`, with the old service's in-memory fallback for local dev (single-process only). */
+/** OTP lưu trong Redis, key theo `normalizePhone` nên mã yêu cầu bằng `0912345678` vẫn xác minh được với `+84912345678`. Có fallback bộ nhớ như service cũ cho dev local (chỉ một process). */
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
@@ -36,7 +36,7 @@ export class OtpService {
     return String(randomInt(0, 1_000_000)).padStart(6, '0');
   }
 
-  /** In dev, an empty code or the sentinel token skips verification - the old DEV_OTP_BYPASS_TOKEN escape hatch, disabled outright in production. */
+  /** Chỉ ở dev: code rỗng hoặc sentinel token bỏ qua xác minh (DEV_OTP_BYPASS_TOKEN của hệ thống cũ). Tắt hẳn ở production. */
   private isDevBypass(code: string): boolean {
     if (process.env.NODE_ENV === 'production') return false;
     const sentinel = process.env.DEV_OTP_BYPASS_TOKEN || 'DEV_BYPASS';
@@ -72,7 +72,7 @@ export class OtpService {
     this.fallback.delete(key);
   }
 
-  /** Generates, stores and sends an OTP (logged to the console in dev when eSMS is unconfigured). A gateway failure is a 503 naming the SMS service, because eSMS rejects for reasons that are ours and fixable - an exhausted balance, a suspended brandname, a wrong key. */
+  /** Tạo, lưu và gửi OTP (dev chưa cấu hình eSMS thì chỉ log ra console). Lỗi cổng SMS trả 503 có tên dịch vụ SMS, vì eSMS từ chối vì lỗi phía ta sửa được: hết số dư, brandname bị khoá, sai key. */
   async sendOtp(phoneNumber: string): Promise<{ sent: true }> {
     if (!phoneNumber)
       throw new BadRequestException({
@@ -107,7 +107,6 @@ export class OtpService {
     return { sent: true };
   }
 
-  /** Verifies a submitted OTP against the stored value, consuming it on success. */
   async verifyOtp(phoneNumber: string, code: string): Promise<true> {
     if (this.isDevBypass(code)) return true;
 
