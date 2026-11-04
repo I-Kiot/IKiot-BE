@@ -100,8 +100,8 @@ export function nextProductionDeliveryCode(
 }
 
 /**
- * Which lines would overshoot what was ordered if this delivery went in: received + still pending
- * on other notes + this one, per line. Pure, so the rule is tested without a database.
+ * Dòng nào sẽ vượt số đã đặt nếu phiếu này được ghi: đã nhận + đang chờ trên phiếu khác + phiếu này, tính theo từng dòng.
+ * Hàm thuần nên quy tắc được test không cần DB.
  */
 export function deliveryOvershoots(
   lines: { id: string; quantity: number; receivedQuantity: number }[],
@@ -125,12 +125,10 @@ export function deliveryOvershoots(
 const CODE_ATTEMPTS = 5;
 
 /**
- * Workshop staff (a STAFF account with `users.workshop_id`) and their delivery notes (2026-10-09).
- *
- * The workshop sees every request sent to it, at every location, and writes a delivery note -
- * possibly short, so finished pieces can leave before the rest. The note raises nothing: the
- * workshop is also the party paid by the accepted quantity, so the receiving location counts the
- * goods and confirms the note, which runs the one receipt path (`ProductionRequestService.receiveGoods`).
+ * Nhân viên xưởng (tài khoản STAFF có `users.workshop_id`) và phiếu giao của họ (2026-10-09).
+ * Xưởng thấy mọi yêu cầu gửi tới mình ở mọi địa điểm và viết phiếu giao, có thể thiếu để thành phẩm đi trước.
+ * Phiếu không tạo gì lên kho: xưởng cũng là bên được trả theo số lượng nhận, nên địa điểm nhận đếm hàng và xác nhận phiếu,
+ * qua đúng một đường nhận hàng (`ProductionRequestService.receiveGoods`).
  */
 @Injectable()
 export class ProductionDeliveryService {
@@ -140,8 +138,6 @@ export class ProductionDeliveryService {
     private readonly productionList: ProductionListService,
     private readonly notifications: NotificationService,
   ) {}
-
-  // ─── Workshop side ─────────────────────────────────────────────────────────
 
   async listForWorkshop(
     user: AuthUser,
@@ -164,7 +160,7 @@ export class ProductionDeliveryService {
       this.prisma.productionRequest.findMany({
         where,
         include: DETAIL_INCLUDE,
-        // Still owed first, then by the day promised.
+        // Còn nợ đứng trước, rồi tới ngày hẹn.
         orderBy: [{ expectedReadyDate: 'asc' }, { createdAt: 'desc' }],
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -219,8 +215,7 @@ export class ProductionDeliveryService {
     ) {
       try {
         deliveryCode = await this.prisma.$transaction(async (tx) => {
-          // Serialises notes and receipts against one request: the room left on a line is read
-          // after every earlier note on it has committed.
+          // Tuần tự hoá phiếu và lần nhận trên cùng một yêu cầu: chỗ còn lại của dòng được đọc sau khi mọi phiếu trước đó đã commit.
           await tx.$queryRaw`SELECT id FROM production_requests WHERE id = ${requestId} FOR UPDATE`;
           const fresh = await tx.productionRequest.findUniqueOrThrow({
             where: { id: requestId },
@@ -299,7 +294,7 @@ export class ProductionDeliveryService {
       });
     }
 
-    // After the commit: the location must count the goods before they are stock.
+    // Sau commit: địa điểm phải đếm được hàng trước khi nó thành tồn kho.
     const managers = await this.notifications.managersOfLocation({
       tenantId,
       locationId: request.locationId,
@@ -337,9 +332,7 @@ export class ProductionDeliveryService {
     return this.cancel(user, delivery, dto, true);
   }
 
-  // ─── Location side ─────────────────────────────────────────────────────────
-
-  /** Delivery notes to the caller's location (every location for the owner) - the "chờ nhận" list. Workshop staff get their own workshop's notes. */
+  /** Phiếu giao tới địa điểm của người gọi (chủ shop thấy mọi địa điểm): danh sách "chờ nhận". Nhân viên xưởng chỉ thấy phiếu của xưởng mình. */
   async list(user: AuthUser, query: QueryProductionDeliveryDto) {
     const tenantId = requireTenantId(user);
     const requestWhere: Prisma.ProductionRequestWhereInput = {};
@@ -400,7 +393,7 @@ export class ProductionDeliveryService {
     return this.toResponse(delivery);
   }
 
-  /** The location counts what arrived and confirms the note - this is where stock and the workshop's debt rise. */
+  /** Địa điểm đếm hàng đã về và xác nhận phiếu: tồn kho và công nợ xưởng tăng ở đây. */
   async receive(user: AuthUser, id: string, dto: ReceiveProductionDto) {
     const tenantId = requireTenantId(user);
     const delivery = await this.findDelivery(tenantId, id);
@@ -425,7 +418,7 @@ export class ProductionDeliveryService {
     });
   }
 
-  /** The location refuses the note (wrong goods, nothing arrived). Nothing was ever stock, so nothing moves back. */
+  /** Địa điểm từ chối phiếu (sai hàng, chưa có gì về). Chưa từng thành tồn nên không có gì phải hoàn lại. */
   async cancelByLocation(
     user: AuthUser,
     id: string,
@@ -440,8 +433,6 @@ export class ProductionDeliveryService {
     this.requests.assertCanWrite(user, request);
     return this.cancel(user, delivery, dto, false);
   }
-
-  // ─── Shared ────────────────────────────────────────────────────────────────
 
   private async cancel(
     user: AuthUser,
@@ -489,7 +480,6 @@ export class ProductionDeliveryService {
     return this.toResponse(await this.findDelivery(tenantId, delivery.id));
   }
 
-  /** The workshop link every workshop route needs. */
   private requireWorkshop(user: AuthUser): string {
     if (!user.workshopId) {
       throw new ForbiddenException({
@@ -500,7 +490,7 @@ export class ProductionDeliveryService {
     return user.workshopId;
   }
 
-  /** A request the caller's workshop may see: sent to it, and past DRAFT. Anything else answers 404 - another workshop's requests must look like they do not exist. */
+  /** Yêu cầu mà xưởng của người gọi được thấy: đã gửi tới xưởng và qua DRAFT. Còn lại trả 404; yêu cầu của xưởng khác phải như không tồn tại. */
   private async workshopRequest(
     user: AuthUser,
     id: string,

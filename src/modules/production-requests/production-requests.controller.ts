@@ -25,7 +25,7 @@ import {
 import { ProductionListService } from './production-list.service';
 import { ProductionRequestService } from './production-requests.service';
 
-/** "Yêu cầu sản xuất" (YCSX) sent to a WORKSHOP supplier and tracked by hand (hành trình GĐ1 – Bước 4, contract §3). Receiving the goods is its own right, `production:receive`, because it is what raises stock. Every route takes the whole `AuthUser`: where the caller works decides what they may touch. */
+/** Yêu cầu sản xuất (YCSX) gửi NCC loại WORKSHOP, theo dõi bằng tay. Nhận hàng là quyền riêng `production:receive` vì đó là lúc tồn tăng. Mọi route nhận cả `AuthUser`: nơi người gọi làm việc quyết định họ được chạm gì. */
 @ApiTags('production-requests')
 @ApiBearerAuth('bearer')
 @Controller('production-requests')
@@ -109,7 +109,7 @@ export class ProductionRequestController {
   }
 }
 
-/** "Danh sách cần sản xuất": computed on every read from the open orders, the stock and the open production requests - there is no table behind it (contract §3). */
+/** "Danh sách cần sản xuất": tính lại mỗi lần đọc từ đơn đang mở, tồn kho và yêu cầu sản xuất đang mở; không có bảng phía sau (contract §3). */
 @ApiTags('production-list')
 @ApiBearerAuth('bearer')
 @Controller('production-list')

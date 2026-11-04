@@ -28,7 +28,6 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** An attribute of the SKU's product set to a different value on a production line. */
 export class ProductionLineAttributeDto {
   @IsUUID()
   attributeId: string;
@@ -37,7 +36,7 @@ export class ProductionLineAttributeDto {
   value: string;
 }
 
-/** One line of a production request: a SKU and how many to have made. `orderItemId` ties the line to the order line it is made for - required in practice for a custom piece (the production list hands it over), optional for standard stock. */
+/** Một dòng: SKU và số lượng cần làm. `orderItemId` gắn dòng với dòng đơn nó làm cho: thực tế bắt buộc với hàng tuỳ chỉnh (danh sách sản xuất truyền vào), không bắt buộc với hàng chuẩn. */
 export class ProductionRequestLineDto {
   @IsUUID()
   productItemId: string;
@@ -55,21 +54,21 @@ export class ProductionRequestLineDto {
   @IsString()
   note?: string;
 
-  /** Attributes changed from the SKU's own (2026-10-16). The line is then for the SKU carrying exactly those values - an existing sibling, or a new one copied from this SKU. Not allowed on a line made for an order line. */
+  /** Thuộc tính khác với SKU gốc (2026-10-16). Dòng khi đó dành cho SKU có đúng các giá trị này: SKU anh em có sẵn, hoặc SKU mới sao từ SKU gốc. Không dùng cho dòng làm cho đơn. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ProductionLineAttributeDto)
   attributeValues?: ProductionLineAttributeDto[];
 
-  /** Images for the workshop - a design drawing, a sample photo - already uploaded through `POST /uploads` (2026-10-16). */
+  /** Ảnh cho xưởng (bản vẽ, ảnh mẫu) đã tải qua `POST /uploads` (2026-10-16). */
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
   @IsUrl({ require_tld: false }, { each: true })
   attachmentUrls?: string[];
 
-  /** Sent only when the user ticked "update the price": the resulting SKU's retail price becomes this. */
+  /** Chỉ gửi khi người dùng tick "cập nhật giá": giá bán lẻ của SKU thành giá này. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -77,17 +76,17 @@ export class ProductionRequestLineDto {
   retailPrice?: number;
 }
 
-/** `code`, `status`, `sentAt`, `createdBy` and every received figure are the server's (coding rule 4). */
+/** `code`, `status`, `sentAt`, `createdBy` và mọi số đã nhận do server quyết (coding rule 4). */
 export class CreateProductionRequestDto {
-  /** The workshop - a supplier whose `type` is WORKSHOP. */
+  /** Xưởng – NCC có `type` là WORKSHOP. */
   @IsUUID()
   supplierId: string;
 
-  /** Where the workshop delivers: a branch or a warehouse, sellable. */
+  /** Xưởng giao tới: chi nhánh hoặc kho, bán được. */
   @IsUUID()
   locationId: string;
 
-  /** The day the workshop promised, `YYYY-MM-DD`. */
+  /** Ngày xưởng hứa giao, `YYYY-MM-DD`. */
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, {
     message: 'Ngày hẹn xong phải có dạng YYYY-MM-DD',
@@ -106,7 +105,7 @@ export class CreateProductionRequestDto {
   items: ProductionRequestLineDto[];
 }
 
-/** DRAFT only. `items`, when sent, replaces the whole line set. */
+/** Chỉ DRAFT. `items` nếu gửi thì thay toàn bộ tập dòng. */
 export class UpdateProductionRequestDto extends PartialType(
   CreateProductionRequestDto,
 ) {}
@@ -117,14 +116,14 @@ export class UpdateProductionRequestStatusDto {
   })
   status: string;
 
-  /** Appended to the request's note. Required when closing short (`COMPLETED`): why the rest will never come. */
+  /** Nối vào ghi chú yêu cầu. Bắt buộc khi đóng thiếu (`COMPLETED`): vì sao phần còn lại sẽ không về. */
   @IsOptional()
   @IsString()
   note?: string;
 }
 
 export class QueryProductionRequestDto extends PaginationQueryDto {
-  /** Partial match on the YCSX code. */
+  /** Khớp một phần mã YCSX. */
   @IsOptional()
   @IsString()
   @Transform(trim)
@@ -142,7 +141,7 @@ export class QueryProductionRequestDto extends PaginationQueryDto {
   @IsUUID()
   locationId?: string;
 
-  /** Requests with a line for this SKU - the production list's expanded row. */
+  /** Yêu cầu có dòng cho SKU này – dòng mở rộng của danh sách sản xuất. */
   @IsOptional()
   @IsUUID()
   productItemId?: string;
@@ -152,20 +151,20 @@ export class ReceiveProductionLineDto {
   @IsUUID()
   productionRequestItemId: string;
 
-  /** How many arrived this time, defects included. */
+  /** Số về lần này, kể cả hàng lỗi. */
   @Type(() => Number)
   @IsInt({ message: 'Số lượng nhận phải là số nguyên' })
   @Min(0, { message: 'Số lượng nhận không được âm' })
   receivedQuantity: number;
 
-  /** Of those, how many are defective - they go to the damaged-goods location, not on sale. */
+  /** Trong đó bao nhiêu lỗi – chuyển về kho hàng hỏng, không bán. */
   @IsOptional()
   @Type(() => Number)
   @IsInt({ message: 'Số lượng lỗi phải là số nguyên' })
   @Min(0, { message: 'Số lượng lỗi không được âm' })
   defectQuantity?: number;
 
-  /** The workshop's price per unit; blank = the SKU's cost price. */
+  /** Giá xưởng cho mỗi đơn vị; để trống = giá vốn của SKU. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -180,7 +179,7 @@ export class ReceiveProductionDto {
   @Type(() => ReceiveProductionLineDto)
   items: ReceiveProductionLineDto[];
 
-  /** Where defective units go; defaults to the receiving location's damaged-goods location. */
+  /** Hàng lỗi về đâu; mặc định là kho hàng hỏng của địa điểm nhận. */
   @IsOptional()
   @IsUUID()
   defectLocationId?: string;
@@ -190,46 +189,44 @@ export class ReceiveProductionDto {
   note?: string;
 }
 
-/** The catalogue at each location, paged. `onlyShort` narrows it to what still has to be ordered. */
+/** Danh mục ở mỗi địa điểm, phân trang. `onlyShort` lọc về những gì còn phải đặt. */
 export class QueryProductionListDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
   locationId?: string;
 
-  /** Partial match on SKU or product name. */
+  /** Khớp một phần theo SKU hoặc tên sản phẩm. */
   @IsOptional()
   @IsString()
   @Transform(trim)
   search?: string;
 
-  /** One SKU only - where a shortage notification links to (`production-request.templates.ts`). Narrows `search` further when both are sent. */
+  /** Chỉ một SKU – thông báo thiếu hàng dẫn tới đây (`production-request.templates.ts`). Thu hẹp thêm `search` khi gửi cả hai. */
   @IsOptional()
   @IsUUID()
   productItemId?: string;
 
-  /** Only rows still short after stock and every open request. Defaults to false: anything can be ordered, short rows are sorted first. */
+  /** Chỉ dòng còn thiếu sau tồn và mọi yêu cầu đang mở. Mặc định false: đặt được mọi thứ, dòng thiếu lên trước. */
   @BooleanQuery()
   onlyShort?: boolean;
 
-  /** Only rows with a production request still open (draft, sent, partly received) - what is waiting to be sent or received. */
+  /** Chỉ dòng có yêu cầu sản xuất còn mở (nháp, đã gửi, nhận một phần) – thứ đang chờ gửi hoặc nhận. */
   @BooleanQuery()
   hasOpenRequest?: boolean;
 }
-
-// ─── Workshop staff & delivery notes (2026-10-09) ─────────────────────────────
 
 export class ProductionDeliveryLineDto {
   @IsUUID()
   productionRequestItemId: string;
 
-  /** How many the workshop is delivering on this line this time. A short delivery is fine - the rest can follow on another note. */
+  /** Số xưởng giao trên dòng này lần này. Giao thiếu được – phần còn lại theo phiếu khác. */
   @Type(() => Number)
   @IsInt({ message: 'Số lượng giao phải là số nguyên' })
   @Min(1, { message: 'Số lượng giao phải lớn hơn 0' })
   quantity: number;
 }
 
-/** Written by workshop staff. Touches no stock: the receiving location counts the goods and confirms (`POST /production-deliveries/:id/receive`). `code`, `status` and the people are the server's. */
+/** Nhân viên xưởng viết. Không đụng tồn: địa điểm nhận đếm hàng và xác nhận (`POST /production-deliveries/:id/receive`). `code`, `status` và người do server quyết. */
 export class CreateProductionDeliveryDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'Phiếu giao phải có ít nhất một mặt hàng' })
@@ -243,16 +240,16 @@ export class CreateProductionDeliveryDto {
 }
 
 export class CancelProductionDeliveryDto {
-  /** Why the note is withdrawn (workshop) or refused (location) - the only record of it. */
+  /** Lý do phiếu bị rút (xưởng) hoặc từ chối (địa điểm) – là dấu vết duy nhất của nó. */
   @IsString()
   @Transform(trim)
   @Matches(/\S/, { message: 'Phải nhập lý do hủy phiếu giao' })
   reason: string;
 }
 
-/** The workshop's view of the requests sent to it, at every location. */
+/** Góc nhìn của xưởng về các yêu cầu gửi tới mình, ở mọi địa điểm. */
 export class QueryWorkshopProductionRequestDto extends PaginationQueryDto {
-  /** Partial match on the YCSX code. */
+  /** Khớp một phần mã YCSX. */
   @IsOptional()
   @IsString()
   @Transform(trim)
@@ -268,7 +265,7 @@ export class QueryWorkshopProductionRequestDto extends PaginationQueryDto {
 }
 
 export class QueryProductionDeliveryDto extends PaginationQueryDto {
-  /** Partial match on the delivery code or the YCSX code. */
+  /** Khớp một phần mã phiếu giao hoặc mã YCSX. */
   @IsOptional()
   @IsString()
   @Transform(trim)
@@ -278,7 +275,6 @@ export class QueryProductionDeliveryDto extends PaginationQueryDto {
   @IsIn(PRODUCTION_DELIVERY_STATUSES)
   status?: string;
 
-  /** The receiving location. */
   @IsOptional()
   @IsUUID()
   locationId?: string;

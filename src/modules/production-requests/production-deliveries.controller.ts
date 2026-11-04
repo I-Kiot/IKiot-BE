@@ -20,7 +20,7 @@ import {
 } from './dto/production-request.dto';
 import { ProductionDeliveryService } from './production-deliveries.service';
 
-/** Workshop staff (`users.workshop_id`): the requests sent to their workshop at every location, and the delivery notes they write. Every route needs `production:deliver` and a linked workshop. */
+/** Nhân viên xưởng (`users.workshop_id`): xem yêu cầu gửi tới xưởng ở mọi địa điểm và phiếu giao họ viết. Mọi route cần `production:deliver` và xưởng liên kết. */
 @ApiTags('workshop')
 @ApiBearerAuth('bearer')
 @Controller('workshop')
@@ -75,7 +75,7 @@ export class WorkshopController {
   }
 }
 
-/** The receiving side of a workshop's delivery notes: the "chờ nhận" list, confirming a note (which is what raises stock - `production:receive`) or refusing it. */
+/** Phía nhận phiếu giao của xưởng: danh sách "chờ nhận", xác nhận phiếu (lúc này tồn mới tăng, `production:receive`) hoặc từ chối. */
 @ApiTags('production-deliveries')
 @ApiBearerAuth('bearer')
 @Controller('production-deliveries')

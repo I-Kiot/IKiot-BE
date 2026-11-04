@@ -16,7 +16,7 @@ import { SupplierModule } from '../suppliers/suppliers.module';
 import { ProductModule } from '../products/products.module';
 
 @Module({
-  // InventoryModule for `openLot` (receiving), SupplierModule for the workshop's payables, NotificationModule for the shortage / goods-arrived / delivery messages.
+  // InventoryModule cho `openLot` (nhận hàng), SupplierModule cho công nợ xưởng, NotificationModule cho thông báo thiếu / hàng về / phiếu giao.
   imports: [InventoryModule, NotificationModule, SupplierModule, ProductModule],
   controllers: [
     ProductionRequestController,
@@ -29,7 +29,7 @@ import { ProductModule } from '../products/products.module';
     ProductionListService,
     ProductionDeliveryService,
   ],
-  // ProductionListService for the order module's shortage hook (B-3: `shortagesFor` / `notifyNewShortages`).
+  // ProductionListService cho hook thiếu hàng của module đơn (B-3: `shortagesFor` / `notifyNewShortages`).
   exports: [ProductionRequestService, ProductionListService],
 })
 export class ProductionRequestModule {}

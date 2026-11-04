@@ -4,22 +4,19 @@ import {
 } from '../../common/constants/production-request-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// The production request's lifecycle as pure functions - the one place every status change is
-// decided (contract §3), unit-tested in production-request-rules.spec.ts.
+// Vòng đời yêu cầu sản xuất dưới dạng hàm thuần, là nơi duy nhất quyết mọi đổi trạng thái (contract §3); test trong production-request-rules.spec.ts.
 //
 //   DRAFT ──SENT──▶ SENT ──receive──▶ PARTIALLY_RECEIVED ──receive──▶ COMPLETED
 //     │               │                       │
-//     └──CANCELLED◀───┘                       └──close short (by hand, with a reason)──▶ COMPLETED
-//        (only while nothing has been received)
+//     └──CANCELLED◀───┘                       └──đóng thiếu (bằng tay, kèm lý do)──▶ COMPLETED
+//        (chỉ khi chưa nhận gì)
 //
-// Closing short exists because a workshop that delivers 8 of 10 and stops would otherwise
-// leave the request open for ever, its last 2 still counted as "on order" on the production
-// list - so the shortage it should be showing stays hidden. Once closed, the remainder stops
-// counting and the list shows that SKU short again, ready to order elsewhere.
+// Đóng thiếu có vì xưởng giao 8/10 rồi dừng sẽ khiến yêu cầu mở mãi, 2 cái còn lại vẫn bị tính "đang đặt" trên danh sách sản xuất,
+// nên thiếu đáng lẽ phải hiện thì vẫn bị ẩn. Khi đã đóng, phần còn lại thôi được tính và danh sách hiện lại SKU đó thiếu, sẵn để đặt chỗ khác.
 
 export type RuleViolation = { code: ErrorCode; message: string };
 
-/** A status somebody sets by hand. Returns the reason it is refused, or null. A request that has delivered goods cannot be cancelled: stock already came in against it, and cancelling would stop explaining where those goods came from - it is closed short instead, which keeps the receipts and drops only what never came. */
+/** Trạng thái do người dùng đặt tay. Trả lý do bị từ chối hoặc null. Yêu cầu đã giao hàng không được huỷ: tồn đã nhập theo nó, huỷ sẽ mất dấu nguồn hàng; thay vào đó đóng thiếu, giữ các phiếu nhận và bỏ phần chưa về. */
 export function manualTransitionViolation(
   from: string,
   to: string,
@@ -50,8 +47,7 @@ export function manualTransitionViolation(
       : null;
   }
   if (to === ProductionRequestStatus.COMPLETED) {
-    // Only a request that has delivered something and is still owed the rest. Nothing received
-    // yet is a cancellation, not a short close.
+    // Chỉ yêu cầu đã giao gì đó và còn nợ phần còn lại. Chưa nhận gì là huỷ, không phải đóng thiếu.
     if (from !== ProductionRequestStatus.PARTIALLY_RECEIVED) {
       return {
         code: ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID,
@@ -72,7 +68,7 @@ export function manualTransitionViolation(
   };
 }
 
-/** Where a receipt leaves the request: COMPLETED once every line has all it asked for, PARTIALLY_RECEIVED otherwise. */
+/** Sau một lần nhận, yêu cầu ở đâu: COMPLETED khi mọi dòng đủ số đã đặt, còn lại PARTIALLY_RECEIVED. */
 export function statusAfterReceipt(
   lines: { quantity: number; receivedQuantity: number }[],
 ): string {
@@ -81,7 +77,7 @@ export function statusAfterReceipt(
     : ProductionRequestStatus.PARTIALLY_RECEIVED;
 }
 
-/** The next YCSX code after the highest one in the shop: `YCSX000123` → `YCSX000124`. Codes are always server-made, so every one matches the pattern; anything else is ignored rather than trusted. */
+/** Mã YCSX kế tiếp sau mã cao nhất của shop: `YCSX000123` → `YCSX000124`. Mã luôn do server tạo nên khớp mẫu; mã khác bị bỏ qua chứ không tin. */
 export const PRODUCTION_REQUEST_CODE_PREFIX = 'YCSX';
 
 export function nextProductionRequestCode(

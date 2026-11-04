@@ -1,9 +1,9 @@
 import { CREDIT_WARNING_RATIO, crossedCreditWarning } from './credit-warning';
 
 const LIMIT = 100_000_000;
-const THRESHOLD = CREDIT_WARNING_RATIO * LIMIT; // 75,000,000
+const THRESHOLD = CREDIT_WARNING_RATIO * LIMIT;
 
-// Same failure mode as the low-stock warning: the version that fires on every receipt above the line is the one that gets muted, after which the real warnings go unread too.
+// Cùng lỗi như cảnh báo tồn thấp: bản bắn ở mọi lần nhận trên ngưỡng sẽ bị tắt, rồi cảnh báo thật cũng không ai đọc.
 describe('crossedCreditWarning', () => {
   it('fires on the receipt that lands exactly on the threshold', () => {
     expect(crossedCreditWarning(THRESHOLD, 5_000_000, LIMIT)).toBe(true);
@@ -16,7 +16,7 @@ describe('crossedCreditWarning', () => {
   });
 
   it('stays quiet on later receipts once already above the threshold', () => {
-    // Debt was already 80m before this 5m receipt - the warning went out then.
+    // Nợ đã 80 triệu trước lần nhận 5 triệu này, nên cảnh báo đã gửi từ trước đó.
     expect(crossedCreditWarning(85_000_000, 5_000_000, LIMIT)).toBe(false);
   });
 

@@ -4,7 +4,7 @@ import { SupplierService } from './suppliers.service';
 import { NotificationModule } from '../notifications/notifications.module';
 
 @Module({
-  // NotificationModule: paying down a supplier debt notifies the tenant owners.
+  // NotificationModule: trả nợ NCC thì báo chủ shop.
   imports: [NotificationModule],
   controllers: [SupplierController],
   providers: [SupplierService],

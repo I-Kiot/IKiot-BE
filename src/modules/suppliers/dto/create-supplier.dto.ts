@@ -10,13 +10,13 @@ import {
 } from 'class-validator';
 import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 
-// `outstandingDebt` is deliberately absent: it is server-managed, rising on receipt of a stock movement and falling only through POST /suppliers/:id/payments. The generated DTO accepted it from the client, which let a caller rewrite the books with a PATCH.
+// Cố ý không có `outstandingDebt`: server quản lý, tăng khi nhận hàng và chỉ giảm qua POST /suppliers/:id/payments. DTO sinh tự động từng cho client gửi nó, nên PATCH viết lại được sổ nợ.
 export class CreateSupplierDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên nhà cung cấp không được để trống' })
   supplierName: string;
 
-  /** GOODS sells finished goods (supplier imports); WORKSHOP makes them to order (production requests). Defaults to GOODS. Locked once a document names the supplier. */
+  /** GOODS bán hàng có sẵn (nhập NCC); WORKSHOP làm theo đơn (yêu cầu sản xuất). Mặc định GOODS. Khoá sau khi có phiếu gắn NCC. */
   @IsOptional()
   @IsIn(SUPPLIER_TYPES, {
     message: `Loại nhà cung cấp phải là ${SUPPLIER_TYPES.join(' hoặc ')}`,
@@ -39,7 +39,7 @@ export class CreateSupplierDto {
   @IsString()
   address?: string;
 
-  /** Ceiling the outstanding debt is checked against when receiving goods. 0 = no credit. */
+  /** Trần công nợ kiểm khi nhận hàng. 0 = không cho nợ. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
