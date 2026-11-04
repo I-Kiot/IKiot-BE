@@ -41,10 +41,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Chủ xác nhận đã nhận tiền mặt từ shipper (A-10, OrderRemittanceService – `POST
- * /orders/:id/confirm-remittance`) trên Postgres thật (docker compose up -d). Đơn đi đủ luồng thật:
- * tạo (có cọc) → đóng gói → lấy hàng → đang vận chuyển → giao thu tiền mặt (C-5), rồi mới xác nhận.
- * Tự tạo tenant riêng và dọn sạch.
+ * Chủ xác nhận đã nhận tiền mặt từ shipper (A-10) trên Postgres thật. Đơn đi đủ luồng: tạo (có cọc) → đóng gói → lấy hàng → đang vận chuyển → giao thu tiền mặt (C-5), rồi mới xác nhận. Tự tạo tenant riêng và dọn sạch.
  */
 describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () => {
   let prisma: PrismaService;
@@ -86,7 +83,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
   const confirm = (orderId: string, amount: number, note?: string) =>
     remittances.confirm(owner, tenantId, orderId, { amount, note });
 
-  /** An order of one sofa (10.000.000đ) with a 3.000.000đ deposit, taken to SHIPPING through the real routes. */
+  /** Đơn một sofa (10.000.000đ) có cọc 3.000.000đ, đưa tới SHIPPING qua các route thật. */
   const shippingOrder = async () => {
     const { id } = await manual.create(owner, tenantId, {
       branchId,
@@ -107,7 +104,6 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     return { orderId: id, shipmentId: shipment.id };
   };
 
-  /** Delivered, the remaining 7.000.000đ collected by `method`. */
   const deliveredOrder = async (method: string) => {
     const { orderId, shipmentId } = await shippingOrder();
     await delivery.deliver(owner, tenantId, shipmentId, {
@@ -164,7 +160,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     delivery = moduleRef.get(ShipmentDeliveryService);
     const inventory = moduleRef.get(InventoryService);
 
-    // A bank account, so a delivery can be paid by QR.
+    // Cần tài khoản ngân hàng đã liên kết SePay để giao hàng thu được QR.
     await prisma.tenant.create({
       data: {
         id: tenantId,
@@ -275,7 +271,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     const before = await orderOf(orderId);
     expect(before.status).toBe(OrderStatus.RECEIVED);
     expect(before.payments[0].remittanceStatus).toBe(RemittanceStatus.PENDING);
-    // Delivered but the owner has not got the cash yet: the invoice is still waiting.
+    // Đã giao nhưng chủ chưa nhận tiền: hóa đơn vẫn đang chờ.
     const pending = await prisma.invoice.findFirstOrThrow({
       where: { orderId },
     });
@@ -293,7 +289,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     expect(cash.note).toContain('Đã đếm đủ');
     expect(detail).toMatchObject({ id: orderId });
 
-    // COMPLETED is the moment the invoice is issued: numbered, with the order's lines frozen onto it.
+    // COMPLETED là lúc hóa đơn được phát hành: có số, các dòng đơn được chốt vào hóa đơn.
     const issued = await prisma.invoice.findFirstOrThrow({
       where: { orderId },
       include: { lines: true },
@@ -301,7 +297,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     expect(issued.status).toBe('ISSUED');
     expect(issued.invoiceNumber).toMatch(/^HD\d{6}$/);
     expect(issued.issuedAt).not.toBeNull();
-    // The invoice is for the whole sale (7M collected on delivery + 3M deposit), not just the last payment.
+    // Hóa đơn là cho cả đơn bán (7M thu khi giao + 3M cọc), không chỉ khoản thanh toán cuối.
     expect(Number(issued.total)).toBe(10_000_000);
     expect(issued.lines).toHaveLength(1);
   });

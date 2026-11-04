@@ -43,10 +43,7 @@ import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 
 /**
- * Hủy đơn (A-5, OrderCancelService.cancel – `POST /orders/:id/cancel`) trên Postgres thật
- * (docker compose up -d): hủy trước / sau đóng gói (trả phần khoá về kệ), tiền cọc hoàn một phần /
- * giữ, các trạng thái không được hủy, và YCSX liên quan chỉ được báo lại. Tự tạo tenant riêng và
- * dọn sạch, chạy lại bao nhiêu lần cũng được.
+ * Huỷ đơn (A-5) trên Postgres thật: huỷ trước / sau đóng gói (trả phần khoá về kệ), tiền cọc hoàn một phần hoặc giữ, các trạng thái không được huỷ, và YCSX liên quan chỉ được báo lại. Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
  */
 describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
   let prisma: PrismaService;
@@ -252,7 +249,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     expect(row.payments).toHaveLength(0);
     expect(result.refund).toBeNull();
     expect(result.openProductionRequests).toEqual([]);
-    // It was never completed, so its invoice was never issued - it is withdrawn.
+    // Đơn chưa từng hoàn thành nên hóa đơn chưa phát hành - chỉ được rút lại.
     const invoice = await prisma.invoice.findFirstOrThrow({
       where: { orderId: id },
     });
@@ -264,7 +261,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     const id = await createOrder();
     const fulfillment = await fulfillments.packOrder(owner, id, {});
     expect((await sofaStock()).lockedStock).toBe(2);
-    // POST /shipments (C-2) is not built yet - stand in for "the carrier picked it up".
+    // POST /shipments (C-2) chưa có route nên giả lập bước "ĐVVC đã lấy hàng".
     await prisma.order.update({
       where: { id },
       data: { status: OrderStatus.PICKED_UP },
@@ -294,7 +291,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
       (await prisma.shipment.findUniqueOrThrow({ where: { id: shipment.id } }))
         .status,
     ).toBe(ShipmentStatus.CANCELLED);
-    // Releasing a lock moves nothing, so the ledger has no new row.
+    // Nhả khoá không di chuyển hàng nên sổ kho không có dòng mới.
     expect(
       await prisma.inventoryTransaction.count({
         where: { tenantId, referenceId: id },

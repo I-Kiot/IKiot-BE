@@ -34,9 +34,7 @@ import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 
 /**
- * Tạo đơn tay (A-2, ManualOrderService.create – `POST /orders`) trên Postgres thật
- * (docker compose up -d): đơn sinh ra CONFIRMED, chụp giá, chọn kho xuất mặc định, bung combo,
- * ghi tiền cọc, và các lỗi chặn. Tự tạo tenant riêng và dọn sạch, chạy lại bao nhiêu lần cũng được.
+ * Tạo đơn tay (A-2) trên Postgres thật: đơn sinh ra CONFIRMED, chụp giá, chọn kho xuất mặc định, bung combo, ghi tiền cọc và các lỗi chặn. Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
  */
 describe('POST /orders – ManualOrderService.create', () => {
   let prisma: PrismaService;
@@ -299,7 +297,7 @@ describe('POST /orders – ManualOrderService.create', () => {
     expect(Number(line.listUnitPrice)).toBe(10_000_000);
     expect(Number(line.unitPrice)).toBe(10_000_000);
     expect(Number(line.lineTotal)).toBe(20_000_000);
-    // The branch's default ship-from warehouse, not the branch.
+    // Kho xuất mặc định của chi nhánh, không phải chính chi nhánh.
     expect(line.sourceLocationId).toBe(warehouseId);
     expect(line.lineType).toBe(OrderLineType.PRODUCT);
 
@@ -431,7 +429,7 @@ describe('POST /orders – ManualOrderService.create', () => {
 
     expect(parent.productItemId).toBe(roomComboId);
     expect(Number(parent.lineTotal)).toBe(26_000_000);
-    // No line for the inner combos - only goods, each under the combo that was sold.
+    // Không có dòng cho combo con, chỉ có hàng, mỗi món nằm dưới combo đã bán.
     expect(
       children.every((c) => c.lineType === OrderLineType.COMBO_COMPONENT),
     ).toBe(true);
@@ -440,7 +438,7 @@ describe('POST /orders – ManualOrderService.create', () => {
     const quantities = Object.fromEntries(
       children.map((child) => [child.productItemId, child.quantity]),
     );
-    // Per room: 1 + 1 tables, 2 wardrobes, 4 + 2 chairs; times 2 rooms.
+    // Mỗi phòng: 1+1 bàn, 2 tủ, 4+2 ghế; nhân 2 phòng.
     expect(quantities).toEqual({
       [tableId]: 4,
       [wardrobeId]: 4,

@@ -4,8 +4,8 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 
-// Needs a reachable DATABASE_URL (docker-compose up) - booting AppModule connects Prisma.
-// NODE_ENV=test also keeps SubscriptionCronService from scheduling its daily sweep.
+// Cần DATABASE_URL truy cập được (docker-compose up) vì khởi động AppModule sẽ kết nối Prisma.
+// NODE_ENV=test cũng giữ SubscriptionCronService không lên lịch quét hằng ngày.
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
 

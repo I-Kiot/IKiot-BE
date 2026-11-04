@@ -12,10 +12,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Hành trình GĐ1 – Bước 4 against real Postgres (docker compose up -d): an order short of a
-// cabinet shows on the production list, a production request covers it, and receiving the
-// workshop's goods is the moment stock rises - lots, ledger, defects and the workshop's debt
-// checked by reading the tables back. Creates its own tenant and removes it afterwards.
+// Hành trình GĐ1 Bước 4 trên Postgres thật: đơn thiếu tủ hiện trên danh sách sản xuất, yêu cầu sản xuất phủ được nó, tồn tăng khi xưởng nhận hàng. Lô, sổ kho, hàng lỗi, công nợ kiểm bằng cách đọc lại bảng. Tự tạo và xoá tenant riêng.
 describe('production list, production requests and workshop receipts', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -36,7 +33,7 @@ describe('production list, production requests and workshop receipts', () => {
   const productId = randomUUID();
   const cabinetId = randomUUID();
   const comboId = randomUUID();
-  // Bought from suppliers only (isManufacturable false), and one whose flag is switched off mid-test.
+  // Chỉ mua từ nhà cung cấp (isManufacturable = false), và một món bị tắt cờ giữa chừng test.
   const boughtProductId = randomUUID();
   const chairId = randomUUID();
   const flippedProductId = randomUUID();
@@ -60,7 +57,7 @@ describe('production list, production requests and workshop receipts', () => {
     displayName: 'Owner',
     phoneNumber: `prod-owner-${ownerId}`,
   };
-  // Posted at the warehouse - the branch is somebody else's.
+  // Gửi tới kho, không phải chi nhánh.
   const warehouseStaff: AuthUser = {
     ...baseUser,
     userId: staffId,
@@ -237,7 +234,7 @@ describe('production list, production requests and workshop receipts', () => {
     await prisma.customer.create({
       data: { id: customerId, tenantId, name: 'Khách e2e' },
     });
-    // A manual order confirmed at the branch, stock 0 - the hành trình example.
+    // Đơn tay xác nhận tại chi nhánh, tồn 0 - ví dụ của hành trình.
     await prisma.order.create({
       data: {
         id: orderId,
@@ -335,22 +332,22 @@ describe('production list, production requests and workshop receipts', () => {
 
   it('lists every producible SKU at every sellable location, short or not', async () => {
     const rows = await listRows(owner);
-    // The cabinet at the warehouse has no order and no stock, and still shows - anything can be ordered.
+    // Tủ ở kho không có đơn và không có tồn nhưng vẫn hiện - món nào cũng đặt được.
     expect(
       rows.find(
         (row) =>
           row.productItemId === cabinetId && row.location?.id === warehouseId,
       ),
     ).toMatchObject({ demandQuantity: 0, shortQuantity: 0 });
-    // A combo is ordered through its components, and the damaged-goods location never takes deliveries.
+    // Combo được đặt qua các thành phần; kho hàng hỏng không bao giờ nhận giao hàng.
     expect(rows.some((row) => row.productItemId === comboId)).toBe(false);
-    // Bought from suppliers only: nothing to order from a workshop, so not in the catalogue view.
+    // Chỉ mua từ nhà cung cấp: không có gì để đặt từ xưởng nên không hiện trong danh mục.
     expect(rows.some((row) => row.productItemId === chairId)).toBe(false);
     expect(
       rows.find((row) => row.productItemId === cabinetId)?.isManufacturable,
     ).toBe(true);
     expect(rows.some((row) => row.location?.id === damagedId)).toBe(false);
-    // Short rows first.
+    // Dòng thiếu đứng trước.
     expect(rows[0]).toMatchObject({
       productItemId: cabinetId,
       shortQuantity: 3,
@@ -424,14 +421,14 @@ describe('production list, production requests and workshop receipts', () => {
       data: { isManufacturable: false },
     });
 
-    // Editing the draft re-sends its lines: the shelf was already on it, so it stays.
+    // Sửa nháp sẽ gửi lại các dòng: phần trên kệ đã có trong đó nên giữ nguyên.
     const edited = await requests.update(owner, draft.id, {
       items: [{ productItemId: shelfId, quantity: 3 }],
     });
     expect(edited.items).toEqual([
       expect.objectContaining({ productItemId: shelfId, quantity: 3 }),
     ]);
-    // A new request for it is refused.
+    // Tạo yêu cầu mới cho món này bị từ chối.
     expect(
       await codeOf(
         requests.create(owner, {
@@ -471,7 +468,7 @@ describe('production list, production requests and workshop receipts', () => {
     expect(created.code).toMatch(/^YCSX\d{6}$/);
     expect(created.items[0].orderItem?.id).toBe(orderItemId);
 
-    // "Thêm vào yêu cầu" for the same line adds to it rather than duplicating it.
+    // "Thêm vào yêu cầu" cho cùng một dòng sẽ cộng vào, không tạo trùng.
     const added = await requests.addItem(owner, requestId, {
       productItemId: cabinetId,
       quantity: 1,
@@ -568,7 +565,7 @@ describe('production list, production requests and workshop receipts', () => {
         sourceType: 'WORKSHOP',
         supplierId: workshopId,
         productionRequestItemId: lineId,
-        // A standard order line does not reserve the lot.
+        // Dòng đơn thường không giữ lô.
         orderItemId: null,
       });
       expect(Number(lot.unitCost)).toBe(1200);
@@ -582,7 +579,7 @@ describe('production list, production requests and workshop receipts', () => {
     });
     expect(Number(workshop.outstandingDebt)).toBe(1200);
 
-    // Stock 1 + still on order 1 against demand 3: one short again, nothing drafted.
+    // Tồn 1 + đang đặt 1 so với nhu cầu 3: vẫn thiếu 1, không tạo nháp.
     expect(await cabinetRow()).toMatchObject({
       stock: 1,
       onOrderQuantity: 1,
@@ -613,7 +610,7 @@ describe('production list, production requests and workshop receipts', () => {
     expect(done.closedShort).toBe(false);
     expect(done.receipts).toHaveLength(2);
     expect(await stockAt(branchId)).toBe(2);
-    // Costed at the SKU's cost price when no workshop price is given.
+    // Tính theo giá vốn SKU khi không có giá xưởng.
     expect(
       Number(
         (await prisma.supplier.findUniqueOrThrow({ where: { id: workshopId } }))
@@ -633,7 +630,7 @@ describe('production list, production requests and workshop receipts', () => {
       items: [{ productItemId: cabinetId, quantity: 3 }],
     });
     await requests.updateStatus(owner, created.id, { status: 'SENT' });
-    // Nothing received yet: that is a cancellation, not a short close.
+    // Chưa nhận gì: đây là hủy chứ không phải đóng thiếu.
     expect(
       await codeOf(
         requests.updateStatus(owner, created.id, {
@@ -665,7 +662,7 @@ describe('production list, production requests and workshop receipts', () => {
     expect(closed.items[0]).toMatchObject({ quantity: 3, receivedQuantity: 1 });
     expect((await cabinetRow())?.onOrderQuantity).toBe(0);
 
-    // The receipt it already had stays; nothing more can arrive against it.
+    // Phần đã nhận giữ nguyên; không nhận thêm được nữa.
     expect(closed.receipts).toHaveLength(1);
     expect(
       await codeOf(

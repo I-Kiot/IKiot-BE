@@ -300,7 +300,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
         quantity: 4,
         componentItem: { stock: 7, availableStock: 7, stockAllLocations: 7 },
       });
-      // A service holds none.
+      // Dịch vụ không có tồn kho.
       expect(byId.get(installId)?.componentItem.stock).toBe(0);
     });
   });
@@ -316,7 +316,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
 
       expect(await stockOf(tableId)).toBe(4);
       expect(await stockOf(chairId)).toBe(3);
-      // A combo has no stock row, and the sale must not have made one.
+      // Combo không có dòng tồn, và bán hàng không được tạo dòng nào.
       expect(await inventoryOf(comboId)).toBeNull();
 
       const lines = await prisma.orderItem.findMany({
@@ -337,7 +337,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
         children.find((line) => line.productItemId === chairId)?.quantity,
       ).toBe(4);
 
-      // Each stocked child owns its own SALE ledger row; the parent and the service own none.
+      // Mỗi món con có tồn tự ghi một dòng SALE trong sổ kho; combo cha và dịch vụ thì không.
       const sales = await prisma.inventoryTransaction.findMany({
         where: { tenantId, type: 'SALE', referenceId: orderId },
       });
@@ -379,7 +379,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
       expect(error.getResponse()).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
       expect(JSON.stringify(error.getResponse())).toContain('Ghế');
 
-      // Rolled back: no order, and the table that was available was not touched.
+      // Đã rollback: không có đơn, và chiếc bàn còn hàng không bị động tới.
       expect(await prisma.order.count({ where: { tenantId } })).toBe(
         orderCount,
       );
@@ -406,7 +406,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
           productItemId: chairId,
         },
       });
-      // A line may draw from more than one lot (FIFO), so compare what each line took in total.
+      // Một dòng có thể lấy từ nhiều lô (FIFO), nên so sánh tổng số lấy của từng dòng.
       const takenBy = new Map<string, number>();
       for (const row of sales) {
         takenBy.set(

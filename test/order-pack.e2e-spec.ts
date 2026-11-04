@@ -21,9 +21,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Kiểm thử đóng đơn (C-1, FulfillmentService.packOrder) trên Postgres thật (docker compose up -d):
- * khoá hàng, chặn khi trên kệ thiếu, và hai kiểu bấm cùng lúc (race condition). Tự tạo tenant
- * riêng và dọn sạch mọi thứ đã ghi, nên chạy lại bao nhiêu lần cũng được.
+ * Đóng đơn (C-1, FulfillmentService.packOrder) trên Postgres thật: khoá hàng, chặn khi trên kệ thiếu, và hai lần bấm cùng lúc (race condition). Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
  */
 describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
   let prisma: PrismaService;

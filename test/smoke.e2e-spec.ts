@@ -15,15 +15,13 @@ import {
 } from './../src/common/constants/inventory-ledger';
 
 /**
- * Throwaway smoke run over everything ported on 2026-08-25 - products, inventory, staff
- * and stock movements - against a real Postgres. Creates one tenant, exercises the routes,
- * and deletes everything it made.
+ * Smoke test một lần cho mọi thứ port ngày 2026-08-25 (sản phẩm, tồn kho, nhân viên, phiếu chuyển kho) trên Postgres thật. Tạo một tenant, chạy các route, rồi xoá mọi thứ đã tạo.
  */
 jest.setTimeout(120_000);
 
 const PHONE_OWNER = '0987650001';
 const PHONE_STAFF = '0987650002';
-// A throwaway platform admin (tenantId null), for the routes only an operator may reach.
+// Admin nền tảng dùng một lần (tenantId null), cho các route chỉ operator mới vào được.
 const PHONE_ADMIN = '0987650009';
 const TENANT_NAME = 'SmokeTest Shop 25-08';
 
@@ -51,7 +49,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   let scheduleId = '';
 
   const auth = (token = ownerToken) => ({ Authorization: `Bearer ${token}` });
-  /** Adds stock the only way it can enter now - as a lot (cost-lot ledger, 2026-10-01). Writing `inventories.stock` straight would break "the lots add up to the stock" and the next sale could not draw. */
+  /** Thêm tồn theo cách duy nhất còn được phép - dưới dạng lô (sổ giá vốn theo lô, 2026-10-01). Ghi thẳng `inventories.stock` sẽ phá "các lô cộng lại bằng tồn" và lần bán sau không lấy được hàng. */
   const topUp = (locationId: string, productItemId: string, quantity: number) =>
     prisma.$transaction((tx) =>
       app.get(InventoryService).openLot(tx, {
@@ -164,9 +162,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.ticket.deleteMany({ where: { tenantId: t } });
     await prisma.aIChatHistory.deleteMany({ where: { tenantId: t } });
     await prisma.notification.deleteMany({ where: { tenantId: t } });
-    // Announcements have tenantId null but reach this tenant through the join table, whose
-    // rows hold an FK to it - so they have to go before the tenant does. The delete cascades
-    // to NotificationTargetTenant.
+    // Thông báo chung có tenantId null nhưng tới tenant này qua bảng nối, và các dòng đó giữ FK tới tenant - nên phải xóa trước tenant. Xóa sẽ cascade sang NotificationTargetTenant.
     await prisma.notification.deleteMany({
       where: { type: 'ANNOUNCEMENT', targetTenants: { some: { tenantId: t } } },
     });
@@ -190,10 +186,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     await prisma.role.deleteMany({ where: { tenantId: t } });
     await prisma.user.deleteMany({ where: { tenantId: t } });
-    // Branch/Warehouse rows cascade from their Location.
+    // Dòng Branch/Warehouse cascade từ Location của chúng.
     await prisma.location.deleteMany({ where: { tenantId: t } });
     await prisma.tenant.deleteMany({ where: { id: t } });
-    // Lives outside the tenant (tenantId null), so the sweep above never reaches it.
+    // Nằm ngoài tenant (tenantId null) nên lệnh xóa ở trên không chạm tới.
     await prisma.notification.deleteMany({
       where: {
         tenantId: null,
@@ -263,9 +259,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note(`supplier: OK creditLimit=${supplier.body.data.creditLimit}`);
   });
 
-  // Since the cost-lot ledger (2026-10-01) a product is created with no stock: stock only enters
-  // through a lot (an import, a workshop receipt, a return). The opening stock this suite relies on
-  // is opened here the way an import would, straight through InventoryService.
+  // Từ sổ giá vốn theo lô (2026-10-01), sản phẩm được tạo với tồn 0: tồn chỉ vào qua lô (nhập, xưởng giao, hoàn). Tồn đầu mà suite cần được mở ở đây giống một lần nhập, đi thẳng qua InventoryService.
   it('creates a product with variants, then opens its stock in lots', async () => {
     const created = await http()
       .post('/products')
@@ -381,7 +375,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(red.stockDetails).toHaveLength(2);
     note(`GET /products/:id: stockDetails=${red.stockDetails.length} OK`);
 
-    // Since the Location refactor the two filters are independent: a kind alone narrows to every place of that kind.
+    // Từ refactor Location, hai bộ lọc độc lập nhau: chỉ lọc theo loại thì thu hẹp tới mọi địa điểm thuộc loại đó.
     const byKind = await http()
       .get('/products?locationType=BRANCH')
       .set(auth())
@@ -469,8 +463,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(400);
     note('POST /users with VoIP prefix 065: 400 OK (phone validator wired)');
 
-    // Hiring and granting access are two calls, as in the old system: POST /users puts the
-    // person on the books with no password, POST /users/:id/account switches the login on.
+    // Thuê và cấp quyền truy cập là hai lệnh, như hệ cũ: POST /users ghi nhân viên vào sổ không có mật khẩu, POST /users/:id/account mới bật đăng nhập.
     const staff = await http()
       .post('/users')
       .set(auth())
@@ -484,14 +477,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       select: { password: true },
     });
     expect(beforeAccount?.password).toBeNull();
-    // No password on file means no way in, even with the right phone number.
+    // Chưa có mật khẩu nghĩa là không đăng nhập được, dù đúng số điện thoại.
     await http()
       .post('/auth/login')
       .send({ phoneNumber: PHONE_STAFF, password: 'password123' })
       .expect(401);
 
-    // A password field on POST /users is silently stripped by the ValidationPipe's
-    // whitelist rather than quietly setting one - pinned so the split can't regress.
+    // Trường password trên POST /users bị whitelist của ValidationPipe âm thầm loại bỏ thay vì đặt mật khẩu - ghim lại để việc tách này không bị hồi quy.
     expect(staff.body.data).not.toHaveProperty('password');
 
     await http()
@@ -519,9 +511,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(searched.body.pagination.total).toBe(1);
     note('GET /users?search: OK');
 
-    // Seats are billable, so hiring is capped by the plan the same way branches and
-    // products are. Pinned to the staff already on the books, then released - the rest of
-    // this suite hires two more.
+    // Số chỗ nhân viên bị tính phí nên thuê bị giới hạn bởi gói, giống chi nhánh và sản phẩm. Ghim vào số nhân viên đang có rồi thả ra - phần còn lại của suite thuê thêm hai người.
     await prisma.subscription.updateMany({
       where: { tenantId },
       data: { quotaSnapshotMaxUsers: 1 },
@@ -538,8 +528,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     note('POST /users past the plan seat limit: 400 OK');
 
-    // Email is unique per shop, and it is checked when hiring - not only when editing,
-    // which is where a duplicate used to lie undetected until someone opened the record.
+    // Email là duy nhất trong mỗi shop và được kiểm khi thuê - không chỉ khi sửa, nơi bản trùng từng nằm im cho tới khi có người mở bản ghi.
     await http()
       .patch(`/users/${staffId}`)
       .set(auth())
@@ -548,7 +537,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const dupEmail = await http()
       .post('/users')
       .set(auth())
-      // Different case on purpose: @NormalizeEmail lowercases before anything compares.
+      // Cố ý khác chữ hoa/thường: @NormalizeEmail chuyển về chữ thường trước khi so sánh.
       .send({
         phoneNumber: '0987650008',
         email: 'an.tran@example.com',
@@ -616,7 +605,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     note('re-activate account (mismatch 400, then 201) OK');
 
-    // Put them back on the branch for the stock-movement scenario below.
+    // Đưa họ về lại chi nhánh cho kịch bản phiếu chuyển kho bên dưới.
     await http()
       .patch(`/users/${staffId}`)
       .set(auth())
@@ -656,7 +645,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(afterShip?.stock).toBe(30);
     note(`ship: warehouse 50 → ${afterShip?.stock} OK`);
 
-    // Short delivery: 18 of 20 arrive.
+    // Giao thiếu: 18 trên 20 về tới nơi.
     await http()
       .patch(`/stock-movements/${id}/receive`)
       .set(auth())
@@ -784,9 +773,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(linked).toBe(1);
     note('IMPORT linked the supplier to the received variant OK');
 
-    // Nothing is sent here, and that is correct: the only recipient would be the tenant
-    // owner, who is the person who just received the goods. iKiotMS-BE filtered the actor
-    // out the same way. The warning firing for real is covered by the next test.
+    // Ở đây không gửi gì, và đúng như vậy: người nhận duy nhất sẽ là chủ shop - chính người vừa nhận hàng. iKiotMS-BE cũng loại người thực hiện theo cách đó. Cảnh báo bắn thật được phủ ở test kế tiếp.
     const selfWarned = await prisma.notification.count({
       where: { tenantId, title: { contains: 'hạn mức' } },
     });
@@ -803,7 +790,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ supplierName: 'NCC Beta', creditLimit: 1_000_000 })
       .expect(201);
 
-    // Move the staff member to the warehouse so they may receive there.
+    // Chuyển nhân viên sang kho để họ được nhận hàng ở đó.
     await http()
       .patch(`/users/${staffId}`)
       .set(auth())
@@ -840,7 +827,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `credit warning: staff receipt pushes NCC Beta to 80% of limit → ${warned} notification to the owner OK`,
     );
 
-    // Edge-triggered: a second receipt above the line must stay quiet.
+    // Kích hoạt theo cạnh: lần nhận thứ hai nằm trên ngưỡng phải giữ im lặng.
     const again = await http()
       .post('/stock-movements')
       .set(auth())
@@ -916,9 +903,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `staff GET /stock-movements: sees ${list.body.pagination.total} of the tenant's movements (own branch only)`,
     );
 
-    // A transfer may be raised from either end since 2026-09-09 (CLAUDE.md "Either end may raise a
-    // transfer"), so a branch account asking the warehouse for goods is allowed. A stocktake is only
-    // ever filed where the stock is counted: this one, at the warehouse, is not the account's to file.
+    // Phiếu chuyển (từ 2026-09-09) lập được từ một trong hai đầu, nên tài khoản chi nhánh xin hàng từ kho là được phép. Phiếu kiểm kho chỉ lập tại nơi đếm hàng; phiếu này ở kho nên tài khoản không được lập.
     await http()
       .post('/stock-movements')
       .set(auth(staffToken))
@@ -930,8 +915,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(403);
     note('staff filing a stocktake at another location: 403 OK');
 
-    // products:read is part of every staff account's baseline since 2026-09-18 (STAFF_BASE_PERMISSIONS);
-    // suppliers:read is in neither that nor this role.
+    // products:read nằm trong quyền nền của mọi tài khoản nhân viên từ 2026-09-18 (STAFF_BASE_PERMISSIONS); suppliers:read không nằm trong quyền nền cũng không nằm trong role này.
     await http().get('/suppliers').set(auth(staffToken)).expect(403);
     note('staff without suppliers:read on /suppliers: 403 OK');
   });
@@ -949,7 +933,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         branchId,
         paymentMethod: 'CASH',
         customerPay: 500_000,
-        // grandTotal is deliberately NOT sent - and would be ignored if it were.
+        // Cố ý KHÔNG gửi grandTotal - và nếu gửi thì cũng bị bỏ qua.
         items: [{ productItemId: itemAId, quantity: 2 }],
       })
       .expect(201);
@@ -970,7 +954,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(after!.stock).toBe(before!.stock - 2);
     note(`sale decremented branch stock ${before!.stock} → ${after!.stock} OK`);
 
-    // Cash with change is two rows: the drawer took the note and gave some back.
+    // Tiền mặt có tiền thối là hai dòng: ngăn kéo nhận tờ tiền và trả lại một phần.
     const flows = await prisma.cashFlow.findMany({
       where: {
         tenantId,
@@ -991,10 +975,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('prices a sale from the catalogue, whatever the till claims', async () => {
-    // itemA's retailPrice is 200.000. The request says 1đ. Until 2026-09-06 the server
-    // believed it: `priceLines` selected only id/sku/productName and passed the client's
-    // `unitPrice` straight through, so a basket could be rung up for nothing while stock
-    // left the shelf and the ledger recorded an honest-looking sale.
+    // retailPrice của itemA là 200.000, còn request gửi 1đ. Đến 2026-09-06 server tin theo: `priceLines` chỉ chọn id/sku/productName và chuyển thẳng `unitPrice` của client, nên một giỏ có thể được tính với giá 0 trong khi hàng vẫn rời kệ và sổ ghi một giao dịch trông hợp lệ.
     await topUp(branchId, itemAId, 2);
 
     const sale = await http()
@@ -1012,8 +993,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(sale.body.data.order.items[0].unitPrice).toBe(200_000);
     note('POST /orders với unitPrice: 1 → server vẫn tính 200.000/đơn vị OK');
 
-    // The manual whole-order discount is capped at what the order is worth. `Math.max(0,…)`
-    // alone only stopped the total going negative - any basket could still be settled at 0.
+    // Giảm giá tay cả đơn bị chặn ở giá trị đơn. Chỉ `Math.max(0,…)` thì tổng không âm, nhưng giỏ nào vẫn có thể thanh toán ở 0.
     await topUp(branchId, itemAId, 1);
     const capped = await http()
       .post('/orders/pos')
@@ -1033,10 +1013,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('does not multiply a promotion across duplicate lines', async () => {
-    // The hole this closes: the engine allocated per `productItemId` and the order read it
-    // back per LINE, so N lines of one variant each received the sum of their shares. A
-    // 10% promotion split across ten identical lines discounted 100% and the order was
-    // written at 0đ - while ten units left the shelf.
+    // Lỗ hổng được vá: engine phân bổ theo `productItemId` còn đơn đọc lại theo TỪNG DÒNG, nên N dòng cùng một biến thể đều nhận tổng phần của mình. Khuyến mãi 10% chia cho mười dòng giống nhau thì giảm 100% và đơn ghi giá 0đ - trong khi mười món đã rời kệ.
     await topUp(branchId, itemAId, 10);
 
     const promo = await http()
@@ -1053,8 +1030,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(201);
 
-    // Ten separate lines, same variant - exactly what a till does when it rings items in
-    // one at a time.
+    // Mười dòng riêng, cùng biến thể - đúng như quầy quét từng món một.
     const sale = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1164,9 +1140,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(400);
     note('SEPAY sale without tenant banking configured: 400 OK');
 
-    // Through the real endpoint, not a direct write. Until `/tenant/banking` was ported
-    // there was no way for a shop to configure this, which made SEPAY sales unreachable
-    // outside a manual UPDATE - the seed here used to be that workaround.
+    // Qua endpoint thật, không ghi trực tiếp. Trước khi `/tenant/banking` được port, shop không có cách nào cấu hình việc này, khiến bán SEPAY chỉ làm được bằng UPDATE tay - seed ở đây từng là cách làm tay đó.
     const banked = await http()
       .put('/tenant/banking')
       .set(auth())
@@ -1177,7 +1151,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(200);
     expect(banked.body.data.banking.bankName).toBe('MB');
-    // The secret is never in a response, even to the shop that owns it.
+    // Secret không bao giờ nằm trong response, kể cả với shop sở hữu nó.
     expect(banked.body.data.bankingSepayWebhookApiKey).toBeUndefined();
 
     const mine = await http().get('/tenant/me').set(auth()).expect(200);
@@ -1186,8 +1160,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(mine.body.data.bankingSepayWebhookApiKey).toBeUndefined();
     note('PUT /tenant/banking + GET /tenant/me: saved, secret withheld OK');
 
-    // The operators get told there is an account to link - the first half of the manual
-    // SePay workflow, and a system notification (no tenant, no recipient).
+    // Operator được báo có tài khoản cần liên kết - nửa đầu của quy trình SePay làm tay, và là thông báo hệ thống (không tenant, không người nhận).
     const heads = await prisma.notification.findFirst({
       where: { type: 'SYSTEM_TENANT_BANK_UPDATED', tenantId: null },
       orderBy: { createdAt: 'desc' },
@@ -1250,10 +1223,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('settles a SePay sale from the webhook', async () => {
-    // Provisioning the webhook key is a platform-admin job, through the real route. The
-    // old system's route claimed SUPER_ADMIN in a comment but enforced nothing, so any
-    // account with `tenants:update` could write any shop's key - the thing that identifies
-    // a tenant to the payment webhook. Both halves are asserted here.
+    // Cấp webhook key là việc của admin nền tảng, qua route thật. Route cũ ghi SUPER_ADMIN trong comment nhưng không thi hành gì, nên tài khoản có `tenants:update` nào cũng ghi được key của shop khác - thứ định danh tenant với webhook thanh toán. Cả hai nửa đều được khẳng định ở đây.
     const admin = await prisma.user.create({
       data: {
         phoneNumber: PHONE_ADMIN,
@@ -1301,7 +1271,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const reference = sale.body.data.order.paymentReference;
 
-    // Unknown key: answered 200 so SePay stops, but nothing is settled.
+    // Key lạ: trả 200 để SePay ngừng gọi lại, nhưng không quyết toán gì.
     const unknown = await http()
       .post('/webhook/sepay/order')
       .set({ Authorization: 'Apikey wrong-key' })
@@ -1327,9 +1297,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       select: { status: true, sepayTransactionId: true },
     });
     expect(settled!.status).toBe('COMPLETED');
-    // The only key tying this order to a line on the bank statement. Dropped by the first
-    // port, restored 2026-08-26 - kept on the cash flow too, since that is what a
-    // reconciliation actually reads.
+    // Khóa duy nhất nối đơn này với một dòng trên sao kê ngân hàng. Bị mất ở lần port đầu, khôi phục 2026-08-26 - cũng được giữ trên dòng tiền vì đối soát thực sự đọc chỗ đó.
     expect(settled!.sepayTransactionId).toBe('987654');
     const incomeRow = await prisma.cashFlow.findFirstOrThrow({
       where: { orderId: sale.body.data.order.id, flowType: 'INCOME' },
@@ -1529,10 +1497,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'POST /promotions/calculate: 10% of 600k capped at maxDiscountAmount 50k OK',
     );
 
-    // The till names the promotion and nothing else - no breakdown, no discountValue, no
-    // discountType. Everything the old contract asked the client to echo back is worked
-    // out server-side now, so this is the regression test for an order that would
-    // previously have been rung up at full price with a discount showing on screen.
+    // Quầy chỉ gửi tên khuyến mãi, không gửi breakdown, discountValue hay discountType. Mọi thứ hệ cũ bắt client gửi lại giờ server tự tính, nên đây là test hồi quy cho đơn từng bị tính đủ giá dù màn hình hiện giảm giá.
     const withDiscount = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1556,8 +1521,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'POST /orders with only a promotion id: server prices it - total 550k, line discount 50k, promoName filled in OK',
     );
 
-    // Sending the old payload shape must land on the same numbers: the extra keys are
-    // stripped by ValidationPipe and the client-supplied amounts are simply not read.
+    // Gửi payload theo dạng cũ phải ra cùng số: key thừa bị ValidationPipe loại bỏ, còn số tiền client gửi thì không được đọc.
     const legacyShape = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1583,7 +1547,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'POST /orders with the old payload (bogus amounts): ignored, still 550k OK',
     );
 
-    // A manual whole-order discount and a promotion have one column between them.
+    // Giảm giá tay cả đơn và khuyến mãi dùng chung một cột.
     const conflict = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1632,7 +1596,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       items: [{ productItemId: itemAId, quantity: 1 }],
     };
 
-    // usageLimit was 1 and the previous test consumed it, so it is no longer eligible.
+    // usageLimit là 1 và test trước đã dùng hết, nên nó không còn đủ điều kiện.
     const calc = await http()
       .post('/promotions/calculate')
       .set(auth())
@@ -1777,16 +1741,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('refuses a promotion from another tenant on an order', async () => {
-    // The FK would accept it - it is a real promotion id, just not this tenant's.
+    // FK sẽ chấp nhận - đó là id khuyến mãi thật, chỉ không thuộc tenant này.
     const outsider = await prisma.promotion.findFirst({
       where: { tenantId: { not: tenantId } },
       select: { id: true },
     });
 
-    // 400, not the 404 this used to answer: the order no longer looks the promotion up
-    // itself, it prices the cart through the engine, and an id that isn't among this
-    // tenant's live candidates comes back as "gone or not applicable to this order" -
-    // one message for both, which is also the right answer for a cross-tenant id.
+    // Trả 400, không phải 404 như trước: đơn không tự tra khuyến mãi nữa mà tính giỏ qua engine; id không nằm trong danh sách ứng viên đang hoạt động của tenant sẽ trả "đã hết hạn hoặc không áp dụng cho đơn này" - một thông điệp cho cả hai trường hợp, cũng là đáp án đúng cho id của tenant khác.
     const refused = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1805,8 +1766,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note("order carrying another tenant's promotion id: 400 OK");
   });
 
-  // The engine re-checks eligibility now, so an order can no longer claim a promotion the
-  // preview would have refused. The old code only checked the id existed in the tenant.
+  // Engine giờ kiểm lại điều kiện, nên đơn không còn được dùng khuyến mãi mà bước xem trước đã từ chối. Code cũ chỉ kiểm id có tồn tại trong tenant.
   it('refuses an inactive promotion on an order', async () => {
     const paused = await prisma.promotion.create({
       data: {
@@ -1839,9 +1799,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('tells the client which permissions it holds', async () => {
-    // The frontend cannot gate a screen on an account *kind* any more - a shop defines its
-    // own roles - so `/auth/me` hands back the set `JwtStrategy` resolved for this very
-    // request, and the UI draws from that.
+    // Frontend không còn chặn màn hình theo *loại* tài khoản được nữa - mỗi shop tự định nghĩa role - nên `/auth/me` trả về tập quyền `JwtStrategy` vừa resolve cho chính request này, và UI dựa vào đó.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -1862,8 +1820,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth(staffLogin.body.data.accessToken))
       .expect(200);
 
-    // The role's two grants, plus the baseline every staff account holds (STAFF_BASE_PERMISSIONS,
-    // added 2026-09-18 so a new hire can at least see the catalogue and their own schedule).
+    // Hai quyền của role, cộng với quyền nền mà mọi tài khoản nhân viên đều có (STAFF_BASE_PERMISSIONS, thêm 2026-09-18 để nhân viên mới ít nhất xem được danh mục và lịch của mình).
     expect(staffMe.body.data.permissions.sort()).toEqual(
       [
         ...new Set([
@@ -1876,15 +1833,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(staffMe.body.data.systemRole).toBe('STAFF');
     note('GET /auth/me (staff): quyền của vai trò + quyền nền OK');
 
-    // Empty for the owner, and that means "not applicable" - they short-circuit the guard
-    // entirely. A client reading it as "no permissions" would lock the owner out of their
-    // own shop, which is exactly what happened before this was documented.
+    // Rỗng với chủ shop, nghĩa là "không áp dụng" - họ bỏ qua guard hoàn toàn. Client đọc thành "không có quyền" sẽ khóa chủ shop khỏi chính shop của mình, đúng việc đã xảy ra trước khi ghi lại điều này.
     const ownerMe = await http().get('/auth/me').set(auth()).expect(200);
     expect(ownerMe.body.data.permissions).toEqual([]);
     expect(ownerMe.body.data.systemRole).toBe('TENANT_OWNER');
     note('GET /auth/me (chủ shop): permissions rỗng = "không áp dụng" OK');
 
-    // Revoking one takes effect on the next request, no re-login.
+    // Thu hồi một quyền có hiệu lực ở request kế tiếp, không cần đăng nhập lại.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -1908,7 +1863,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const staffToken = login.body.data.accessToken;
 
-    // The staff role has no orders:* yet - grant read only, no view_all.
+    // Role nhân viên chưa có orders:* - chỉ cấp đọc, không có view_all.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -1939,11 +1894,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
     note('owner still sees every branch OK (view_all short-circuit)');
 
-    // A query filter may narrow the scope, never replace it. Until 2026-09-06 this read
-    // `if (query.branchId) where.branchId = query.branchId`, so naming another branch
-    // handed back its whole sales ledger - while `GET /orders/:id` refused the same rows.
-    // Reuse the second branch an earlier test created - the TRIAL plan caps a shop at two,
-    // so creating a third here would be refused by the quota, not by the scope rule.
+    // Bộ lọc truy vấn chỉ được thu hẹp phạm vi, không được thay thế nó. Đến 2026-09-06 code đọc `if (query.branchId) where.branchId = query.branchId`, nên ghi tên chi nhánh khác sẽ trả về toàn bộ sổ bán của chi nhánh đó - trong khi `GET /orders/:id` từ chối cùng các dòng. Dùng lại chi nhánh thứ hai mà test trước đã tạo - gói TRIAL giới hạn shop ở hai chi nhánh, nên tạo cái thứ ba sẽ bị quota chặn chứ không phải luật phạm vi.
     const otherBranch = await prisma.branch.findFirstOrThrow({
       where: {
         tenantId,
@@ -1960,14 +1911,14 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(403);
     note('staff GET /orders?branchId=<chi nhánh khác>: 403 OK');
 
-    // Echoing back your own branch is normal - a screen sends what it was showing.
+    // Gửi lại chi nhánh của chính mình là bình thường - màn hình gửi đúng thứ đang hiển thị.
     await http()
       .get('/orders')
       .query({ branchId })
       .set(auth(staffToken))
       .expect(200);
 
-    // The owner is unscoped, so naming a branch still narrows for them.
+    // Chủ shop không bị giới hạn phạm vi, nên chọn chi nhánh vẫn thu hẹp kết quả với họ.
     await http()
       .get('/orders')
       .query({ branchId: otherBranch.id })
@@ -2031,7 +1982,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('runs a cash drawer through a full day, including a handover', async () => {
-    // Staff needs the till permissions for this scenario.
+    // Nhân viên cần quyền quầy cho kịch bản này.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -2044,7 +1995,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(200);
 
-    // A second cashier to hand over to - hired, then given a login.
+    // Thu ngân thứ hai để bàn giao - thuê rồi cấp đăng nhập.
     const secondStaff = await http()
       .post('/users')
       .set(auth())
@@ -2089,7 +2040,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const secondToken = second.body.data.accessToken;
 
-    // Only whoever holds the drawer may write to it.
+    // Chỉ người đang giữ ngăn kéo mới được ghi vào đó.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/shift-logs`)
       .set(auth(secondToken))
@@ -2097,7 +2048,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(404);
     note('a cashier who never held the drawer cannot even see it: 404 OK');
 
-    // END before START is out of sequence.
+    // END trước START là sai thứ tự.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/shift-logs`)
       .set(auth(staffToken))
@@ -2118,7 +2069,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(409);
     note('a second START on the same shift: 409 OK');
 
-    // Finalizing mid-shift is refused - the last log is a START.
+    // Chốt giữa ca bị từ chối - log cuối là START.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/finalize`)
       .set(auth())
@@ -2126,7 +2077,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(409);
     note('finalize with a shift still open: 409 OK');
 
-    // Hand over to the second cashier.
+    // Bàn giao cho thu ngân thứ hai.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/shift-logs`)
       .set(auth(staffToken))
@@ -2145,7 +2096,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(afterHandover!.status).toBe('OPEN');
     note('handover: drawer passed to cashier 2, session still OPEN OK');
 
-    // The first cashier no longer holds it.
+    // Thu ngân thứ nhất không còn giữ ngăn kéo nữa.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/shift-logs`)
       .set(auth(staffToken))
@@ -2186,8 +2137,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('reconciles the closed drawer against the cash ledger', async () => {
-    // The gap this closes: the session recorded what people *counted* and CashFlow recorded
-    // what *moved*, and nothing ever subtracted one from the other.
+    // Lỗ hổng được vá: phiên ghi số người *đếm* được, còn CashFlow ghi số *đã di chuyển*, và chưa từng có gì trừ hai số này cho nhau.
     const session = await prisma.cashDrawerSession.findUniqueOrThrow({
       where: { id: sessionId },
       select: { businessDate: true, openingAmount: true, finalLogAmount: true },
@@ -2199,9 +2149,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     const report = first.body.data;
 
-    // The trading-day window, checked against the +07:00 offset directly rather than
-    // against the helper that produced it - an hour out here moves every pre-07:00 receipt
-    // onto the previous day's till, which is the failure this whole feature exists to find.
+    // Khung ngày bán được kiểm trực tiếp theo offset +07:00 thay vì qua helper đã tạo ra nó - lệch một giờ ở đây sẽ đẩy mọi hóa đơn trước 07:00 sang ngăn kéo của ngày hôm trước, đúng lỗi mà cả tính năng này sinh ra để tìm.
     const dayStart = new Date(
       session.businessDate.getTime() - 7 * 60 * 60 * 1000,
     );
@@ -2209,7 +2157,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(new Date(report.window.start).getTime()).toBe(dayStart.getTime());
     expect(new Date(report.window.end).getTime()).toBe(dayEnd.getTime());
 
-    // Read the ledger independently and check the endpoint agrees with it.
+    // Đọc sổ độc lập và kiểm endpoint khớp với nó.
     const flows = await prisma.cashFlow.findMany({
       where: {
         tenantId,
@@ -2242,8 +2190,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `GET /:id/reconciliation: expected ${report.expectedClosing}, counted ${report.countedClosing}, variance ${report.variance} OK`,
     );
 
-    // Four shift logs (START, END+handover, START, END) split the day into five stretches,
-    // and the zero-length GAP between the handover and the next START is one of them.
+    // Bốn log ca (START, END+bàn giao, START, END) chia ngày thành năm đoạn; khoảng GAP độ dài 0 giữa bàn giao và START kế tiếp là một đoạn trong số đó.
     expect(report.segments.map((s: any) => s.kind)).toEqual([
       'OPENING',
       'SHIFT',
@@ -2254,7 +2201,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(report.segments[1].staff.id).toBe(staffId);
     expect(report.segments[3].staff.id).toBe(secondStaffId);
 
-    // The property the report rests on: the day is short by X and the segments say where.
+    // Tính chất mà báo cáo dựa vào: ngày thiếu X và các đoạn chỉ ra vị trí.
     const summed = report.segments.reduce(
       (total: number, segment: any) => total + (segment.variance ?? 0),
       0,
@@ -2264,15 +2211,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `segments ${report.segments.map((s: any) => `${s.kind}:${s.variance}`).join(' ')} sum to the session variance OK`,
     );
 
-    // Non-cash never enters the drawer, so it is reported beside the variance, not in it.
+    // Tiền không phải mặt không bao giờ vào ngăn kéo nên được báo bên cạnh chênh lệch, không nằm trong đó.
     expect(
       report.nonCash.every((row: any) => row.paymentMethod !== 'CASH'),
     ).toBe(true);
 
-    // Now move real money and check the report follows: one more cash sale at this branch
-    // raises what the drawer *should* hold, while the counted total stays where it was.
-    // Stock is topped up by exactly what the sale consumes, so inventory nets to zero and
-    // later tests see what they expected.
+    // Giờ chuyển tiền thật và kiểm báo cáo có theo: thêm một đơn tiền mặt tại chi nhánh này làm tăng số ngăn kéo phải có, còn tổng đã đếm giữ nguyên. Tồn được bù đúng bằng lượng đã bán nên tồn tịnh về 0, các test sau thấy đúng như mong đợi.
     await topUp(branchId, itemAId, 1);
     await http()
       .post('/orders/pos')
@@ -2280,8 +2224,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         branchId,
         paymentMethod: 'CASH',
-        // itemA sells for 200.000 and the price is the catalogue's now, so this is exact
-        // money: no change row, and every delta below is a clean +200.000.
+        // itemA bán 200.000 và giá lấy theo danh mục, nên số tiền chính xác: không có dòng tiền thối, mọi chênh lệch bên dưới đều đúng +200.000.
         customerPay: 200_000,
         items: [{ productItemId: itemAId, quantity: 1 }],
       })
@@ -2297,8 +2240,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
     expect(second.body.data.countedClosing).toBe(report.countedClosing);
     expect(second.body.data.variance).toBe(report.variance - 200_000);
-    // A sale rung up after the last END lands in the closing stretch, where nobody held
-    // the drawer - exactly the shape of "money went in the till after it was counted".
+    // Đơn bán sau END cuối rơi vào đoạn đóng ca, lúc không ai giữ ngăn kéo - đúng dạng "tiền vào ngăn kéo sau khi đã đếm".
     expect(second.body.data.segments.at(-1)).toMatchObject({
       kind: 'CLOSING',
       cashIn: 200_000,
@@ -2323,8 +2265,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `GET /reconciliation: ${range.body.totals.sessions} session(s), total variance ${range.body.totals.totalVariance} OK`,
     );
 
-    // varianceOnly filters across the whole range before paging, so it either keeps this
-    // session or drops it according to the number above - never according to the page.
+    // varianceOnly lọc trên toàn khoảng trước khi phân trang, nên giữ hay bỏ phiên này theo con số ở trên - không bao giờ theo trang.
     const off = await http()
       .get('/cash-drawer-sessions/reconciliation')
       .query({ branchId, varianceOnly: true })
@@ -2350,13 +2291,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('lets a branch open a new drawer once the previous one is closed', async () => {
-    // The old schema's plain unique on (tenant, branch, status) made this impossible from
-    // the second day onwards - a branch could only ever hold one CLOSED session.
+    // Unique thường trên (tenant, branch, status) của schema cũ khiến việc này không thể từ ngày thứ hai - chi nhánh chỉ giữ được đúng một phiên CLOSED.
     const previous = await prisma.cashDrawerSession.findUnique({
       where: { id: sessionId },
       select: { businessDate: true },
     });
-    // Move yesterday's session off today's date so the per-day unique doesn't fire.
+    // Chuyển phiên hôm qua khỏi ngày hôm nay để unique theo ngày không bị kích hoạt.
     await prisma.cashDrawerSession.update({
       where: { id: sessionId },
       data: { businessDate: new Date('2026-08-25T00:00:00.000Z') },
@@ -2396,7 +2336,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
       .expect(201);
 
-    // The role holds read_own, not read - cashier 1 worked the first session only.
+    // Role chỉ có read_own, không có read - thu ngân 1 chỉ làm phiên đầu tiên.
     const mine = await http()
       .get('/cash-drawer-sessions')
       .set(auth(staffLogin.body.data.accessToken))
@@ -2416,10 +2356,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('rejects a duplicate shift log sent twice at once', async () => {
-    // The guard has to advance even when nothing about the session changes - a START or a
-    // no-handover END writes only to the shift-log table. Before the fix, `updateMany` with
-    // an empty `data` matched the row without touching `updatedAt`, so a double tap or a
-    // client retry produced two identical logs and a shortfall stopped being attributable.
+    // Guard phải tiến lên ngay cả khi phiên không đổi gì - START hoặc END không bàn giao chỉ ghi vào bảng log ca. Trước khi sửa, `updateMany` với `data` rỗng khớp dòng mà không chạm `updatedAt`, nên chạm đúp hoặc client retry tạo hai log giống hệt và thiếu hụt không còn truy được người chịu trách nhiệm.
     const opened = await prisma.cashDrawerSession.findFirstOrThrow({
       where: { tenantId, status: 'OPEN' },
       select: { id: true, currentStaffId: true },
@@ -2459,8 +2396,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('refuses a staff account that belongs to no branch', async () => {
-    // A cashier granted cash_drawers:read but never posted to a branch used to fall through
-    // to "no branch filter" and see every till in the tenant.
+    // Thu ngân được cấp cash_drawers:read nhưng chưa được gán chi nhánh từng rơi vào "không lọc chi nhánh" và thấy mọi ngăn kéo trong tenant.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -2483,7 +2419,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ newPassword: 'password123', reEnterPassword: 'password123' })
       .expect(201);
 
-    // Take their posting away.
+    // Gỡ phân công của họ.
     await prisma.user.update({
       where: { id: drifter.body.data.id },
       data: { locationId: null },
@@ -2527,7 +2463,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ name: 'Ca sáng', startTime: '08:00', endTime: '12:00' })
       .expect(201);
     shiftTemplateId = template.body.data.id;
-    // A `@db.Time` column comes back as a Date; the API keeps the old HH:mm strings.
+    // Cột `@db.Time` trả về Date; API giữ chuỗi HH:mm như cũ.
     expect(template.body.data.startTime).toBe('08:00');
 
     const night = await http()
@@ -2542,7 +2478,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         schedules: [
           { userId: [staffId], shiftTemplateId, workDate: '2026-09-10' },
-          // Same slot, different person - must merge into one schedule, not two.
+          // Cùng khung giờ, khác người - phải gộp thành một lịch, không phải hai.
           {
             userId: [secondStaffId],
             shiftTemplateId,
@@ -2558,10 +2494,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'bulk roster: two assignments on one slot merged into one schedule OK',
     );
 
-    // 08:00 Vietnam is 01:00 UTC - the shift interval is built at +07:00, not server time.
+    // 08:00 Việt Nam là 01:00 UTC - khoảng ca được dựng theo +07:00, không theo giờ server.
     expect(rostered.body.data[0].startAt).toContain('T01:00:00');
 
-    // A night shift ends the next calendar day.
+    // Ca đêm kết thúc vào ngày dương lịch kế tiếp.
     const nightRoster = await http()
       .post('/working-schedules/bulk')
       .set(auth())
@@ -2578,7 +2514,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(nightRoster.body.data[0].endAt).toContain('2026-09-11T23:00');
     note('night shift 22:00–06:00 rolls endAt onto the next day OK');
 
-    // Same person, overlapping window, different shift → refused.
+    // Cùng người, khung giờ chồng lấn, ca khác → bị từ chối.
     const clash = await http()
       .post('/shift-templates')
       .set(auth())
@@ -2605,7 +2541,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .expect(200);
     expect(listed.body.pagination.total).toBe(1);
-    // 2026-09-10 is a Thursday and not a holiday.
+    // 2026-09-10 là thứ Năm và không phải ngày nghỉ.
     expect(listed.body.data[0].dayInfo.dayType).toBe('NORMAL');
     note('list: date range filter + dayInfo OK');
 
@@ -2628,11 +2564,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const staffToken = staffLogin.body.data.accessToken;
 
-    // Their role was last set to [orders:read, cash_drawers:read_own, cash_drawers:report]
-    // - no stock_movement at all, so this is refused outright.
+    // Role của họ lần cuối được đặt là [orders:read, cash_drawers:read_own, cash_drawers:report] - không có stock_movement nào, nên bị từ chối ngay.
     await http().get('/stock-movements').set(auth(staffToken)).expect(403);
 
-    // Put them in charge of a shift that is running right now, at their own branch.
+    // Giao cho họ phụ trách một ca đang chạy ngay lúc này, tại chi nhánh của họ.
     const now = new Date();
     const live = await prisma.workingSchedule.create({
       data: {
@@ -2649,7 +2584,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       select: { id: true },
     });
 
-    // Same account, same token - the rights come from the clock, not from a new login.
+    // Cùng tài khoản, cùng token - quyền đến từ đồng hồ, không phải từ đăng nhập mới.
     const supervising = await http()
       .get('/stock-movements')
       .set(auth(staffToken))
@@ -2659,7 +2594,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'shift supervisor: stock_movement:read granted mid-shift on the same token OK',
     );
 
-    // Move the shift into the past - the grant expires by the clock, nothing revokes it.
+    // Đưa ca về quá khứ - quyền hết hạn theo đồng hồ, không có gì thu hồi nó.
     await prisma.workingSchedule.update({
       where: { id: live.id },
       data: {
@@ -2683,26 +2618,25 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ date: '2026-09-02', name: 'Quốc khánh' })
       .expect(201);
     expect(created.body.data.source).toBe('MANUAL');
-    // Anything a human made is stamped, so the Google sync leaves it alone forever.
+    // Mọi thứ người tạo đều được đánh dấu, nên đồng bộ Google sẽ không bao giờ đụng vào.
     expect(created.body.data.isManuallyEdited).toBe(true);
     const holidayId = created.body.data.id;
 
-    // Restores what the Mongo compound index enforced: Postgres ignores NULL branch_id in
-    // the plain @@unique, so this only holds because of the partial-index migration.
+    // Khôi phục ràng buộc mà compound index Mongo từng thi hành: Postgres bỏ qua NULL branch_id trong @@unique thường, nên ràng buộc chỉ đứng vững nhờ migration partial-index.
     await http()
       .post('/holidays')
       .set(auth())
       .send({ date: '2026-09-02', name: 'Trùng ngày' })
       .expect(409);
 
-    // Shape passes the regex, but that day doesn't exist.
+    // Định dạng khớp regex nhưng ngày đó không tồn tại.
     await http()
       .post('/holidays')
       .set(auth())
       .send({ date: '2026-02-31', name: 'Không có thật' })
       .expect(400);
 
-    // Turning a holiday off is its own route; PATCH refuses the field outright.
+    // Tắt ngày nghỉ là một route riêng; PATCH từ chối trường này luôn.
     const rejected = await http()
       .patch(`/holidays/${holidayId}`)
       .set(auth())
@@ -2724,7 +2658,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(listed.body.pagination.total).toBe(1);
     expect(listed.body.data[0].id).toBe(holidayId);
 
-    // A different year must not match it.
+    // Năm khác không được khớp với nó.
     const other = await http()
       .get('/holidays?year=2025')
       .set(auth())
@@ -2742,9 +2676,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
   });
 
-  // Refresh tokens live in Redis (docker compose up -d redis). The suite asserts the
-  // whole session lifecycle the old system had and the first port dropped: rotation,
-  // one-time use, logout, and "changing a password ends every other session".
+  // Refresh token nằm trong Redis (docker compose up -d redis). Suite khẳng định toàn bộ vòng đời phiên mà hệ cũ có và lần port đầu làm mất: xoay vòng, chỉ dùng một lần, đăng xuất, và "đổi mật khẩu sẽ kết thúc mọi phiên khác".
   it('issues, rotates and revokes a refresh token', async () => {
     const login = await http()
       .post('/auth/login')
@@ -2761,14 +2693,14 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const second = refreshed.body.data.refreshToken;
     expect(second).not.toBe(first);
 
-    // Rotation: the token just spent is dead, so a replay (or a stolen copy) fails.
+    // Xoay vòng: token vừa dùng đã chết, nên replay (hoặc bản sao bị đánh cắp) sẽ thất bại.
     await http()
       .post('/auth/refresh')
       .send({ refreshToken: first })
       .expect(401);
     note('refresh: rotates and the spent token is refused (401) OK');
 
-    // The new access token really works.
+    // Access token mới thực sự dùng được.
     const me = await http()
       .get('/auth/me')
       .set(auth(refreshed.body.data.accessToken))
@@ -2803,7 +2735,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ currentPassword: 'password123', newPassword: 'password123' })
       .expect(201);
 
-    // Both sessions, not just the other one: the old system revoked by userId.
+    // Cả hai phiên, không chỉ phiên kia: hệ cũ thu hồi theo userId.
     await http()
       .post('/auth/refresh')
       .send({ refreshToken: a.body.data.refreshToken })
@@ -2821,7 +2753,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ phoneNumber: PHONE_OWNER })
       .expect(200);
 
-    // DEV_BYPASS is the dev escape hatch the old otpService carried; NODE_ENV=test here.
+    // DEV_BYPASS là lối thoát cho dev mà otpService cũ có; ở đây NODE_ENV=test.
     const verified = await http()
       .post('/auth/verify-forgot-password-otp')
       .send({ phoneNumber: PHONE_OWNER, otpCode: 'DEV_BYPASS' })
@@ -2839,7 +2771,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ phoneNumber: PHONE_OWNER, password: 'password123' })
       .expect(201);
 
-    // An access token is not a reset token, however valid its signature.
+    // Access token không phải reset token, dù chữ ký hợp lệ đến đâu.
     const login = await http()
       .post('/auth/login')
       .send({ phoneNumber: PHONE_OWNER, password: 'password123' })
@@ -2874,14 +2806,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('check-availability: both fields reported OK');
   });
 
-  // Regression: /tenants is a platform resource on a model with no tenantId of its own,
-  // and PermissionsGuard short-circuits TENANT_OWNER - so @Permissions alone left every
-  // shop owner able to read, edit and delete every other tenant, and read their SePay
-  // webhook key with it. AdminOnlyGuard is what closes that.
-  // The dashboard. Four of these answers are hand-written SQL (local-day bucketing, line
-  // revenue, stock valuation), which typecheck proves nothing about - so each one is run
-  // against the real Postgres here and the numbers checked against what the earlier tests
-  // in this file actually sold.
+  // Hồi quy: /tenants là tài nguyên nền tảng trên model không có tenantId riêng, và PermissionsGuard bỏ qua TENANT_OWNER - nên chỉ @Permissions thì mọi chủ shop đều đọc, sửa, xóa được tenant khác và đọc được webhook key SePay của họ. AdminOnlyGuard là thứ chặn việc đó.
+  // Dashboard. Bốn câu trả lời trong số này là SQL viết tay (gom theo ngày địa phương, doanh thu theo dòng, định giá tồn kho), mà typecheck không kiểm được gì - nên mỗi cái được chạy trên Postgres thật và con số được đối chiếu với những gì các test trước trong file này thực sự bán.
   it('reports the shop dashboard off real sales', async () => {
     const overview = await http()
       .get('/stats/overview')
@@ -2889,17 +2815,15 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(overview.body.data.revenue).toBeGreaterThan(0);
     expect(overview.body.data.orderCount).toBeGreaterThan(0);
-    // aov = round(revenue / orderCount), recomputed here rather than trusted.
+    // aov = round(revenue / orderCount), tính lại ở đây thay vì tin tưởng.
     expect(overview.body.data.aov).toBe(
       Math.round(overview.body.data.revenue / overview.body.data.orderCount),
     );
-    // Nothing was sold in the 30 days before this run, so every change is "from zero" -
-    // null, deliberately, rather than 0 or Infinity.
+    // Không bán gì trong 30 ngày trước lần chạy này, nên mọi thay đổi là "từ zero" - cố ý trả null thay vì 0 hay Infinity.
     expect(overview.body.data.changePct.revenue).toBeNull();
     note('GET /stats/overview: revenue, AOV, null change-from-zero OK');
 
-    // The bucket must be the shop's local day. Everything this suite created happened just
-    // now, so there is exactly one bucket and it is today in Ho Chi Minh City.
+    // Bucket phải là ngày địa phương của shop. Mọi thứ suite này tạo ra đều xảy ra ngay bây giờ, nên chỉ có đúng một bucket và đó là hôm nay ở TP.HCM.
     const today = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Ho_Chi_Minh',
     }).format(new Date());
@@ -2929,7 +2853,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .expect(200);
     expect(byMethod.body.data.breakdown.length).toBeGreaterThan(0);
-    // Sorted by revenue descending, like the old $sort stage.
+    // Sắp xếp theo doanh thu giảm dần, như stage $sort cũ.
     const revenues = byMethod.body.data.breakdown.map(
       (row: { revenue: number }) => row.revenue,
     );
@@ -2965,7 +2889,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
     note('GET /stats/top-products: line revenue summed and ranked in SQL OK');
 
-    // Cashflow: the ledger view of the same sales. `flow=ORD` isolates them by reference prefix.
+    // Dòng tiền: góc nhìn sổ của cùng các đơn bán. `flow=ORD` tách chúng theo tiền tố reference.
     const cash = await http().get('/stats/cashflow').set(auth()).expect(200);
     expect(cash.body.data.income).toBeGreaterThan(0);
     expect(cash.body.data.expense).toBeGreaterThan(0);
@@ -2973,15 +2897,14 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       cash.body.data.income - cash.body.data.expense,
     );
 
-    // ORD is not "income" - a refunded order writes an ORD-prefixed EXPENSE, so the sales
-    // flow has both sides.
+    // ORD không phải "thu nhập" - đơn hoàn tiền ghi một khoản CHI có tiền tố ORD, nên luồng bán có cả hai phía.
     const salesOnly = await http()
       .get('/stats/cashflow?flow=ORD')
       .set(auth())
       .expect(200);
     expect(salesOnly.body.data.income).toBe(cash.body.data.income);
     expect(salesOnly.body.data.expense).toBeGreaterThan(0);
-    // Every cash row this suite writes is a sale or its refund.
+    // Mọi dòng tiền mặt suite này ghi đều là một đơn bán hoặc khoản hoàn của nó.
     expect(salesOnly.body.data.expense).toBe(cash.body.data.expense);
     note('GET /stats/cashflow: flow=ORD selects the sales ledger OK');
 
@@ -3000,7 +2923,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(inventory.body.data.skuCount).toBeGreaterThan(0);
     expect(inventory.body.data.stockValue).toBeGreaterThan(0);
     expect(inventory.body.data.lowStock.length).toBeGreaterThan(0);
-    // Polymorphic location split into two nullable columns - exactly one is set.
+    // Địa điểm đa hình được tách thành hai cột nullable - đúng một cột được set.
     const row = inventory.body.data.lowStock[0];
     expect(Boolean(row.branchId) !== Boolean(row.warehouseId)).toBe(true);
     expect(row.locationType).toBe(row.branchId ? 'BRANCH' : 'WAREHOUSE');
@@ -3014,8 +2937,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const staffToken = staffLogin.body.data.accessToken;
 
-    // Without reports:read the dashboard is closed to them at the guard, before any
-    // scoping runs.
+    // Không có reports:read thì guard chặn dashboard trước khi chạy bất kỳ bước phạm vi nào.
     await http().get('/stats/overview').set(auth(staffToken)).expect(403);
 
     await http()
@@ -3024,10 +2946,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ permissions: [{ resource: 'reports', action: 'read' }] })
       .expect(200);
 
-    // The old system let anyone holding reports:read see every branch. A posted account is
-    // now pinned to its own location, and naming someone else's is refused rather than
-    // silently ignored - the failure mode that let a manager misread another branch's
-    // numbers as their own.
+    // Hệ cũ cho ai có reports:read xem mọi chi nhánh. Tài khoản được phân công giờ bị ghim vào địa điểm của mình; chọn địa điểm khác bị từ chối thay vì bỏ qua âm thầm - lỗi từng khiến quản lý đọc nhầm số chi nhánh khác thành số của mình.
     await http()
       .get(`/stats/overview?branchId=${branchId}`)
       .set(auth(staffToken))
@@ -3051,12 +2970,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     expect(platform.body.data.tenants.total).toBeGreaterThan(0);
     expect(platform.body.data.revenue.groupBy).toBe('month');
-    // Ticket statuses are folded into two buckets; nothing may fall between them (the
-    // enum's unreachable RESOLVED counts as resolved, not as a missing status).
+    // Trạng thái ticket gộp thành hai nhóm, không được rơi ra ngoài (RESOLVED dù không đạt được vẫn tính là đã xử lý, không phải trạng thái thiếu).
     expect(platform.body.data.tickets.total).toBe(
       platform.body.data.tickets.open + platform.body.data.tickets.resolved,
     );
-    // This tenant had its SePay key set earlier, so at least one shop is linked.
+    // Tenant này đã được đặt SePay key trước đó, nên ít nhất một shop đã liên kết.
     expect(platform.body.data.sepay.linked).toBeGreaterThan(0);
     expect(platform.body.data.subscriptions.byStatus.TRIAL).toBeGreaterThan(0);
     note('GET /stats/admin/overview: TENANT_OWNER 403, admin sees platform OK');
@@ -3078,10 +2996,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('stats validation: backwards range, bad date, bad enum all 400 OK');
   });
 
-  // Support threads. The whole point of the module is the two-sided conversation, so this
-  // walks one thread end to end rather than poking each route in isolation: the shop opens
-  // it, an operator answers, the shop answers back, the operator closes it, and only then
-  // does replying fail.
+  // Luồng hỗ trợ. Điểm chính của module là hội thoại hai chiều, nên test đi xuyên suốt một luồng thay vì thử từng route riêng: shop mở, operator trả lời, shop đáp lại, operator đóng, rồi mới tới lúc trả lời bị lỗi.
   it('runs a support ticket from open to closed across both consoles', async () => {
     const adminLogin = await http()
       .post('/auth/login')
@@ -3099,16 +3014,15 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(201);
     const ticketId = opened.body.data.id;
-    // Not the old `TK-<epoch><2 digits>` scheme - same generator as every other reference.
+    // Không dùng kiểu `TK-<epoch><2 digits>` cũ - dùng cùng bộ sinh như mọi mã tham chiếu khác.
     expect(opened.body.data.ticketId).toMatch(/^TK[0-9A-F]{10}$/);
     expect(opened.body.data.status).toBe('OPEN');
-    // The description is the opening message too, so the thread is self-contained.
+    // Mô tả cũng là tin nhắn mở đầu, nên luồng tự đủ thông tin.
     expect(opened.body.data.messages).toHaveLength(1);
     expect(opened.body.data.messages[0].message).toContain('máy in ở quầy 1');
     note('POST /tickets: TK reference, status OPEN, opening message OK');
 
-    // The operators' inbox row is a system notification - tenantId and recipientId both
-    // null - not a notification addressed to anyone in the shop.
+    // Dòng inbox của operator là thông báo hệ thống - cả tenantId và recipientId đều null - không phải thông báo gửi tới ai đó trong shop.
     const systemRow = await prisma.notification.findFirst({
       where: { type: 'SYSTEM_TICKET_CREATED', referenceId: ticketId },
       select: { tenantId: true, recipientId: true },
@@ -3141,7 +3055,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(answered.body.data.messages).toHaveLength(2);
     note('admin reply: status IN_PROGRESS, 2 messages OK');
 
-    // Unlike the open event, an answer has to reach the owner's own inbox.
+    // Khác với sự kiện mở, câu trả lời phải tới inbox của chủ shop.
     const owned = await prisma.notification.count({
       where: { type: 'TICKET_REPLIED', referenceId: ticketId, tenantId },
     });
@@ -3153,7 +3067,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({ message: 'Vẫn không được ạ.' })
       .expect(200);
-    // Back to OPEN - the thread needs an operator again.
+    // Quay lại OPEN - luồng cần operator trả lời lần nữa.
     expect(back.body.data.status).toBe('OPEN');
     expect(back.body.data.messages).toHaveLength(3);
     note('shop reply: status back to OPEN, 3 messages OK');
@@ -3171,7 +3085,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(400);
     note('reply to a CLOSED ticket: 400 OK');
 
-    // Soft delete only, and one-sided: gone from the shop's list, still in the operators'.
+    // Chỉ xóa mềm và một phía: biến mất khỏi danh sách của shop, vẫn còn trong danh sách của operator.
     const removed = await http()
       .delete(`/tickets/${ticketId}`)
       .set(auth())
@@ -3193,10 +3107,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
   });
 
-  // AI conversations. `/ai/chat` itself is not exercised here - it would spend real Gemini
-  // quota on every run and fail whenever the network or the model name moved; the agent
-  // loop is covered by ai-agent.service.spec.ts against a scripted model. What is proved
-  // here is everything around it: the permission gate, per-person scoping, and the CRUD.
+  // Hội thoại AI. Không chạy `/ai/chat` ở đây - nó sẽ tốn quota Gemini thật mỗi lần chạy và lỗi bất cứ khi nào mạng hoặc tên model đổi; vòng lặp agent được phủ bởi ai-agent.service.spec.ts với model giả lập. Ở đây kiểm mọi thứ xung quanh: cổng quyền, phạm vi theo từng người và CRUD.
   it('keeps AI conversations private to the person who had them', async () => {
     const staffLogin = await http()
       .post('/auth/login')
@@ -3204,8 +3115,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const staffToken = staffLogin.body.data.accessToken;
 
-    // The old routes were gated on two fixed roles that no longer exist; the shop now
-    // decides who may use the assistant, through the ai_chat catalog resource.
+    // Route cũ bị chặn theo hai role cố định đã không còn; giờ shop tự quyết ai được dùng trợ lý, qua tài nguyên ai_chat trong catalog.
     await http().get('/ai/conversations').set(auth(staffToken)).expect(403);
     await http()
       .post('/ai/chat')
@@ -3214,7 +3124,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(403);
     note('ai: staff without ai_chat on /ai/chat and /ai/conversations 403 OK');
 
-    // Seeded directly: creating one through /ai/chat would call Gemini.
+    // Seed trực tiếp: tạo qua /ai/chat sẽ gọi Gemini.
     const owner = await prisma.user.findFirst({
       where: { phoneNumber: PHONE_OWNER },
       select: { id: true },
@@ -3234,7 +3144,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
     const mine = await http().get('/ai/conversations').set(auth()).expect(200);
     expect(mine.body.pagination.total).toBe(1);
-    // The list is titles only - a transcript is fetched one conversation at a time.
+    // Danh sách chỉ có tiêu đề - nội dung được lấy từng hội thoại một.
     expect(mine.body.data[0]).not.toHaveProperty('messages');
     expect(mine.body.data[0].title).toBe('Doanh thu tháng 8');
 
@@ -3244,8 +3154,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(detail.body.data.messages).toHaveLength(2);
 
-    // A conversation belongs to one person, not to the shop: grant the staff account the
-    // permission and they still cannot read the owner's thread.
+    // Hội thoại thuộc về một người, không thuộc shop: cấp quyền cho tài khoản nhân viên thì họ vẫn không đọc được luồng của chủ shop.
     await http()
       .patch(`/roles/${roleId}`)
       .set(auth())
@@ -3296,9 +3205,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('ai: rename / delete own conversation, blank title 400 OK');
   });
 
-  // The operators' console. It reads the same table as every shop's inbox, so the thing
-  // worth proving is the separation: the feed shows only rows belonging to nobody, and the
-  // acknowledge/delete routes cannot reach a shop's private notification by id.
+  // Console của operator đọc cùng bảng với inbox của mọi shop, nên điều cần chứng minh là sự tách biệt: feed chỉ hiện các dòng không thuộc ai, còn các route acknowledge/delete không thể chạm tới thông báo riêng của shop qua id.
   it('gives operators a system feed that cannot touch a shop inbox', async () => {
     const adminLogin = await http()
       .post('/auth/login')
@@ -3313,8 +3220,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth(adminToken))
       .expect(200);
     expect(feed.body.pagination.total).toBeGreaterThan(0);
-    // The ticket opened earlier put a row here; the shop's own notifications must not be in
-    // it, and every row must carry the null pair that defines a system notification.
+    // Ticket mở trước đó đã đưa một dòng vào đây; thông báo riêng của shop không được nằm trong đó, và mọi dòng phải mang cặp null định nghĩa thông báo hệ thống.
     expect(
       feed.body.data.some(
         (row: { type: string }) => row.type === 'SYSTEM_TICKET_CREATED',
@@ -3326,8 +3232,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     }
     note('GET /admin/system-notifications: paginated, null-pair rows only OK');
 
-    // The old markAsRead had no filter at all - this is the regression it leaves behind.
-    // A notification addressed to the shop owner must be unreachable from here.
+    // markAsRead cũ không có bộ lọc nào - đây là hồi quy nó để lại. Thông báo gửi tới chủ shop phải không thể truy cập từ đây.
     const shopRow = await prisma.notification.findFirst({
       where: { tenantId, type: 'TICKET_REPLIED' },
       select: { id: true },
@@ -3363,8 +3268,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(all.body.success).toBe(true);
     note('mark-read / mark-all-read on the system feed OK');
 
-    // An announcement is not a system event: it is written here but must never show up in
-    // the feed above.
+    // Thông báo chung không phải sự kiện hệ thống: nó được ghi ở đây nhưng không bao giờ hiện trong feed phía trên.
     const announced = await http()
       .post('/admin/notifications')
       .set(auth(adminToken))
@@ -3397,7 +3301,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     ).toBe(false);
     note('announcement: saved to the outbox, absent from the event feed OK');
 
-    // targetType=SELECTION with a non-uuid tenant is a 400, not a silent send to nobody.
+    // targetType=SELECTION với tenant không phải uuid trả 400, không gửi âm thầm cho không ai.
     await http()
       .post('/admin/notifications')
       .set(auth(adminToken))
@@ -3425,9 +3329,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('TENANT_OWNER on /tenants (list/read/update/delete): 403 OK');
   });
 
-  // Regression: the response envelope. The success half is proved by every assertion
-  // above reading `body.data`; this pins the two shapes that aren't an entity - a
-  // paginated list merges rather than nesting, and a failure answers `success: false`.
+  // Hồi quy: envelope của response. Nửa thành công đã được chứng minh bởi mọi assertion phía trên đọc `body.data`; test này ghim hai dạng không phải entity - danh sách phân trang được gộp thay vì lồng, và lỗi trả về `success: false`.
   it('answers in the { success, message?, data } envelope', async () => {
     const list = await http()
       .get('/products?page=1&limit=5')
@@ -3447,8 +3349,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       message: expect.any(String),
     });
 
-    // A ValidationPipe failure keeps its per-field list, under `errors` rather than as
-    // the user-facing `message` - the shape the old DTO validators sent.
+    // Lỗi ValidationPipe giữ danh sách theo từng trường trong `errors`, không đặt vào `message` hiển thị cho người dùng - dạng mà DTO validator cũ gửi.
     const invalid = await http()
       .post('/suppliers')
       .set(auth())
@@ -3457,7 +3358,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(invalid.body.success).toBe(false);
     expect(Array.isArray(invalid.body.errors)).toBe(true);
 
-    // The SePay webhook is @RawResponse() - its body belongs to SePay, not to us.
+    // Webhook SePay là @RawResponse() - body thuộc về SePay, không thuộc về ta.
     const webhook = await http()
       .post('/webhook/sepay/order')
       .send({ transferType: 'in' })

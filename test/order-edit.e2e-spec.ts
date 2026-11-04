@@ -39,10 +39,7 @@ import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dt
 import type { UpdateOrderDto } from './../src/modules/orders/dto/update-order.dto';
 
 /**
- * Sửa đơn (A-8, OrderEditService – `PATCH /orders/:id`, `/assignee`, `/priority`) trên Postgres thật
- * (docker compose up -d): sửa dòng khi CONFIRMED (giữ / thêm / bỏ, combo co giãn), chặn sửa dòng sau
- * khi đóng gói, tiền cọc không được lệch số đã thu, dòng đã có YCSX không bỏ được, đơn POS / đã đi
- * không sửa được, và `excludePos` của `GET /orders`. Tự tạo tenant riêng và dọn sạch.
+ * Sửa đơn (A-8) trên Postgres thật: sửa dòng khi CONFIRMED (giữ / thêm / bỏ, combo co giãn), chặn sửa dòng sau khi đóng gói, tiền cọc không lệch số đã thu, dòng đã có YCSX không bỏ được, đơn POS / đã đi không sửa được, và `excludePos` của `GET /orders`. Tự tạo tenant riêng và dọn sạch.
  */
 describe('PATCH /orders/:id – OrderEditService', () => {
   let prisma: PrismaService;
@@ -313,9 +310,8 @@ describe('PATCH /orders/:id – OrderEditService', () => {
 
     await edit(id, {
       items: [
-        // Kept: quantity changes, the agreed price is kept because none is sent.
+        // Giữ dòng: đổi số lượng, không gửi giá nên giữ giá đã thỏa thuận.
         { id: sofaLine.id, productItemId: sofaId, quantity: 2 },
-        // New.
         {
           productItemId: chairId,
           quantity: 3,

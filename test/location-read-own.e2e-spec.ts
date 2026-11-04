@@ -11,9 +11,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
 /**
- * Kiểm thử quyền nền `branches:read_own` / `warehouses:read_own` trên Postgres thật: nhân viên chỉ
- * thấy đúng nơi mình được phân công, `read` vẫn thấy cả shop. Hạn mức gói được bỏ qua
- * (SubscriptionService giả); tự tạo một tenant riêng và dọn sạch.
+ * Quyền nền `branches:read_own` / `warehouses:read_own` trên Postgres thật: nhân viên chỉ thấy đúng nơi mình được phân công; `read` vẫn thấy cả shop. Hạn mức gói được bỏ qua; tự tạo một tenant riêng và dọn sạch.
  */
 describe('Reading your own posting – LocationService (read_own)', () => {
   let prisma: PrismaService;

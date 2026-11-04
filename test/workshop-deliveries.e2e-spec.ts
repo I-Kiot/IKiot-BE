@@ -10,10 +10,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Workshop staff and their delivery notes (2026-10-09) against real Postgres: a workshop sees only
-// the requests sent to it, announces a short delivery, and nothing is stock until the receiving
-// location counts the goods and confirms - lots, debt and the request's status read back.
-// Creates its own tenant and removes it afterwards.
+// Thợ xưởng và phiếu giao hàng trên Postgres thật: xưởng chỉ thấy yêu cầu gửi cho mình, khai báo giao thiếu được, và tồn chỉ tăng khi kho đếm và xác nhận (lô, công nợ và trạng thái yêu cầu được đọc lại). Tự tạo tenant riêng và xoá sau khi chạy.
 describe('workshop staff delivery notes', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -215,7 +212,7 @@ describe('workshop staff delivery notes', () => {
     await prisma.inventory.deleteMany({ where });
     await prisma.notification.deleteMany({ where });
     await prisma.user.deleteMany({ where });
-    // Receiving links the SKU to the workshop (`SupplierService.charge`).
+    // Nhận hàng sẽ gắn SKU với xưởng (`SupplierService.charge`).
     await prisma.productItemSupplier.deleteMany({
       where: { supplierId: { in: [workshopId, otherWorkshopId] } },
     });
@@ -293,7 +290,6 @@ describe('workshop staff delivery notes', () => {
     firstDeliveryId = after.deliveries[0].id;
     expect(await stockAt(branchId)).toBe(0);
 
-    // 5 ordered, 3 already announced: only 2 more fit.
     expect(
       await codeOf(
         deliveries.create(worker, requestId, {
@@ -302,7 +298,7 @@ describe('workshop staff delivery notes', () => {
       ),
     ).toBe(ErrorCode.PRODUCTION_DELIVERY_QTY_EXCEEDS);
 
-    // Goods may be at the door: the request cannot be cancelled under it.
+    // Hàng có thể đã tới cổng: không hủy được yêu cầu khi còn phiếu đang mở.
     expect(
       await codeOf(
         requests.updateStatus(owner, requestId, { status: 'CANCELLED' }),
@@ -357,7 +353,7 @@ describe('workshop staff delivery notes', () => {
       receivedQuantity: 3,
       defectQuantity: 1,
     });
-    // The workshop is owed for the 2 that passed, at the SKU's cost.
+    // Xưởng được ghi nợ 2 cái đã đạt, theo giá vốn của SKU.
     const workshop = await prisma.supplier.findUniqueOrThrow({
       where: { id: workshopId },
     });
@@ -393,7 +389,6 @@ describe('workshop staff delivery notes', () => {
     });
     expect(await stockAt(branchId)).toBe(2);
 
-    // The room it held is free again.
     const withThird = await deliveries.create(worker, requestId, {
       items: [{ productionRequestItemId: lineId, quantity: 2 }],
     });

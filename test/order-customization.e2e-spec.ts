@@ -31,11 +31,7 @@ import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dt
 import type { OrderItemCustomizationDto } from './../src/modules/orders/dto/order-item-customization.dto';
 
 /**
- * Dòng custom (A-4, OrderCustomizationService – `PUT /orders/:id/items/:itemId/customization`, và
- * `customization` khi tạo đơn) trên Postgres thật (docker compose up -d): lần đầu tạo ProductItem
- * riêng cùng sản phẩm (kích thước, chi tiết, ảnh, kiện), lần sau sửa đúng item đó; chặn dòng combo,
- * đơn đã đóng gói, dòng đã có YCSX gửi xưởng; YCSX nháp chuyển theo item mới. Tự tạo tenant riêng và
- * dọn sạch.
+ * Dòng custom (A-4) trên Postgres thật: lần đầu tạo ProductItem riêng cho sản phẩm (kích thước, chi tiết, ảnh, kiện), lần sau sửa đúng item đó; chặn dòng combo, đơn đã đóng gói, dòng đã có YCSX; YCSX nháp chuyển theo item mới. Tự tạo tenant riêng và dọn sạch.
  */
 describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationService', () => {
   let prisma: PrismaService;
@@ -320,7 +316,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
     });
     expect(after.isCustom).toBe(true);
     expect(after.productItemId).not.toBe(sofaId);
-    // Price and quantity are the order's; the line only changes what it is.
+    // Giá và số lượng vẫn thuộc đơn; dòng chỉ đổi phần mô tả sản phẩm.
     expect(Number(after.unitPrice)).toBe(10_000_000);
 
     const custom = await itemOf(after.productItemId);
@@ -330,7 +326,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
     expect(Number(custom.retailPrice)).toBe(10_000_000);
     expect(Number(custom.lengthCm)).toBe(181);
     expect(Number(custom.widthCm)).toBe(90);
-    // Not given: the catalogue's.
+    // Không gửi thì lấy theo danh mục.
     expect(Number(custom.heightCm)).toBe(80);
     expect(custom.details.map((d) => [d.name, d.value])).toEqual([
       ['Bảo hành', '24 tháng'],
@@ -353,7 +349,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
     expect(after.customization!.specs).toHaveLength(1);
     expect(detail).toMatchObject({ id: orderId });
 
-    // The catalogue SKU is untouched.
+    // SKU trong danh mục không bị đổi.
     const sofa = await itemOf(sofaId);
     expect(Number(sofa.lengthCm)).toBe(180);
     expect(sofa.details).toHaveLength(2);
@@ -436,7 +432,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
       ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE,
     );
 
-    // A component of the combo carries goods, so it can be.
+    // Thành phần combo có hàng riêng nên được tùy chỉnh.
     const component = await prisma.orderItem.findFirstOrThrow({
       where: { orderId, parentItemId: combo.id, productItemId: sofaId },
     });

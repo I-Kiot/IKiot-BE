@@ -11,17 +11,14 @@ import { InventoryService } from './../src/modules/inventories/inventories.servi
 import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
 import { UserService } from './../src/modules/users/users.service';
 
-// Compiles the whole DI graph without calling init(), so it needs no database. Catches the
-// wiring mistakes a type-check can't: a provider that isn't exported by its module, a
-// missing DiscoveryModule import, a service injected but never registered.
+// Biên dịch toàn bộ đồ thị DI mà không gọi init(), không cần database. Bắt lỗi nối dây mà type-check không thấy: provider chưa export từ module, thiếu DiscoveryModule, hoặc service được inject nhưng chưa đăng ký.
 describe('AppModule DI graph', () => {
   it('resolves every rewired provider', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
-    // APP_* enhancers aren't resolvable by token from a compiled testing module, so the
-    // interceptor's own wiring is covered by the discovery test below instead.
+    // Không resolve được APP_* theo token từ testing module đã compile, nên wiring của interceptor được kiểm ở test discovery bên dưới.
     expect(
       moduleRef.get(SubscriptionBillingService, { strict: false }),
     ).toBeDefined();
@@ -35,9 +32,7 @@ describe('AppModule DI graph', () => {
     expect(moduleRef.get(UserService, { strict: false })).toBeDefined();
   });
 
-  // The whole point of @AuditTemplate(): a domain module registers its own descriptor and
-  // AppModule never has to list it. If discovery silently returned nothing, audit rows
-  // would quietly fall back to the generic description instead of failing.
+  // Mục đích của @AuditTemplate(): module nghiệp vụ tự đăng ký descriptor, AppModule không cần liệt kê. Nếu discovery trả rỗng, audit sẽ âm thầm rơi về mô tả chung thay vì báo lỗi.
   it('discovers every @AuditTemplate() descriptor', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
