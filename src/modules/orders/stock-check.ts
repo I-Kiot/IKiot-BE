@@ -7,20 +7,15 @@ import {
 } from '../../common/constants/order-status';
 import { STOCK_CHECK_SEVERITY, StockCheckStatus } from './order-read.constants';
 
-// An order line's stockCheck (contract §2, journey GĐ1 - Bước 3): is the line's quantity on the
-// shelf right now. Read-only - nothing here holds stock for the order. Written for A-9; B-2 owns
-// the rule, and which location to count is still open (contract §8): until it is settled this
-// counts the line's own `sourceLocationId`, the contract's proposal. Change it here, in one place.
+// stockCheck của một dòng đơn (contract §2, GĐ1 - Bước 3): số lượng dòng có trên kệ ngay lúc này không. Chỉ đọc, không giữ hàng cho đơn.
+// Viết cho A-9; B-2 sở hữu quy tắc, còn kho nào để đếm vẫn chưa chốt (contract §8). Tới lúc đó, hàm đếm `sourceLocationId` của dòng theo đề xuất của contract. Đổi ở đây, một chỗ duy nhất.
 
 export interface StockCheck {
   status: StockCheckStatus;
-  /** On-shelf stock at the line's source location: `stock − lockedStock`. */
   stock: number;
-  /** `max(0, quantity − stock)`. */
   shortQuantity: number;
 }
 
-/** The fields of one order line this needs. */
 export interface StockCheckLine {
   id: string;
   productItemId: string;
@@ -35,13 +30,12 @@ export interface StockCheckOrder {
   items: StockCheckLine[];
 }
 
-/** Orders whose goods are already locked for them at `pack`, so their own lines cannot come up short. */
+/** Các đơn đã có hàng khóa sẵn lúc đóng gói, nên dòng của chúng không thể thiếu. */
 const PACKED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.PACKED,
   OrderStatus.PICKED_UP,
 ];
 
-/** The journey's three cases: all of it on the shelf, some of it, none of it. */
 export function classifyStock(quantity: number, onShelf: number): StockCheck {
   const stock = Math.max(0, onShelf);
   const shortQuantity = Math.max(0, quantity - stock);
@@ -54,7 +48,7 @@ export function classifyStock(quantity: number, onShelf: number): StockCheck {
   return { status, stock, shortQuantity };
 }
 
-/** An order's `stockSummary`: its worst line, or null when no line has a check (shipped, or only COMBO / SERVICE lines). */
+/** `stockSummary` của đơn là dòng tệ nhất, hoặc null khi không dòng nào có check (đã giao, hoặc chỉ có dòng COMBO / SERVICE). */
 export function summarizeStock(
   checks: (StockCheck | null | undefined)[],
 ): StockCheckStatus | null {
@@ -64,7 +58,7 @@ export function summarizeStock(
   return STOCK_CHECK_SEVERITY.find((status) => present.has(status)) ?? null;
 }
 
-/** Does this line get a stockCheck at all? Only stock-carrying lines still waiting to ship, on an order that has not shipped, with a location to count. */
+/** Dòng có được tính stockCheck không: chỉ dòng có hàng còn chờ giao, trên đơn chưa giao, và có kho để đếm. */
 function isCheckable(
   order: StockCheckOrder,
   line: StockCheckLine,
@@ -78,13 +72,9 @@ function isCheckable(
 }
 
 /**
- * Every checkable line's stockCheck, keyed by order line id; a line missing from the map has
- * `stockCheck: null`. One inventory query for all the orders given, whatever their number.
+ * stockCheck của mọi dòng cần kiểm, khoá theo id dòng; dòng không có trong map là `stockCheck: null`. Một query tồn cho mọi đơn, bất kể số lượng.
  *
- * Each line is compared on its own with on-shelf stock, which already excludes what packed
- * orders hold - so two CONFIRMED orders wanting the one cabinet left both read ENOUGH, and
- * whichever is packed first takes it (contract §2). A PACKED / PICKED_UP order's own goods are
- * among the locked ones, so its lines read ENOUGH.
+ * Mỗi dòng so riêng với tồn trên kệ (đã loại phần các đơn đã đóng gói đang giữ): hai đơn CONFIRMED cùng muốn một chiếc còn lại đều báo ENOUGH, đơn đóng gói trước được lấy trước (contract §2). Dòng của đơn PACKED / PICKED_UP nằm trong nhóm đã khoá nên báo ENOUGH.
  */
 export async function computeStockChecks(
   reader: Pick<Prisma.TransactionClient, 'inventory'>,

@@ -7,13 +7,11 @@ import { PaymentMethod } from '../../common/constants/payment-method';
 import type { OrderDetailRow, OrderListRow } from './order-read';
 import { summarizeStock, type StockCheck } from './stock-check';
 
-// Rows -> the contract's OrderListItem / OrderDetail (A-9, contract §2). Every field POS already
-// reads off these two routes (src/types/order.ts in the FE) is kept, under the same name and
-// type: the order-journey fields are added beside them. Money leaves as numbers (contract §0).
+// Dòng DB -> `OrderListItem` / `OrderDetail` của contract (A-9). Mọi trường POS đang đọc từ hai route này (src/types/order.ts bên FE)
+// được giữ nguyên tên và kiểu; các trường hành trình được thêm bên cạnh. Tiền trả về là number (contract §0).
 
 type Decimalish = { toString(): string };
 
-/** A Prisma Decimal as the number the API answers with. */
 function num(value: Decimalish): number {
   return Number(value);
 }
@@ -22,7 +20,7 @@ function numOrNull(value: Decimalish | null): number | null {
   return value === null ? null : Number(value);
 }
 
-/** A `@db.Date` column as the contract's plain `YYYY-MM-DD`. Postgres DATE comes back as UTC midnight, so the UTC date is the stored one. */
+/** Cột `@db.Date` thành `YYYY-MM-DD`. Postgres trả DATE dưới dạng nửa đêm UTC nên lấy ngày UTC là ngày đã lưu. */
 function dateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
 }
@@ -40,7 +38,7 @@ export interface UserRef {
   phoneNumber: string;
 }
 
-/** The contract's `UserRef`. A Vietnamese full name reads family name first - `lastName firstName` ("Phạm Thị Lan"), as the dashboard's staff screens show it; an account with no profile name shows its phone number. */
+/** `UserRef` của contract. Tên đầy đủ đọc họ trước (`lastName firstName`, "Phạm Thị Lan") như màn hình nhân viên; tài khoản chưa có tên thì hiện số điện thoại. */
 export function toUserRef(user: UserRow | null): UserRef | null {
   if (!user) return null;
   const name =
@@ -51,7 +49,7 @@ export function toUserRef(user: UserRow | null): UserRef | null {
   return { id: user.id, name, phoneNumber: user.phoneNumber };
 }
 
-/** `grandTotal − deposit`: what the shipper collects on delivery. Worked out, never stored (contract §6). */
+/** `grandTotal − deposit`: số shipper thu khi giao. Tính lúc đọc, không lưu (contract §6). */
 export function amountDueOf(
   grandTotal: Decimalish,
   depositAmount: Decimalish | null,
@@ -59,7 +57,6 @@ export function amountDueOf(
   return Math.max(0, num(grandTotal) - (numOrNull(depositAmount) ?? 0));
 }
 
-/** `{ amount, percent }`; `percent` is null when the deposit was typed as an amount. */
 export function depositOf(
   depositAmount: Decimalish | null,
   depositPercent: Decimalish | null,
@@ -68,7 +65,7 @@ export function depositOf(
   return { amount: num(depositAmount), percent: numOrNull(depositPercent) };
 }
 
-/** Statuses an order only reaches after delivery - where a fully deposited order is shown as collected with nothing to collect. */
+/** Các status chỉ đạt sau khi giao. Đơn đã cọc đủ được hiện là đã thu, không còn gì phải thu. */
 const DELIVERED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.RECEIVED,
   OrderStatus.COMPLETED,
@@ -76,12 +73,9 @@ const DELIVERED_ORDER_STATUSES: readonly string[] = [
 ];
 
 /**
- * `collection`: what was collected on delivery, from the order's BALANCE payment. Null until
- * delivery. A fully deposited order has no BALANCE row, so once it has shipped and been delivered
- * it reads `method: 'NONE'` with nothing collected.
+ * `collection`: số đã thu khi giao (Payment BALANCE của đơn), null cho tới khi giao. Đơn cọc đủ không có dòng BALANCE nên sau giao là `method: 'NONE'`.
  *
- * `method`: `Payment.method` for money a shipper took by QR is still open (contract §8 - SEPAY or
- * BANK_TRANSFER), so anything that is not cash is read as `BANK_TRANSFER_QR`.
+ * `method`: `Payment.method` của khoản shipper thu QR (SEPAY hoặc BANK_TRANSFER, contract §8) chưa chốt, nên mọi khoản không tiền mặt đọc là `BANK_TRANSFER_QR`.
  */
 export function collectionOf(
   order: Pick<OrderListRow, 'status' | 'shippedAt' | 'payments'>,
@@ -121,7 +115,7 @@ export function collectionOf(
 type ListLineRow = OrderListRow['items'][number];
 type DetailLineRow = OrderDetailRow['items'][number];
 
-/** One line as the list returns it: every column POS reads, money as numbers, plus `stockCheck`. */
+/** Một dòng trong danh sách: đủ mọi cột POS đọc, tiền là number, thêm `stockCheck`. */
 function toLine(item: ListLineRow, stockChecks: Map<string, StockCheck>) {
   const {
     listUnitPrice,
@@ -167,7 +161,7 @@ function toCustomization(customization: DetailLineRow['customization']) {
   };
 }
 
-/** One line as the detail returns it: the list's line plus where it ships from and its custom specs. */
+/** Một dòng trong chi tiết: như dòng danh sách, thêm kho xuất và thông số may đo. */
 function toDetailLine(
   item: DetailLineRow,
   stockChecks: Map<string, StockCheck>,
@@ -182,7 +176,7 @@ function toDetailLine(
   };
 }
 
-/** The order-level fields both shapes share. `payments` and `items` are dropped here (`collection` and each shape's own lines replace them), and so is `channelPayload` - Shopee's raw order, kept only to re-sync it, not for any screen. */
+/** Trường cấp đơn chung cho cả hai dạng. Bỏ `payments` và `items` (do từng dạng thay thế) và `channelPayload` (đơn Shopee gốc, chỉ để đồng bộ lại). */
 function toOrderBase(row: OrderListRow) {
   const {
     branch,
@@ -213,7 +207,7 @@ function toOrderBase(row: OrderListRow) {
   return {
     ...rest,
     branch: namedBranch(branch),
-    // POS reads `user` as it always has; `createdBy` is the same person as the contract's UserRef.
+    // POS vẫn đọc `user` như cũ; `createdBy` là cùng một người với `UserRef` của contract.
     user,
     createdBy: toUserRef(user),
     assignee: toUserRef(assignee),
@@ -239,8 +233,8 @@ function toOrderBase(row: OrderListRow) {
 }
 
 /**
- * The contract's `OrderListItem`, plus the lines: the contract drops them from the list, but POS's
- * invoice list expands an order's lines in place off this same response, so they stay.
+ * `OrderListItem` của contract cộng thêm các dòng: contract bỏ dòng khỏi danh sách, nhưng danh sách hóa đơn của POS
+ * mở rộng dòng ngay tại chỗ từ cùng response này nên vẫn giữ.
  */
 export function toOrderListItem(
   row: OrderListRow,
@@ -250,17 +244,16 @@ export function toOrderListItem(
   return {
     ...toOrderBase(row),
     items,
-    // The newest shipment's driver; null until one is assigned.
+    // Tài xế của shipment mới nhất; null cho tới khi được gán.
     driver: toUserRef(row.shipments[0]?.driver ?? null),
-    // The order stays SHIPPING when a delivery fails (the goods are still out); this is what lets the list say so.
+    // Giao thất bại thì đơn vẫn ở SHIPPING (hàng còn ngoài kho); trường này để danh sách hiển thị điều đó.
     latestShipmentStatus: row.shipments[0]?.status ?? null,
-    // Top-level lines: a combo counts once, not once per component.
+    // Chỉ tính dòng gốc: một combo tính một lần, không tính theo từng thành phần.
     itemCount: row.items.filter((item) => item.parentItemId === null).length,
     stockSummary: summarizeStock(items.map((item) => item.stockCheck)),
   };
 }
 
-/** The contract's `OrderDetail`. */
 export function toOrderDetail(
   row: OrderDetailRow,
   stockChecks: Map<string, StockCheck>,

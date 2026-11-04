@@ -7,7 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PromotionService } from '../promotions/promotions.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** One line as a client sends it. `unitPrice` is only ever set by the order journey's manual create (a negotiated price); the till never sends one and is always priced from the catalogue. */
+/** Một dòng như client gửi. `unitPrice` chỉ đến từ lúc tạo đơn tay (giá mặc cả); quầy không bao giờ gửi, luôn tính theo danh mục. */
 export interface PricingLineInput {
   productItemId: string;
   quantity: number;
@@ -15,7 +15,6 @@ export interface PricingLineInput {
   discountAmount?: number;
 }
 
-/** What both creates hand to `priceOrder` - the till's `CreatePosOrderDto` and the journey's `CreateOrderDto` each satisfy it structurally. */
 export interface PricingInput {
   branchId: string;
   customerId?: string;
@@ -29,7 +28,7 @@ export type PricedLine = Awaited<
   ReturnType<OrderPricingService['priceLines']>
 >[number];
 
-/** The money side of a sale, shared by the till (`OrderService.createPosSale`) and the order journey's manual create (`ManualOrderService`) so both price a basket by the same rules. */
+/** Phần tiền của một đơn, dùng chung cho quầy (`OrderService.createPosSale`) và tạo đơn tay (`ManualOrderService`) để cả hai tính giỏ hàng theo cùng quy tắc. */
 @Injectable()
 export class OrderPricingService {
   constructor(
@@ -37,7 +36,10 @@ export class OrderPricingService {
     private readonly promotions: PromotionService,
   ) {}
 
-  /** Everything about the sale's money, worked out here rather than taken on trust. The promotion discount is priced server-side through the same engine `/promotions/calculate` runs - it used to be assumed the client had echoed a breakdown back, so a till that sent only a total got a full-price order and no error - and the engine re-checks eligibility, so an expired or out-of-branch promotion is a 400 instead of a discount. The variants are looked up twice on a promotion sale; one extra indexed read is the price of the engine owning its own view of the cart. */
+  /**
+   * Tính toàn bộ tiền của đơn ở server, không tin số client gửi. Khuyến mãi đi qua engine của `/promotions/calculate`, nên KM hết hạn hoặc sai chi nhánh bị trả 400 chứ không lặng lẽ giảm giá.
+   * Đơn có khuyến mãi tra biến thể hai lần; lần đọc thêm là cái giá để engine tự giữ bản nhìn của giỏ.
+   */
   async priceOrder(tenantId: string, input: PricingInput) {
     const lines = await this.priceLines(tenantId, input.items);
     const promotionIds = [
@@ -60,7 +62,7 @@ export class OrderPricingService {
       };
     }
 
-    // One discountType per order, so the two kinds can't be stacked - the schema has nowhere to record a total that is part manual and part promotion.
+    // Một discountType cho mỗi đơn nên hai loại không cộng dồn được: schema không có chỗ ghi tổng vừa tay vừa khuyến mãi.
     if (input.discountType === 'ORDER') {
       throw new BadRequestException({
         code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
@@ -68,7 +70,7 @@ export class OrderPricingService {
           'An order cannot carry both an order-level discount and a promotion',
       });
     }
-    // The engine prices every line at `retailPrice` (it never takes a price from the caller), so a negotiated price under a promotion would be discounted off a number the line doesn't carry. A manual order takes one or the other.
+    // Engine luôn tính mỗi dòng theo `retailPrice` (không nhận giá từ bên gọi), nên giá thỏa thuận cộng khuyến mãi sẽ bị giảm trên một số mà dòng không mang. Đơn tay chỉ được một trong hai.
     if (lines.some((line) => line.unitPrice !== line.listUnitPrice)) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
@@ -87,7 +89,7 @@ export class OrderPricingService {
       promotionIds,
     });
 
-    // Joined by position, never by `productItemId`: the engine returns one entry per cart line in cart order, and keying by variant id collapsed duplicate lines, handing each the sum of their shares - ten identical lines under a 10% promotion came out at 100% off.
+    // Ghép theo vị trí, không theo `productItemId`: engine trả một mục cho mỗi dòng giỏ. Ghép theo id biến thể sẽ gộp các dòng trùng và nhân đôi mức giảm (10 dòng giống nhau dưới KM 10% từng ra giảm 100%).
     if (pricing.itemBreakdown.length !== lines.length) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_PROMOTION_ALLOCATION_MISMATCH,
@@ -96,7 +98,7 @@ export class OrderPricingService {
     }
 
     return {
-      // The engine's allocation replaces whatever the client sent, including a manual line discount: two discounts on one line have no home in the schema.
+      // Phân bổ của engine ghi đè mọi thứ client gửi, kể cả giảm tay trên dòng: hai khoản giảm trên một dòng không có chỗ trong schema.
       lines: lines.map((line, index) => ({
         ...line,
         discountAmount: pricing.itemBreakdown[index].discountAmount,
@@ -107,7 +109,9 @@ export class OrderPricingService {
     };
   }
 
-  /** The lines of a sale. `listUnitPrice` is always `ProductItem.retailPrice`; `unitPrice` is the same unless the caller negotiated one - the till never can, which used to let `unitPrice: 0` ring up a full basket for nothing. The manual per-line discount is capped at the line's own total and going over is a 400, not a silent trim - clamping would leave the stored `discount_amount` larger than the discount given, and `/stats/top-products` would report that product's revenue as negative. */
+  /**
+   * Các dòng của một đơn. `listUnitPrice` luôn là `ProductItem.retailPrice`; `unitPrice` bằng nó trừ khi bên gọi thoả thuận giá khác (quầy thì không được). Giảm tay mỗi dòng bị chặn bởi thành tiền của chính dòng; vượt thì trả 400 chứ không cắt âm thầm, vì `discount_amount` lưu lớn hơn số đã giảm sẽ làm `/stats/top-products` báo doanh thu âm.
+   */
   async priceLines(tenantId: string, items: PricingLineInput[]) {
     const ids = [...new Set(items.map((item) => item.productItemId))];
     const variants = await this.prisma.productItem.findMany({
@@ -134,7 +138,7 @@ export class OrderPricingService {
       const listUnitPrice = Number(variant.retailPrice);
       const unitPrice = item.unitPrice ?? listUnitPrice;
       const discountAmount = item.discountAmount ?? 0;
-      // Rounded the same way `grandTotalOf` rounds the line, so the cap and the subtraction agree to the đồng.
+      // Làm tròn giống `grandTotalOf`, để trần và phép trừ khớp đến từng đồng.
       const lineTotal = Math.round(item.quantity * unitPrice);
       if (discountAmount > lineTotal) {
         throw new BadRequestException({
@@ -156,7 +160,7 @@ export class OrderPricingService {
     });
   }
 
-  /** One line's total as stored in `order_items.line_total`: rounded before its discount comes off, never below zero. */
+  /** Thành tiền một dòng như lưu trong `order_items.line_total`: làm tròn trước khi trừ giảm, không âm. */
   lineTotalOf(line: {
     quantity: number;
     unitPrice: number;
@@ -168,18 +172,18 @@ export class OrderPricingService {
     );
   }
 
-  /** What the customer actually owes for the goods: line totals minus per-line discounts, then a manual whole-order discount. A PROMOTION discount is not subtracted again - `priceOrder` has already spread it across the lines. Never below zero. Shipping is the caller's to add. */
+  /** Số khách thực phải trả cho hàng: thành tiền các dòng trừ giảm từng dòng, rồi trừ giảm tay cả đơn. Khuyến mãi không trừ lại vì `priceOrder` đã phân bổ vào các dòng. Không âm. Phí giao do bên gọi cộng thêm. */
   grandTotalOf(
     lines: { quantity: number; unitPrice: number; discountAmount: number }[],
     discountType: string | null,
     discountValue: number,
   ): number {
-    // Each line is rounded before its discount comes off, exactly as `pricing-engine.ts` does; rounding once at the end would leave a promotion sale a đồng or two from the total the preview quoted.
+    // Làm tròn từng dòng trước khi trừ giảm, giống `pricing-engine.ts`. Làm tròn một lần ở cuối sẽ lệch vài đồng so với tổng preview đã báo.
     const afterLineDiscounts = lines.reduce(
       (sum, line) => sum + this.lineTotalOf(line),
       0,
     );
-    // Capped at what the order is actually worth: `Math.max(0, …)` alone only stopped the total going negative, so a cashier could still settle any basket at 0đ.
+    // Chặn theo giá trị thật của đơn: chỉ `Math.max(0, …)` thì tổng không âm nhưng thu ngân vẫn chốt được cả giỏ với giá 0đ.
     const orderDiscount =
       discountType === 'ORDER'
         ? Math.min(Math.max(0, discountValue), afterLineDiscounts)

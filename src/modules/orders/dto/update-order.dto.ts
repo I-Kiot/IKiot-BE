@@ -11,7 +11,7 @@ import {
 import { ORDER_PRIORITIES } from '../../../common/constants/order-status';
 import { CreateOrderDto, CreateOrderItemDto } from './create-order.dto';
 
-/** A line on `PATCH /orders/:id`. With `id` it is that existing line, changed in place (its product cannot change - drop it and add another); without, a new line. An existing line left out of the list is removed. Specs are not set here: `PUT …/customization` (A-4) is the one way a line becomes custom after the order exists. */
+/** Một dòng trong `PATCH /orders/:id`. Có `id` thì sửa đúng dòng đó tại chỗ (không đổi sản phẩm; muốn đổi thì xoá và thêm dòng mới); không có thì là dòng mới. Dòng cũ bị bỏ khỏi danh sách sẽ bị xoá. Thông số đơn may chỉ đi qua `PUT …/customization` (A-4). */
 export class UpdateOrderItemDto extends OmitType(CreateOrderItemDto, [
   'customization',
 ] as const) {
@@ -21,11 +21,7 @@ export class UpdateOrderItemDto extends OmitType(CreateOrderItemDto, [
 }
 
 /**
- * `PATCH /orders/:id` (A-8, contract §2): the create's fields, every one optional - a field left out
- * is left as it is. The branch is not among them: it is the store that made the sale. `items`, when
- * sent, is the whole new list of lines and only while the order is CONFIRMED - once packed, its goods
- * are locked and the lines stay as packed (decided 2026-10-06; cancel and re-create to change them).
- * `discountType: null` / `appliedPromotions: []` clear a discount.
+ * `PATCH /orders/:id`: các trường như lúc tạo, đều không bắt buộc. Không đổi chi nhánh vì đó là cửa hàng đã bán đơn. `items`, nếu gửi, thay toàn bộ dòng và chỉ khi đơn còn CONFIRMED (sau khi đóng gói hàng đã khoá, quyết định 2026-10-06). `discountType: null` / `appliedPromotions: []` để xoá giảm giá.
  */
 export class UpdateOrderDto extends PartialType(
   OmitType(CreateOrderDto, ['branchId', 'items'] as const),
@@ -38,13 +34,11 @@ export class UpdateOrderDto extends PartialType(
   items?: UpdateOrderItemDto[];
 }
 
-/** `PATCH /orders/:id/assignee`. */
 export class SetOrderAssigneeDto {
   @IsUUID()
   assigneeId: string;
 }
 
-/** `PATCH /orders/:id/priority`. */
 export class SetOrderPriorityDto {
   @IsIn(ORDER_PRIORITIES, {
     message: `priority phải là ${ORDER_PRIORITIES.join(', ')}`,

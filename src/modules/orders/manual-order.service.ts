@@ -36,21 +36,18 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Account kinds that can be put in charge of an order. */
 const ASSIGNABLE_ROLES: readonly string[] = [
   SystemRole.TENANT_OWNER,
   SystemRole.STAFF,
 ];
 
-/** Deposit worked out from the request: what is stored on the order and what the DEPOSIT payment carries. */
 export interface ResolvedDeposit {
   amount: number;
-  /** Only when the deposit was entered as a percentage. */
   percent: number | null;
   method: string;
 }
 
-/** `ProductItem.itemType` (PRODUCT | COMBO | SERVICE) is the same vocabulary as the line types a sold item can start as; COMBO_COMPONENT is never sent by a client, only added under a COMBO here. */
+/** `itemType` của ProductItem dùng chung từ vựng với loại dòng bán. `COMBO_COMPONENT` không bao giờ do client gửi, chỉ server thêm dưới dòng COMBO. */
 const SELLABLE_LINE_TYPES: readonly string[] = [
   OrderLineType.PRODUCT,
   OrderLineType.COMBO,
@@ -58,10 +55,7 @@ const SELLABLE_LINE_TYPES: readonly string[] = [
 ];
 
 /**
- * The deposit on a manual order (contract §2 "Tiền cọc"): a PERCENT is taken of the grand total and
- * rounded to the đồng, an AMOUNT as given. Zero means no deposit at all. More than the order is
- * worth is refused rather than capped - the customer handed over a real sum. (`orders_deposit_valid`
- * enforces the same bounds in SQL.)
+ * Cọc của đơn tay: PERCENT tính trên tổng và làm tròn tới đồng, AMOUNT lấy đúng số nhập; 0 là không cọc. Cọc lớn hơn giá trị đơn bị từ chối chứ không cắt xuống, vì khách đã đưa đúng số đó. `orders_deposit_valid` ràng buộc cùng giới hạn trong SQL.
  */
 export function resolveDeposit(
   deposit: { type: string; value: number; method: string } | undefined,
@@ -92,7 +86,7 @@ export function resolveDeposit(
   return { amount, percent, method: deposit.method };
 }
 
-/** An order's `paymentStatus` while its only money is the deposit (before delivery collects the rest). */
+/** `paymentStatus` của đơn khi tiền duy nhất là cọc (trước khi giao thu phần còn lại). */
 export function paymentStatusForDeposit(
   depositAmount: number,
   grandTotal: number,
@@ -103,7 +97,7 @@ export function paymentStatusForDeposit(
     : OrderPaymentStatus.PARTIALLY_PAID;
 }
 
-/** The order journey's `POST /orders` (A-2, contract §2): a manual order staff type in for a customer who ordered online or by phone. It is born CONFIRMED with a person in charge, holds no stock and is never refused for stock - packing (C-1) is where shortage blocks. The till's sale is `OrderService.createPosSale`. */
+/** `POST /orders` (A-2): đơn tay nhân viên nhập cho khách đặt qua online hay điện thoại. Sinh ra ở CONFIRMED có người phụ trách, không giữ kho và không bị từ chối vì thiếu hàng; thiếu hàng chỉ chặn ở bước đóng gói (C-1). Bán tại quầy là `OrderService.createPosSale`. */
 @Injectable()
 export class ManualOrderService {
   constructor(
@@ -149,7 +143,7 @@ export class ManualOrderService {
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
-    // A Branch's id is its Location's id, so the branch itself is the last fallback.
+    // Id của Branch cũng là id của Location nên chính chi nhánh là phương án cuối.
     const defaultSource =
       branch.location.defaultFulfillmentLocationId ?? branch.id;
     await this.assertSourceLocations(tenantId, dto.items);
@@ -184,14 +178,14 @@ export class ManualOrderService {
       grandTotal,
     );
 
-    // Created before the transaction: CustomerService owns the code sequence and the one-phone-one-customer rule. Everything that can refuse the order has already run, so a stray customer row needs a database failure to be left behind - and is a real customer either way.
+    // Tạo khách trước transaction vì CustomerService giữ dãy mã và quy tắc một số điện thoại một khách. Mọi bước có thể từ chối đơn đã chạy xong, nên khách thừa chỉ còn lại khi DB lỗi, và vẫn là khách thật.
     const typedInCustomerId =
       !dto.customerId && dto.customer
         ? await this.customers.findOrCreateForOrder(tenantId, dto.customer)
         : undefined;
 
     const items = this.buildItems(lines, components);
-    // buildItems emits each sent line in order, its combo children right after it.
+    // buildItems trả dòng theo đúng thứ tự gửi, con của combo nằm ngay sau combo cha.
     const topLevelRows = items.filter((row) => !row.parentItemId);
     const now = new Date();
 
@@ -215,7 +209,7 @@ export class ManualOrderService {
           fulfillmentType: dto.fulfillmentType,
           userId,
           assigneeId: dto.assigneeId,
-          // Creating a manual order is confirming it (contract §2) - there is no draft step.
+          // Tạo đơn tay cũng là xác nhận đơn (contract §2), không có bước nháp.
           confirmedById: userId,
           confirmedAt: now,
           subtotal,
@@ -233,7 +227,7 @@ export class ManualOrderService {
             ? new Date(dto.requestedDeliveryDate)
             : undefined,
           note: dto.note,
-          // One statement for every line, so a combo's children can name a parent inserted alongside them.
+          // Một câu INSERT cho mọi dòng để con của combo tham chiếu được cha được chèn cùng lúc.
           items: { createMany: { data: items } },
           appliedPromotions: { create: appliedPromotions },
         },
@@ -241,7 +235,7 @@ export class ManualOrderService {
       });
 
       if (deposit) {
-        // The deposit is money already in hand, so its Payment is PAID now. Its CashFlow row is E-5's (`CashFlow.paymentId`), not written here.
+        // Tiền cọc đã nhận nên Payment là PAID ngay. Dòng CashFlow do E-5 ghi (`CashFlow.paymentId`), không ghi ở đây.
         await tx.payment.create({
           data: {
             tenantId,
@@ -272,7 +266,7 @@ export class ManualOrderService {
           item.customization,
         );
       }
-      // Issued when the order is COMPLETED (delivered and paid); until then it is a PENDING invoice.
+      // Hóa đơn chỉ phát hành khi đơn COMPLETED (đã giao và thu đủ); trước đó là hóa đơn PENDING.
       await this.invoices.ensurePending(tx, created.id);
       return created.id;
     });
@@ -281,7 +275,7 @@ export class ManualOrderService {
     return this.orders.findOne(user, tenantId, orderId);
   }
 
-  /** Only a product, a combo or a service can be a line of its own; a combo's components are added by the server. */
+  /** Chỉ sản phẩm, combo hoặc dịch vụ mới là dòng riêng; thành phần combo do server thêm. */
   assertSellableLines(lines: readonly PricedLine[]) {
     for (const line of lines) {
       if (!SELLABLE_LINE_TYPES.includes(line.itemType)) {
@@ -293,7 +287,7 @@ export class ManualOrderService {
     }
   }
 
-  /** The person in charge has to be someone who can log in to this shop and work an order. Shared with the edit routes (A-8). */
+  /** Người phụ trách phải đăng nhập được vào shop và làm đơn. Dùng chung với route sửa đơn (A-8). */
   async assertAssignee(tenantId: string, assigneeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
@@ -312,7 +306,7 @@ export class ManualOrderService {
     }
   }
 
-  /** Every ship-from location named on a line must be one of the tenant's live locations, and one whose stock is for sale - a damaged-goods warehouse never ships to a customer. */
+  /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant và có hàng bán được; kho hàng hỏng không bao giờ giao cho khách. */
   async assertSourceLocations(
     tenantId: string,
     items: readonly { sourceLocationId?: string }[],
@@ -347,12 +341,10 @@ export class ManualOrderService {
     }
   }
 
-  /** What each COMBO line in the order finally contains, keyed by the combo's variant id. The walk lives in `order-combo.ts`, shared with the till. */
   expandCombos(tenantId: string, lines: readonly PricedLine[]) {
     return expandCombos(this.prisma, tenantId, lines);
   }
 
-  /** The order's lines as rows, each COMBO line followed by its children (`buildOrderItemRows`). */
   buildItems(
     lines: readonly (PricedLine & { sourceLocationId: string })[],
     components: Map<string, ComboLeaf[]>,

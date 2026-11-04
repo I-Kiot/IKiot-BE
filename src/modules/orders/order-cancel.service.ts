@@ -30,13 +30,11 @@ import { OPEN_PRODUCTION_REQUEST_STATUSES } from '../../common/constants/product
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Fulfillments whose goods are still locked on the shelf for the order (`inventories.locked_stock`). */
 const LOCKING_FULFILLMENT_STATUSES: readonly string[] = [
   FulfillmentStatus.PACKED,
   FulfillmentStatus.HANDED_OVER,
 ];
 
-/** A deposit payment row as far as the refund rule needs it. */
 export interface DepositPaymentRow {
   id: string;
   kind: string;
@@ -47,16 +45,14 @@ export interface DepositPaymentRow {
 }
 
 export interface ResolvedRefund {
-  /** What the customer had paid as deposit and not yet got back. */
   held: number;
   amount: number;
   method: string;
-  /** The deposit payment the refund is written against. */
   refundOfPaymentId: string;
   paymentStatus: string;
 }
 
-/** The deposit the shop still holds for an order: every PAID deposit less every PAID refund. The one rule for it - the cancel refund (A-5) and the edit check (A-8) both read it here. */
+/** Cọc shop còn giữ: tổng cọc PAID trừ tổng hoàn PAID. Quy tắc duy nhất: hoàn khi hủy (A-5) và kiểm tra khi sửa (A-8) đều đọc ở đây. */
 export function depositHeld(
   payments: readonly Pick<DepositPaymentRow, 'kind' | 'status' | 'amount'>[],
 ): number {
@@ -69,10 +65,7 @@ export function depositHeld(
 }
 
 /**
- * The deposit refund on a cancel (A-5, decided 2026-10-05): whoever cancels says how much goes back,
- * from 0 (the shop keeps the deposit) to everything still held; there is no default, because
- * either default would be someone's money moved without being asked. Null when there is nothing
- * to refund and nothing held.
+ * Hoàn cọc khi huỷ (A-5): người huỷ tự chọn số tiền hoàn, từ 0 (shop giữ cọc) tới toàn bộ số đang giữ. Không có mặc định vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. Null khi không có gì để hoàn và không giữ gì.
  */
 export function resolveRefund(
   payments: readonly DepositPaymentRow[],
@@ -125,12 +118,10 @@ export function resolveRefund(
 }
 
 /**
- * `POST /orders/:id/cancel` (A-5): a journey order cancelled before its goods leave stock -
- * CONFIRMED, PACKED or PICKED_UP. A packed order's lock goes back to the shelf
- * (`releaseLockedStock`) and its fulfillment is CANCELLED; an open shipment is CANCELLED. From
- * SHIPPING on the goods are gone and only a return brings them back. Production requests for the
- * order's lines are left alone (the workshop may already be making them; the goods become
- * ordinary stock when they arrive) and are listed in the response so someone can decide.
+ * `POST /orders/:id/cancel` (A-5): hủy đơn hành trình khi hàng chưa rời kho, tức CONFIRMED, PACKED hoặc PICKED_UP.
+ * Đơn đã đóng gói thì hàng khóa trả về kệ (`releaseLockedStock`) và fulfillment thành CANCELLED; shipment đang mở cũng thành CANCELLED.
+ * Từ SHIPPING trở đi hàng đã đi, chỉ hàng trả về mới đưa lại được. Yêu cầu sản xuất của các dòng không bị động tới
+ * (xưởng có thể đang làm; hàng về sau thành tồn kho thường) và được liệt kê trong response để người xử lý quyết định.
  */
 @Injectable()
 export class OrderCancelService {
@@ -179,7 +170,7 @@ export class OrderCancelService {
       });
     }
 
-    // A till sale is cancelled through PATCH /orders/:id/status, which also reverses its stock and cash flows.
+    // Đơn bán tại quầy hủy qua PATCH /orders/:id/status, route đó mới hoàn lại tồn kho và dòng tiền.
     if (
       order.fulfillmentType === FulfillmentType.TAKEAWAY ||
       !canTransition(order.status, OrderStatus.CANCELLED)
@@ -210,7 +201,7 @@ export class OrderCancelService {
     const now = new Date();
 
     await this.prisma.$transaction(async (tx) => {
-      // Claimed on the status we read: a pack or a hand-over racing the cancel loses or wins whole.
+      // Chiếm đơn theo status vừa đọc: đóng gói hoặc bàn giao chạy đua với hủy thì một bên thắng trọn, bên kia bị từ chối.
       const claimed = await tx.order.updateMany({
         where: { id, tenantId, status: order.status },
         data: {
@@ -228,7 +219,7 @@ export class OrderCancelService {
         });
       }
 
-      // A cancellable order was never COMPLETED, so its invoice was never issued: withdraw it.
+      // Đơn hủy được chưa bao giờ COMPLETED nên hóa đơn chưa phát hành: chỉ cần thu hồi.
       await this.invoices.voidPending(tx, id);
 
       for (const fulfillment of order.fulfillments) {
@@ -262,7 +253,7 @@ export class OrderCancelService {
       });
 
       if (refund && refund.amount > 0) {
-        // Money going back is a REFUND row against the deposit it returns. Its CashFlow row is E-5's, like the deposit's.
+        // Tiền hoàn là dòng REFUND gắn với cọc được hoàn. Dòng CashFlow do E-5 ghi, như với cọc.
         await tx.payment.create({
           data: {
             tenantId,

@@ -15,7 +15,7 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** One measurement or option agreed with the customer ("Chiều cao lưng tựa: 95 cm"). With `attributeId` it changes that attribute of the product (2026-10-16); without, it is a free-form note. */
+/** Một số đo hoặc tùy chọn đã thỏa thuận ("Chiều cao lưng tựa: 95 cm"). Có `attributeId` thì đổi thuộc tính đó của sản phẩm (2026-10-16); không có thì chỉ là ghi chú tự do. */
 export class OrderItemSpecDto {
   @IsOptional()
   @IsUUID()
@@ -38,9 +38,8 @@ export class OrderItemSpecDto {
 }
 
 /**
- * The specs agreed with a customer for one line (contract §2 `OrderItemCustomization`): sent whole
- * on every `PUT …/customization`, so a field left out is cleared - it is the record of what the
- * workshop must make, not a patch on it.
+ * Thông số đã thỏa thuận cho một dòng (contract §2). Gửi nguyên khối mỗi lần `PUT …/customization`,
+ * nên trường bỏ trống sẽ bị xóa: đây là bản ghi việc xưởng phải làm, không phải bản vá.
  */
 export class OrderItemCustomizationDto {
   @IsOptional()
@@ -80,7 +79,7 @@ export class OrderItemCustomizationDto {
   @IsString()
   note?: string;
 
-  /** Photos of a sample or drawings, already uploaded through `POST /uploads`. */
+  /** Ảnh mẫu hoặc bản vẽ, phải upload trước qua `POST /uploads`. */
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)

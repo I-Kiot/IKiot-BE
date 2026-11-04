@@ -5,12 +5,10 @@ import {
 } from '../../common/dto/location-ref.dto';
 import { PaymentKind } from './order-read.constants';
 
-// What `GET /orders` and `GET /orders/:id` read (A-9, contract §2). Both are supersets of the
-// till's own include in orders.service.ts: POS still lists and opens orders through these two
-// routes and reads `items`, `user` and `appliedPromotions` off them, so nothing it gets today may
-// disappear - the order-journey fields are added beside it.
+// Dữ liệu `GET /orders` và `GET /orders/:id` đọc (A-9, contract §2). Cả hai là tập cha của include của quầy trong orders.service.ts:
+// POS vẫn liệt kê và mở đơn qua hai route này, đọc `items`, `user`, `appliedPromotions` từ đó, nên không được bỏ bất cứ thứ gì nó đang nhận;
+// các trường hành trình được thêm bên cạnh.
 
-/** The `UserRef` of the contract - `{ id, name, phoneNumber }` once mapped; `name` is put together from the profile columns. */
 export const USER_REF_SELECT = {
   select: {
     id: true,
@@ -20,7 +18,7 @@ export const USER_REF_SELECT = {
   },
 } as const satisfies Prisma.UserDefaultArgs;
 
-/** The money the shipper collected on delivery, and whether it reached the owner - what `collection` is built from. One per order at most; the newest wins if a failed attempt left an older one. */
+/** Số tiền shipper thu khi giao và đã về tay chủ chưa, `collection` được dựng từ đây. Mỗi đơn tối đa một dòng; nếu lần thất bại trước để lại dòng cũ thì lấy dòng mới nhất. */
 const BALANCE_PAYMENT_INCLUDE = {
   where: { kind: PaymentKind.BALANCE },
   orderBy: { createdAt: 'desc' },
@@ -31,7 +29,7 @@ const BALANCE_PAYMENT_INCLUDE = {
   },
 } as const satisfies Prisma.Order$paymentsArgs;
 
-/** One row of the order list. Keeps every line: POS's invoice list expands them in place, and `stockSummary` is the worst line's `stockCheck`, so the lines are needed either way. */
+/** Một dòng danh sách đơn. Giữ mọi dòng hàng: danh sách hóa đơn của POS mở rộng chúng tại chỗ, và `stockSummary` là `stockCheck` của dòng tệ nhất nên vẫn cần các dòng. */
 export const ORDER_LIST_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
   branch: BRANCH_NAME_SELECT,
@@ -53,7 +51,6 @@ export const ORDER_LIST_INCLUDE = {
   },
 } as const satisfies Prisma.OrderInclude;
 
-/** One order opened in full: the list row plus each line's customization and source location, its shipments and its returns. */
 export const ORDER_DETAIL_INCLUDE = {
   ...ORDER_LIST_INCLUDE,
   items: {

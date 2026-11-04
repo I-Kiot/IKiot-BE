@@ -1,12 +1,12 @@
 import { OrderStatus } from '../../common/constants/order-status';
 
-// The status vocabulary is shared with the fulfillment, shipment and return modules, so it lives in common/constants; the transitions below are still the till's four-state flow until A-2/A-3 replace them.
+// Từ vựng status dùng chung với fulfillment, shipment và return nên nằm trong common/constants; các chuyển trạng thái bên dưới vẫn là luồng 4 trạng thái của quầy cho tới khi A-2/A-3 thay thế.
 export {
   OrderStatus,
   ORDER_STATUSES,
 } from '../../common/constants/order-status';
 
-/** Where an order may go from where it is. A completed sale is never un-completed, only RETURNED; CANCELLED and RETURNED are both terminal, so correcting either means a new order. */
+/** Đơn đi được từ trạng thái nào. Đơn đã COMPLETED không quay lại, chỉ có thể RETURNED; CANCELLED và RETURNED đều là trạng thái cuối, muốn sửa thì tạo đơn mới. */
 export const VALID_ORDER_TRANSITIONS: Readonly<
   Record<string, readonly string[]>
 > = {
@@ -16,14 +16,13 @@ export const VALID_ORDER_TRANSITIONS: Readonly<
   [OrderStatus.RETURNED]: [],
 };
 
-/** What a client may ask for on PATCH /orders/:id/status. */
 export const SETTABLE_ORDER_STATUSES: readonly string[] = [
   OrderStatus.COMPLETED,
   OrderStatus.CANCELLED,
   OrderStatus.RETURNED,
 ];
 
-/** Payment methods where the money is in hand as the order is rung up, so it opens COMPLETED. SEPAY is the exception: the bank tells us afterwards, so it opens PENDING and waits for the webhook. */
+/** Phương thức thu tiền ngay khi lên đơn, nên đơn mở ở COMPLETED. SEPAY là ngoại lệ: ngân hàng báo sau nên đơn mở ở PENDING và chờ webhook. */
 export const INSTANT_COMPLETE_METHODS: readonly string[] = [
   'CASH',
   'BANK_TRANSFER',
@@ -31,7 +30,7 @@ export const INSTANT_COMPLETE_METHODS: readonly string[] = [
   'VNPAY',
 ];
 
-/** What `POST /orders/:id/pay-offline` may settle a stuck SePay order with. */
+/** Phương thức được dùng để chốt đơn SePay đang treo qua `POST /orders/:id/pay-offline`. */
 export const OFFLINE_PAYMENT_METHODS: readonly string[] = [
   ...INSTANT_COMPLETE_METHODS,
 ];

@@ -14,7 +14,7 @@ import {
   type OrderSort,
 } from '../order-read.constants';
 
-/** `GET /orders` query (A-9, contract §2): the till's own filters, inherited unchanged because POS still lists through this route, plus the order-journey ones. `search` now also matches the order code. */
+/** Query của `GET /orders`. Giữ nguyên bộ lọc của quầy vì POS vẫn liệt kê qua route này, thêm bộ lọc hành trình đơn. `search` giờ khớp cả mã đơn. */
 export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsOptional()
   @IsIn(ORDER_CHANNELS)
@@ -28,17 +28,17 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsIn(ORDER_PRIORITIES)
   priority?: string;
 
-  /** The order's worst line - lets the list show "orders that can go now" (`ENOUGH`). Worked out when read, so it only ever matches orders that have not shipped. */
+  /** Dòng tệ nhất của đơn (lọc "đơn giao được ngay" = `ENOUGH`). Tính lúc đọc nên chỉ khớp đơn chưa giao. */
   @IsOptional()
   @IsIn(STOCK_CHECK_STATUSES)
   stockSummary?: string;
 
-  /** Has the cash a shipper collected reached the owner - read off the order's BALANCE payment. `NOT_APPLICABLE` also matches orders that have none. */
+  /** Tiền shipper thu đã về tay chủ chưa, đọc từ Payment BALANCE. `NOT_APPLICABLE` cũng khớp đơn không có BALANCE. */
   @IsOptional()
   @IsIn(REMITTANCE_STATUSES)
   cashRemittanceStatus?: string;
 
-  /** Contract name for the creation-date window; the inherited `fromDate`/`toDate` are the till's spelling of the same thing. When both are sent, `from`/`to` win. */
+  /** Tên theo contract cho khoảng ngày tạo; `fromDate`/`toDate` kế thừa từ quầy là cùng ý. Gửi cả hai thì `from`/`to` thắng. */
   @IsOptional()
   @IsDateString()
   from?: string;
@@ -47,16 +47,15 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsDateString()
   to?: string;
 
-  /** `true` leaves out the till's sales (`TAKEAWAY`): the order-journey screens send it, POS does not - both list through this route, so it is opt-in rather than the contract's "always" (decided 2026-10-06, A-8). */
+  /** `true` loại đơn bán tại quầy (`TAKEAWAY`). Màn hình hành trình gửi `true`, POS thì không nên đây là tùy chọn chứ không luôn bật như contract (quyết định 2026-10-06, A-8). */
   @BooleanQuery()
   excludePos?: boolean;
 
-  /** Defaults to `createdAt`. */
   @IsOptional()
   @IsIn(ORDER_SORTS)
   sort?: OrderSort;
 
-  /** Orders that need someone's eye: `SHORT` - a line is partly or wholly out on the shelf; `DUE_SOON` - the requested delivery date is near or past. Only orders that have not shipped can match. */
+  /** Đơn cần chú ý: `SHORT` (có dòng thiếu một phần hoặc hết trên kệ), `DUE_SOON` (gần hoặc quá ngày giao). Chỉ đơn chưa giao mới khớp. */
   @IsOptional()
   @IsIn(ORDER_ATTENTION_KINDS)
   attention?: OrderAttentionKind;

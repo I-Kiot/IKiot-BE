@@ -6,25 +6,25 @@ import {
 } from '../../common/utils/reference-generator';
 import { normalizeAccountNumber } from '../../common/utils/bank-account';
 
-/** Separate from `SepaySubscriptionService`: that one pays iKiot's account from env vars, this one pays each shop's own. */
+/** Tách khỏi `SepaySubscriptionService`: service kia thu vào tài khoản iKiot lấy từ env, service này thu vào tài khoản riêng của từng shop. */
 @Injectable()
 export class SepayOrderService {
   private readonly logger = new Logger(SepayOrderService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Every order gets an `ORD` reference, not just SePay ones - the prefix is what makes a CashFlow row identifiable as sales revenue later. */
+  /** Mọi đơn đều có mã `ORD`, không chỉ đơn SePay; tiền tố này giúp nhận ra dòng CashFlow là doanh thu bán hàng. */
   generateOrderReference(): string {
     return generateReference(REFERENCE_PREFIX.ORDER);
   }
 
-  /** `{6,10}` rather than `{10}`: references minted before the random space was widened are 6 hex characters and may still be PENDING. Greedy, so a current 10-character reference still matches in full. */
+  /** `{6,10}` thay vì `{10}`: mã tạo trước khi nới không gian ngẫu nhiên dài 6 ký tự hex và có thể còn PENDING. Tham lam nên mã 10 ký tự hiện tại vẫn khớp đủ. */
   extractOrderReference(content = ''): string | null {
     const match = content.match(/ORD[0-9A-F]{6,10}/i);
     return match ? match[0].toUpperCase() : null;
   }
 
-  /** A per-shop key names the tenant; the shared key defers to the account in the payload. */
+  /** Key riêng của shop xác định tenant; key dùng chung thì nhường cho tài khoản trong payload. */
   async resolveTenant(apiKey: string, payload: Record<string, unknown>) {
     if (!apiKey) return null;
     const sharedKey = process.env.SEPAY_ORDER_WEBHOOK_API_KEY?.trim();
@@ -42,7 +42,7 @@ export class SepayOrderService {
     });
   }
 
-  /** `subAccount` too: a bank routing QR through a virtual account reports the VA there. If the two fields name different shops, refuse rather than credit the wrong one. */
+  /** `subAccount` cũng vậy: ngân hàng đi qua tài khoản ảo báo VA ở đó. Nếu hai trường trỏ tới hai shop khác nhau thì từ chối, không ghi có nhầm shop. */
   private async findTenantByAccount(payload: Record<string, unknown>) {
     const numbers = [payload.accountNumber, payload.subAccount]
       .map((value) => (typeof value === 'string' ? value : ''))
