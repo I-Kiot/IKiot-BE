@@ -2,7 +2,7 @@ import type { QuotaField } from '../subscriptions/subscriptions.service';
 import type { LocationType } from '../../common/constants/location-type';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** The manager summary every location embeds; Branch and Warehouse each carried their own identical copy of this select. */
+/** Tóm tắt quản lý mà mọi địa điểm nhúng; trước đây chi nhánh và kho mỗi bên có một bản y hệt. */
 export const MANAGER_SELECT = {
   id: true,
   phoneNumber: true,
@@ -16,12 +16,11 @@ export const LOCATION_INCLUDE = {
   manager: { select: MANAGER_SELECT },
 } as const;
 
-/** A Location row as LocationService reads and returns it. Branch/Warehouse rows carry no columns of their own beyond the link, so everything the API shows lives here. */
+/** Dòng Location như LocationService đọc và trả về. Chi nhánh / kho không có cột riêng ngoài liên kết, nên mọi thứ API hiện đều nằm ở đây. */
 export type LocationRow = Prisma.LocationGetPayload<{
   include: typeof LOCATION_INCLUDE;
 }>;
 
-/** Every message that differs between a branch and a warehouse, in one place. */
 export interface LocationMessages {
   notFound: string;
   alreadyDeleted: string;
@@ -33,11 +32,9 @@ export interface LocationMessages {
 }
 
 export interface LocationConfig {
-  /** `Location.type` this service owns - every query is narrowed to it. */
+  /** `Location.type` mà service này quản lý; mọi truy vấn đều lọc theo nó. */
   kind: LocationType;
-  /** Which 1:1 specialization row is created alongside the Location. */
   specialization: 'branch' | 'warehouse';
-  /** Which plan quota caps how many of these a tenant may open. */
   quotaField: QuotaField;
   messages: LocationMessages;
 }

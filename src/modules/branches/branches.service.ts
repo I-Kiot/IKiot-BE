@@ -5,7 +5,6 @@ import { LocationService } from '../locations/location.service';
 import type { LocationConfig } from '../locations/location.types';
 import { LocationType } from '../../common/constants/location-type';
 
-/** Everything that makes a branch a branch rather than a warehouse. */
 const BRANCH_CONFIG: LocationConfig = {
   kind: LocationType.BRANCH,
   specialization: 'branch',
@@ -22,7 +21,7 @@ const BRANCH_CONFIG: LocationConfig = {
   },
 };
 
-// Ported from BranchService + BranchController; the CRUD and manager appointment live in LocationService, shared with WarehouseService, because the two were 90% identical text and drifted apart in the old codebase.
+// Port từ BranchService + BranchController; CRUD và bổ nhiệm quản lý nằm ở LocationService, dùng chung với WarehouseService vì hai bên gần như y hệt và đã lệch nhau ở bản cũ.
 @Injectable()
 export class BranchService extends LocationService {
   constructor(prisma: PrismaService, subscriptions: SubscriptionService) {

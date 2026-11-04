@@ -3,9 +3,8 @@ import { IsIn, IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { FILTERABLE_LOCATION_STATUSES } from '../../../common/constants/location-status';
 
-/** List filters shared by branches and warehouses, so the two endpoints keep their own Swagger names while the rules exist once. */
+/** Bộ lọc danh sách chung cho chi nhánh và kho; hai endpoint giữ tên Swagger riêng, luật chỉ viết một lần. */
 export class QueryLocationDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on the location name. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -13,7 +12,7 @@ export class QueryLocationDto extends PaginationQueryDto {
   )
   search?: string;
 
-  // Omitted means "everything that isn't soft-deleted"; passing status=DELETED is how you look at the recycle bin, same as the old API.
+  // Bỏ trống = mọi thứ chưa xoá mềm; status=DELETED để xem thùng rác, như API cũ.
   @IsOptional()
   @IsIn(FILTERABLE_LOCATION_STATUSES)
   status?: string;

@@ -20,14 +20,14 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Ported from iKiotMS-BE's branch module. The tenant always comes from the token - no `?tenantId=` override, as in the other hand-ported modules.
+// Port từ module chi nhánh của iKiotMS-BE. Tenant luôn lấy từ token, không có `?tenantId=` như các module port tay khác.
 @ApiTags('branches')
 @ApiBearerAuth('bearer')
 @Controller('branches')
 export class BranchController {
   constructor(private readonly service: BranchService) {}
 
-  // `read_own` is in every STAFF account's base set and reaches only their own posting - LocationService narrows it (`locationReadScope`).
+  // `read_own` có trong mọi tài khoản STAFF và chỉ tới nơi của họ; LocationService thu hẹp (`locationReadScope`).
   @Permissions('branches', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách chi nhánh (phân trang, tìm kiếm)' })

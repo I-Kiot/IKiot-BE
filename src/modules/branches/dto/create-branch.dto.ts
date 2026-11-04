@@ -8,13 +8,13 @@ import {
   IsUUID,
 } from 'class-validator';
 
-// Mirrors iKiotMS-BE's CreateBranchRequestDTO. `status` is deliberately absent - a new branch is always ACTIVE, and the generated DTO this replaces let a caller create one already soft-deleted.
+// Theo CreateBranchRequestDTO của iKiotMS-BE. Không có `status`: chi nhánh mới luôn ACTIVE (DTO generated cũ cho phép tạo sẵn ở trạng thái đã xoá).
 export class CreateBranchDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên chi nhánh không được để trống' })
   name: string;
 
-  // The Mongoose model validated "at least one phone number"; Postgres cannot express that on a text[], so it stays an app-layer rule.
+  // Model Mongoose kiểm "ít nhất một SĐT"; Postgres không diễn đạt được trên text[] nên giữ là luật tầng ứng dụng.
   @IsArray()
   @ArrayNotEmpty({ message: 'Chi nhánh phải có ít nhất một số điện thoại' })
   @IsString({ each: true })
@@ -29,7 +29,7 @@ export class CreateBranchDto {
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
 
-  /** D-4: where this branch's damaged / defective goods go - a non-sellable warehouse. `null` clears it. */
+  /** D-4: hàng hỏng / lỗi của chi nhánh này về đâu, một kho không bán được. `null` để xoá. */
   @IsOptional()
   @IsUUID('all', { message: 'damagedLocationId không hợp lệ' })
   damagedLocationId?: string | null;

@@ -5,7 +5,6 @@ import { LocationService } from '../locations/location.service';
 import type { LocationConfig } from '../locations/location.types';
 import { LocationType } from '../../common/constants/location-type';
 
-/** Everything that makes a warehouse a warehouse rather than a branch. */
 const WAREHOUSE_CONFIG: LocationConfig = {
   kind: LocationType.WAREHOUSE,
   specialization: 'warehouse',
@@ -22,7 +21,7 @@ const WAREHOUSE_CONFIG: LocationConfig = {
   },
 };
 
-/** Ported from WarehouseService + WarehouseController and brought in line with BranchService, since a tenant runs several warehouses now. The old version accepted any active staff member as a manager, unlike its branch counterpart - which is why the shared LocationService exists: a rule can no longer be added to one of the pair and forgotten on the other. */
+/** Port từ WarehouseService + WarehouseController, đồng bộ với BranchService vì tenant nay có nhiều kho. Bản cũ nhận mọi NV đang làm việc làm quản lý, khác bên chi nhánh; nên có LocationService dùng chung để một luật không bị thêm cho bên này mà quên bên kia. */
 @Injectable()
 export class WarehouseService extends LocationService {
   constructor(prisma: PrismaService, subscriptions: SubscriptionService) {

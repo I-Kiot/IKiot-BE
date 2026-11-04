@@ -1,4 +1,4 @@
 import { QueryLocationDto } from '../../locations/dto/query-location.dto';
 
-/** Warehouse list filters - identical to a branch's; see QueryLocationDto. */
+/** Bộ lọc danh sách kho, giống chi nhánh; xem QueryLocationDto. */
 export class QueryWarehouseDto extends QueryLocationDto {}

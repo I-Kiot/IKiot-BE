@@ -8,7 +8,7 @@ import {
   assertDamagedLocationTarget,
 } from './damaged-location';
 
-/** A stand-in for `prisma.location` answering the given rows. */
+/** Giả `prisma.location` trả về các dòng đã cho. */
 function locations(
   found: { isSellable: boolean } | null,
   users: { name: string }[] = [],
@@ -64,7 +64,6 @@ describe('assertDamagedLocationTarget', () => {
     ).rejects.toMatchObject({
       response: { code: ErrorCode.LOCATION_DAMAGED_INVALID },
     });
-    // Scoped by tenant and excluding deleted ones.
     expect(findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: DAMAGED, tenantId: 't1', status: { not: 'DELETED' } },

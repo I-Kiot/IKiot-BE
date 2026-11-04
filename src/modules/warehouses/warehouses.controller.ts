@@ -20,14 +20,14 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Ported from iKiotMS-BE's warehouse module - same route surface as branches.
+// Port từ module kho của iKiotMS-BE, cùng bề mặt route với chi nhánh.
 @ApiTags('warehouses')
 @ApiBearerAuth('bearer')
 @Controller('warehouses')
 export class WarehouseController {
   constructor(private readonly service: WarehouseService) {}
 
-  // `read_own` is in every STAFF account's base set and reaches only their own posting - LocationService narrows it (`locationReadScope`).
+  // `read_own` có trong mọi tài khoản STAFF và chỉ tới nơi của họ; LocationService thu hẹp (`locationReadScope`).
   @Permissions('warehouses', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách kho (phân trang, tìm kiếm)' })

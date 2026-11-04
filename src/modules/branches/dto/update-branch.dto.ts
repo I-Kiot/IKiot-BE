@@ -7,7 +7,7 @@ import {
 } from '../../../common/constants/location-status';
 
 export class UpdateBranchDto extends PartialType(CreateBranchDto) {
-  // DELETED is not accepted here - soft-deleting goes through DELETE /branches/:id so `branches:delete` actually gates it.
+  // Không nhận DELETED ở đây: xoá mềm đi qua DELETE /branches/:id để `branches:delete` thực sự kiểm soát.
   @IsOptional()
   @IsIn(SETTABLE_LOCATION_STATUSES, {
     message: `status phải là ${SETTABLE_LOCATION_STATUSES.join(' hoặc ')}`,

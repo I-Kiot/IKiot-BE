@@ -16,7 +16,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** What both list endpoints accept - the DTOs extend PaginationQueryDto, so page/limit always arrive defaulted. */
+/** Tham số mà hai endpoint danh sách nhận; DTO kế thừa PaginationQueryDto nên page/limit luôn có mặc định. */
 export interface LocationQuery {
   search?: string;
   status?: string;
@@ -24,24 +24,21 @@ export interface LocationQuery {
   limit: number;
 }
 
-/** The client-settable fields shared by CreateBranchDto and CreateWarehouseDto. */
+/** Các trường client được đặt, dùng chung cho CreateBranchDto và CreateWarehouseDto. */
 export interface LocationInput {
   name?: string;
   phoneNumber?: string[];
   address?: string;
   email?: string;
   status?: string;
-  /** Warehouses only (CreateWarehouseDto); a branch's DTO has no such field. */
+  /** Chỉ kho (CreateWarehouseDto); DTO chi nhánh không có trường này. */
   isSellable?: boolean;
-  /** `null` clears it. */
+  /** `null` để xoá. */
   damagedLocationId?: string | null;
 }
 
-/** Everything a branch and a warehouse do identically. They used to be two ~220-line services that were 90% the same text, and that symmetry had already broken once: BranchService refused to move a staff member out of their current location and WarehouseService silently did it. What actually differs is passed in as a `LocationConfig`.
- *
- * Both now live in the generic `locations` table, told apart by `type`; the `branches` /
- * `warehouses` rows are 1:1 specializations that share the Location's id, so the id the API
- * hands out is the same whichever of the two tables you look it up in. */
+/** Chi nhánh và kho dùng chung logic; phần khác nhau truyền qua `LocationConfig`.
+ * Cả hai nằm trong bảng `locations`, phân biệt bằng `type`; `branches` / `warehouses` dùng chung id với Location. */
 export abstract class LocationService {
   protected constructor(
     protected readonly prisma: PrismaService,
@@ -49,18 +46,18 @@ export abstract class LocationService {
     private readonly config: LocationConfig,
   ) {}
 
-  /** `type` is dropped because the route already says which kind it is. */
+  /** Bỏ `type` vì route đã cho biết loại. */
   protected toResponse(row: LocationRow) {
     const { type, ...rest } = row;
     return rest;
   }
 
-  /** `read_own` narrows the list to the caller's own posting (see `locationReadScope`); posted to none of this kind, the list is empty rather than an error, so a picker simply has nothing to offer. */
+  /** `read_own` thu danh sách về nơi phân công của người gọi (xem `locationReadScope`). Không được phân công ở loại này thì danh sách rỗng chứ không lỗi. */
   async findAll(user: AuthUser, tenantId: string, query: LocationQuery) {
     const where: Prisma.LocationWhereInput = {
       tenantId,
       type: this.config.kind,
-      // Without an explicit filter the recycle bin stays hidden.
+      // Không có bộ lọc rõ ràng thì ẩn thùng rác.
       status: query.status ?? { not: LocationStatus.DELETED },
     };
 
@@ -94,7 +91,7 @@ export abstract class LocationService {
     );
   }
 
-  /** Always scoped by tenant, and a miss is a 404 rather than a 403: another tenant's location must be indistinguishable from one that does not exist. */
+  /** Luôn lọc theo tenant; không thấy thì 404 chứ không 403, để địa điểm tenant khác trông như không tồn tại. */
   protected async findRow(tenantId: string, id: string): Promise<LocationRow> {
     const row = await this.prisma.location.findFirst({
       where: { id, tenantId, type: this.config.kind },
@@ -111,7 +108,7 @@ export abstract class LocationService {
     });
   }
 
-  /** With only `read_own`, any location but the caller's own posting is a 404 - the same answer as one that does not exist, as for every other row out of reach. */
+  /** Chỉ có `read_own` thì địa điểm không phải nơi được phân công trả 404, như không tồn tại. */
   async findOne(user: AuthUser, tenantId: string, id: string) {
     const readScope = locationReadScope(user, this.config.kind);
     if (readScope.scope === 'OWN' && readScope.ownLocationId !== id) {
@@ -121,7 +118,7 @@ export abstract class LocationService {
   }
 
   async create(tenantId: string, dto: LocationInput & { name: string }) {
-    // Old behaviour: POST /branches sat behind requireActiveSubscription and then checked the plan quota, both of which live in SubscriptionService now (maxWarehouses is new in the port).
+    // Hành vi cũ: POST /branches qua requireActiveSubscription rồi kiểm hạn mức gói; nay cả hai ở SubscriptionService (maxWarehouses là mới khi port).
     await this.subscriptions.assertQuota(
       tenantId,
       this.config.quotaField,
@@ -142,8 +139,7 @@ export abstract class LocationService {
       dto.damagedLocationId,
     );
 
-    // The specialization row takes the Location's own id, which is what lets every API
-    // reference (`branchId`, `locationId`, ...) name either table interchangeably.
+    // Dòng chuyên biệt dùng chung id của Location, để `branchId` / `locationId` trỏ tới bảng nào cũng được.
     const id = randomUUID();
     const specialization = { create: { id, tenantId } };
     const row = await this.prisma.location.create({
@@ -164,14 +160,13 @@ export abstract class LocationService {
       include: LOCATION_INCLUDE,
     });
 
-    // A new location opens holding nothing, and writes no stock rows: it lists the whole
-    // catalogue anyway (the product list is not scoped by location) and a row appears here
-    // the first time a stock movement actually delivers something.
+    // Địa điểm mới không có gì và không ghi dòng tồn: danh mục vốn không lọc theo địa điểm; dòng xuất hiện
+    // lần đầu khi phiếu kho thực sự đưa hàng tới.
     return this.toResponse(row);
   }
 
   async update(tenantId: string, id: string, dto: LocationInput) {
-    // Prisma's update({ where: { id } }) can't take a non-unique tenant filter, so scope has to be re-checked first or any tenant could write any row by id.
+    // Prisma update({ where: { id } }) không nhận bộ lọc tenant không unique, nên phải kiểm phạm vi trước, không thì tenant nào cũng ghi được dòng theo id.
     const existing = await this.findRow(tenantId, id);
     await assertDamagedLocationTarget(
       this.prisma,
@@ -199,7 +194,7 @@ export abstract class LocationService {
     return this.toResponse(row);
   }
 
-  /** Soft delete, as the old system did - a hard delete is not an option anyway, since users, orders, inventory, stock movements and cash flows all hold a foreign key here. */
+  /** Xoá mềm như hệ thống cũ. Xoá cứng không được: users, đơn, tồn, phiếu kho và sổ quỹ đều có FK tới đây. */
   async remove(tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     if (existing.status === LocationStatus.DELETED) {
@@ -209,7 +204,7 @@ export abstract class LocationService {
       });
     }
 
-    // Added during the port: soft-deleting a location out from under its staff left them assigned to somewhere that appears in no list.
+    // Thêm khi port: xoá mềm địa điểm mà nhân viên còn gắn vào sẽ để họ ở nơi không còn trong danh sách nào.
     const staffCount = await this.prisma.user.count({
       where: {
         tenantId,
@@ -232,7 +227,7 @@ export abstract class LocationService {
     return this.toResponse(row);
   }
 
-  /** Appoint a manager, returning the appointee. The old role flip is gone with the roles themselves, so the appointment is recorded in `managerId`; the outgoing manager is unlinked and their Role left alone, since the tenant now decides what a manager may do. */
+  /** Bổ nhiệm quản lý, trả về người được bổ nhiệm. Không còn lật role; ghi ở `managerId`, người cũ được gỡ liên kết, Role của họ giữ nguyên vì tenant quyết quản lý được làm gì. */
   protected async appointManager(
     tenantId: string,
     locationId: string,
@@ -263,7 +258,7 @@ export abstract class LocationService {
       });
     }
 
-    // Appointing someone must not quietly relocate them, so a posting at another location is cleared first rather than silently overwritten.
+    // Bổ nhiệm không được âm thầm chuyển người đi, nên nơi công tác cũ được gỡ trước chứ không ghi đè.
     if (staff.locationId !== null && staff.locationId !== locationId) {
       throw new BadRequestException({
         code: ErrorCode.LOCATION_STAFF_POSTED_ELSEWHERE,
@@ -272,7 +267,7 @@ export abstract class LocationService {
     }
 
     const [, updated] = await this.prisma.$transaction([
-      // A user works at exactly one location - one `location_id` column says so by construction.
+      // Mỗi user làm đúng một địa điểm, theo cột `location_id`.
       this.prisma.user.update({
         where: { id: staffId },
         data: { locationId },
