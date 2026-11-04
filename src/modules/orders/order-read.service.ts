@@ -93,7 +93,7 @@ export class OrderReadService {
   }
 
   /**
-   * `GET /orders/alerts`: số đơn chưa giao cần chú ý, cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
+   * `GET /orders/alerts`: số đơn chưa giao cần chú ý (thiếu hàng, sắp tới ngày giao, khách tới lấy quá hạn), cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
    */
   async alerts(user: AuthUser, tenantId: string, branchId?: string) {
     const base = Object.assign(new QueryOrderJourneyDto(), {
@@ -109,12 +109,18 @@ export class OrderReadService {
       attention: 'DUE_SOON',
     });
 
-    const [candidates, dueSoon] = await Promise.all([
+    const overdueWhere = this.listWhere(user, tenantId, {
+      ...base,
+      attention: 'PICKUP_OVERDUE',
+    });
+
+    const [candidates, dueSoon, pickupOverdue] = await Promise.all([
       this.prisma.order.findMany({
         where: shortWhere,
         select: STOCK_SUMMARY_CANDIDATE_SELECT,
       }),
       this.prisma.order.count({ where: dueWhere }),
+      this.prisma.order.count({ where: overdueWhere }),
     ]);
     const stockChecks = await computeStockChecks(
       this.prisma,
@@ -125,7 +131,7 @@ export class OrderReadService {
       isShort(summarizeStock(order.items.map((l) => stockChecks.get(l.id)))),
     ).length;
 
-    return { short, dueSoon, dueSoonDays: DUE_SOON_DAYS };
+    return { short, dueSoon, pickupOverdue, dueSoonDays: DUE_SOON_DAYS };
   }
 
   async findOne(user: AuthUser, tenantId: string, id: string) {
