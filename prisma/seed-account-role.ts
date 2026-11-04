@@ -1,16 +1,5 @@
-// Accounts, locations and roles for the manual test of the order journey - a straight
-// transcription of docs/tai-khoan-test-hanh-trinh.md (parts 1.2 - 1.4): the owner "Nguyễn Thị
-// Demo" (0981189856), locations L1-L3, roles R1-R7 and staff U1-U9. If that file changes,
-// change this one with it.
-//
-// Run `npx prisma db seed` first (PermissionCatalog + plans), then:
-//
-//   npx tsx prisma/seed-account-role.ts
-//   npx tsx prisma/seed-furniture-test.ts     # catalogue, suppliers, customers, opening stock
-//
-// Idempotent: the shop is found by owner phone, locations / roles by name, accounts by phone
-// number - anything already there is left untouched. Dev data only; every password is
-// DEMO_PASSWORD.
+// Tài khoản, địa điểm, role để test thủ công hành trình đơn (chép từ docs/tai-khoan-test-hanh-trinh.md, phần 1.2–1.4). Chạy sau `prisma db seed`, trước seed-furniture-test.ts.
+// Chạy lại an toàn: thứ đã có thì giữ nguyên. Chỉ dữ liệu dev, mật khẩu là DEMO_PASSWORD.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -36,7 +25,7 @@ const LOCATIONS: {
   type: 'BRANCH' | 'WAREHOUSE';
   isSellable: boolean;
 }[] = [
-  // Created first so L2 can name it as its damaged-goods location.
+  // Tạo trước để L2 trỏ được tới nó làm kho hàng hỏng.
   {
     key: 'DAMAGED',
     name: 'Kho hàng hỏng',
@@ -48,8 +37,7 @@ const LOCATIONS: {
 ];
 
 /**
- * Exactly the ticks listed per role in the test file. The STAFF base set is granted by
- * JwtStrategy and stripped from what a role stores, so nothing from it appears here.
+ * Đúng các quyền được tick theo từng role trong file test. Bộ quyền STAFF cơ bản do JwtStrategy cấp và bị loại khỏi những gì role lưu, nên không xuất hiện ở đây.
  */
 const ROLES: {
   code: string;
@@ -81,8 +69,7 @@ const ROLES: {
       ['orders', ['read', 'pack', 'ship']],
       ['shipments', ['create', 'read', 'update']],
       ['inventory', ['read']],
-      // `approve` is the optional tick of the test file; it is granted so K11 step 3 and
-      // stocktakes can be run by the warehouse account.
+      // `approve` là tick tùy chọn của file test; cấp để K11 bước 3 và kiểm kho chạy được bằng tài khoản kho.
       ['stock_movement', ['create', 'read', 'update', 'receive', 'approve']],
       ['production_requests', ['read']],
       ['production', ['receive']],
@@ -116,7 +103,7 @@ const ROLES: {
   },
 ];
 
-/** profile: the app shows "lastName firstName", e.g. "Sale Hà Nội". */
+/** profile: app hiển thị "họ tên", ví dụ "Sale Hà Nội". */
 const STAFF: {
   code: string;
   lastName: string;
@@ -253,7 +240,7 @@ async function seedShop(passwordHash: string) {
   });
 }
 
-/** PRO (unlimited quotas) for a year, as the test file states. */
+/** PRO (không giới hạn quota) một năm, đúng như file test. */
 async function seedSubscription(tenantId: string, ownerId: string) {
   if (await prisma.subscription.findFirst({ where: { tenantId } })) return;
   const plan = await prisma.plan.findFirst({ where: { planCode: 'PRO' } });
@@ -301,7 +288,7 @@ async function seedLocations(
       ids[loc.key] = existing.id;
       continue;
     }
-    // The branch / warehouse row takes the Location's own id, as LocationService does.
+    // Dòng branch/warehouse nhận đúng id của Location, như LocationService.
     const id = randomUUID();
     const specialization = { create: { id, tenantId } };
     await prisma.location.create({
@@ -318,9 +305,7 @@ async function seedLocations(
     });
     ids[loc.key] = id;
   }
-  // L2 names L1 as its damaged-goods warehouse. L3 gets the same so a return there also
-  // has somewhere to put broken goods. defaultFulfillmentLocationId stays null on purpose
-  // (the test file, part 0 item 1: nothing can set it, so the branch ships from itself).
+  // L2 trỏ L1 làm kho hàng hỏng; L3 cũng vậy để đơn trả về có chỗ đặt hàng hỏng. defaultFulfillmentLocationId cố ý để null (file test, phần 0 mục 1: không ai đặt được nên chi nhánh tự xuất hàng).
   await prisma.location.updateMany({
     where: { id: { in: [ids.HANOI, ids.HCM] } },
     data: { damagedLocationId: ids.DAMAGED },

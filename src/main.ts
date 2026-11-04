@@ -1,8 +1,7 @@
-// IMPORTANT: Make sure to import `instrument.ts` at the top of your file.
-// If you're using CommonJS (CJS) syntax, use `require("./instrument.ts");`
+// QUAN TRỌNG: `instrument.ts` (Sentry) phải được import ở dòng đầu tiên, trước mọi import khác.
 import './instrument';
 
-// First import, deliberately: `validateEnv()` runs before ConfigModule reads `.env`, and dotenv never overwrites a real environment variable.
+// Import đầu tiên có chủ đích: `validateEnv()` chạy trước khi ConfigModule đọc `.env`; dotenv không ghi đè biến môi trường thật.
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
@@ -14,21 +13,21 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { corsOrigins, validateEnv } from './common/config/env';
 
 async function bootstrap() {
-  // A deploy missing JWT_SECRET must fail here, not on the first login after the load balancer has cut over.
+  // Deploy thiếu JWT_SECRET phải lỗi ngay tại đây, không phải ở lần đăng nhập đầu tiên sau khi load balancer đã chuyển traffic.
   validateEnv();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // PrismaService and RedisService implement OnModuleDestroy; without this Nest never listens for the SIGTERM every deploy sends.
+  // PrismaService và RedisService implement OnModuleDestroy; thiếu dòng này Nest không lắng nghe SIGTERM mà mỗi lần deploy đều gửi.
   app.enableShutdownHooks();
 
-  // Express ignores X-Forwarded-For until told to trust the proxy, and that header is what AuditInterceptor records - TRUST_PROXY is the hop count, unset meaning no proxy.
+  // Express bỏ qua X-Forwarded-For nếu chưa bảo tin proxy, mà AuditInterceptor ghi đúng header này. TRUST_PROXY là số hop; không đặt nghĩa là không có proxy.
   const trustProxy = process.env.TRUST_PROXY?.trim();
   app.set('trust proxy', trustProxy ? Number(trustProxy) : false);
 
   app.use(
     helmet({
-      // Swagger UI at /docs is served inline, so the default CSP blocks it; these are Nest's own helmet + Swagger directives.
+      // Swagger UI ở /docs được inline nên CSP mặc định sẽ chặn; các directive này là riêng cho helmet + Swagger.
       contentSecurityPolicy: {
         directives: {
           defaultSrc: [`'self'`],
@@ -47,7 +46,6 @@ async function bootstrap() {
   });
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  // Turns Prisma errors into real 4xx responses instead of bare 500s - see the filter.
   app.useGlobalFilters(new AllExceptionsFilter());
 
   const config = new DocumentBuilder()
@@ -63,7 +61,7 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
-  // Both paths are mounted because iKiotMS-BE served its docs at /api-docs unconditionally; making them non-public is a deliberate decision, not part of the port.
+  // Mount cả hai đường dẫn vì iKiotMS-BE luôn phục vụ docs ở /api-docs; việc chặn công khai là quyết định riêng, không thuộc phần port.
   SwaggerModule.setup('api-docs', app, document);
 
   await app.listen(process.env.PORT ?? 3000);

@@ -4,7 +4,7 @@ import { AppService } from './app.service';
 import { Public } from './common/decorators/public.decorator';
 import { RawResponse } from './common/decorators/raw-response.decorator';
 
-// Unauthenticated probe endpoint: @Public() skips the global JWT guard, @RawResponse() keeps the bare `{ status: "ok" }` body.
+// Endpoint probe không cần xác thực: @Public() bỏ qua JWT guard toàn cục, @RawResponse() giữ body `{ status: "ok" }` thô.
 @ApiTags('health')
 @Controller()
 export class AppController {
@@ -17,7 +17,7 @@ export class AppController {
     return this.appService.health();
   }
 
-  /** Alias of `/` at the path iKiotMS-BE's probe hits, so existing uptime checks keep working. */
+  /** Bí danh của `/` ở đường dẫn mà probe của iKiotMS-BE đang gọi, để các uptime check cũ vẫn chạy. */
   @Public()
   @RawResponse()
   @Get('health')
@@ -26,9 +26,8 @@ export class AppController {
   }
 
   /**
-   * Readiness, for deploys: 200 only when the database answers and has every migration this image
-   * ships, 503 otherwise. Kept off `/health` on purpose - the container healthcheck polls that one,
-   * and a database blip must not get the API restarted.
+   * Readiness cho deploy: 200 khi DB trả lời và đủ migration của image, ngược lại 503.
+   * Không gộp vào `/health`: container healthcheck gọi route đó, DB chớp tắt không được restart API.
    */
   @Public()
   @RawResponse()
@@ -37,7 +36,7 @@ export class AppController {
     return this.appService.ready();
   }
 
-  /** Sentry's own smoke test: throws on purpose so the `@SentryExceptionCaptured()` path in `AllExceptionsFilter` can be verified end-to-end. Public so it's reachable with a bare curl. */
+  /** Smoke test của Sentry: ném lỗi có chủ đích để kiểm chứng đường `@SentryExceptionCaptured()` trong `AllExceptionsFilter`. Public để gọi bằng curl. */
   @Public()
   @Get('debug-sentry')
   getError() {

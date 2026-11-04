@@ -1,9 +1,5 @@
-// Seeds the fixed PermissionCatalog every tenant-defined Role draws from. This taxonomy
-// started as iKiotMS-BE's src/config/permissions.json (the union of every resource+action
-// pair listed for the old 6 static roles) and has since grown - see the "added for the
-// NestJS port" notes in CATALOG below. It is the app's contract, not tenant-editable data.
-// Every `@Permissions(resource, action)` in code must have a row here or no role can ever
-// be granted it. Run with `prisma db seed`.
+// Seed PermissionCatalog cố định mà mọi Role do tenant định nghĩa đều lấy từ đó. Đây là hợp đồng của app, không phải dữ liệu tenant sửa được.
+// Mọi `@Permissions(resource, action)` trong code phải có dòng ở đây, nếu không role nào được cấp quyền đó. Chạy bằng `prisma db seed`.
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
@@ -11,9 +7,7 @@ import * as bcrypt from 'bcryptjs';
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 
-// Dev-only platform admin. phoneNumber has no DB-level unique constraint (matches
-// iKiotMS-BE - uniqueness is enforced app-side, see AuthService.register), so this uses
-// find-then-create instead of upsert() to stay idempotent across re-seeds.
+// Admin dev nội bộ. phoneNumber không có unique ở DB (giống iKiotMS-BE; unique được kiểm tra ở app trong AuthService.register), nên dùng find-then-create thay vì upsert() để seed chạy lại an toàn.
 const ADMIN_PHONE = '0000000000';
 const ADMIN_PASSWORD = 'password123';
 
@@ -29,7 +23,7 @@ async function seedAdminUser() {
   const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
   await prisma.user.create({
     data: {
-      tenantId: null, // ADMIN is platform-level, not scoped to any tenant
+      tenantId: null, // ADMIN thuộc cấp nền tảng, không gắn tenant
       phoneNumber: ADMIN_PHONE,
       password: passwordHash,
       systemRole: 'ADMIN',
@@ -39,8 +33,7 @@ async function seedAdminUser() {
   console.log(`Seeded ADMIN account (phone ${ADMIN_PHONE}).`);
 }
 
-// Ported from iKiotMS-BE's src/seeders/plans.seeder.js - same 5 plans, same prices.
-// Subscription's free-trial/upgrade/renew flows all fail without at least TRIAL existing.
+// Luồng dùng thử/nâng cấp/gia hạn của Subscription đều lỗi nếu chưa có gói TRIAL.
 const ALL_PLAN_FEATURES = [
   'stock_movement',
   'sales',
@@ -180,9 +173,7 @@ async function seedPlans() {
 }
 
 /**
- * `descriptions` (2026-10-16): quyền này mở tính năng gì, hiện dưới ô chọn ở màn Vai trò. Mã
- * `resource:action` không đổi được - `role_permissions` trỏ vào nó - nên khi tên một quyền khó hiểu,
- * sửa mô tả ở đây chứ không đổi mã.
+ * `descriptions`: mô tả quyền hiện dưới ô chọn ở màn Vai trò. Mã `resource:action` không đổi được (`role_permissions` trỏ vào nó), nên khi tên quyền khó hiểu thì sửa mô tả, không đổi mã.
  */
 const CATALOG: Record<
   string,
@@ -220,7 +211,7 @@ const CATALOG: Record<
     label: 'Nhà cung cấp',
   },
   branches: {
-    // `read_own` (2026-10-07) is part of STAFF_BASE_PERMISSIONS - every employee may read the branch they are posted to - so the role editor hides it; it is here so the base set is made of valid catalog rows.
+    // `read_own` nằm trong STAFF_BASE_PERMISSIONS (mọi nhân viên được đọc chi nhánh mình làm), nên role editor ẩn nó; vẫn khai báo để bộ quyền cơ bản chỉ gồm dòng catalog hợp lệ.
     actions: [
       'create',
       'read',
@@ -232,7 +223,6 @@ const CATALOG: Record<
     label: 'Chi nhánh',
   },
   warehouses: {
-    // `read_own`: same as for branches.
     actions: [
       'create',
       'read',
@@ -244,9 +234,7 @@ const CATALOG: Record<
     label: 'Kho',
   },
   orders: {
-    // 'delete' added for the NestJS port - the generated orders module exposes DELETE.
-    // 'confirm' / 'assign' added for the order journey (2026-10-02): confirming an order
-    // holds its stock, and naming the person in charge is a decision of its own.
+    // 'confirm' (giữ tồn kho khi xác nhận đơn) và 'assign' (chỉ định người phụ trách) là hai quyết định riêng.
     actions: [
       'create',
       'read',
@@ -256,10 +244,7 @@ const CATALOG: Record<
       'pay_offline',
       'confirm',
       'assign',
-      // Added 2026-10-04 with the revised order journey (docs/hanh-trinh-don-hang.md):
-      // packing, shipping (the step that deducts stock) and confirming the cash a shipper
-      // handed back are each a decision of their own, held by different people. 'pack' is
-      // not folded into 'update' so a packer cannot edit prices or lines.
+      // 'pack', 'ship' (bước trừ tồn kho) và 'confirm_cash' là ba quyết định riêng, do người khác nhau giữ. 'pack' không gộp vào 'update' để người đóng hàng không sửa được giá hay dòng hàng.
       'pack',
       'ship',
       'confirm_cash',
@@ -271,7 +256,6 @@ const CATALOG: Record<
     },
   },
   inventory: {
-    // 'create'/'delete' added for the NestJS port.
     actions: ['create', 'read', 'update', 'delete', 'view_all', 'manage'],
     label: 'Tồn kho',
   },
@@ -285,8 +269,7 @@ const CATALOG: Record<
   },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
   cash_drawers: {
-    // 'create'/'update'/'delete' added for the NestJS port - the old system only ever
-    // opened and finalised a session, never edited one directly.
+    // Hệ thống cũ chỉ mở và chốt ca, không sửa ca trực tiếp.
     actions: [
       'create',
       'read',
@@ -313,7 +296,6 @@ const CATALOG: Record<
     label: 'Lịch làm việc',
   },
   stock_movement: {
-    // 'delete' added for the NestJS port.
     actions: [
       'create',
       'read',
@@ -331,10 +313,8 @@ const CATALOG: Record<
   },
   profile: { actions: ['read'], label: 'Hồ sơ cá nhân' },
 
-  // ── Resources with no equivalent in iKiotMS-BE's permissions.json ──────────────────
-  // These modules had routes but no authorize() call at all in the old system - every
-  // logged-in user could reach them. They get a real resource here so a tenant-defined
-  // role can actually be scoped away from them.
+  // ── Resource không có trong permissions.json của iKiotMS-BE ──────────────────
+  // Các module này cũ không gọi authorize() nên mọi user đăng nhập đều vào được. Khai báo resource để role của tenant có thể tách chúng ra.
   customers: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Khách hàng',
@@ -344,9 +324,7 @@ const CATALOG: Record<
     label: 'Yêu cầu hỗ trợ',
   },
   cash_flows: {
-    // Distinct from cash_drawers: a drawer is one cashier's shift, cash_flows is every
-    // movement of tenant money (supplier payments, ...). The old system
-    // only ever exposed it read-only under reports ('/stats/cashflow').
+    // Khác cash_drawers: drawer là ca của một thu ngân, cash_flows là mọi dòng tiền của tenant (trả nhà cung cấp, ...). Hệ thống cũ chỉ cho xem chỉ đọc qua báo cáo ('/stats/cashflow').
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Dòng tiền',
   },
@@ -355,33 +333,28 @@ const CATALOG: Record<
     label: 'Lịch sử chat AI',
   },
 
-  // ── The order journey (2026-10-02, docs/order-flow.md) ─────────────────────────────
-  // All added up front in Phase 0 so the parallel tracks never edit this file.
+  // ── Hành trình đơn hàng (docs/order-flow.md) ─────────────────────────────
+  // Thêm đầy đủ từ Phase 0 để các track song song không phải sửa file này.
   production_requests: {
-    // 'update' covers moving the status by hand (DRAFT → SENT → ... → COMPLETED).
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Yêu cầu sản xuất',
   },
   production: {
-    // The production list (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4): entering the quantity
-    // produced is what raises stock, so it is its own right (2026-10-04, contract §6).
-    // 'deliver' (2026-10-09) is the workshop staff's: see their workshop's requests and write a
-    // delivery note. It raises nothing - the location's 'receive' on that note does.
+    // Nhập số lượng đã sản xuất là thứ làm tăng tồn kho nên có quyền riêng (contract §6). 'deliver' là của nhân viên xưởng: xem yêu cầu của xưởng và lập phiếu giao; phiếu không tăng tồn, việc đó do 'receive' ở kho nhận làm.
     actions: ['receive', 'deliver'],
     label: 'Nhập hàng sản xuất',
   },
   fulfillments: {
-    // 'verify' = confirming the packed goods are intact, which is what deducts the stock.
+    // 'verify' = xác nhận hàng đã đóng còn nguyên vẹn; đây là bước trừ tồn kho.
     actions: ['create', 'read', 'update', 'verify'],
     label: 'Đóng hàng',
   },
   shipments: {
-    // 'deliver' is the shipper's own right: see their deliveries, upload proof, mark delivered.
     actions: ['create', 'read', 'update', 'deliver'],
     label: 'Giao hàng',
   },
   returns: {
-    // The order's person in charge may also open a return without holding 'create'.
+    // Người phụ trách đơn cũng được mở đơn hoàn mà không cần 'create'.
     actions: ['create', 'read', 'inspect', 'cancel'],
     label: 'Hoàn hàng',
   },

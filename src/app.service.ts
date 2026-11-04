@@ -4,7 +4,6 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 import { ErrorCode } from './common/errors/error-codes';
 
-/** The migrations this build was made with but the database has not finished. */
 export function pendingMigrations(
   shipped: readonly string[],
   applied: readonly string[],
@@ -13,7 +12,7 @@ export function pendingMigrations(
   return shipped.filter((name) => !done.has(name));
 }
 
-/** Migration folder names shipped with this build (`prisma/migrations/<timestamp>_<name>`), or null when the folder is not there (a build without it cannot tell). */
+/** Tên thư mục migration đi kèm image (`prisma/migrations/<timestamp>_<name>`). Trả null khi thiếu thư mục: build đó không tự kiểm tra được. */
 function shippedMigrations(): string[] | null {
   try {
     return readdirSync(join(process.cwd(), 'prisma', 'migrations'), {
@@ -29,20 +28,18 @@ function shippedMigrations(): string[] | null {
 
 @Injectable()
 export class AppService {
-  /** Read once: the folder is part of the image and does not change while it runs. */
+  /** Đọc một lần: thư mục nằm trong image và không đổi khi đang chạy. */
   private readonly shipped = shippedMigrations();
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Liveness: the process is up. Deliberately touches nothing else, so a database blip does not make the container look dead. */
+  /** Liveness: process còn sống. Cố ý không đụng tới DB để sự cố DB không làm container trông như đã chết. */
   health() {
     return { status: 'ok', uptime: process.uptime() };
   }
 
   /**
-   * Readiness: the database answers and holds every migration this build ships. A deploy that put
-   * new code on an old schema answered `/health` with "ok" while every query failed (2026-10-07,
-   * dev) - this is the check CI waits on instead. 503 with the pending names when not ready.
+   * Readiness: DB trả lời và có đủ migration của build này. `/health` từng báo ok khi code mới chạy trên schema cũ, nên CI chờ check này. 503 kèm tên migration còn thiếu.
    */
   async ready() {
     let applied: string[];
