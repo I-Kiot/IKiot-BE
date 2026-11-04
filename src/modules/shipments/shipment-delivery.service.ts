@@ -32,6 +32,7 @@ import {
   onTheRoadWhere,
 } from './shipment-actor';
 import {
+  FulfillmentType,
   OrderPaymentStatus,
   OrderStatus,
   RemittanceStatus,
@@ -525,6 +526,16 @@ export class ShipmentDeliveryService {
         await this.invoices.issueForOrder(tx, payment.order.id, null);
       }
       if (completed.count !== 1) {
+        // Đơn khách tới lấy đang chờ ở quầy: tiền về thì chỉ đánh dấu đã thu, nhân viên bấm giao hàng sau (OrderPickupService).
+        const atCounter = await tx.order.updateMany({
+          where: {
+            id: payment.order.id,
+            status: OrderStatus.PACKED,
+            fulfillmentType: FulfillmentType.STORE_PICKUP,
+          },
+          data: { paymentStatus: OrderPaymentStatus.PAID },
+        });
+        if (atCounter.count === 1) return true;
         this.logger.warn(
           `SePay transfer for ${paymentReference} was recorded, but order ${payment.order.code} is no longer RECEIVED and was not completed.`,
         );
