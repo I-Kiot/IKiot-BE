@@ -6,7 +6,7 @@ import { NotificationModule } from '../notifications/notifications.module';
 import { SupplierModule } from '../suppliers/suppliers.module';
 
 @Module({
-  // InventoryModule for the stock primitives, NotificationModule for the fan-out to the locations involved, SupplierModule for the payables rules a receipt applies.
+  // InventoryModule cho primitive tồn, NotificationModule cho thông báo tới các địa điểm liên quan, SupplierModule cho quy tắc công nợ khi nhận hàng.
   imports: [InventoryModule, NotificationModule, SupplierModule],
   controllers: [StockMovementController],
   providers: [StockMovementService],

@@ -20,7 +20,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of StockMovementController, same path and same permission per route. There is no DELETE: a movement is paperwork about goods that physically moved, so it is cancelled, never removed. Every route takes the whole `AuthUser`, because where the caller works decides what they may touch. */
+/** Port của StockMovementController, cùng path và permission. Không có DELETE: phiếu là chứng từ, nên huỷ chứ không xoá. */
 @ApiTags('stock-movements')
 @ApiBearerAuth('bearer')
 @Controller('stock-movements')
@@ -61,28 +61,26 @@ export class StockMovementController {
     return this.service.updateDetails(user, id, dto);
   }
 
-  /** DRAFT → OPENING. */
   @Permissions('stock_movement', 'update')
   @Patch(':id/open')
   open(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.open(user, id);
   }
 
-  /** OPENING → CLOSED. */
   @Permissions('stock_movement', 'update')
   @Patch(':id/close')
   close(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.close(user, id);
   }
 
-  /** → IN_TRANSIT. Stock leaves the source here. */
+  /** → IN_TRANSIT. Hàng rời nguồn tại đây. */
   @Permissions('stock_movement', 'approve')
   @Patch(':id/ship')
   ship(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.ship(user, id);
   }
 
-  /** → RECEIVED. Stock arrives, and an import books the supplier's debt. */
+  /** → RECEIVED. Hàng về, và phiếu nhập ghi nhận công nợ NCC. */
   @Permissions('stock_movement', 'receive')
   @Patch(':id/receive')
   receive(
@@ -93,7 +91,6 @@ export class StockMovementController {
     return this.service.receive(user, id, dto);
   }
 
-  /** ADJUST PENDING → COMPLETED. */
   @Permissions('stock_movement', 'approve')
   @Patch(':id/approve-adjust')
   approveAdjust(
