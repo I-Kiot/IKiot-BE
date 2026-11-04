@@ -7,7 +7,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Read-only on purpose: invoices are produced by the order lifecycle. Gated on `orders:read` - an invoice is a view of an order, and a second permission for the same sale is how one ends up granted and not the other. */
+/** Chỉ đọc có chủ đích: hoá đơn do vòng đời đơn hàng sinh ra. Dùng `orders:read` vì hoá đơn chỉ là góc nhìn của đơn; permission riêng cho cùng một giao dịch dễ bị cấp lệch nhau. */
 @ApiTags('invoices')
 @ApiBearerAuth('bearer')
 @Controller('invoices')

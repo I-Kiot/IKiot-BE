@@ -42,17 +42,12 @@ const ORDER_FOR_INVOICE = {
 } as const satisfies Prisma.OrderSelect;
 
 /**
- * Every order has one SALE invoice. It is PENDING from the moment the order exists and is ISSUED -
- * numbered, with its lines frozen - when the order is COMPLETED, by every route that completes one.
- * An issued invoice is never edited: goods that come back afterwards produce an ADJUSTMENT with a
- * negative total. All methods take the caller's transaction, so an invoice can never be ISSUED for
- * an order whose completion rolled back (or the other way round).
+ * Mỗi đơn có một hoá đơn BÁN, ở trạng thái PENDING từ khi đơn tồn tại; chuyển sang ISSUED (đánh số, khoá dòng) khi đơn COMPLETED. ISSUED không bao giờ bị sửa: hàng trả sau đó sinh ADJUSTMENT âm. Mọi method nhận transaction của caller, để hoá đơn không ISSUED khi việc hoàn thành đơn bị rollback.
  */
 @Injectable()
 export class InvoiceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** The order's invoice, PENDING; a no-op when it already has a live one. */
   async ensurePending(tx: Tx, orderId: string) {
     const live = await this.liveSale(tx, orderId);
     if (live) return live;
@@ -73,7 +68,7 @@ export class InvoiceService {
     });
   }
 
-  /** PENDING -> ISSUED for a COMPLETED order. Idempotent: a second call (a replayed webhook, two routes racing) returns the invoice already issued. */
+  /** PENDING -> ISSUED cho đơn COMPLETED. Idempotent: lần gọi thứ hai (webhook gửi lại, hai route chạy đua) trả về hoá đơn đã ISSUED. */
   async issueForOrder(tx: Tx, orderId: string, actorId?: string | null) {
     const order = await this.loadOrder(tx, orderId);
     const existing = await this.liveSale(tx, orderId);
@@ -108,7 +103,7 @@ export class InvoiceService {
     }));
 
     if (existing) {
-      // Claimed on PENDING: two routes completing the same order can't both number it.
+      // Khoá bằng điều kiện status PENDING: hai route cùng hoàn thành một đơn không thể cùng đánh số.
       const claimed = await tx.invoice.updateMany({
         where: { id: existing.id, status: InvoiceStatus.PENDING },
         data: {
@@ -131,7 +126,7 @@ export class InvoiceService {
       return tx.invoice.findUniqueOrThrow({ where: { id: existing.id } });
     }
 
-    // An order that never got a PENDING invoice (created before invoices existed): issue directly.
+    // Đơn chưa có hoá đơn PENDING (tạo trước khi có hoá đơn): xuất thẳng.
     return tx.invoice.create({
       data: {
         tenantId: order.tenantId,
@@ -151,7 +146,7 @@ export class InvoiceService {
     });
   }
 
-  /** The order was cancelled (or came back whole) before it was ever completed: the invoice was never issued, so it is withdrawn rather than adjusted. */
+  /** Đơn bị huỷ (hoặc trả hết) trước khi hoàn thành: hoá đơn chưa từng ISSUED nên bị rút lại, không điều chỉnh. */
   async voidPending(tx: Tx, orderId: string) {
     await tx.invoice.updateMany({
       where: {
@@ -164,9 +159,8 @@ export class InvoiceService {
   }
 
   /**
-   * Goods came back. Once the sale invoice is ISSUED that is an ADJUSTMENT for their value (negative);
-   * while it is still PENDING nothing is written - `issueForOrder` nets the returned quantity out.
-   * `items` omitted means the whole order (the till's RETURNED).
+   * Hàng được trả. Khi hoá đơn BÁN đã ISSUED thì ghi ADJUSTMENT âm theo giá trị trả; còn PENDING thì không ghi gì, vì `issueForOrder` đã trừ số lượng trả.
+   * `items` rỗng nghĩa là trả cả đơn.
    */
   async adjustForReturn(
     tx: Tx,
@@ -234,7 +228,7 @@ export class InvoiceService {
     });
   }
 
-  /** Numbers are a per-shop running count; the advisory lock serialises two issues in one shop so they can't read the same highest number. */
+  /** Số hoá đơn đếm tăng theo từng shop; advisory lock tuần tự hoá hai lần phát hành trong cùng shop để không đọc trùng số lớn nhất. */
   private async allocateNumber(
     tx: Tx,
     tenantId: string,

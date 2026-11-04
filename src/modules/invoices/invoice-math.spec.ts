@@ -7,7 +7,6 @@ import {
 
 describe('invoice-math', () => {
   it('prorates a line discount onto the returned goods', () => {
-    // 4 x 100 with a 40 discount -> 360; one unit back is worth 90.
     expect(returnedValue({ quantity: 4, lineTotal: 360, returned: 1 })).toBe(
       90,
     );
@@ -23,7 +22,7 @@ describe('invoice-math', () => {
     expect(kept).toHaveLength(1);
     expect(kept[0].quantity).toBe(3);
     expect(kept[0].amount).toBe(270);
-    // Shipping (30) stays: 360 + 50 + 30 = 440, minus 90 and 50 back.
+    // Phí ship (30) không được hoàn khi trả hàng: 440 trừ 90 và 50 hàng trả lại.
     expect(saleTotal(440, lines)).toBe(300);
   });
 
