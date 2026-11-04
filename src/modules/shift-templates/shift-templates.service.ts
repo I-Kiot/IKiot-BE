@@ -9,18 +9,16 @@ import {
 import type { Prisma, ShiftTemplate } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** ACTIVE | DELETED - a shift template is soft-deleted, schedules point at it. */
 export const ShiftTemplateStatus = {
   ACTIVE: 'ACTIVE',
   DELETED: 'DELETED',
 } as const;
 
-/** Named shift patterns that `WorkingSchedule` rows are cut from. Every read filters `status: ACTIVE`, including the by-id one: a deleted template is gone as far as this module is concerned, but the rows still point at it, so it is never removed. */
+/** Mẫu ca mà các dòng `WorkingSchedule` được cắt ra. Mọi truy vấn lọc `status: ACTIVE`, kể cả theo id: mẫu đã xoá coi như không tồn tại, nhưng lịch vẫn trỏ tới nên không bao giờ xoá cứng. */
 @Injectable()
 export class ShiftTemplateService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Times go out as `HH:mm`, the shape the old string columns had. */
   private toResponse(row: ShiftTemplate) {
     return {
       ...row,
@@ -73,7 +71,7 @@ export class ShiftTemplateService {
     return { message: 'Tạo ca mẫu thành công', data: this.toResponse(created) };
   }
 
-  /** A full replace, not a merge - the old service `$set` the whole DTO. */
+  /** Thay thế toàn bộ DTO, không merge (service cũ `$set` cả DTO). */
   async update(tenantId: string, id: string, dto: ShiftTemplateDto) {
     await this.findRow(tenantId, id);
     const updated = await this.prisma.shiftTemplate.update({
@@ -90,7 +88,7 @@ export class ShiftTemplateService {
     };
   }
 
-  /** Soft delete: `WorkingSchedule.shiftTemplateId` is a real foreign key, so a hard delete would fail once the template had ever been scheduled - and those rows still need to say which shift they were. */
+  /** Xoá mềm: `WorkingSchedule.shiftTemplateId` là foreign key thật, xoá cứng sẽ lỗi khi mẫu đã từng được xếp lịch, và các lịch đó vẫn cần biết mình thuộc ca nào. */
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
     const deleted = await this.prisma.shiftTemplate.update({
@@ -103,7 +101,7 @@ export class ShiftTemplateService {
     };
   }
 
-  /** Every template a batch of schedules names, keyed by id. Keeping the lookup here means "a usable template is ACTIVE and in this tenant" is stated once, rather than in WorkingScheduleService's own copy. */
+  /** Tra cứu mẫu cho cả batch lịch. Quy tắc "mẫu phải ACTIVE và thuộc tenant" chỉ viết ở đây, không lặp lại ở WorkingScheduleService. */
   async activeByIds(
     tenantId: string,
     ids: string[],

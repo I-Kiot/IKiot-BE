@@ -20,7 +20,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Ten routes at the old paths and permissions, including the four actions the old module named (`read_all`, `readBR`, `readWH`, `read`/`read_own`). `current`, `me`, `branches` and `warehouses` are declared above `:id` or they get matched as schedule ids. */
+/** Giữ đường dẫn và quyền cũ, kể cả bốn action cũ (`read_all`, `readBR`, `readWH`, `read` / `read_own`). `current`, `me`, `branches`, `warehouses` phải khai báo trước `:id`, nếu không sẽ bị hiểu là id lịch. */
 @ApiTags('working-schedules')
 @ApiBearerAuth('bearer')
 @Controller('working-schedules')
@@ -36,7 +36,6 @@ export class WorkingScheduleController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  /** The shift the caller is in right now, or `{ data: null }`. */
   @Permissions('schedules', 'read', 'read_own')
   @Get('current')
   findCurrent(@CurrentUser() user: AuthUser) {
@@ -52,7 +51,7 @@ export class WorkingScheduleController {
     return this.service.findMine(requireTenantId(user), user.userId, query);
   }
 
-  /** The branch and warehouse views are the same list with the location pinned; the old routes answered 400 without the id, and `QueryWorkingScheduleDto` makes that a validation error instead. */
+  /** Hai view chi nhánh/kho là cùng một danh sách, chỉ khác location; thiếu id được báo lỗi validation (route cũ trả 400). */
   @Permissions('schedules', 'readBR')
   @Get('branches')
   findByBranch(

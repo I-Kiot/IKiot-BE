@@ -14,7 +14,7 @@ import {
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { HOLIDAY_SOURCES } from '../holiday.constants';
 
-/** `YYYY-MM-DD`, and a date that actually exists - `@Matches` alone would let `2026-02-31` through, so the old DTO round-tripped it through `Date`. */
+/** Phải là `YYYY-MM-DD` và là ngày tồn tại thật; `@Matches` một mình sẽ cho qua `2026-02-31`. */
 export const HOLIDAY_DATE_MESSAGE =
   'A holiday date must be formatted YYYY-MM-DD and be a real date';
 
@@ -46,7 +46,7 @@ export class CreateHolidayDto extends HolidayDateDto {
   isActive?: boolean = true;
 }
 
-/** `PATCH /holidays/:id` - date and/or name. `isActive` is deliberately absent: turning a holiday off is its own route because it is its own decision. */
+/** PATCH: ngày và/hoặc tên. Cố ý không có `isActive`: bật/tắt là route riêng vì là quyết định riêng. */
 export class UpdateHolidayDto {
   @IsOptional()
   @Matches(/^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/, {
@@ -83,7 +83,6 @@ export class QueryHolidayDto extends PaginationQueryDto {
   @IsIn(HOLIDAY_SOURCES, { message: 'Nguồn ngày lễ không hợp lệ' })
   source?: string;
 
-  /** Partial, case-insensitive match on the holiday's name. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -92,12 +91,11 @@ export class QueryHolidayDto extends PaginationQueryDto {
   name?: string;
 }
 
-/** `POST /holidays/sync/vietnam`. */
 export class SyncVietnamHolidayDto {
   @Type(() => Number)
   @IsInt({ message: 'year phải là số nguyên' })
   @Min(2000)
-  // The old DTO capped at "current year + 5"; a constant is close enough and doesn't change answer as the clock rolls over mid-request.
+  // Service cũ giới hạn tới năm hiện tại + 5; hằng số này đủ gần và không đổi kết quả khi qua năm giữa lúc request.
   @Max(2100)
   year: number;
 }
