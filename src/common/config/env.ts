@@ -32,6 +32,11 @@ const OPTIONAL = [
     'SEPAY_WEBHOOK_API_KEY',
     'the subscription payment webhook rejects everything',
   ],
+  [
+    'SEPAY_ORDER_WEBHOOK_API_KEY',
+    'the shared order webhook is off - only shops with their own webhook key can take QR payments',
+  ],
+  ['SEPAY_API_KEY', 'shops are never marked as linked to SePay automatically'],
 ] as const;
 
 /** Browser origins allowed over HTTP and Socket.IO: comma-separated `CORS_ORIGIN`, else `FRONTEND_URL`, else `true` (dev only). */

@@ -1195,6 +1195,23 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(heads?.description).toContain('MB');
     note('bank update raises a SYSTEM_TENANT_BANK_UPDATED notification OK');
 
+    const unlinked = await http()
+      .post('/orders/pos')
+      .set(auth())
+      .send({
+        branchId,
+        paymentMethod: 'SEPAY',
+        items: [{ productItemId: itemAId, quantity: 1 }],
+      })
+      .expect(400);
+    expect(unlinked.body.code).toBe('TENANT_SEPAY_NOT_LINKED');
+    note('SEPAY sale on an account not linked to SePay: 400 OK');
+
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: { bankingSepayLinkedAt: new Date() },
+    });
+
     const sale = await http()
       .post('/orders/pos')
       .set(auth())
@@ -1217,6 +1234,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(settled.body.data.status).toBe('COMPLETED');
     expect(settled.body.data.paymentMethod).toBe('CASH');
+    const offline = await prisma.order.findUniqueOrThrow({
+      where: { id: sale.body.data.order.id },
+      select: { paymentStatus: true },
+    });
+    expect(offline.paymentStatus).toBe('PAID');
     note('pay-offline: SEPAY order settled as CASH, COMPLETED OK');
 
     await http()
@@ -1334,6 +1356,130 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     expect(flowCount).toBe(1);
     note('webhook replay: refused, still exactly 1 income row OK');
+  });
+
+  it('settles a SePay sale through the shared webhook, by account number', async () => {
+    process.env.SEPAY_ORDER_WEBHOOK_API_KEY = 'smoke-shared-key';
+    const otherShop = await prisma.tenant.create({
+      data: {
+        name: `${TENANT_NAME} (other shop)`,
+        bankingAccountNumber: '7777777777',
+      },
+      select: { id: true },
+    });
+    try {
+      const taken = await http()
+        .put('/tenant/banking')
+        .set(auth())
+        .send({
+          bankName: 'MB',
+          accountNumber: '777 777 7777',
+          accountName: 'X',
+        })
+        .expect(409);
+      expect(taken.body.code).toBe('TENANT_BANKING_ACCOUNT_TAKEN');
+      note(
+        "PUT /tenant/banking with another shop's number (typed with spaces): 409 OK",
+      );
+
+      const sale = await http()
+        .post('/orders/pos')
+        .set(auth())
+        .send({
+          branchId,
+          paymentMethod: 'SEPAY',
+          items: [{ productItemId: itemAId, quantity: 1 }],
+        })
+        .expect(201);
+      const reference = sale.body.data.order.paymentReference;
+
+      const pending = await http()
+        .put('/tenant/banking')
+        .set(auth())
+        .send({ bankName: 'MB', accountNumber: '1111111111', accountName: 'X' })
+        .expect(409);
+      expect(pending.body.code).toBe('TENANT_BANKING_HAS_PENDING_SEPAY');
+      note('changing the account while a SePay QR waits: 409 OK');
+
+      const wrongAccount = await http()
+        .post('/webhook/sepay/order')
+        .set({ Authorization: 'Apikey smoke-shared-key' })
+        .send({
+          transferType: 'in',
+          accountNumber: '7777777777',
+          content: reference,
+          transferAmount: 200_000,
+          id: 111001,
+        })
+        .expect(200);
+      expect(wrongAccount.body.success).toBe(false);
+      const unknownAccount = await http()
+        .post('/webhook/sepay/order')
+        .set({ Authorization: 'Apikey smoke-shared-key' })
+        .send({
+          transferType: 'in',
+          accountNumber: '9999999999',
+          content: reference,
+          transferAmount: 200_000,
+          id: 111002,
+        })
+        .expect(200);
+      expect(unknownAccount.body.success).toBe(false);
+      const stillPending = await prisma.order.findUniqueOrThrow({
+        where: { id: sale.body.data.order.id },
+        select: { status: true },
+      });
+      expect(stillPending.status).toBe('PENDING');
+      note(
+        "shared webhook, another shop's / no shop's account: 200, nothing settled OK",
+      );
+
+      const paid = await http()
+        .post('/webhook/sepay/order')
+        .set({ Authorization: 'Apikey smoke-shared-key' })
+        .send({
+          transferType: 'in',
+          accountNumber: '0000000000',
+          content: `TT ${reference}`,
+          transferAmount: 200_000,
+          id: 111003,
+        })
+        .expect(200);
+      expect(paid.body.success).toBe(true);
+      const settled = await prisma.order.findUniqueOrThrow({
+        where: { id: sale.body.data.order.id },
+        select: { status: true, paymentStatus: true, sepayTransactionId: true },
+      });
+      expect(settled).toEqual({
+        status: 'COMPLETED',
+        paymentStatus: 'PAID',
+        sepayTransactionId: '111003',
+      });
+      note("shared webhook, the shop's own account: order COMPLETED + PAID OK");
+
+      const before = await prisma.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { bankingSepayWebhookApiKey: true },
+      });
+      await http()
+        .put('/tenant/banking')
+        .set(auth())
+        .send({ bankName: 'MB', accountNumber: '1111111111', accountName: 'X' })
+        .expect(200);
+      const moved = await http().get('/tenant/me').set(auth()).expect(200);
+      expect(moved.body.data.hasSepayKey).toBe(false);
+      note('a new account number unlinks the shop, key included OK');
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          bankingAccountNumber: '0000000000',
+          bankingSepayWebhookApiKey: before.bankingSepayWebhookApiKey,
+        },
+      });
+    } finally {
+      delete process.env.SEPAY_ORDER_WEBHOOK_API_KEY;
+      await prisma.tenant.delete({ where: { id: otherShop.id } });
+    }
   });
 
   it('prices a cart against a promotion and commits it once', async () => {
@@ -3318,7 +3464,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(webhook.body).toEqual({
       success: false,
-      message: 'Unknown API key',
+      message: 'Unknown API key or account',
     });
     note(
       'envelope: list merges, errors carry success:false, webhook stays raw OK',

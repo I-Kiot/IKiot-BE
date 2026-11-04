@@ -219,14 +219,15 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     delivery = moduleRef.get(ShipmentDeliveryService);
     inventory = moduleRef.get(InventoryService);
 
-    // Có tài khoản ngân hàng để thu được QR lúc giao (C-5).
+    // Có tài khoản ngân hàng đã liên kết SePay để thu được QR lúc giao (C-5).
     await prisma.tenant.create({
       data: {
         id: tenantId,
         name: 'ship-e2e',
         bankingBankName: 'VCB',
-        bankingAccountNumber: '0123456789',
+        bankingAccountNumber: '0123456701',
         bankingAccountName: 'NOI THAT DEMO',
+        bankingSepayLinkedAt: new Date(),
       },
     });
     await prisma.role.create({
@@ -1212,6 +1213,33 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         delivered(DeliveryCollectionMethod.NONE, 0),
       );
       expect((await orderOf(orderId)).status).toBe(OrderStatus.COMPLETED);
+      expect(await paymentsOf(orderId)).toHaveLength(0);
+    });
+
+    it('QR: refused while the shop is not linked to SePay, and nothing moves', async () => {
+      const { orderId, shipmentId } = await shippedShipment();
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { bankingSepayLinkedAt: null },
+      });
+      try {
+        await expect(
+          delivery.deliver(
+            driver,
+            tenantId,
+            shipmentId,
+            delivered(DeliveryCollectionMethod.BANK_TRANSFER_QR),
+          ),
+        ).rejects.toMatchObject({
+          response: { code: ErrorCode.TENANT_SEPAY_NOT_LINKED },
+        });
+      } finally {
+        await prisma.tenant.update({
+          where: { id: tenantId },
+          data: { bankingSepayLinkedAt: new Date() },
+        });
+      }
+      expect((await orderOf(orderId)).status).toBe(OrderStatus.SHIPPING);
       expect(await paymentsOf(orderId)).toHaveLength(0);
     });
 

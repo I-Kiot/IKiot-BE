@@ -3,6 +3,7 @@ import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
+import { normalizeAccountNumber } from '../../common/utils/bank-account';
 
 // Ported from the subscription half of sepayService.js and deliberately not shared with order payments: this one pays into iKiot's own company account, while orders use each tenant's banking fields and a per-tenant webhook key.
 @Injectable()
@@ -24,6 +25,20 @@ export class SepaySubscriptionService {
   verifyWebhookKey(receivedKey: string): boolean {
     const expectedKey = process.env.SEPAY_WEBHOOK_API_KEY ?? '';
     return Boolean(expectedKey) && receivedKey === expectedKey;
+  }
+
+  /** Shops' accounts sit on the same SePay account, so a shop could otherwise pay itself with an `IKMS…` reference and activate a plan. */
+  isPlatformAccount(payload: {
+    accountNumber?: string | null;
+    subAccount?: string | null;
+  }): boolean {
+    const own = normalizeAccountNumber(process.env.SEPAY_ACCOUNT_NUMBER);
+    return (
+      own !== '' &&
+      [payload.accountNumber, payload.subAccount].some(
+        (number) => normalizeAccountNumber(number) === own,
+      )
+    );
   }
 
   /** {6,10}: refs minted before generateReference standardised on 5 bytes are 6 hex. */

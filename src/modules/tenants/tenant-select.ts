@@ -16,6 +16,16 @@ export const TENANT_SELECT = {
   updatedAt: true,
 } as const satisfies Prisma.TenantSelect;
 
+/** Linked by a per-shop webhook key, or by the sync seeing the account on the platform's SePay. The rule behind every `hasSepayKey`. */
+export function isSepayLinked(tenant: {
+  bankingSepayWebhookApiKey: string | null;
+  bankingSepayLinkedAt: Date | null;
+}): boolean {
+  return Boolean(
+    tenant.bankingSepayWebhookApiKey || tenant.bankingSepayLinkedAt,
+  );
+}
+
 /** The flat banking columns, as the schema stores them. */
 export interface FlatTenantBanking {
   bankingAccountNumber?: string | null;

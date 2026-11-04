@@ -494,6 +494,13 @@ export const ErrorCode = {
   // ─── Product type (2026-10-23) ──────────────────────────────────────────────
   /** A variant's `itemType` differs from its product's `productType` - every SKU of a product has the product's type. */
   PRODUCT_ITEM_TYPE_MISMATCH: 'PRODUCT_ITEM_TYPE_MISMATCH',
+
+  // ─── Shared SePay webhook ───────────────────────────────────────────────────
+  TENANT_BANKING_ACCOUNT_TAKEN: 'TENANT_BANKING_ACCOUNT_TAKEN',
+  TENANT_BANKING_HAS_PENDING_SEPAY: 'TENANT_BANKING_HAS_PENDING_SEPAY',
+  TENANT_SEPAY_NOT_LINKED: 'TENANT_SEPAY_NOT_LINKED',
+  SEPAY_API_NOT_CONFIGURED: 'SEPAY_API_NOT_CONFIGURED',
+  SEPAY_API_FAILED: 'SEPAY_API_FAILED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

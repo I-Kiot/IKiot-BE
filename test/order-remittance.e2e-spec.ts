@@ -170,8 +170,9 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
         id: tenantId,
         name: 'remit-e2e',
         bankingBankName: 'VCB',
-        bankingAccountNumber: '0123456789',
+        bankingAccountNumber: '0123456702',
         bankingAccountName: 'NOI THAT DEMO',
+        bankingSepayLinkedAt: new Date(),
       },
     });
     await prisma.user.create({

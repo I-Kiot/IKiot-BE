@@ -192,3 +192,23 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 
 **Chỉnh thêm (cùng ngày, màn Combo):** bỏ chữ "Toàn chuỗi" ở cột Tồn kho (cờ mới `ProductScreen.showChainStock`, bật ở Hàng hóa, tắt ở Combo) và bỏ "Toàn chuỗi" / "đủ N bộ" ở khối tồn thành phần. Thành phần khan nhất vẫn được tô nổi. Chỉ sửa FE; `stockAllLocations` của thành phần vẫn do BE trả nhưng FE không dùng nữa.
 
+## 2026-11-04 - SePay: một webhook chung, tự đánh dấu "đã liên kết" (`feat/hungld-sepay-shared-webhook`)
+
+**Đã làm**
+- Webhook `POST /webhook/sepay/order` nhận thêm key chung `SEPAY_ORDER_WEBHOOK_API_KEY`: một webhook trên SePay của nền tảng phủ mọi tài khoản, shop được tìm theo `accountNumber` / `subAccount`. Key riêng từng shop vẫn chạy.
+- `SepayAccountSyncService` đọc `GET /v2/bank-accounts` (token `SEPAY_API_KEY`) và đánh dấu `banking_sepay_linked_at`: mỗi 10 phút, sau khi shop lưu TK, và `POST /tenants/sepay-sync`.
+- Chưa liên kết thì không phát QR: 400 `TENANT_SEPAY_NOT_LINKED` ở POS và giao hàng thu QR; FE khoá lựa chọn QR.
+- STK: chuẩn hoá, unique theo shop (migration `20261104100000_tenant_banking_rules` chuẩn hoá số cũ; số trùng thì shop tạo sau bị xoá STK), không đổi được khi còn QR chờ (`TENANT_BANKING_HAS_PENDING_SEPAY`). Đổi số thì xoá cả `linkedAt` lẫn key riêng. `/tenants` của admin không còn ghi được các cột banking.
+- `POST /webhook/sepay` (gói cước) bỏ qua tiền vào tài khoản khác `SEPAY_ACCOUNT_NUMBER`, để shop không tự chuyển cho mình mà kích hoạt được gói.
+- POS ghi `payment_status`: PAID khi hoàn tất, REFUNDED khi trả hàng; migration sửa các đơn POS cũ.
+- QR VietinBank có `SEVQR` trước mã đơn (quy định của ngân hàng).
+
+**Đã kiểm chứng trên SePay thật**
+- Giao dịch TPBank qua webhook chung: đơn POS COMPLETED, 1 dòng cash flow INCOME, hoá đơn ISSUED, kho trừ 1 lần. Trước phần sửa `payment_status`.
+- Webhook phải **tắt "Chỉ gửi khi có mã thanh toán"**: bật thì SePay không nhận `ORD…` là mã thanh toán và không gửi gì. Giao dịch đã bị bỏ qua không tự gửi lại.
+
+**Còn lại**
+- Chưa có màn đối soát giao dịch đã về với đơn đang chờ; "Chuyển sang tiền mặt" sẽ ghi sai là tiền mặt.
+- Dialog giao hàng của shipper chưa bấm thử trên trình duyệt (BE có e2e).
+- `.env.{dev,prod}` trên VPS cần `SEPAY_ORDER_WEBHOOK_API_KEY` và `SEPAY_API_KEY`; webhook phải trỏ về API dev.
+- Khách tự gõ nội dung vào VietinBank phải gõ cả `SEVQR`, màn hình chưa hiện.

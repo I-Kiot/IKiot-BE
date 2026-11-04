@@ -60,10 +60,11 @@ model Tenant {
   mainAddress   String? @map("main_address")
   taxNumber     String? @map("tax_number")
 
-  bankingAccountNumber      String? @map("banking_account_number")
-  bankingBankName           String? @map("banking_bank_name")
-  bankingAccountName        String? @map("banking_account_name")
-  bankingSepayWebhookApiKey String? @map("banking_sepay_webhook_api_key") // bí mật – không bao giờ trả ra API
+  bankingAccountNumber      String?   @unique @map("banking_account_number") // webhook chung tìm shop theo số này
+  bankingBankName           String?   @map("banking_bank_name")
+  bankingAccountName        String?   @map("banking_account_name")
+  bankingSepayWebhookApiKey String?   @map("banking_sepay_webhook_api_key") // bí mật – không bao giờ trả ra API
+  bankingSepayLinkedAt      DateTime? @map("banking_sepay_linked_at") @db.Timestamptz(6) // lúc BE thấy STK trong tài khoản SePay của nền tảng (webhook chung)
 
   invoiceAutoIssueOn String? @map("invoice_auto_issue_on") // tự xuất hoá đơn khi đơn: null = tắt | PAID | COMPLETED
 
