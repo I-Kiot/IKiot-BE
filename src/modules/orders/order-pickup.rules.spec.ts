@@ -9,6 +9,7 @@ import {
 } from '../../common/constants/payment-method';
 import {
   assertNoPickupShippingFee,
+  assertNotStorePickup,
   assertPickupReady,
   assertStorePickup,
   isPickupOverdue,
@@ -39,6 +40,19 @@ describe('assertStorePickup', () => {
       );
     },
   );
+});
+
+describe('assertNotStorePickup', () => {
+  it('refuses a shipment for a pickup order only', () => {
+    expect(
+      codeOf(() =>
+        assertNotStorePickup({ fulfillmentType: FulfillmentType.STORE_PICKUP }),
+      ),
+    ).toBe(ErrorCode.SHIPMENT_NOT_FOR_PICKUP);
+    expect(() =>
+      assertNotStorePickup({ fulfillmentType: FulfillmentType.HOME_DELIVERY }),
+    ).not.toThrow();
+  });
 });
 
 describe('assertPickupReady', () => {
