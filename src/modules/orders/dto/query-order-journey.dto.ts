@@ -2,6 +2,7 @@ import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator
 import { IsDateString, IsIn, IsOptional, IsUUID } from 'class-validator';
 import { QueryOrderDto } from './order.dto';
 import {
+  FULFILLMENT_TYPES,
   ORDER_CHANNELS,
   ORDER_PRIORITIES,
   REMITTANCE_STATUSES,
@@ -27,6 +28,11 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsOptional()
   @IsIn(ORDER_PRIORITIES)
   priority?: string;
+
+  /** Hình thức giao: `STORE_PICKUP` cho màn hình “đơn chờ khách lấy”. */
+  @IsOptional()
+  @IsIn(FULFILLMENT_TYPES)
+  fulfillmentType?: string;
 
   /** Dòng tệ nhất của đơn (lọc "đơn giao được ngay" = `ENOUGH`). Tính lúc đọc nên chỉ khớp đơn chưa giao. */
   @IsOptional()

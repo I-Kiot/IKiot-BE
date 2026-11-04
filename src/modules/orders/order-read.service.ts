@@ -208,6 +208,9 @@ export class OrderReadService {
     if (query.channel) and.push({ channel: query.channel });
     if (query.assigneeId) and.push({ assigneeId: query.assigneeId });
     if (query.priority) and.push({ priority: query.priority });
+    if (query.fulfillmentType) {
+      and.push({ fulfillmentType: query.fulfillmentType });
+    }
     if (query.excludePos) {
       and.push({ fulfillmentType: { not: FulfillmentType.TAKEAWAY } });
     }
