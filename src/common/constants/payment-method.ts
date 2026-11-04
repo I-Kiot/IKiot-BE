@@ -53,3 +53,9 @@ export const DEPOSIT_METHODS: readonly string[] = [
   PaymentMethod.CASH,
   PaymentMethod.BANK_TRANSFER,
 ];
+
+/** Cách thu số còn lại khi khách tới lấy hàng tại quầy (`POST /orders/:id/pickup/collect`). Không có `NONE`: đã đủ tiền thì không cần thu. */
+export const PICKUP_COLLECTION_METHODS: readonly string[] = [
+  DeliveryCollectionMethod.CASH,
+  DeliveryCollectionMethod.BANK_TRANSFER_QR,
+];
