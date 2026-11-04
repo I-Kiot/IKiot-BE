@@ -12,7 +12,7 @@ import {
 import { SETTABLE_PRODUCT_STATUSES } from '../../../common/constants/product-status';
 import { ProductAttributeDto, ProductImageDto } from './product-item.dto';
 
-/** Ported from UpdateProductRequestDTO, not `PartialType(CreateProductDto)`: `items` is never edited here, and DISCONTINUED is reachable only through DELETE /products/:id, which checks stock and pending paperwork first. */
+/** Port từ UpdateProductRequestDTO, không dùng `PartialType(CreateProductDto)`: `items` không sửa ở đây, và DISCONTINUED chỉ qua DELETE /products/:id (kiểm tồn kho và phiếu đang chờ trước). */
 export class UpdateProductDto {
   @IsOptional()
   @IsString()
@@ -27,7 +27,7 @@ export class UpdateProductDto {
   @IsUUID()
   categoryId?: string;
 
-  // Tắt cờ không đụng tới YCSX đang mở: dòng đã đặt vẫn nhận hàng bình thường, chỉ chặn dòng mới.
+  // Tắt cờ không ảnh hưởng YCSX đang mở (dòng đã đặt vẫn nhận hàng), chỉ chặn dòng mới.
   @IsOptional()
   @IsBoolean()
   isManufacturable?: boolean;
@@ -38,14 +38,13 @@ export class UpdateProductDto {
   })
   status?: string;
 
-  /** Replaces the product's attribute list when given: rows with `id` are kept (renamed), missing ones are removed together with their values on every SKU. */
+  /** Khi có, thay toàn bộ thuộc tính: dòng có `id` được giữ (đổi tên), dòng vắng mặt bị xoá kèm giá trị trên mọi SKU. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ProductAttributeDto)
   attributes?: ProductAttributeDto[];
 
-  // Replaces the whole set when given, same as the old API's behaviour.
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

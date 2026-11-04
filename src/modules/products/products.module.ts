@@ -5,8 +5,7 @@ import { ProductVariantService } from './product-variant.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  // SubscriptionModule for the product quota. No InventoryModule: creating a product writes
-  // no stock rows - they appear at a location when a stock movement first puts goods there.
+  // SubscriptionModule cho hạn mức sản phẩm. Không import InventoryModule: tạo sản phẩm không ghi dòng tồn kho.
   imports: [SubscriptionModule],
   controllers: [ProductController],
   providers: [ProductService, ProductVariantService],
