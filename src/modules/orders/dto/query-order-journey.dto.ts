@@ -61,7 +61,7 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsIn(ORDER_SORTS)
   sort?: OrderSort;
 
-  /** Đơn cần chú ý: `SHORT` (có dòng thiếu một phần hoặc hết trên kệ), `DUE_SOON` (gần hoặc quá ngày giao). Chỉ đơn chưa giao mới khớp. */
+  /** Đơn cần chú ý: `SHORT` (có dòng thiếu một phần hoặc hết trên kệ), `DUE_SOON` (gần hoặc quá ngày giao), `PICKUP_OVERDUE` (khách tới lấy, đã đóng gói, quá ngày hẹn lấy). Chỉ đơn chưa giao mới khớp. */
   @IsOptional()
   @IsIn(ORDER_ATTENTION_KINDS)
   attention?: OrderAttentionKind;

@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   FulfillmentType,
+  OrderStatus,
   RemittanceStatus,
   UNSHIPPED_ORDER_STATUSES,
 } from '../../common/constants/order-status';
@@ -254,6 +255,15 @@ export class OrderReadService {
       const cutoff = businessDate();
       cutoff.setUTCDate(cutoff.getUTCDate() + DUE_SOON_DAYS);
       and.push({ requestedDeliveryDate: { not: null, lte: cutoff } });
+    }
+
+    // Khách hẹn lấy hàng nhưng quá hạn mà vẫn chưa tới: nhân viên cần liên hệ. Chỉ đánh cờ, không tự huỷ.
+    if (query.attention === 'PICKUP_OVERDUE') {
+      and.push({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        status: OrderStatus.PACKED,
+        requestedDeliveryDate: { not: null, lt: businessDate() },
+      });
     }
 
     return { AND: and };
