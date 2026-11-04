@@ -10,9 +10,8 @@ import { buildSepayQrUrl } from '../orders/tenant-banking';
 import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 
-// Lần giao trả về cho client theo đúng hình dạng `Shipment` của contract §4. Dùng chung cho
-// ShipmentService (lấy hàng, đổi shipper, ship, xem, nhật trình) và ShipmentDeliveryService (giao xong,
-// thu tiền), để hai nơi không thể trả về hai hình dạng khác nhau.
+// Hình dạng `Shipment` của contract §4, dùng chung cho ShipmentService và ShipmentDeliveryService
+// để hai nơi không thể trả về hai hình dạng khác nhau.
 
 /** Một người trong payload: `{ id, phoneNumber, profile }` như mọi chỗ khác (`withNestedProfile`). */
 export const PERSON_SELECT = {
@@ -23,7 +22,6 @@ export const PERSON_SELECT = {
   profileAvatarUrl: true,
 } as const;
 
-/** Một dòng của danh sách: `Shipment` của contract §4 trừ nhật trình. */
 export const SHIPMENT_SUMMARY_INCLUDE = {
   order: {
     select: {
@@ -38,7 +36,6 @@ export const SHIPMENT_SUMMARY_INCLUDE = {
   driver: { select: PERSON_SELECT },
 } as const satisfies Prisma.ShipmentInclude;
 
-/** Chi tiết: thêm nhật trình. */
 const SHIPMENT_DETAIL_INCLUDE = {
   ...SHIPMENT_SUMMARY_INCLUDE,
   events: {
@@ -59,7 +56,6 @@ export function amountDueOf(order: {
   return Number(order.grandTotal) - Number(order.depositAmount ?? 0);
 }
 
-/** Dòng shipment → hình dạng contract §4 (không kèm nhật trình). */
 export function toSummary(row: ShipmentSummaryRow) {
   const { order, driver, ...rest } = row;
   return {
@@ -85,8 +81,8 @@ export interface ShipmentQrPayment {
 }
 
 /**
- * Chi tiết một lần giao: thông tin, nhật trình, và khoản thu QR (nếu có). Mã QR dựng lại từ tài khoản
- * ngân hàng hiện tại của shop – lỡ đóng màn thì shipper mở lại vẫn thấy đúng mã.
+ * Chi tiết một lần giao: thông tin, nhật trình, khoản thu QR (nếu có). Mã QR dựng lại từ tài khoản ngân hàng
+ * hiện tại của shop, nên mở lại sau khi đóng màn vẫn đúng mã.
  */
 export async function loadShipmentDetail(
   prisma: Pick<PrismaService, 'shipment' | 'payment' | 'tenant'>,
@@ -146,9 +142,7 @@ export async function loadShipmentDetail(
 }
 
 /**
- * `from` / `to` (YYYY-MM-DD) as a half-open instant window in Vietnam time, whole days: a row stamped
- * 23:30 belongs to that day and is not pushed to the next. One definition, used by the list and by the
- * shipper's history, so the two cannot disagree about where a day ends.
+ * `from` / `to` (YYYY-MM-DD) là khoảng nửa mở theo giờ Việt Nam, tính trọn ngày: dòng ghi 23:30 vẫn thuộc đúng ngày, không bị đẩy sang hôm sau. Dùng chung cho danh sách và lịch sử shipper để hai nơi không lệch điểm kết thúc ngày.
  */
 export function localDayWindow(
   from: string | undefined,
@@ -163,7 +157,6 @@ export function localDayWindow(
   };
 }
 
-/** Tìm theo mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
 export function shipmentSearchWhere(search: string): Prisma.ShipmentWhereInput {
   const contains = { contains: search, mode: 'insensitive' as const };
   return {

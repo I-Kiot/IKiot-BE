@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { CARRIER_TYPES } from '../../../common/constants/shipment-status';
 
-/** Body của POST /shipments – ghi nhận "ĐVVC đã lấy hàng" cho một đơn đã đóng gói (C-2, gán shipper C-8). Không có trạng thái, người thao tác hay địa chỉ: server tự lấy. */
+/** Ghi nhận "ĐVVC đã lấy hàng" cho đơn đã đóng gói (C-2, gán shipper C-8). Không nhận trạng thái, người thao tác hay địa chỉ: server tự lấy. */
 export class CreateShipmentDto {
   @IsUUID('4', { message: 'Mã đơn hàng không hợp lệ' })
   orderId: string;
@@ -35,7 +35,6 @@ export class CreateShipmentDto {
   @IsUUID('4', { message: 'Shipper không hợp lệ' })
   driverId?: string;
 
-  /** Ngày hẹn giao, `YYYY-MM-DD`. */
   @IsOptional()
   @IsDateString({ strict: true }, { message: 'Ngày hẹn giao không hợp lệ' })
   scheduledDate?: string;

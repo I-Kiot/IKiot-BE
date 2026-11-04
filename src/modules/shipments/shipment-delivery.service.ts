@@ -55,7 +55,6 @@ import {
 } from '../../common/utils/reference-generator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Phần của lần giao mà giao xong / thu tiền cần đọc. */
 const DELIVERY_SELECT = {
   id: true,
   status: true,
@@ -76,18 +75,12 @@ const DELIVERY_SELECT = {
 } as const;
 
 /**
- * Giao xong và thu tiền khi giao (C-5, chốt 2026-10-06), cho lần giao **nội bộ** (shipper / thợ của shop):
- *
- * - Đã cọc đủ → đơn COMPLETED.
- * - Tiền mặt → đơn RECEIVED, khoản CASH đã thu nhưng tiền đang ở tay shipper (`remittanceStatus` PENDING)
- *   cho tới khi chủ xác nhận (A-10).
- * - QR → đơn RECEIVED, khoản SEPAY **chờ tiền về**; webhook SePay báo đủ tiền thì đơn COMPLETED. Khách
- *   không chuyển thì shipper bấm "khách trả tiền mặt" (`payCash`) và đi đường tiền mặt.
- * - Chuyển thiếu: **chưa xử lý** (nhóm còn họp) – webhook chỉ ghi log, khoản vẫn chờ.
- *
- * Lần giao qua ĐVVC ngoài không đi qua đây: hãng tự báo về (C-4, Phase 2).
- *
- * Không ghi `CashFlow` – việc đó của E-5, như khoản cọc của A-2.
+ * Giao xong và thu tiền khi giao (C-5) cho lần giao nội bộ (shipper / thợ của shop):
+ * - Đã cọc đủ → COMPLETED.
+ * - Tiền mặt → RECEIVED; khoản CASH còn ở tay shipper (`remittanceStatus` PENDING) tới khi chủ xác nhận (A-10).
+ * - QR → RECEIVED; khoản SEPAY chờ webhook, đủ tiền thì COMPLETED. Khách không chuyển thì shipper bấm `payCash`.
+ * - Chuyển thiếu: chưa được quyết, webhook chỉ ghi log, khoản vẫn chờ.
+ * Lần giao qua ĐVVC ngoài không đi qua đây (hãng tự báo về, C-4). Không ghi `CashFlow` (việc của E-5).
  */
 @Injectable()
 export class ShipmentDeliveryService {
@@ -99,9 +92,6 @@ export class ShipmentDeliveryService {
     private readonly invoices: InvoiceService,
   ) {}
 
-  // ─── Đơn cần giao của tôi ───────────────────────────────────────────────────
-
-  /** GET /shipments/mine: các lần giao chưa kết thúc mà người gọi là shipper, ngày hẹn gần nhất trước. */
   async listMine(user: AuthUser, tenantId: string) {
     const rows = await this.prisma.shipment.findMany({
       where: {
@@ -119,15 +109,8 @@ export class ShipmentDeliveryService {
   }
 
   /**
-   * GET /shipments/mine/history: every shipment of mine, finished or not, with the counts the screen's
-   * cards show and what I collected.
-   *
-   * The date window applies to when a shipment ended - `deliveredAt`, or `updatedAt` for one that never
-   * delivered (failed / returned / cancelled) - and **never hides one still open**: a delivery assigned
-   * six weeks ago and not done is exactly what the "cần giao" card must still count.
-   *
-   * The counts ignore `status` and `search` (they are the filter's choices) but honour the window, so a
-   * card shows what clicking it would list.
+   * Lịch sử giao của người gọi: mọi trạng thái, kèm số liệu từng thẻ và số tiền đã thu. Khoảng ngày theo lúc kết thúc (`deliveredAt`, hoặc `updatedAt` với lần không giao được), nhưng không bao giờ ẩn lần còn mở: lần giao dở từ sáu tuần trước vẫn phải được thẻ “cần giao” đếm.
+   * Số liệu bỏ qua `status` và `search` nhưng vẫn theo khoảng ngày, để thẻ khớp danh sách khi bấm vào.
    */
   async listMyHistory(
     user: AuthUser,
@@ -187,7 +170,7 @@ export class ShipmentDeliveryService {
       }),
     ]);
 
-    // One query for the page's collections, not one per row.
+    // Một query cho các collection của trang, không phải một query mỗi dòng.
     const payments = await this.prisma.payment.findMany({
       where: {
         tenantId,
@@ -206,7 +189,7 @@ export class ShipmentDeliveryService {
       { method: string; amount: number; status: string }
     >();
     for (const payment of payments) {
-      if (collectionByOrder.has(payment.orderId)) continue; // newest first
+      if (collectionByOrder.has(payment.orderId)) continue; // Dòng đầu là mới nhất, nên bỏ qua các dòng sau.
       collectionByOrder.set(payment.orderId, {
         method: payment.method,
         amount: Number(payment.amount),
@@ -234,9 +217,6 @@ export class ShipmentDeliveryService {
     return { ...paginate(data, total, query.page, query.limit), summary };
   }
 
-  // ─── Giao xong ──────────────────────────────────────────────────────────────
-
-  /** POST /shipments/:id/deliver: shipper xác nhận đã giao thành công, kèm ảnh bằng chứng và cách thu tiền. */
   async deliver(
     user: AuthUser,
     tenantId: string,
@@ -246,7 +226,7 @@ export class ShipmentDeliveryService {
     const shipment = await this.loadShipment(tenantId, id);
     const access = deliveryActorAccess(user, shipment);
 
-    // Các kiểm tra dưới đây chỉ để báo lỗi rõ ràng sớm; chỗ chặn thật là các câu ghi có điều kiện trong transaction.
+    // Kiểm tra dưới đây chỉ để báo lỗi sớm và rõ; chốt chặn thật là các câu ghi có điều kiện trong transaction.
     if (shipment.carrierType !== CarrierType.INTERNAL) {
       throw new BadRequestException({
         code: ErrorCode.SHIPMENT_DELIVER_INTERNAL_ONLY,
@@ -282,7 +262,6 @@ export class ShipmentDeliveryService {
       await requireTenantBanking(this.prisma, tenantId);
     }
 
-    // Đã cọc đủ thì xong luôn; tiền mặt chờ chủ nhận tiền, QR chờ tiền về.
     const nextOrderStatus =
       method === DeliveryCollectionMethod.NONE
         ? OrderStatus.COMPLETED
@@ -290,7 +269,6 @@ export class ShipmentDeliveryService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // 1. Nhận lần giao: vẫn đang trên đường, và người bấm vẫn là shipper / người phụ trách.
       const claimed = await tx.shipment.updateMany({
         where: onTheRoadWhere(id, access, user),
         data: {
@@ -317,7 +295,7 @@ export class ShipmentDeliveryService {
         },
       });
 
-      // 2. Đơn đi tiếp. Tiền mặt nghĩa là khách đã trả đủ, dù tiền còn ở tay shipper.
+      // Tiền mặt nghĩa là khách đã trả đủ, dù tiền còn ở tay shipper.
       const orderData: { status: string; paymentStatus?: string } = {
         status: nextOrderStatus,
       };
@@ -338,12 +316,11 @@ export class ShipmentDeliveryService {
           message: 'The order has just changed, please reload',
         });
       }
-      // Đã cọc đủ thì đơn COMPLETED ngay ở đây, nên hoá đơn cũng xuất ngay.
+      // Đã cọc đủ thì COMPLETED ngay ở đây, nên hoá đơn xuất luôn.
       if (nextOrderStatus === OrderStatus.COMPLETED) {
         await this.invoices.issueForOrder(tx, shipment.order.id, user.userId);
       }
 
-      // 3. Khoản thu khi giao.
       if (method === DeliveryCollectionMethod.CASH) {
         await tx.payment.create({
           data: {
@@ -390,11 +367,9 @@ export class ShipmentDeliveryService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  // ─── Khách không chuyển khoản ───────────────────────────────────────────────
-
   /**
-   * POST /shipments/:id/pay-cash: đã giao với QR nhưng khách không chuyển – shipper thu tiền mặt thay.
-   * Khoản QR đang chờ bị huỷ, ghi khoản tiền mặt (chờ nộp lại cho chủ); đơn giữ RECEIVED.
+   * Đã giao bằng QR nhưng khách không chuyển: shipper thu tiền mặt thay. Khoản QR đang chờ bị huỷ,
+   * ghi khoản tiền mặt (chờ nộp lại cho chủ); đơn giữ RECEIVED.
    */
   async payCash(user: AuthUser, tenantId: string, id: string, dto: PayCashDto) {
     const shipment = await this.loadShipment(tenantId, id);
@@ -419,7 +394,7 @@ export class ShipmentDeliveryService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // 1. Huỷ khoản QR – chỉ khi vẫn đang chờ. Tiền vừa về (webhook thắng) thì dừng ở đây.
+      // Huỷ khoản QR chỉ khi vẫn đang chờ. Tiền vừa về (webhook thắng) thì dừng ở đây.
       const cancelled = await tx.payment.updateMany({
         where: { id: qrPayment.id, status: PaymentRecordStatus.PENDING },
         data: { status: PaymentRecordStatus.CANCELLED },
@@ -431,7 +406,7 @@ export class ShipmentDeliveryService {
         });
       }
 
-      // 2. Đơn vẫn chờ tiền (RECEIVED) và người bấm vẫn phụ trách đơn, nếu nhờ đó mà được phép.
+      // Đơn vẫn chờ tiền (RECEIVED), và người bấm vẫn phụ trách đơn nếu nhờ đó mà được phép.
       const orderWhere: {
         id: string;
         tenantId: string;
@@ -452,7 +427,6 @@ export class ShipmentDeliveryService {
         });
       }
 
-      // 3. Khoản tiền mặt thay cho khoản QR.
       await tx.payment.create({
         data: {
           tenantId,
@@ -479,12 +453,9 @@ export class ShipmentDeliveryService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  // ─── Webhook SePay ──────────────────────────────────────────────────────────
-
   /**
-   * Tiền chuyển khoản QR lúc giao đã về (gọi từ webhook SePay khi nhánh bán tại quầy không khớp). Trả về
-   * `true` nếu mã thuộc một khoản thu khi giao (đã xử lý xong, kể cả khi chỉ ghi log), `false` nếu không.
-   * Không bao giờ ném lỗi về webhook – SePay gọi lại mọi câu trả lời khác 200.
+   * Tiền QR lúc giao đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `true` nếu mã thuộc khoản thu khi giao
+   * (đã xử lý, kể cả chỉ ghi log). Không bao giờ ném lỗi: SePay gọi lại mọi câu trả lời khác 200.
    */
   async settleSepayBalance(
     tenantId: string,
@@ -575,8 +546,6 @@ export class ShipmentDeliveryService {
     return true;
   }
 
-  // ─── Nội bộ ─────────────────────────────────────────────────────────────────
-
   /** Nạp lần giao cùng đơn của nó; không có trong shop thì 404. */
   private async loadShipment(tenantId: string, id: string) {
     const shipment = await this.prisma.shipment.findFirst({
@@ -614,8 +583,7 @@ export class ShipmentDeliveryService {
 
 /**
  * Số tiền shipper thu phải khớp đúng số còn phải thu (chốt 2026-10-06: chỉ xử lý thu đủ 100%).
- * - Không còn gì phải thu → chỉ chấp nhận `NONE`, số thu 0.
- * - Còn tiền phải thu → không được `NONE`, và số thu phải bằng đúng số còn phải thu.
+ * Không còn gì phải thu thì chỉ nhận `NONE` với số thu 0; còn phải thu thì không được `NONE` và số thu phải đúng bằng số đó.
  */
 function assertCollectionMatches(
   amountDue: number,

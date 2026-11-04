@@ -7,7 +7,7 @@ import { NotificationModule } from '../notifications/notifications.module';
 import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
-  // InventoryModule cho shipLockedStock (trừ hàng đã khoá lúc ship), NotificationModule để báo shipper được gán / tiền chờ nộp. OrderModule import module này cho POST /orders/:id/ship và cho webhook SePay (khoản thu QR lúc giao).
+  // InventoryModule cho shipLockedStock (trừ hàng đã khoá), NotificationModule báo shipper / tiền chờ nộp. OrderModule import module này cho POST /orders/:id/ship và webhook SePay.
   imports: [InventoryModule, NotificationModule, InvoiceModule],
   controllers: [ShipmentController],
   providers: [ShipmentService, ShipmentDeliveryService],

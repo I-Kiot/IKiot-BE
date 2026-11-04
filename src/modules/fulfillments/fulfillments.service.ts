@@ -80,7 +80,6 @@ export class FulfillmentService {
     });
   }
 
-  /** Đọc lại fulfillment vừa đóng (kèm dòng hàng và thùng) để trả về cho client. */
   private findPacked(tenantId: string, id: string) {
     return this.prisma.fulfillment.findFirstOrThrow({
       where: { id, tenantId },
@@ -108,7 +107,7 @@ export class FulfillmentService {
       });
     }
 
-    // Chỉ để báo lỗi rõ ràng sớm; chỗ chặn thật là bước "nhận đơn" trong transaction.
+    // Chỉ để báo lỗi sớm; chốt chặn thật là bước "nhận đơn" trong transaction.
     assertTransition(order.status, OrderStatus.PACKED);
 
     // COMBO cha chỉ mang giá, SERVICE không có hàng – chỉ dòng có tồn mới đóng gói.
@@ -132,7 +131,7 @@ export class FulfillmentService {
 
     const { fulfillmentId, crossings } = await this.prisma.$transaction(
       async (tx) => {
-        // 1. Nhận đơn: kiểm trạng thái (và người phụ trách, nếu nhờ đó mà được phép) và ghi trong MỘT câu – hai người bấm cùng lúc thì một người nhận 409.
+        // Nhận đơn trong MỘT câu ghi có điều kiện (trạng thái, và người phụ trách nếu được phép): hai người bấm cùng lúc thì một người nhận 409.
         const claimed = await tx.order.updateMany({
           where: {
             id: orderId,
@@ -149,7 +148,6 @@ export class FulfillmentService {
           });
         }
 
-        // 2. Chứng từ khoá hàng: fulfillment PACKED + item + thùng.
         const now = new Date();
         const fulfillment = await tx.fulfillment.create({
           data: {
@@ -184,7 +182,7 @@ export class FulfillmentService {
           })),
         });
 
-        // 3. Khoá hàng (hàng hóa đã có đơn). Thiếu ở bất kỳ dòng nào → INSUFFICIENT_STOCK, rollback cả 1 và 2.
+        // Khoá hàng. Thiếu ở bất kỳ dòng nào thì INSUFFICIENT_STOCK, rollback cả hai bước trên.
         const locked = await this.inventory.lockStock(
           tx,
           lines.map((l) => ({

@@ -1,6 +1,6 @@
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 
-/** Body của POST /shipments/:id/pick-up – shipper xác nhận đã tới kho lấy hàng. Ghi chú lưu vào nhật trình shipment. */
+/** Shipper xác nhận đã tới kho lấy hàng. Ghi chú lưu vào nhật trình shipment. */
 export class PickUpShipmentDto {
   @IsOptional()
   @IsString()

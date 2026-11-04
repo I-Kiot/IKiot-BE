@@ -63,14 +63,10 @@ import { paginate } from '../../common/utils/pagination';
 import { withNestedProfile } from '../../common/utils/user-profile';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Quyền theo role để làm shipper / thợ giao hàng. */
 const DRIVER_PERMISSION = { resource: 'shipments', action: 'deliver' } as const;
 
 /**
- * Lấy hàng & giao hàng: ghi nhận "ĐVVC đã lấy hàng", đổi shipper, chuyển đơn sang Đang vận chuyển –
- * bước trừ tồn kho (C-2, C-8); xem danh sách / chi tiết, ghi nhật trình, báo giao không thành (C-3).
- * Ai được làm mỗi bước do `assertOrderStepAccess` quyết định: chủ shop, người phụ trách đơn, hoặc
- * người có quyền của bước đó tại kho của fulfillment; nhật trình và báo thất bại thêm shipper.
+ * Lấy hàng & giao hàng: ghi “ĐVVC đã lấy hàng”, đổi shipper, chuyển đơn sang Đang vận chuyển (bước trừ tồn, C-2, C-8); xem danh sách / chi tiết, ghi nhật trình, báo giao không thành (C-3). Ai được làm bước nào do `assertOrderStepAccess` quyết định: chủ shop, người phụ trách đơn, hoặc người có quyền của bước đó tại kho fulfillment; nhật trình và báo thất bại thêm shipper.
  */
 @Injectable()
 export class ShipmentService {
@@ -81,12 +77,9 @@ export class ShipmentService {
   ) {}
 
   /**
-   * "Giao cho vận chuyển" (GĐ1–B6.1). Tồn kho không đổi – hàng vẫn đang khoá.
-   * - EXTERNAL: ĐVVC không đăng nhập hệ thống để tự xác nhận, nên nhân viên ghi nhận là xong: đơn
-   *   PACKED → PICKED_UP, fulfillment → HANDED_OVER, shipment tạo ở PICKED_UP.
-   * - INTERNAL (chốt 2026-10-15): chỉ là **gán shipper** – shipment tạo ở CREATED, đơn và fulfillment
-   *   vẫn PACKED. Shipper còn phải tới kho lấy hàng rồi bấm `pickUp`; gán xong chưa ai cầm hàng. Kể cả
-   *   khi tự gán chính mình: thực tế vẫn có quãng đi lấy hàng.
+   * “Giao cho vận chuyển”. Tồn kho không đổi, hàng vẫn đang khoá.
+   * - EXTERNAL: ĐVVC không tự xác nhận trên hệ thống, nên nhân viên ghi nhận là xong: đơn PACKED → PICKED_UP, fulfillment → HANDED_OVER, shipment tạo ở PICKED_UP.
+   * - INTERNAL: chỉ gán shipper, shipment tạo ở CREATED, đơn và fulfillment vẫn PACKED. Shipper còn phải tới kho lấy hàng rồi bấm `pickUp`, kể cả khi tự gán chính mình.
    */
   async create(user: AuthUser, tenantId: string, dto: CreateShipmentDto) {
     const order = await this.prisma.order.findFirst({
@@ -148,9 +141,8 @@ export class ShipmentService {
       : ShipmentStatus.CREATED;
     const now = new Date();
     const shipmentId = await this.prisma.$transaction(async (tx) => {
-      // Nhận đơn theo trạng thái đã đọc. EXTERNAL đẩy đơn sang PICKED_UP; INTERNAL để đơn ở PACKED nhưng
-      // vẫn ghi vào dòng đơn (updatedAt) để giữ khoá dòng tới hết transaction: người bấm thứ hai phải chờ ở
-      // đây, rồi câu kiểm tra "đã có lần giao đang mở" bên dưới mới thấy lần giao của người thứ nhất.
+      // Ghi updatedAt lên dòng đơn để giữ khoá dòng tới hết transaction (INTERNAL vẫn ở PACKED): người bấm thứ hai
+      // phải chờ ở đây, rồi câu kiểm "đã có lần giao đang mở" bên dưới mới thấy lần giao của người thứ nhất.
       const claimed = await tx.order.updateMany({
         where: {
           id: order.id,
@@ -168,7 +160,7 @@ export class ShipmentService {
           message: 'The order has just changed, please reload',
         });
       }
-      // Index một phần `shipments_one_open_per_order` là chốt chặn cuối; câu này cho người thua một mã lỗi rõ ràng.
+      // Index một phần `shipments_one_open_per_order` là chốt chặn cuối; câu này để người thua nhận mã lỗi rõ ràng.
       const open = await tx.shipment.findFirst({
         where: {
           orderId: order.id,
@@ -222,7 +214,7 @@ export class ShipmentService {
       return shipment.id;
     });
 
-    // Sau commit: shipment rollback thì không có thông báo nào.
+    // Sau commit: transaction rollback thì không có thông báo nào.
     await this.notifyDriver(
       tenantId,
       dto.driverId,
@@ -234,9 +226,8 @@ export class ShipmentService {
   }
 
   /**
-   * POST /shipments/:id/pick-up (chốt 2026-10-15): shipper xác nhận đã lấy hàng – shipment CREATED →
-   * PICKED_UP, đơn PACKED → PICKED_UP, fulfillment → HANDED_OVER. Cùng nhóm người như xác nhận giao
-   * (`deliveryActorAccess`): shipper của lần giao, người phụ trách đơn, chủ shop bấm hộ.
+   * Shipper xác nhận đã lấy hàng (chốt 2026-10-15): shipment CREATED → PICKED_UP, đơn PACKED → PICKED_UP,
+   * fulfillment → HANDED_OVER. Cùng nhóm người như xác nhận giao (`deliveryActorAccess`).
    */
   async pickUp(
     user: AuthUser,
@@ -264,7 +255,7 @@ export class ShipmentService {
       });
     }
     const access = deliveryActorAccess(user, shipment);
-    // Chỉ báo sớm; chỗ chặn thật là hai câu ghi có điều kiện trong transaction.
+    // Chỉ báo sớm; chốt chặn thật là hai câu ghi có điều kiện trong transaction.
     if (shipment.status !== ShipmentStatus.CREATED) {
       throw new ConflictException({
         code: ErrorCode.SHIPMENT_STATUS_INVALID,
@@ -275,8 +266,7 @@ export class ShipmentService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // Nhận lần giao: vẫn chờ lấy, và người được phép nhờ là shipper / người phụ trách thì vẫn còn là người
-      // đó – bị đổi shipper đúng lúc bấm thì người cũ không ghi được gì.
+      // Nhận lần giao: vẫn chờ lấy, và người được nhờ vẫn là shipper / người phụ trách. Bị đổi shipper đúng lúc bấm thì người cũ không ghi được gì.
       const shipmentClaim: Prisma.ShipmentWhereInput = {
         id,
         tenantId,
@@ -329,7 +319,7 @@ export class ShipmentService {
       });
     });
 
-    // Sau commit: người phụ trách cần biết hàng đã rời tay kho để xác nhận Đang vận chuyển. Tự bấm thì không tự báo.
+    // Sau commit: người phụ trách cần biết hàng đã rời kho để xác nhận Đang vận chuyển. Tự bấm thì không tự báo.
     const { assigneeId, code } = shipment.order;
     if (assigneeId && assigneeId !== user.userId) {
       await this.notifications.notify({
@@ -419,10 +409,9 @@ export class ShipmentService {
   }
 
   /**
-   * PICKED_UP → SHIPPING (GĐ1–B6.2–3): bước trừ tồn kho. Hàng đã khoá lúc đóng gói, nên trừ cả `stock`
-   * lẫn `locked_stock` theo đúng chứng từ khoá – các dòng của fulfillment đã bàn giao – giống A-5 trả
-   * khoá theo đúng các dòng đó. Không gọi `notifyLowStock`: hàng trên kệ không đổi, nên không có ngưỡng
-   * nào mới bị vượt.
+   * PICKED_UP → SHIPPING (GĐ1–B6.2–3): bước trừ tồn kho. Hàng đã khoá lúc đóng gói, nên trừ cả `stock` lẫn `locked_stock`
+   * đúng theo các dòng của fulfillment đã bàn giao (giống A-5 trả khoá theo đúng các dòng đó).
+   * Không gọi `notifyLowStock`: hàng trên kệ không đổi nên không vượt ngưỡng mới.
    */
   async shipOrder(
     user: AuthUser,
@@ -464,7 +453,7 @@ export class ShipmentService {
         message: 'Order not found',
       });
     }
-    // Chỉ để báo lỗi sớm; chỗ chặn thật là bước nhận đơn trong transaction.
+    // Chỉ để báo lỗi sớm; chốt chặn thật là bước nhận đơn trong transaction.
     assertTransition(order.status, OrderStatus.SHIPPING);
     const [fulfillment] = order.fulfillments;
     const [shipment] = order.shipments;
@@ -503,7 +492,7 @@ export class ShipmentService {
         });
       }
 
-      // Một câu UPDATE có điều kiện cho mỗi dòng (locked_stock ≥ quantity) – chính câu đó là chốt chặn, không gom được thành một query.
+      // Một UPDATE có điều kiện cho mỗi dòng (locked_stock ≥ quantity) là chốt chặn, nên không gom được thành một query.
       for (const item of fulfillment.items) {
         await this.inventory.shipLockedStock(tx, {
           tenantId,
@@ -523,7 +512,7 @@ export class ShipmentService {
           },
         });
       }
-      // Chỉ các dòng có hàng đã trừ mới SHIPPED; dòng COMBO cha / dịch vụ không có tồn để trừ.
+      // Chỉ dòng có hàng đã trừ mới SHIPPED; dòng COMBO cha / dịch vụ không có tồn để trừ.
       await tx.orderItem.updateMany({
         where: {
           id: { in: fulfillment.items.map((item) => item.orderItemId) },
@@ -568,7 +557,7 @@ export class ShipmentService {
     }
   }
 
-  /** Báo trước khi tạo cho đẹp; ràng buộc `@@unique([carrierName, trackingCode])` vẫn là chốt chặn cuối (P2002 → 409 qua filter chung). Ràng buộc chỉ có hiệu lực khi có cả hai giá trị, nên kiểm tra cũng vậy. */
+  /** Báo trước cho thân thiện; `@@unique([carrierName, trackingCode])` vẫn là chốt chặn cuối (P2002 → 409). Ràng buộc chỉ có hiệu lực khi có cả hai giá trị, nên kiểm tra cũng vậy. */
   private async assertTrackingFree(
     carrierName: string | undefined,
     trackingCode: string | undefined,
@@ -608,12 +597,9 @@ export class ShipmentService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  // ─── Chọn shipper (C-9) ─────────────────────────────────────────────────────
-
   /**
-   * GET /shipments/drivers?orderId=: những người làm shipper được cho đơn này, cho ô chọn shipper. Chỉ
-   * người sắp chọn shipper mới thấy danh sách nhân viên – người được giao hàng (HAND_OVER) hoặc đổi
-   * shipper (CHANGE_DRIVER) cho đơn, tại kho của fulfillment.
+   * Người làm shipper được cho đơn này, cho ô chọn shipper. Chỉ người sắp giao hàng (HAND_OVER) hoặc đổi shipper
+   * (CHANGE_DRIVER) tại kho của fulfillment mới thấy danh sách nhân viên.
    */
   async listDrivers(user: AuthUser, tenantId: string, orderId: string) {
     const order = await this.prisma.order.findFirst({
@@ -674,8 +660,6 @@ export class ShipmentService {
       isAssignee: driver.id === order.assigneeId,
     }));
   }
-
-  // ─── Đọc & nhật trình (C-3) ─────────────────────────────────────────────────
 
   /** GET /shipments: các shipment người gọi được xem (`visibleWhere`), mới nhất trước. */
   async findAll(user: AuthUser, tenantId: string, query: QueryShipmentDto) {
@@ -747,9 +731,8 @@ export class ShipmentService {
   }
 
   /**
-   * POST /shipments/:id/fail: shipment → FAILED, đơn giữ SHIPPING. Hàng chưa về shop nên shipper vẫn giao lại
-   * được (`deliver` nhận cả FAILED); chỉ khi người phụ trách / người xem được đơn xác nhận hàng đã về
-   * (`POST /order-returns/confirm-failed-delivery`) thì shipment → RETURNED và đơn → RETURNED.
+   * Shipment → FAILED, đơn giữ SHIPPING. Hàng chưa về shop nên shipper vẫn giao lại được (`deliver` nhận cả FAILED);
+   * chỉ khi `POST /order-returns/confirm-failed-delivery` xác nhận hàng đã về thì shipment và đơn → RETURNED.
    */
   async fail(
     user: AuthUser,
@@ -783,7 +766,7 @@ export class ShipmentService {
       });
     });
 
-    // Sau commit: người phụ trách và chủ shop cùng biết (một người nhận hai lần thì gộp), trừ chính người báo.
+    // Sau commit: người phụ trách và chủ shop cùng biết (gộp nếu một người nhận hai lần), trừ chính người báo.
     const { assigneeId, code } = shipment.order;
     const owners = await this.notifications.tenantOwners(tenantId);
     const recipientIds = [
@@ -801,10 +784,9 @@ export class ShipmentService {
   }
 
   /**
-   * Ai được xem shipment nào (chốt 2026-10-06): chủ shop mọi shipment; người khác thấy shipment khi là
-   * người phụ trách đơn, là shipper, hoặc có `shipments:read` và đứng ở kho của fulfillment **hoặc** chi
-   * nhánh bán đơn – quản lý showroom theo dõi được đơn mình bán dù hàng xuất từ kho tổng. Chỉ cho xem;
-   * các thao tác ghi vẫn theo kho của fulfillment (`assertOrderStepAccess`).
+   * Ai được xem shipment nào (chốt 2026-10-06): chủ shop xem mọi shipment; người khác khi là người phụ trách đơn,
+   * là shipper, hoặc có `shipments:read` và đứng ở kho của fulfillment **hoặc** chi nhánh bán đơn (showroom theo dõi
+   * được đơn dù hàng xuất từ kho tổng). Chỉ là quyền xem; thao tác ghi vẫn theo kho của fulfillment (`assertOrderStepAccess`).
    */
   private visibleWhere(
     user: AuthUser,
@@ -851,7 +833,7 @@ export class ShipmentService {
       });
     }
     const access = trackingActorAccess(user, shipment);
-    // Chỉ báo sớm; chỗ chặn thật là câu ghi có điều kiện trong `claimOnTheRoad`.
+    // Chỉ báo sớm; chốt chặn thật là câu ghi có điều kiện trong `claimOnTheRoad`.
     if (
       shipment.order.status !== OrderStatus.SHIPPING ||
       !ON_THE_ROAD_STATUSES.includes(shipment.status)
@@ -865,15 +847,15 @@ export class ShipmentService {
   }
 
   /**
-   * Ghi trạng thái mới chỉ khi lần giao vẫn đang trên đường (`onTheRoadWhere`) – hai người cùng báo
-   * thất bại, hay thất bại đúng lúc giao xong, thì một người nhận 409.
+   * Ghi trạng thái mới chỉ khi lần giao vẫn đang trên đường (`onTheRoadWhere`): hai người cùng báo thất bại,
+   * hay thất bại đúng lúc giao xong, thì một người nhận 409.
    */
   private async claimOnTheRoad(
     tx: Prisma.TransactionClient,
     shipment: { id: string; access: ShipmentActorAccess },
     user: AuthUser,
     data: { status: string },
-    /** Narrow "on the road" further, e.g. a failure may not be reported twice. */
+    /** Thu hẹp thêm "đang trên đường", ví dụ một lần giao không được báo thất bại hai lần. */
     from?: readonly string[],
   ) {
     const updated = await tx.shipment.updateMany({
@@ -893,11 +875,10 @@ export class ShipmentService {
 }
 
 /**
- * Những tài khoản làm shipper được cho đơn này (chốt 2026-10-06): chủ shop, người phụ trách đơn (toàn
- * quyền với đơn của mình), hoặc STAFF có `shipments:deliver` trong role – đều phải đang hoạt động, cùng
- * shop. Một `where` dùng cho cả kiểm (`assertEligibleDriver`) lẫn liệt kê (`listDrivers`), để ô chọn
- * shipper trên màn hình không bao giờ đưa ra người mà lúc ghi lại bị từ chối. Quyền trưởng ca không tính
- * – nó hết theo giờ, còn việc giao hàng kéo dài qua ca.
+ * Tài khoản làm shipper được cho đơn (chốt 2026-10-06): chủ shop, người phụ trách đơn, hoặc STAFF có `shipments:deliver`
+ * trong role, đều đang hoạt động và cùng shop. Một `where` dùng cho cả kiểm (`assertEligibleDriver`) lẫn liệt kê
+ * (`listDrivers`), để ô chọn không đưa ra người lúc ghi lại bị từ chối. Quyền trưởng ca không tính: nó hết theo giờ,
+ * còn việc giao hàng kéo dài qua ca.
  */
 function eligibleDriverWhere(
   tenantId: string,

@@ -15,7 +15,7 @@ import {
 
 const LOCAL_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Query của GET /shipments (C-3). `from` / `to` là ngày theo giờ Việt Nam, tính trọn ngày. */
+/** `from` / `to` là ngày theo giờ Việt Nam, tính trọn ngày (C-3). */
 export class QueryShipmentDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(SHIPMENT_STATUSES, { message: 'Trạng thái giao hàng không hợp lệ' })
@@ -39,7 +39,6 @@ export class QueryShipmentDto extends PaginationQueryDto {
   @Matches(LOCAL_DAY, { message: 'Ngày kết thúc phải có dạng YYYY-MM-DD' })
   to?: string;
 
-  /** Mã đơn, mã vận đơn, tên hoặc SĐT người nhận. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,

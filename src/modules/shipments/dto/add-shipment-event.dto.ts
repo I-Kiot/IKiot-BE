@@ -13,7 +13,6 @@ export const LOGGABLE_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.OUT_FOR_DELIVERY,
 ];
 
-/** Body của POST /shipments/:id/events – ghi nhật trình giao hàng (C-3). */
 export class AddShipmentEventDto {
   @IsIn(LOGGABLE_SHIPMENT_STATUSES, {
     message: 'Nhật trình chỉ ghi được trạng thái "Đang đi giao"',
