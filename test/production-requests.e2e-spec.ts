@@ -2,11 +2,14 @@ import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { ProductionRequestService } from './../src/modules/production-requests/production-requests.service';
 import { ProductionListService } from './../src/modules/production-requests/production-list.service';
 import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
+import { QueryStockMovementDto } from './../src/modules/stock-movement-requests/dto/stock-movement.dto';
 import { SupplierService } from './../src/modules/suppliers/suppliers.service';
 import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
@@ -585,6 +588,42 @@ describe('production list, production requests and workshop receipts', () => {
       onOrderQuantity: 1,
       shortQuantity: 1,
     });
+  });
+
+  // Màn Nhập hàng lọc nguồn ở server: tab Nhà cung cấp không được lẫn phiếu sinh ra từ nhận hàng xưởng.
+  it('filters the import list by source, and rejects an unknown source', async () => {
+    const workshopImport = await prisma.stockMovementRequest.findFirstOrThrow({
+      where: { tenantId, importSource: 'WORKSHOP' },
+    });
+    // Còn PENDING nên không đụng tới tồn mà các test sau đang đếm.
+    const supplierImport = await movements.create(owner, {
+      movementType: 'IMPORT',
+      fromSupplierId: goodsSupplierId,
+      toLocationId: branchId,
+      details: [{ productItemId: cabinetId, quantity: 1, importPrice: 100 }],
+    });
+
+    const idsFor = async (importSource: string) =>
+      (
+        await movements.findAll(owner, {
+          page: 1,
+          limit: 100,
+          movementType: 'IMPORT',
+          importSource,
+        })
+      ).data.map((row) => row.id);
+
+    const fromSuppliers = await idsFor('SUPPLIER');
+    const fromWorkshops = await idsFor('WORKSHOP');
+    expect(fromSuppliers).toContain(supplierImport.id);
+    expect(fromSuppliers).not.toContain(workshopImport.id);
+    expect(fromWorkshops).toContain(workshopImport.id);
+    expect(fromWorkshops).not.toContain(supplierImport.id);
+
+    const errors = await validate(
+      plainToInstance(QueryStockMovementDto, { importSource: 'NOPE' }),
+    );
+    expect(errors.map((error) => error.property)).toContain('importSource');
   });
 
   it('refuses to receive more than was ordered, and to cancel after a receipt', async () => {

@@ -354,8 +354,10 @@ ReceiveProductionDto = {
 2. Ghi một **phiếu nhập** `StockMovementRequest` `IMPORT`, `importSource: WORKSHOP`, `supplierId` = xưởng,
    `toLocation` = `ProductionRequest.locationId`, trạng thái đã nhận, `receivedBy` = người duyệt; mỗi dòng mang
    `productionRequestItemId`, `receivedQuantity`, `defectQuantity`, `defectLocationId`. Phiếu này hiện trong
-   danh sách `/stock-movements` như mọi phiếu nhập – **không** tạo được bằng `POST /stock-movements`
-   (`importSource: WORKSHOP` ở đó → `IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST`).
+   danh sách `/stock-movements` như mọi phiếu nhập (lọc bằng `?importSource=SUPPLIER|WORKSHOP`; màn Nhập hàng
+   của dashboard chỉ liệt kê `SUPPLIER`, phiếu `WORKSHOP` mở từ chi tiết YCSX qua `GET /stock-movements/:id`)
+   – **không** tạo được bằng `POST /stock-movements` (`importSource: WORKSHOP` ở đó →
+   `IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST`).
 3. Phần đạt (`received − defect`) → `openLot` tại nơi nhận (§1) – **tồn kho tăng ở đây**; phần lỗi →
    `openLot` tại kho hỏng, `ledger.type = DEFECT`.
 4. Cộng `ProductionRequestItem.receivedQuantity`; YCSX → `PARTIALLY_RECEIVED`, hoặc `COMPLETED` khi mọi dòng đủ.
