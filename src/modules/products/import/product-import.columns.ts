@@ -1,6 +1,6 @@
 import {
-  ProductItemType,
   ProductStatus,
+  ProductType,
 } from '../../../common/constants/product-status';
 
 // Bảng cột của file import hàng hoá. Template và bộ đọc file cùng đọc bảng này, nên đổi tên một
@@ -21,10 +21,11 @@ export const LISTS_SHEET = 'Danh sách';
 
 /** Danh sách giá trị mà một cột lấy từ trang "Danh sách" (dropdown trong Excel). */
 export type ImportList =
-  'categories' | 'brands' | 'suppliers' | 'statuses' | 'itemTypes' | 'yesNo';
+  'categories' | 'brands' | 'suppliers' | 'statuses' | 'productTypes' | 'yesNo';
 
 export type ImportColumnKey =
   | 'name'
+  | 'productType'
   | 'category'
   | 'brand'
   | 'status'
@@ -37,7 +38,6 @@ export type ImportColumnKey =
   | 'costPrice'
   | 'vat'
   | 'warrantyPeriod'
-  | 'itemType'
   | 'suppliers'
   | `attrName${number}`
   | `attrUnit${number}`
@@ -47,6 +47,8 @@ export type ImportColumnKey =
 export interface ImportColumn {
   key: ImportColumnKey;
   header: string;
+  /** Tiêu đề cũ vẫn được nhận khi đọc file, để template tải về trước khi đổi tên cột không thành vô dụng. */
+  aliases?: string[];
   required: boolean;
   /** `product`: chỉ cần điền ở dòng đầu tiên của hàng hoá; `item`: mỗi dòng (mỗi SKU) một giá trị. */
   level: 'product' | 'item';
@@ -68,9 +70,9 @@ export const STATUS_LABELS: Record<string, string> = {
 };
 
 /** COMBO không có ở đây: một combo cần danh sách thành phần, thứ một dòng Excel không diễn đạt được. */
-export const ITEM_TYPE_LABELS: Record<string, string> = {
-  [ProductItemType.PRODUCT]: 'Hàng hóa',
-  [ProductItemType.SERVICE]: 'Dịch vụ',
+export const PRODUCT_TYPE_LABELS: Record<string, string> = {
+  [ProductType.PRODUCT]: 'Hàng hóa',
+  [ProductType.SERVICE]: 'Dịch vụ',
 };
 
 export const YES = 'Có';
@@ -125,6 +127,20 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
     format: 'Chữ',
     example: 'Bàn làm việc gỗ sồi',
     note: 'Các dòng có cùng tên hàng hóa là các phiên bản (SKU) của một hàng hóa. Không được trùng tên hàng hóa đã có trong cửa hàng.',
+  },
+  {
+    key: 'productType',
+    header: 'Loại hàng hóa',
+    // Đến 2026-11-04 cột này là "Loại mặt hàng", điền theo từng SKU. Loại giờ thuộc về hàng hóa
+    // (mọi SKU cùng `itemType` với `productType`), nên cột lên cấp hàng hóa và đổi tên theo.
+    aliases: ['Loại mặt hàng'],
+    required: false,
+    level: 'product',
+    width: 14,
+    format: `${PRODUCT_TYPE_LABELS.PRODUCT} / ${PRODUCT_TYPE_LABELS.SERVICE}`,
+    example: PRODUCT_TYPE_LABELS.PRODUCT,
+    note: `Bỏ trống = ${PRODUCT_TYPE_LABELS.PRODUCT}. Mọi mặt hàng của một hàng hóa cùng loại. Dịch vụ không có tồn kho. Combo không nhập được bằng file - tạo ở màn hình Combo.`,
+    list: 'productTypes',
   },
   {
     key: 'category',
@@ -186,9 +202,9 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
     required: false,
     level: 'item',
     width: 14,
-    format: 'Chữ',
+    format: 'Chữ, không trùng',
     example: '',
-    note: 'Bỏ trống để hệ thống tự sinh (SP000001...).',
+    note: 'Không được trùng trong file và với mã hàng đã có. Bỏ trống để hệ thống tự sinh (SP000001...).',
     text: true,
   },
   {
@@ -208,9 +224,9 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
     required: false,
     level: 'item',
     width: 16,
-    format: 'Chữ',
+    format: 'Chữ, không trùng',
     example: '8936012345678',
-    note: '',
+    note: 'Không được trùng trong file và với mã vạch đã có. Bỏ trống nếu hàng không có mã vạch.',
     text: true,
   },
   {
@@ -254,17 +270,6 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
     format: 'Chữ',
     example: '24 tháng',
     note: '',
-  },
-  {
-    key: 'itemType',
-    header: 'Loại mặt hàng',
-    required: false,
-    level: 'item',
-    width: 14,
-    format: `${ITEM_TYPE_LABELS.PRODUCT} / ${ITEM_TYPE_LABELS.SERVICE}`,
-    example: ITEM_TYPE_LABELS.PRODUCT,
-    note: `Bỏ trống = ${ITEM_TYPE_LABELS.PRODUCT}. Dịch vụ không có tồn kho. Combo không nhập được bằng file - tạo trên màn hình.`,
-    list: 'itemTypes',
   },
   {
     key: 'suppliers',

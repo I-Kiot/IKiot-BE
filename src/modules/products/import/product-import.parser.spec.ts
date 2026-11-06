@@ -18,6 +18,8 @@ const lookups = (over: Partial<ImportLookups> = {}): ImportLookups => ({
   ]),
   takenProductNames: new Set(),
   takenSkus: new Set(),
+  takenProductCodes: new Set(),
+  takenBarcodes: new Set(),
   ...over,
 });
 
@@ -106,7 +108,6 @@ describe('parseImportRows', () => {
     expect(dto.items[0]).toMatchObject({
       retailPrice: 3500000,
       costPrice: 2400000,
-      itemType: 'PRODUCT',
       supplierIds: ['sup-1', 'sup-2'],
       productDetails: [
         { name: 'Màu', value: 'Nâu' },
@@ -125,7 +126,7 @@ describe('parseImportRows', () => {
           retailPrice: 1,
           costPrice: 1,
           vat: 150,
-          itemType: 'Combo',
+          productType: 'Combo',
           category: 'Bàn',
           brand: 'Không có',
           status: 'Bán',
@@ -143,7 +144,7 @@ describe('parseImportRows', () => {
         { row: 4, column: 'VAT (%)', message: anyText() },
         {
           row: 4,
-          column: 'Loại mặt hàng',
+          column: 'Loại hàng hóa',
           message: containing('Combo'),
         },
         // "Bàn" names two categories - ambiguous, must use the path.
@@ -193,6 +194,70 @@ describe('parseImportRows', () => {
         row: 5,
         column: 'Tên hàng hóa',
         message: containing('đã có'),
+      },
+    ]);
+  });
+
+  it('refuses product codes duplicated in the file or already in the shop', () => {
+    const { errors } = parseImportRows(
+      [
+        row({
+          name: 'A',
+          productCode: 'MA1',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'M',
+          attrValue1: '1',
+        }),
+        row({
+          name: 'A',
+          productCode: 'MA1',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'M',
+          attrValue1: '2',
+        }),
+        row({
+          name: 'B',
+          productCode: 'SP000001',
+          retailPrice: 1,
+          costPrice: 1,
+        }),
+        row({ name: 'C', retailPrice: 1, costPrice: 1 }),
+      ],
+      lookups({ takenProductCodes: new Set(['SP000001']) }),
+    );
+    expect(errors).toEqual([
+      { row: 3, column: 'Mã hàng', message: 'Mã hàng "MA1" trùng với dòng 2' },
+      {
+        row: 4,
+        column: 'Mã hàng',
+        message: 'Mã hàng "SP000001" đã có trong cửa hàng',
+      },
+    ]);
+  });
+
+  it('refuses barcodes duplicated in the file or already in the shop, and lets blank ones repeat', () => {
+    const { errors } = parseImportRows(
+      [
+        row({ name: 'A', barcode: '893001', retailPrice: 1, costPrice: 1 }),
+        row({ name: 'B', barcode: '893001', retailPrice: 1, costPrice: 1 }),
+        row({ name: 'C', barcode: '893999', retailPrice: 1, costPrice: 1 }),
+        row({ name: 'D', retailPrice: 1, costPrice: 1 }),
+        row({ name: 'E', retailPrice: 1, costPrice: 1 }),
+      ],
+      lookups({ takenBarcodes: new Set(['893999']) }),
+    );
+    expect(errors).toEqual([
+      {
+        row: 3,
+        column: 'Mã vạch',
+        message: 'Mã vạch "893001" trùng với dòng 2',
+      },
+      {
+        row: 4,
+        column: 'Mã vạch',
+        message: 'Mã vạch "893999" đã có trong cửa hàng',
       },
     ]);
   });
@@ -261,13 +326,70 @@ describe('parseImportRows', () => {
     expect(products).toEqual([]);
   });
 
-  it('maps labels for status and item type, and leaves blank codes for the server to allocate', () => {
+  it('keeps one type per product: blank means PRODUCT, a later row naming another type is an error', () => {
+    const { products, errors } = parseImportRows(
+      [
+        row({ name: 'Kệ', retailPrice: 1, costPrice: 1 }),
+        row({
+          name: 'Bàn',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'Màu',
+          attrValue1: 'Nâu',
+        }),
+        row({
+          name: 'Bàn',
+          productType: 'Dịch vụ',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'Màu',
+          attrValue1: 'Trắng',
+        }),
+      ],
+      lookups(),
+    );
+    expect(products[0].dto.productType).toBe('PRODUCT');
+    expect(errors).toEqual([]);
+    // Dòng đầu bỏ trống thì dòng sau được đặt loại; chỉ khi hai dòng ghi khác nhau mới lỗi.
+    expect(products[1].dto.productType).toBe('SERVICE');
+
+    const mixed = parseImportRows(
+      [
+        row({
+          name: 'Bàn',
+          productType: 'Hàng hóa',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'Màu',
+          attrValue1: 'Nâu',
+        }),
+        row({
+          name: 'Bàn',
+          productType: 'Dịch vụ',
+          retailPrice: 1,
+          costPrice: 1,
+          attrName1: 'Màu',
+          attrValue1: 'Trắng',
+        }),
+      ],
+      lookups(),
+    );
+    expect(mixed.errors).toEqual([
+      {
+        row: expect.any(Number) as number,
+        column: 'Loại hàng hóa',
+        message: containing('Khác với dòng'),
+      },
+    ]);
+  });
+
+  it('maps labels for status and product type, and leaves blank codes for the server to allocate', () => {
     const { products, errors } = parseImportRows(
       [
         row({
           name: 'Lắp đặt',
           status: 'Ngừng kinh doanh',
-          itemType: 'Dịch vụ',
+          productType: 'Dịch vụ',
           retailPrice: 200000,
           costPrice: 0,
         }),
@@ -275,10 +397,13 @@ describe('parseImportRows', () => {
       lookups(),
     );
     expect(errors).toEqual([]);
-    expect(products[0].dto).toMatchObject({ status: 'INACTIVE' });
+    expect(products[0].dto).toMatchObject({
+      status: 'INACTIVE',
+      productType: 'SERVICE',
+    });
+    expect(products[0].dto.items[0]).not.toHaveProperty('itemType');
     expect(products[0].dto.items[0]).toMatchObject({
       productName: 'Lắp đặt',
-      itemType: 'SERVICE',
       productCode: undefined,
       sku: undefined,
     });

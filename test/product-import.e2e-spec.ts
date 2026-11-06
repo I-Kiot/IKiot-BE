@@ -189,7 +189,7 @@ describe('ProductImportService', () => {
         name: `Lắp đặt ${tag}`,
         retailPrice: 200000,
         costPrice: 0,
-        itemType: 'Dịch vụ',
+        productType: 'Dịch vụ',
       },
     ]);
 
@@ -232,6 +232,12 @@ describe('ProductImportService', () => {
       where: { tenantId, productName: `Lắp đặt ${tag}` },
     });
     expect(service.itemType).toBe('SERVICE');
+    expect(
+      await prisma.product.findUniqueOrThrow({
+        where: { id: service.productId },
+        select: { productType: true },
+      }),
+    ).toEqual({ productType: 'SERVICE' });
     expect(service.productCode).toMatch(/^SP\d{6}$/);
   });
 

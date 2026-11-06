@@ -12,11 +12,11 @@ import {
   GUIDE_SHEET,
   IMPORT_COLUMNS,
   IMPORT_SHEET,
-  ITEM_TYPE_LABELS,
   LISTS_SHEET,
   MAX_IMPORT_BYTES,
   MAX_IMPORT_ROWS,
   NO,
+  PRODUCT_TYPE_LABELS,
   STATUS_LABELS,
   YES,
   headerKey,
@@ -82,7 +82,7 @@ export class ProductImportService {
       brands: unique(brands.map((b) => b.name)),
       suppliers: unique(suppliers.map((s) => s.supplierName)),
       statuses: Object.values(STATUS_LABELS),
-      itemTypes: Object.values(ITEM_TYPE_LABELS),
+      productTypes: Object.values(PRODUCT_TYPE_LABELS),
       yesNo: [YES, NO],
     };
 
@@ -110,7 +110,7 @@ export class ProductImportService {
       brands: 'Thương hiệu',
       suppliers: 'Nhà cung cấp',
       statuses: 'Trạng thái',
-      itemTypes: 'Loại mặt hàng',
+      productTypes: 'Loại hàng hóa',
       yesNo: 'Có / Không',
     };
     const ranges: Partial<Record<ImportList, string>> = {};
@@ -219,7 +219,7 @@ export class ProductImportService {
       'Cột tiêu đề màu đỏ có (*) là bắt buộc. Cột tiêu đề màu xanh là thông tin của hàng hóa - chỉ cần điền ở dòng đầu tiên; nếu điền ở các dòng sau thì phải giống dòng đầu.',
       'Các phiên bản của cùng một hàng hóa phân biệt nhau bằng "Thuộc tính / Giá trị" (ví dụ Màu: Nâu, Màu: Trắng). Hai dòng trùng cả tên mặt hàng lẫn giá trị thuộc tính sẽ bị báo lỗi.',
       'Danh mục, thương hiệu, nhà cung cấp phải có sẵn trên hệ thống - chọn trong ô thả xuống. Muốn thêm mới, tạo trên hệ thống rồi tải lại file mẫu.',
-      'Mã hàng và SKU có thể bỏ trống để hệ thống tự sinh. SKU không được trùng trong file và với SKU đã có.',
+      'Mã hàng và SKU có thể bỏ trống để hệ thống tự sinh. Mã hàng, SKU và mã vạch không được trùng trong file và với mã đã có trong cửa hàng.',
       'File chỉ tạo hàng hóa mới: tên hàng hóa trùng với hàng đã có trong cửa hàng sẽ bị báo lỗi. Tồn kho không nhập ở đây - hàng vào kho qua phiếu nhập.',
       'Combo không nhập được bằng file - hãy tạo combo trên màn hình hàng hóa.',
       'File không có cột ảnh: sau khi nhập, thêm ảnh cho hàng hóa và từng mặt hàng trên màn hình hàng hóa.',
@@ -323,6 +323,7 @@ export class ProductImportService {
     const example: Record<string, string>[] = [
       {
         name: 'Bàn làm việc gỗ sồi',
+        productType: PRODUCT_TYPE_LABELS.PRODUCT,
         status: STATUS_LABELS.ACTIVE,
         isManufacturable: YES,
         sku: 'BAN-SOI-NAU',
@@ -351,9 +352,9 @@ export class ProductImportService {
       },
       {
         name: 'Lắp đặt tại nhà',
+        productType: PRODUCT_TYPE_LABELS.SERVICE,
         retailPrice: '200000',
         costPrice: '0',
-        itemType: ITEM_TYPE_LABELS.SERVICE,
       },
     ];
     const exampleHeader = sheet.getRow(row++);
@@ -431,7 +432,11 @@ export class ProductImportService {
 
     // Dòng 1 là tiêu đề. Nhận cột theo tiêu đề, không theo vị trí - đổi thứ tự cột vẫn đọc đúng.
     const byHeader = new Map(
-      IMPORT_COLUMNS.map((column) => [headerKey(column.header), column]),
+      IMPORT_COLUMNS.flatMap((column) =>
+        [column.header, ...(column.aliases ?? [])].map(
+          (header) => [headerKey(header), column] as const,
+        ),
+      ),
     );
     const columnAt = new Map<number, ImportColumn>();
     const problems: ImportError[] = [];
@@ -504,26 +509,47 @@ export class ProductImportService {
     const skus = unique(
       rows.map((row) => textOf(row.cells.sku)).filter(Boolean),
     );
-    const [categories, brands, suppliers, products, takenSkus] =
-      await Promise.all([
-        this.categoryLabels(tenantId),
-        this.prisma.brand.findMany({
-          where: { tenantId },
-          select: { id: true, name: true },
-        }),
-        this.prisma.supplier.findMany({
-          where: { tenantId },
-          select: { id: true, supplierName: true },
-        }),
-        this.prisma.product.findMany({
-          where: { tenantId, status: { not: ProductStatus.DISCONTINUED } },
-          select: { name: true },
-        }),
-        this.prisma.productItem.findMany({
-          where: { tenantId, sku: { in: skus } },
-          select: { sku: true },
-        }),
-      ]);
+    const codes = unique(
+      rows.map((row) => textOf(row.cells.productCode)).filter(Boolean),
+    );
+    const barcodes = unique(
+      rows.map((row) => textOf(row.cells.barcode)).filter(Boolean),
+    );
+    const [
+      categories,
+      brands,
+      suppliers,
+      products,
+      takenSkus,
+      takenCodes,
+      takenBarcodes,
+    ] = await Promise.all([
+      this.categoryLabels(tenantId),
+      this.prisma.brand.findMany({
+        where: { tenantId },
+        select: { id: true, name: true },
+      }),
+      this.prisma.supplier.findMany({
+        where: { tenantId },
+        select: { id: true, supplierName: true },
+      }),
+      this.prisma.product.findMany({
+        where: { tenantId, status: { not: ProductStatus.DISCONTINUED } },
+        select: { name: true },
+      }),
+      this.prisma.productItem.findMany({
+        where: { tenantId, sku: { in: skus } },
+        select: { sku: true },
+      }),
+      this.prisma.productItem.findMany({
+        where: { tenantId, productCode: { in: codes } },
+        select: { productCode: true },
+      }),
+      this.prisma.productItem.findMany({
+        where: { tenantId, barcode: { in: barcodes } },
+        select: { barcode: true },
+      }),
+    ]);
 
     return {
       // Một danh mục nhận cả tên lẫn đường dẫn "Cha > Con"; tên trùng ở hai nhánh thì phải dùng đường dẫn.
@@ -539,6 +565,12 @@ export class ProductImportService {
       takenProductNames: new Set(products.map((p) => normalizeName(p.name))),
       takenSkus: new Set(
         takenSkus.map((row) => row.sku).filter((sku): sku is string => !!sku),
+      ),
+      takenProductCodes: new Set(takenCodes.map((row) => row.productCode)),
+      takenBarcodes: new Set(
+        takenBarcodes
+          .map((row) => row.barcode)
+          .filter((code): code is string => !!code),
       ),
     };
   }

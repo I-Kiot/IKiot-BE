@@ -229,3 +229,46 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Dialog giao hàng của shipper chưa bấm thử trên trình duyệt (BE có e2e).
 - `.env.{dev,prod}` trên VPS cần `SEPAY_ORDER_WEBHOOK_API_KEY` và `SEPAY_API_KEY`; webhook phải trỏ về API dev.
 - Khách tự gõ nội dung vào VietinBank phải gõ cả `SEVQR`, màn hình chưa hiện.
+
+## 2026-11-04 - Import Excel hàng hóa theo `productType`
+
+**Đã làm**
+- Cột "Loại mặt hàng" (cấp từng SKU, ghi `itemType`) đổi thành **"Loại hàng hóa"** ở cấp hàng hóa, ghi `productType` (bỏ trống = Hàng hóa; Dịch vụ; Combo vẫn bị từ chối). Lý do: từ khi có `productType`, mọi SKU phải cùng loại với sản phẩm. Parser cũ gửi `itemType: SERVICE` mà sản phẩm mặc định PRODUCT, nên một dòng "Dịch vụ" sẽ làm cả lần import lỗi `PRODUCT_ITEM_TYPE_MISMATCH` thay vì báo lỗi theo dòng.
+- Parser không gửi `itemType` nữa, server tự suy ra qua `itemTypeFor`. Hai dòng của cùng hàng hóa ghi hai loại khác nhau thì báo lỗi theo dòng ("Khác với dòng X"), giống danh mục / thương hiệu.
+- Template: cột mới đứng ngay sau "Tên hàng hóa", dropdown "Loại hàng hóa" ở trang Danh sách, dòng ví dụ ghi loại. Khi đọc file vẫn nhận tiêu đề cũ "Loại mặt hàng" (`aliases` trên cột), nên template đã tải trước đây vẫn import được.
+- Test: unit `product-import.parser.spec.ts` sửa theo và thêm 1 ca (một loại cho mỗi hàng hóa). E2E `product-import.e2e-spec.ts` kiểm thêm `product.productType = SERVICE`.
+
+**Chưa kiểm chứng**
+- Chưa chạy `test:e2e` (docker không chạy). tsc, lint và unit (42 suite / 425 ca) đều qua.
+- Chưa tải template mới ra mở bằng Excel để xem tận mắt.
+
+## 2026-11-06 - Mã hàng duy nhất trong cửa hàng
+
+**Đã làm**
+- `product_items.product_code` duy nhất theo tenant: `@@unique([tenantId, productCode])` thay index thường, migration `20261106100000_product_item_unique_code`. SKU vốn đã unique, không đổi.
+- Trước đây mã hàng không được kiểm tra ở đâu. Hai đường còn chép nguyên mã hàng của mặt hàng gốc: tạo phiên bản (`ProductVariantService.createVariant`) và hàng đặt riêng theo đơn (`OrderCustomizationService.apply`). Nay cả hai lấy mã hàng = SKU mới của chính nó (`<gốc>-V<n>`, `<gốc>-C<hex>`). Migration sửa dữ liệu cũ theo cùng quy tắc: trong mỗi nhóm trùng, dòng tạo sớm nhất giữ mã, các dòng còn lại lấy SKU của mình (nếu SKU đó chưa bị dùng làm mã hàng), không được thì lấy `<mã cũ>-<8 ký tự đầu id>`.
+- `ProductService`: tạo hàng (`createMany`) và thêm phiên bản báo lỗi 400 `PRODUCT_CODE_DUPLICATE_IN_REQUEST` khi trùng trong cùng request, 409 `PRODUCT_CODE_TAKEN` khi trùng với mã đã có. `updateItem` cũng kiểm tra, và bỏ khoảng trắng ở mã hàng / SKU (để trống = giữ mã cũ, không ghi chuỗi rỗng nữa).
+- Mã tự sinh `SP…` bỏ qua các mã gõ tay trong cùng lô. Trước đây DB đang tới SP000004 mà file gõ tay SP000005 thì dòng để trống cũng được cấp SP000005.
+- Import Excel: báo lỗi theo dòng "Mã hàng … trùng với dòng N" / "… đã có trong cửa hàng". Ghi chú cột và trang Hướng dẫn được cập nhật. Thêm 1 ca unit test cho parser.
+
+**Kiểm chứng**
+- tsc, lint, build, unit (42 suite / 426 ca), e2e toàn bộ trên `ikiot_e2e` (23 suite / 303 ca) đều qua.
+- Đã chạy thử phần sửa dữ liệu của migration trên `ikiot_db` local trong transaction rồi rollback: 1 cặp trùng (SP000001 của BAN-OAK-120 và BAN-OAK-120-V1) → dòng V1 được đổi thành mã `BAN-OAK-120-V1`. **Chưa chạy migration thật trên `ikiot_db`.** Môi trường dev / prod cũng cần `pnpm run deploy:migrate`.
+
+**Còn lại**
+- So khớp mã vẫn phân biệt hoa thường (như SKU): `ban-01` và `BAN-01` vẫn được coi là hai mã khác nhau.
+- Mã vạch vẫn chưa có ràng buộc (giữ nguyên theo yêu cầu).
+- FE: đã thêm bản dịch cho hai code mới trong `IKiot-FE/src/lib/api/error-codes.ts`.
+
+## 2026-11-06 - Mã vạch duy nhất trong cửa hàng
+
+**Đã làm**
+- `product_items.barcode` duy nhất theo tenant khi có điền: `@@unique([tenantId, barcode])`, migration `20261106110000_product_item_unique_barcode`. NULL = không có mã vạch, được lặp lại.
+- Form tạo hàng từng ghi mã vạch trống là `''` (DB local có 5 dòng như vậy), mà nếu giữ `''` thì các dòng này sẽ đụng nhau. Migration đổi chúng thành NULL. Code chuẩn hoá qua `normalizeBarcode` (bỏ khoảng trắng hai đầu, trống → null) ở tạo hàng, thêm phiên bản và sửa phiên bản. Khi sửa, mã vạch trống nghĩa là **xoá** mã vạch; khác với mã hàng / SKU, trống nghĩa là giữ mã cũ.
+- Lỗi: 400 `BARCODE_DUPLICATE_IN_REQUEST`, 409 `BARCODE_TAKEN`; FE có bản dịch. Import Excel báo lỗi theo dòng ("Mã vạch … trùng với dòng N" / "… đã có trong cửa hàng"); ghi chú cột và trang Hướng dẫn được cập nhật.
+- Nếu DB đã có mã vạch thật bị trùng, migration **dừng và liệt kê** các mã đó, không tự chọn mặt hàng giữ mã. Sửa tay rồi chạy lại.
+- Tạo phiên bản và hàng đặt riêng không chép mã vạch của mặt hàng gốc (đã kiểm tra), nên không phải sửa hai chỗ này.
+
+**Kiểm chứng**
+- tsc, lint, build, unit (42 suite / 427 ca, thêm 1 ca parser), e2e toàn bộ trên `ikiot_e2e` (23 suite / 303 ca; smoke kiểm thêm 409 mã hàng / mã vạch, 400 trùng trong request, `barcode: ''` → null).
+- Chạy thử cả hai migration hôm nay trên `ikiot_db` trong transaction rồi rollback: qua, 13/13 mặt hàng có barcode NULL. **Chưa chạy thật trên `ikiot_db`, dev, prod.**

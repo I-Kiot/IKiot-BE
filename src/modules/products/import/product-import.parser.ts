@@ -1,11 +1,11 @@
-import { ProductItemType } from '../../../common/constants/product-status';
+import { ProductType } from '../../../common/constants/product-status';
 import type { CreateProductDto } from '../dto/create-product.dto';
 import type { CreateProductItemDto } from '../dto/product-item.dto';
 import {
   IMPORT_ATTRIBUTE_SLOTS,
   IMPORT_COLUMNS,
-  ITEM_TYPE_LABELS,
   NO,
+  PRODUCT_TYPE_LABELS,
   STATUS_LABELS,
   YES,
 } from './product-import.columns';
@@ -42,6 +42,10 @@ export interface ImportLookups {
   takenProductNames: ReadonlySet<string>;
   /** SKU đã có trong cửa hàng (so nguyên văn, như `@@unique([tenantId, sku])`). */
   takenSkus: ReadonlySet<string>;
+  /** Mã hàng đã có trong cửa hàng (so nguyên văn, như `@@unique([tenantId, productCode])`). */
+  takenProductCodes: ReadonlySet<string>;
+  /** Mã vạch đã có trong cửa hàng (so nguyên văn, như `@@unique([tenantId, barcode])`). */
+  takenBarcodes: ReadonlySet<string>;
 }
 
 export interface ParsedProduct {
@@ -133,8 +137,8 @@ const STATUS_BY_TEXT = new Map<string, string>(
   ]),
 );
 
-const ITEM_TYPE_BY_TEXT = new Map<string, string>(
-  Object.entries(ITEM_TYPE_LABELS).flatMap(([type, label]) => [
+const PRODUCT_TYPE_BY_TEXT = new Map<string, string>(
+  Object.entries(PRODUCT_TYPE_LABELS).flatMap(([type, label]) => [
     [normalizeName(label), type],
     [normalizeName(type), type],
   ]),
@@ -145,6 +149,7 @@ const NO_TEXTS = new Set(['không', 'khong', 'no', 'n', 'false', '0']);
 
 /** Thông tin cấp hàng hoá đọc từ một dòng - so giữa các dòng của cùng hàng hoá. */
 interface ProductFields {
+  productType?: ProductType;
   categoryId?: string;
   brandId?: string;
   status?: string;
@@ -182,6 +187,8 @@ export function parseImportRows(
 
   const drafts = new Map<string, ProductDraft>();
   const skuRows = new Map<string, number>();
+  const codeRows = new Map<string, number>();
+  const barcodeRows = new Map<string, number>();
 
   for (const { rowNumber, cells } of rows) {
     const text = (key: ImportColumnKey) => textOf(cells[key]);
@@ -238,6 +245,38 @@ export function parseImportRows(
       }
       skuRows.set(sku, rowNumber);
     }
+    const productCode = itemDraft.item.productCode;
+    if (productCode) {
+      const earlier = codeRows.get(productCode);
+      if (earlier !== undefined) {
+        fail(
+          rowNumber,
+          'productCode',
+          `Mã hàng "${productCode}" trùng với dòng ${earlier}`,
+        );
+      } else if (lookups.takenProductCodes.has(productCode)) {
+        fail(
+          rowNumber,
+          'productCode',
+          `Mã hàng "${productCode}" đã có trong cửa hàng`,
+        );
+      }
+      codeRows.set(productCode, rowNumber);
+    }
+    const barcode = itemDraft.item.barcode;
+    if (barcode) {
+      const earlier = barcodeRows.get(barcode);
+      if (earlier !== undefined) {
+        fail(
+          rowNumber,
+          'barcode',
+          `Mã vạch "${barcode}" trùng với dòng ${earlier}`,
+        );
+      } else if (lookups.takenBarcodes.has(barcode)) {
+        fail(rowNumber, 'barcode', `Mã vạch "${barcode}" đã có trong cửa hàng`);
+      }
+      barcodeRows.set(barcode, rowNumber);
+    }
     draft.items.push(itemDraft);
   }
 
@@ -252,6 +291,7 @@ export function parseImportRows(
 }
 
 const PRODUCT_FIELD_COLUMN: Record<keyof ProductFields, ImportColumnKey> = {
+  productType: 'productType',
   categoryId: 'category',
   brandId: 'brand',
   status: 'status',
@@ -291,6 +331,27 @@ function readProductFields(
   fail: Fail,
 ): ProductFields {
   const fields: ProductFields = {};
+
+  const typeText = textOf(cells.productType);
+  if (typeText) {
+    if (normalizeName(typeText) === normalizeName(ProductType.COMBO)) {
+      fail(
+        row,
+        'productType',
+        'Combo không nhập được bằng file - hãy tạo combo ở màn hình Combo',
+      );
+    } else {
+      fields.productType = PRODUCT_TYPE_BY_TEXT.get(normalizeName(typeText)) as
+        ProductType | undefined;
+      if (!fields.productType) {
+        fail(
+          row,
+          'productType',
+          `Loại hàng hóa phải là "${Object.values(PRODUCT_TYPE_LABELS).join('" hoặc "')}"`,
+        );
+      }
+    }
+  }
 
   const category = textOf(cells.category);
   if (category) {
@@ -389,27 +450,6 @@ function readItem(
     }
   }
 
-  let itemType: ProductItemType = ProductItemType.PRODUCT;
-  const typeText = textOf(cells.itemType);
-  if (typeText) {
-    const type = ITEM_TYPE_BY_TEXT.get(normalizeName(typeText));
-    if (normalizeName(typeText) === normalizeName(ProductItemType.COMBO)) {
-      failHere(
-        row,
-        'itemType',
-        'Combo không nhập được bằng file - hãy tạo combo trên màn hình hàng hóa',
-      );
-    } else if (!type) {
-      failHere(
-        row,
-        'itemType',
-        `Loại mặt hàng phải là "${Object.values(ITEM_TYPE_LABELS).join('" hoặc "')}"`,
-      );
-    } else {
-      itemType = type as ProductItemType;
-    }
-  }
-
   const supplierIds: string[] = [];
   for (const supplier of listOf(cells.suppliers)) {
     const id = resolveName(
@@ -475,7 +515,6 @@ function readItem(
       vat,
       warrantyPeriod: optional('warrantyPeriod'),
       description: optional('description'),
-      itemType,
       supplierIds: supplierIds.length ? supplierIds : undefined,
       productDetails: attributes.map(({ name, value }) => ({ name, value })),
     },
@@ -544,6 +583,8 @@ function assembleProduct(
     dto: {
       name: draft.name,
       ...fields,
+      // `itemType` của từng SKU không gửi đi: server suy ra từ `productType` (`itemTypeFor`).
+      productType: fields.productType ?? ProductType.PRODUCT,
       attributes: [...units.values()].map(({ name, unit }) => ({
         name,
         unit: unit || undefined,
