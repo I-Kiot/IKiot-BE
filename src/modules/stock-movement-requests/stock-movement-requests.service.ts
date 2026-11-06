@@ -55,6 +55,8 @@ const DETAIL_INCLUDE = {
       quantity: true,
       importPrice: true,
       receivedQuantity: true,
+      // Phiếu nhập xưởng chỉ tính tiền phần đạt, nên màn xem phiếu cần số lỗi để tổng tiền khớp với các dòng.
+      defectQuantity: true,
       note: true,
       productItem: {
         select: {
@@ -100,6 +102,7 @@ export class StockMovementService {
     const where: Prisma.StockMovementRequestWhereInput = { tenantId };
     if (query.status) where.status = query.status;
     if (query.movementType) where.movementType = query.movementType;
+    if (query.importSource) where.importSource = query.importSource;
 
     // Tài khoản nhân viên thấy phiếu chạm tới địa điểm của mình, ở cả hai đầu.
     const own = this.postingOf(user);
