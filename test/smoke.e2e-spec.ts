@@ -340,6 +340,51 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     expect(rolled).toBe(0);
     note('duplicate SKU left no half-created product: OK');
+
+    // Mã hàng và mã vạch duy nhất trong cửa hàng như SKU (2026-11-06); mã vạch trống được lặp lại.
+    await prisma.productItem.update({
+      where: { id: itemAId },
+      data: { barcode: '8930000000017' },
+    });
+    const clash = (item: Record<string, unknown>) =>
+      http()
+        .post('/products')
+        .set(auth())
+        .send({
+          name: 'Trùng mã',
+          items: [{ productName: 'y', retailPrice: 1, costPrice: 1, ...item }],
+        });
+    const codeTaken = await clash({ productCode: 'AT-RED' }).expect(409);
+    expect(codeTaken.body.code).toBe('PRODUCT_CODE_TAKEN');
+    const barcodeTaken = await clash({ barcode: ' 8930000000017 ' }).expect(
+      409,
+    );
+    expect(barcodeTaken.body.code).toBe('BARCODE_TAKEN');
+    const sameBarcode = await http()
+      .post('/products')
+      .set(auth())
+      .send({
+        name: 'Trùng mã',
+        items: [
+          { productName: 'y1', barcode: '893X', retailPrice: 1, costPrice: 1 },
+          { productName: 'y2', barcode: '893X', retailPrice: 1, costPrice: 1 },
+        ],
+      })
+      .expect(400);
+    expect(sameBarcode.body.code).toBe('BARCODE_DUPLICATE_IN_REQUEST');
+    // Mã vạch để trống ghi null, nên sửa mặt hàng B với '' không đụng ràng buộc unique.
+    await http()
+      .patch(`/products/items/${itemBId}`)
+      .set(auth())
+      .send({ barcode: '' })
+      .expect(200);
+    const b = await prisma.productItem.findUniqueOrThrow({
+      where: { id: itemBId },
+    });
+    expect(b.barcode).toBeNull();
+    note(
+      'duplicate product code / barcode refused, blank barcode stored as null: OK',
+    );
   });
 
   it('lists, searches and reads back products', async () => {

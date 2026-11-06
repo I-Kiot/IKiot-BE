@@ -16,6 +16,8 @@ export const ErrorCode = {
   UNAUTHENTICATED: 'UNAUTHENTICATED',
 
   BAD_REQUEST: 'BAD_REQUEST',
+  BARCODE_DUPLICATE_IN_REQUEST: 'BARCODE_DUPLICATE_IN_REQUEST',
+  BARCODE_TAKEN: 'BARCODE_TAKEN',
   BRANCH_ID_REQUIRED: 'BRANCH_ID_REQUIRED',
   DATE_RANGE_INVALID: 'DATE_RANGE_INVALID',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -122,6 +124,8 @@ export const ErrorCode = {
   PRODUCT_DISCONTINUED: 'PRODUCT_DISCONTINUED',
   PRODUCT_HAS_STOCK: 'PRODUCT_HAS_STOCK',
   PRODUCT_IN_STOCK_MOVEMENT: 'PRODUCT_IN_STOCK_MOVEMENT',
+  PRODUCT_CODE_DUPLICATE_IN_REQUEST: 'PRODUCT_CODE_DUPLICATE_IN_REQUEST',
+  PRODUCT_CODE_TAKEN: 'PRODUCT_CODE_TAKEN',
   PRODUCT_IN_UNPAID_ORDER: 'PRODUCT_IN_UNPAID_ORDER',
   PRODUCT_ITEM_AT_LOCATION: 'PRODUCT_ITEM_AT_LOCATION',
   PRODUCT_ITEM_HAS_TRANSACTIONS: 'PRODUCT_ITEM_HAS_TRANSACTIONS',
@@ -427,6 +431,12 @@ export const ErrorCode = {
   PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
   /** Biến thể (hoặc biến thể của sản phẩm) là thành phần của một combo vẫn đang bán; gỡ khỏi combo trước. */
   PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
+
+  // ─── Nhập hàng hoá từ Excel ──────────────────────────────────────────────────
+  /** File tải lên không phải .xlsx đọc được, quá lớn, quá nhiều dòng, hoặc thiếu cột bắt buộc của file mẫu. `errors` liệt kê `{ row, column, message }`. */
+  PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
+  /** Một hoặc nhiều dòng của file nhập không hợp lệ; không có gì được tạo. `errors` liệt kê `{ row, column, message }` bằng tiếng Việt để hiển thị. */
+  PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
   /** Thành phần combo thuộc sản phẩm đã ngừng bán (khi lưu, hoặc khi bật lại combo). Thông báo nêu SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** Biến thể COMBO hoặc SERVICE bị đưa vào chứng từ kho hay địa điểm: chỉ PRODUCT mới giữ kho. */

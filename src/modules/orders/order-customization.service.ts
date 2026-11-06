@@ -244,14 +244,19 @@ export class OrderCustomizationService {
         where: { productItemId: item.id },
         orderBy: { position: 'asc' },
       });
+      // SKU và mã hàng riêng (cả hai duy nhất trong tenant), vẫn đọc ra được SKU danh mục nó được làm từ.
+      // Mã hàng từng chép nguyên của gốc; từ 2026-11-06 mã hàng cũng là unique nên lấy bằng SKU.
+      const customCode = generateReference(
+        `${item.sku ?? item.productCode}-C`,
+        3,
+      );
       const custom = await tx.productItem.create({
         data: {
           tenantId,
           productId: item.productId,
           productName: item.productName,
-          productCode: item.productCode,
-          // SKU riêng (duy nhất trong tenant), vẫn đọc ra được SKU danh mục nó được làm từ.
-          sku: generateReference(`${item.sku ?? item.productCode}-C`, 3),
+          productCode: customCode,
+          sku: customCode,
           description: item.description,
           retailPrice: item.retailPrice,
           costPrice: item.costPrice,

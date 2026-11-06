@@ -54,11 +54,20 @@ import {
 /** Tiền tố mã sản phẩm tự cấp (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
 
-/** DTO phiên bản khi `allocateItemCodes` đã điền đủ hai mã. */
-type ItemWithCodes = CreateProductItemDto & {
+/** DTO phiên bản khi `allocateItemCodes` đã điền đủ hai mã và chuẩn hoá mã vạch (trống = null). */
+type ItemWithCodes = Omit<CreateProductItemDto, 'barcode'> & {
   productCode: string;
   sku: string;
+  barcode: string | null;
 };
+
+/**
+ * Mã vạch là tuỳ chọn, nên trống phải là `null` chứ không phải `''`: `@@unique([tenantId, barcode])`
+ * coi mọi chuỗi rỗng là cùng một mã, còn null thì không trùng với nhau.
+ */
+function normalizeBarcode(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
 
 const IMAGES_INCLUDE = {
   select: { id: true, url: true, isThumbnail: true, position: true },
@@ -173,6 +182,20 @@ export class ProductService {
   ) {}
 
   async create(tenantId: string, dto: CreateProductDto) {
+    const [productId] = await this.createMany(tenantId, [dto]);
+    return this.findOne(tenantId, productId, {});
+  }
+
+  /**
+   * Tạo nhiều hàng hoá kèm biến thể trong một transaction - form "Thêm hàng hóa" và nhập Excel
+   * đi cùng một bộ kiểm tra, nên không đường nào bỏ sót được. Tất cả hoặc không gì: quota phải
+   * đủ cho mọi hàng hoá, và mã được cấp cho cả lô một lần (cấp theo từng hàng hoá sẽ trao hai
+   * hàng hoá cùng một số `SP`, vì chưa gì được ghi trước khi transaction chạy).
+   */
+  async createMany(
+    tenantId: string,
+    dtos: CreateProductDto[],
+  ): Promise<string[]> {
     await this.subscriptions.assertQuota(
       tenantId,
       'quotaSnapshotMaxProducts',
@@ -184,50 +207,85 @@ export class ProductService {
           },
         }),
       'products',
+      dtos.length,
     );
 
-    const items = await this.allocateItemCodes(tenantId, dto.items);
-    this.assertNoDuplicateSkusInPayload(items);
+    const allItems = dtos.flatMap((dto) => dto.items);
+    const coded = await this.allocateItemCodes(tenantId, allItems);
+    this.assertNoDuplicateCodesInPayload(coded);
     await this.assertSkusAreFree(
       tenantId,
-      items.map((item) => item.sku),
+      coded.map((item) => item.sku),
     );
-    const categoryName = await this.resolveCategoryName(
+    await this.assertProductCodesAreFree(
       tenantId,
-      dto.categoryId,
+      coded.map((item) => item.productCode),
     );
-    await this.assertBrandExists(tenantId, dto.brandId);
-    await this.assertItemReferencesExist(tenantId, dto.items);
-    const productType = dto.productType ?? ProductType.PRODUCT;
+    await this.assertBarcodesAreFree(
+      tenantId,
+      coded.map((item) => item.barcode),
+    );
+    const categoryNames = await this.categoryNamesOf(
+      tenantId,
+      dtos.map((dto) => dto.categoryId),
+    );
+    await this.assertBrandsExist(
+      tenantId,
+      dtos.map((dto) => dto.brandId),
+    );
+    await this.assertItemReferencesExist(tenantId, allItems);
 
-    const productId = await this.prisma.$transaction(async (tx) => {
-      const product = await tx.product.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          brandId: dto.brandId,
-          categoryId: dto.categoryId,
-          categoryName,
-          status: dto.status ?? ProductStatus.ACTIVE,
-          isManufacturable: dto.isManufacturable ?? false,
-          productType,
-          images: { create: this.imageRows(dto.images) },
-        },
-        select: { id: true },
-      });
-
-      // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
-      if (dto.attributes) {
-        await upsertAttributeUnits(tx, tenantId, product.id, dto.attributes);
-      }
-      for (const item of items) {
-        await this.insertItem(tx, tenantId, product.id, productType, item);
-      }
-
-      return product.id;
+    // Phần của từng hàng hoá trong danh sách đã cấp mã, theo thứ tự.
+    let offset = 0;
+    const batches = dtos.map((dto) => {
+      const items = coded.slice(offset, offset + dto.items.length);
+      offset += dto.items.length;
+      return { dto, items };
     });
 
-    return this.findOne(tenantId, productId, {});
+    // Một hàng hoá vài biến thể là vài chục câu lệnh; nhập vài trăm dòng là hàng nghìn,
+    // vượt xa mặc định 5 s của interactive transaction.
+    const timeout = Math.max(5_000, allItems.length * 200);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const ids: string[] = [];
+        for (const { dto, items } of batches) {
+          const productType = dto.productType ?? ProductType.PRODUCT;
+          const product = await tx.product.create({
+            data: {
+              tenantId,
+              name: dto.name,
+              brandId: dto.brandId,
+              categoryId: dto.categoryId,
+              categoryName: dto.categoryId
+                ? categoryNames.get(dto.categoryId)
+                : null,
+              status: dto.status ?? ProductStatus.ACTIVE,
+              isManufacturable: dto.isManufacturable ?? false,
+              productType,
+              images: { create: this.imageRows(dto.images) },
+            },
+            select: { id: true },
+          });
+
+          // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
+          if (dto.attributes) {
+            await upsertAttributeUnits(
+              tx,
+              tenantId,
+              product.id,
+              dto.attributes,
+            );
+          }
+          for (const item of items) {
+            await this.insertItem(tx, tenantId, product.id, productType, item);
+          }
+          ids.push(product.id);
+        }
+        return ids;
+      },
+      { timeout, maxWait: 10_000 },
+    );
   }
 
   async findAll(tenantId: string, query: QueryProductDto) {
@@ -703,6 +761,8 @@ export class ProductService {
 
     const [item] = await this.allocateItemCodes(tenantId, [dto]);
     await this.assertSkusAreFree(tenantId, [item.sku]);
+    await this.assertProductCodesAreFree(tenantId, [item.productCode]);
+    await this.assertBarcodesAreFree(tenantId, [item.barcode]);
     await this.assertItemReferencesExist(tenantId, [item]);
 
     const itemId = await this.prisma.$transaction((tx) =>
@@ -733,7 +793,18 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    if (dto.sku) await this.assertSkusAreFree(tenantId, [dto.sku], itemId);
+    // Trimmed like `allocateItemCodes` does on create. Blank means "keep the current code": both are
+    // the variant's identity and must stay unique, and an empty string would be a code nobody can search.
+    const sku = dto.sku?.trim() || undefined;
+    const productCode = dto.productCode?.trim() || undefined;
+    if (sku) await this.assertSkusAreFree(tenantId, [sku], itemId);
+    if (productCode) {
+      await this.assertProductCodesAreFree(tenantId, [productCode], itemId);
+    }
+    // Unlike the two codes a barcode is optional, so blank clears it (null) rather than keeping it.
+    const barcode =
+      dto.barcode === undefined ? undefined : normalizeBarcode(dto.barcode);
+    if (barcode) await this.assertBarcodesAreFree(tenantId, [barcode], itemId);
     if (dto.comboComponents) {
       assertComponentsMatchType(existing.itemType, dto.comboComponents);
     }
@@ -746,9 +817,9 @@ export class ProductService {
         where: { id: itemId },
         data: {
           productName: dto.productName,
-          productCode: dto.productCode,
-          sku: dto.sku,
-          barcode: dto.barcode,
+          productCode,
+          sku,
+          barcode,
           description: dto.description,
           retailPrice: dto.retailPrice,
           // Giá vốn combo là tổng của các thành phần, do `writeComboComponents` ghi.
@@ -1321,31 +1392,115 @@ export class ProductService {
     );
     for (const sku of wantedSkus) usedSkus.add(sku);
 
+    // A code typed on another line of this batch is not in the database yet, so the counter (read
+    // from the database) could land on it; skip those numbers rather than hand out a duplicate.
+    const typedCodes = new Set(candidates);
+    const nextCode = (): string => {
+      let code: string;
+      do code = `${CODE_PREFIX}${String(++counter).padStart(6, '0')}`;
+      while (typedCodes.has(code));
+      return code;
+    };
+
     return items.map((item) => {
-      const productCode =
-        item.productCode?.trim() ||
-        `${CODE_PREFIX}${String(++counter).padStart(6, '0')}`;
+      const productCode = item.productCode?.trim() || nextCode();
       let sku = item.sku?.trim();
       if (!sku) {
         sku = productCode;
         for (let n = 2; usedSkus.has(sku); n++) sku = `${productCode}-${n}`;
         usedSkus.add(sku);
       }
-      return { ...item, productCode, sku };
+      return {
+        ...item,
+        productCode,
+        sku,
+        barcode: normalizeBarcode(item.barcode),
+      };
     });
   }
 
-  private assertNoDuplicateSkusInPayload(items: { sku: string }[]): void {
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
-    for (const item of items) {
-      if (seen.has(item.sku)) duplicates.add(item.sku);
-      seen.add(item.sku);
-    }
-    if (duplicates.size > 0) {
+  /** SKU, product code and barcode each identify one variant within the tenant, so none may repeat inside one request. */
+  private assertNoDuplicateCodesInPayload(
+    items: { sku: string; productCode: string; barcode: string | null }[],
+  ): void {
+    const duplicatesOf = (values: string[]): string[] => {
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const value of values) {
+        if (seen.has(value)) duplicates.add(value);
+        seen.add(value);
+      }
+      return [...duplicates];
+    };
+    const skus = duplicatesOf(items.map((item) => item.sku));
+    if (skus.length > 0) {
       throw new BadRequestException({
         code: ErrorCode.SKU_DUPLICATE_IN_REQUEST,
-        message: `Duplicate SKU within the same request: ${[...duplicates].join(', ')}`,
+        message: `Duplicate SKU within the same request: ${skus.join(', ')}`,
+      });
+    }
+    const codes = duplicatesOf(items.map((item) => item.productCode));
+    if (codes.length > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_CODE_DUPLICATE_IN_REQUEST,
+        message: `Duplicate product code within the same request: ${codes.join(', ')}`,
+      });
+    }
+    const barcodes = duplicatesOf(
+      items
+        .map((item) => item.barcode)
+        .filter((code): code is string => !!code),
+    );
+    if (barcodes.length > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.BARCODE_DUPLICATE_IN_REQUEST,
+        message: `Duplicate barcode within the same request: ${barcodes.join(', ')}`,
+      });
+    }
+  }
+
+  /** Same reason as `assertSkusAreFree`; `@@unique([tenantId, barcode])` is the backstop. Blank barcodes are skipped. */
+  private async assertBarcodesAreFree(
+    tenantId: string,
+    barcodes: (string | null)[],
+    exceptItemId?: string,
+  ): Promise<void> {
+    const wanted = barcodes.filter((code): code is string => !!code);
+    if (wanted.length === 0) return;
+    const taken = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        barcode: { in: wanted },
+        ...(exceptItemId ? { id: { not: exceptItemId } } : {}),
+      },
+      select: { barcode: true },
+    });
+    if (taken.length > 0) {
+      throw new ConflictException({
+        code: ErrorCode.BARCODE_TAKEN,
+        message: `Barcode already exists in this shop: ${taken.map((item) => item.barcode).join(', ')}`,
+      });
+    }
+  }
+
+  /** Same reason as `assertSkusAreFree`: `@@unique([tenantId, productCode])` is the backstop, this names the code. */
+  private async assertProductCodesAreFree(
+    tenantId: string,
+    codes: string[],
+    exceptItemId?: string,
+  ): Promise<void> {
+    const taken = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        productCode: { in: codes },
+        ...(exceptItemId ? { id: { not: exceptItemId } } : {}),
+      },
+      select: { productCode: true },
+    });
+    if (taken.length > 0) {
+      throw new ConflictException({
+        code: ErrorCode.PRODUCT_CODE_TAKEN,
+        message: `Product code already exists in this shop: ${taken.map((item) => item.productCode).join(', ')}`,
       });
     }
   }
@@ -1375,7 +1530,7 @@ export class ProductService {
   /** Mọi NCC trong lô phiên bản phải thuộc tenant này. Không nêu địa điểm: phiên bản tạo ra chưa có tồn ở đâu, dòng tồn chỉ xuất hiện khi có phiếu kho nhập hàng tới đó. */
   private async assertItemReferencesExist(
     tenantId: string,
-    items: CreateProductItemDto[],
+    items: Pick<CreateProductItemDto, 'supplierIds'>[],
   ): Promise<void> {
     const supplierIds = [
       ...new Set(items.flatMap((item) => item.supplierIds ?? [])),
@@ -1397,12 +1552,19 @@ export class ProductService {
     tenantId: string,
     brandId?: string,
   ): Promise<void> {
-    if (!brandId) return;
-    const brand = await this.prisma.brand.findFirst({
-      where: { id: brandId, tenantId },
-      select: { id: true },
+    await this.assertBrandsExist(tenantId, [brandId]);
+  }
+
+  private async assertBrandsExist(
+    tenantId: string,
+    brandIds: (string | undefined)[],
+  ): Promise<void> {
+    const ids = [...new Set(brandIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return;
+    const found = await this.prisma.brand.count({
+      where: { id: { in: ids }, tenantId },
     });
-    if (!brand)
+    if (found !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.BRAND_NOT_FOUND,
         message: 'Brand not found',
@@ -1415,15 +1577,26 @@ export class ProductService {
     categoryId?: string,
   ): Promise<string | null> {
     if (!categoryId) return null;
-    const category = await this.prisma.category.findFirst({
-      where: { id: categoryId, tenantId },
-      select: { name: true },
+    const names = await this.categoryNamesOf(tenantId, [categoryId]);
+    return names.get(categoryId) ?? null;
+  }
+
+  /** Every named category must be this tenant's; answers id → name for the denormalized copy. */
+  private async categoryNamesOf(
+    tenantId: string,
+    categoryIds: (string | undefined)[],
+  ): Promise<Map<string, string>> {
+    const ids = [...new Set(categoryIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return new Map();
+    const rows = await this.prisma.category.findMany({
+      where: { id: { in: ids }, tenantId },
+      select: { id: true, name: true },
     });
-    if (!category)
+    if (rows.length !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.CATEGORY_NOT_FOUND,
         message: 'Category not found',
       });
-    return category.name;
+    return new Map(rows.map((row) => [row.id, row.name]));
   }
 }

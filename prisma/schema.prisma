@@ -658,7 +658,7 @@ model ProductItem {
   productId      String   @map("product_id")
   product        Product  @relation(fields: [productId], references: [id])
   productName    String   @map("product_name") // bản sao tên sản phẩm
-  productCode    String   @map("product_code") // mã hàng, tự sinh SP000001 nếu bỏ trống
+  productCode    String   @map("product_code") // mã hàng, tự sinh SP000001 nếu bỏ trống; duy nhất trong tenant như sku
   sku            String?
   barcode        String?
   description    String?
@@ -699,9 +699,9 @@ model ProductItem {
   productionItems       ProductionRequestItem[]
 
   @@unique([tenantId, sku])
+  @@unique([tenantId, productCode])
+  @@unique([tenantId, barcode]) // null = không có mã vạch; trống luôn ghi null, không phải ''
   @@index([tenantId, productId])
-  @@index([tenantId, productCode])
-  @@index([tenantId, barcode])
   @@map("product_items")
 }
 
