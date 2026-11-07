@@ -253,3 +253,11 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - FE `/reports` và dashboard tổng quan: chọn kho thấy đủ doanh thu của kho, như chi nhánh.
 
 **Lưu ý:** yêu cầu sản xuất đang mở giữ nguyên nơi nhận, nên sau khi đổi nguồn hàng xưởng vẫn về nơi cũ; đơn sẽ báo thiếu ở nơi mới tới khi chuyển kho.
+
+## 2026-11-07 – Seed shop mẫu với sản phẩm từ igm.vn
+
+`prisma/seed-igm-sample.ts`: shop riêng "Nội thất Mộc An" (chủ `0976214358`, gói PRO một năm, `CN Cầu Giấy`, `Kho hàng hỏng`), 2 sản phẩm thường mỗi cái 2 phiên bản, 1 combo gồm 2 phiên bản ghế. Chạy lại an toàn.
+
+- Giá vốn và combo (tên, giá) là số tự đặt: igm.vn không có giá vốn và không có combo. Chưa có ảnh, chưa có tồn kho.
+- Image deploy không có `tsx` và `src/`, nên chạy từ máy dev với `DATABASE_URL` trỏ vào DB đích, sau `npx prisma db seed`.
+- Đã chạy thử trên DB tạm: migrate deploy, `db seed`, seed này hai lần; đăng nhập và `GET /products` qua BE thật. Chưa chạy trên DB dev.
