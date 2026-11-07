@@ -152,7 +152,7 @@ export class ManualOrderService {
       });
     }
 
-    await this.assertAssignee(tenantId, dto.assigneeId);
+    await this.assertAssignee(tenantId, dto.assigneeId, dto.branchId);
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -316,8 +316,11 @@ export class ManualOrderService {
     }
   }
 
-  /** Người phụ trách phải đăng nhập được vào shop và làm đơn. Dùng chung với route sửa đơn (A-8). */
-  async assertAssignee(tenantId: string, assigneeId: string) {
+  /**
+   * Người phụ trách phải đăng nhập được vào shop và làm việc tại địa điểm bán của đơn: phạm vi xem đơn theo địa điểm, nên nhân viên nơi khác được giao cũng không thấy đơn.
+   * Chủ shop xem được mọi nơi nên không bị giới hạn. Dùng chung với route sửa đơn (A-8).
+   */
+  async assertAssignee(tenantId: string, assigneeId: string, placeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
         id: assigneeId,
@@ -325,12 +328,21 @@ export class ManualOrderService {
         status: UserStatus.ACTIVE,
         systemRole: { in: [...ASSIGNABLE_ROLES] },
       },
-      select: { id: true },
+      select: { systemRole: true, locationId: true },
     });
     if (!assignee) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_ASSIGNEE_INVALID,
         message: 'The person in charge is not an active account of this shop',
+      });
+    }
+    if (
+      assignee.systemRole !== SystemRole.TENANT_OWNER &&
+      assignee.locationId !== placeId
+    ) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+        message: 'The person in charge must work at the location of the order',
       });
     }
   }

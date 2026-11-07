@@ -145,8 +145,13 @@ export class OrderEditService {
         { sourceLocationId: dto.sourceLocationId },
       ]);
     }
-    if (dto.assigneeId)
-      await this.manual.assertAssignee(tenantId, dto.assigneeId);
+    // Giữ nguyên người đang phụ trách thì không kiểm lại: đơn cũ có thể giao cho người đã chuyển nơi làm.
+    if (dto.assigneeId && dto.assigneeId !== order.assigneeId)
+      await this.manual.assertAssignee(
+        tenantId,
+        dto.assigneeId,
+        order.branchId,
+      );
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -361,8 +366,8 @@ export class OrderEditService {
     id: string,
     dto: SetOrderAssigneeDto,
   ) {
-    await this.loadEditable(user, tenantId, id);
-    await this.manual.assertAssignee(tenantId, dto.assigneeId);
+    const order = await this.loadEditable(user, tenantId, id);
+    await this.manual.assertAssignee(tenantId, dto.assigneeId, order.branchId);
     await this.claimUnshipped(tenantId, id, { assigneeId: dto.assigneeId });
     return this.reads.findOne(user, tenantId, id);
   }

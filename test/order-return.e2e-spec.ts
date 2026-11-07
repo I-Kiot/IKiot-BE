@@ -212,6 +212,11 @@ describe('/order-returns – OrderReturnService', () => {
     await prisma.branch.create({
       data: { id: branchId, tenantId, locationId: branchId },
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     for (const id of [warehouseId, damagedId]) {
       await prisma.warehouse.create({
         data: { id, tenantId, locationId: id },

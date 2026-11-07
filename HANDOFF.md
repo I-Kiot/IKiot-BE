@@ -249,4 +249,7 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Giữ chỉ cho chi nhánh: bán tại quầy, két, khuyến mãi theo chi nhánh, phân công `branchId` của nhân viên. Shopee để sau.
 - Prod phải chạy `deploy:migrate` trước khi merge lên `main`, như mọi migration.
 
+- Người phụ trách đơn phải làm việc tại địa điểm bán (`ORDER_ASSIGNEE_WRONG_LOCATION`), chủ shop không bị giới hạn. Chọn cách này thay vì mở phạm vi xem đơn cho người phụ trách ở nơi khác, vì ít việc hơn.
+- FE `/reports`: chọn kho thấy đủ doanh thu của kho, như chi nhánh. Dashboard tổng quan khi chọn kho vẫn dùng bố cục kho, chưa có doanh thu.
+
 **Lưu ý:** yêu cầu sản xuất đang mở giữ nguyên nơi nhận, nên sau khi đổi nguồn hàng xưởng vẫn về nơi cũ; đơn sẽ báo thiếu ở nơi mới tới khi chuyển kho.

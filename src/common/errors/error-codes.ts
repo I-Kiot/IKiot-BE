@@ -225,6 +225,8 @@ export const ErrorCode = {
   /** Mọi đơn sau DRAFT / PENDING_CONFIRMATION phải có người phụ trách. */
   ORDER_ASSIGNEE_REQUIRED: 'ORDER_ASSIGNEE_REQUIRED',
   ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
+  /** Nhân viên phụ trách đơn phải làm việc tại địa điểm bán của đơn, không thì họ không xem được đơn. Chủ shop không bị giới hạn. */
+  ORDER_ASSIGNEE_WRONG_LOCATION: 'ORDER_ASSIGNEE_WRONG_LOCATION',
   /** Đã đóng gói và bàn giao - đường quay lại duy nhất là OrderReturn. */
   ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
   ORDER_COMBO_INVALID: 'ORDER_COMBO_INVALID',

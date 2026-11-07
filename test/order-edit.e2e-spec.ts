@@ -183,6 +183,11 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     await prisma.branch.create({
       data: { id: branchId, tenantId, locationId: branchId },
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     await prisma.product.create({
       data: { id: productId, tenantId, name: 'Nội thất' },
     });
@@ -560,6 +565,31 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     after = await orderRow(id);
     expect(Number(after.grandTotal)).toBe(19_000_000);
     expect(after.discountType).toBe('ORDER');
+  });
+
+  it('only hands an order to someone working at its location, or the owner', async () => {
+    const id = await createOrder({ assigneeId: staffId });
+    const elsewhereId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: elsewhereId,
+        tenantId,
+        phoneNumber: `edit-${elsewhereId}`,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+        locationId: warehouseId,
+      },
+    });
+    expect(
+      await codeOf(
+        edits.setAssignee(owner, tenantId, id, { assigneeId: elsewhereId }),
+      ),
+    ).toBe(ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION);
+    expect(await codeOf(edit(id, { assigneeId: elsewhereId }))).toBe(
+      ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+    );
+    await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+    await prisma.user.delete({ where: { id: elsewhereId } });
   });
 
   describe('changing the source of the whole order', () => {

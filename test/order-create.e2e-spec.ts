@@ -191,6 +191,11 @@ describe('POST /orders – ManualOrderService.create', () => {
         { id: otherBranchId, tenantId, locationId: otherBranchId },
       ],
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     await prisma.warehouse.createMany({
       data: [
         { id: warehouseId, tenantId, locationId: warehouseId },
@@ -509,6 +514,18 @@ describe('POST /orders – ManualOrderService.create', () => {
       });
       expect(row.branchId).toBe(warehouseId);
       expect(row.items[0].sourceLocationId).toBe(warehouseId);
+    });
+
+    it('refuses a person in charge who works elsewhere, but not the owner', async () => {
+      await expect(
+        create(base({ branchId: warehouseId, assigneeId: staffId })),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION },
+      });
+      const order = await create(
+        base({ branchId: warehouseId, assigneeId: ownerId }),
+      );
+      expect(order.id).toBeDefined();
     });
 
     it('refuses the damaged-goods warehouse as the place of sale', async () => {
