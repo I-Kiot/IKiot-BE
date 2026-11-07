@@ -49,7 +49,11 @@ export const PRIORITY_SORT_ORDER: readonly string[] = [
 ];
 
 /** Đơn bị gắn cờ "cần chú ý" ở bộ lọc `attention` và `GET /orders/alerts`: có dòng thiếu trên kệ, hoặc ngày giao khách sắp tới (hoặc đã qua). */
-export const ORDER_ATTENTION_KINDS = ['SHORT', 'DUE_SOON'] as const;
+export const ORDER_ATTENTION_KINDS = [
+  'SHORT',
+  'DUE_SOON',
+  'PICKUP_OVERDUE',
+] as const;
 
 export type OrderAttentionKind = (typeof ORDER_ATTENTION_KINDS)[number];
 

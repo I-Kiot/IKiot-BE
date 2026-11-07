@@ -274,6 +274,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -559,6 +560,77 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     after = await orderRow(id);
     expect(Number(after.grandTotal)).toBe(19_000_000);
     expect(after.discountType).toBe('ORDER');
+  });
+
+  describe('store pickup', () => {
+    it('creates a pickup order with no shipping fee and no address', async () => {
+      expect(
+        await codeOf(
+          createOrder({
+            fulfillmentType: FulfillmentType.STORE_PICKUP,
+            shippingFee: 50_000,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        deliveryAddress: '12 Lê Lợi',
+        requestedDeliveryDate: '2026-12-01',
+      });
+      const row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.shippingFee)).toBe(0);
+    });
+
+    it('switches a confirmed order between delivery and pickup, clearing the address and the fee', async () => {
+      const id = await createOrder({
+        deliveryAddress: '12 Lê Lợi',
+        shippingFee: 300_000,
+      });
+      const withFee = Number((await orderRow(id)).grandTotal);
+
+      // Đổi sang khách tới lấy mà quên bỏ phí giao hàng.
+      expect(
+        await codeOf(
+          edit(id, { fulfillmentType: FulfillmentType.STORE_PICKUP }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      await edit(id, {
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        shippingFee: 0,
+      });
+      let row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.grandTotal)).toBe(withFee - 300_000);
+
+      // Khách đổi ý muốn nhận tại nhà.
+      await edit(id, {
+        fulfillmentType: FulfillmentType.HOME_DELIVERY,
+        deliveryAddress: '5 Trần Hưng Đạo',
+        shippingFee: 200_000,
+      });
+      row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.HOME_DELIVERY);
+      expect(row.deliveryAddress).toBe('5 Trần Hưng Đạo');
+    });
+
+    it('moves the pickup date of a packed order when the customer comes later', async () => {
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2026-12-01',
+      });
+      await fulfillments.packOrder(owner, id, {});
+      await edit(id, { requestedDeliveryDate: '2026-12-10' });
+      const row = await orderRow(id);
+      expect(row.status).toBe(OrderStatus.PACKED);
+      expect(row.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-10',
+      );
+    });
   });
 
   it('leaves the till’s sales out of GET /orders with excludePos', async () => {

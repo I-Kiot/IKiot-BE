@@ -11,10 +11,14 @@ import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
+import { assertNoPickupShippingFee } from './order-pickup.rules';
+import { writePaymentCashFlow } from './order-cash-flow';
+import { FlowType } from '../stats/stats.constants';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import type { ComboLeaf } from './combo-expansion';
 import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
+  FulfillmentType,
   OrderChannel,
   OrderLineType,
   OrderPaymentStatus,
@@ -171,6 +175,9 @@ export class ManualOrderService {
       discountValue,
     );
     const shippingFee = Math.round(dto.shippingFee ?? 0);
+    const isPickup = dto.fulfillmentType === FulfillmentType.STORE_PICKUP;
+    // Khách tới lấy thì không có phí giao hàng và không có địa chỉ giao.
+    if (isPickup) assertNoPickupShippingFee(shippingFee);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
     const paymentStatus = paymentStatusForDeposit(
@@ -222,7 +229,7 @@ export class ManualOrderService {
           paymentStatus,
           recipientName: dto.recipientName,
           recipientPhone: dto.recipientPhone,
-          deliveryAddress: dto.deliveryAddress,
+          deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
           requestedDeliveryDate: dto.requestedDeliveryDate
             ? new Date(dto.requestedDeliveryDate)
             : undefined,
@@ -231,12 +238,12 @@ export class ManualOrderService {
           items: { createMany: { data: items } },
           appliedPromotions: { create: appliedPromotions },
         },
-        select: { id: true },
+        select: { id: true, code: true },
       });
 
       if (deposit) {
-        // Tiền cọc đã nhận nên Payment là PAID ngay. Dòng CashFlow do E-5 ghi (`CashFlow.paymentId`), không ghi ở đây.
-        await tx.payment.create({
+        // Tiền cọc đã nhận nên Payment là PAID và vào sổ thu chi ngay.
+        const payment = await tx.payment.create({
           data: {
             tenantId,
             orderId: created.id,
@@ -249,6 +256,19 @@ export class ManualOrderService {
             collectedById: userId,
             createdById: userId,
           },
+          select: { id: true },
+        });
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: created.id,
+          orderCode: created.code,
+          flowType: FlowType.INCOME,
+          amount: deposit.amount,
+          method: deposit.method,
+          locationId: branch.id,
+          createdById: userId,
+          description: `Tiền cọc đơn ${created.code}`,
         });
       }
       for (const [index, item] of dto.items.entries()) {

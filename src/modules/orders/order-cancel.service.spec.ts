@@ -23,6 +23,54 @@ const codeOf = (fn: () => unknown): unknown => {
 describe('resolveRefund', () => {
   const deposit = payment({ kind: 'DEPOSIT', amount: 3_000_000 });
 
+  describe('money collected at the counter', () => {
+    const balance = payment({
+      kind: 'BALANCE',
+      amount: 7_000_000,
+      createdAt: new Date('2026-10-05'),
+    });
+
+    it('counts the balance as money held, with the deposit', () => {
+      expect(
+        resolveRefund([deposit, balance], 10_000_000, undefined),
+      ).toMatchObject({
+        held: 10_000_000,
+        amount: 10_000_000,
+        refundOfPaymentId: balance.id,
+        paymentStatus: 'REFUNDED',
+      });
+    });
+
+    it('refuses more than deposit and balance together', () => {
+      expect(
+        codeOf(() => resolveRefund([deposit, balance], 10_000_001, undefined)),
+      ).toBe(ErrorCode.ORDER_REFUND_EXCEEDS_DEPOSIT);
+    });
+
+    it('asks how much to refund when only a balance is held', () => {
+      expect(codeOf(() => resolveRefund([balance], undefined, undefined))).toBe(
+        ErrorCode.ORDER_REFUND_AMOUNT_REQUIRED,
+      );
+    });
+
+    it('refunds a QR payment by bank transfer: SePay only reports money coming in', () => {
+      const qr = payment({ kind: 'BALANCE', amount: 500, method: 'SEPAY' });
+      expect(resolveRefund([qr], 500, undefined)).toMatchObject({
+        method: 'BANK_TRANSFER',
+      });
+    });
+
+    it('ignores a QR still waiting for the money', () => {
+      const waiting = payment({
+        kind: 'BALANCE',
+        amount: 500,
+        method: 'SEPAY',
+        status: 'PENDING',
+      });
+      expect(resolveRefund([waiting], undefined, undefined)).toBeNull();
+    });
+  });
+
   it('is null for an order with no deposit and no refund asked', () => {
     expect(resolveRefund([], undefined, undefined)).toBeNull();
     expect(resolveRefund([], 0, undefined)).toBeNull();
@@ -55,7 +103,7 @@ describe('resolveRefund', () => {
   it('keeps it all when the refund is 0', () => {
     expect(resolveRefund([deposit], 0, undefined)).toMatchObject({
       amount: 0,
-      paymentStatus: 'PARTIALLY_PAID',
+      paymentStatus: null,
     });
   });
 

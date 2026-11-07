@@ -268,6 +268,7 @@ describe('POST /orders – ManualOrderService.create', () => {
     await prisma.user.deleteMany({
       where: { tenantId: { in: [tenantId, otherTenantId] } },
     });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.deleteMany({
       where: { id: { in: [tenantId, otherTenantId] } },
     });
@@ -355,6 +356,17 @@ describe('POST /orders – ManualOrderService.create', () => {
       collectedById: ownerId,
     });
     expect(Number(row.payments[0].amount)).toBe(3_000_000);
+
+    const flow = await prisma.cashFlow.findFirstOrThrow({
+      where: { paymentId: row.payments[0].id },
+    });
+    expect(flow).toMatchObject({
+      flowType: 'INCOME',
+      paymentMethod: 'CASH',
+      locationId: branchId,
+      orderId: order.id,
+    });
+    expect(Number(flow.amount)).toBe(3_000_000);
   });
 
   it('marks a fully paid-up deposit PAID', async () => {

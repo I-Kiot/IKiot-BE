@@ -41,6 +41,9 @@ import { FulfillmentService } from '../fulfillments/fulfillments.service';
 import { ShipmentService } from '../shipments/shipments.service';
 import { ShipmentDeliveryService } from '../shipments/shipment-delivery.service';
 import { ShipOrderDto } from '../shipments/dto/ship-order.dto';
+import { OrderPickupService } from './order-pickup.service';
+import { PickupCollectDto } from './dto/pickup-collect.dto';
+import { PickupHandOverDto } from './dto/pickup-hand-over.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -63,6 +66,7 @@ export class OrderController {
     private readonly edits: OrderEditService,
     private readonly customizations: OrderCustomizationService,
     private readonly remittances: OrderRemittanceService,
+    private readonly pickups: OrderPickupService,
   ) {}
 
   /** Đơn tay (A-2): sinh ra ở CONFIRMED, có người phụ trách (contract §2). */
@@ -207,6 +211,30 @@ export class OrderController {
     @Body() dto: ShipOrderDto,
   ) {
     return this.shipments.shipOrder(user, requireTenantId(user), id, dto);
+  }
+
+  /**
+   * Đơn khách tới lấy, đang chờ khách (PACKED): thu số còn lại tại quầy. **Cố ý không có `@Permissions`**, cùng lý do với `ship`: chủ shop, hoặc `orders:ship` tại kho xuất, kiểm trong `OrderPickupService`.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/pickup/collect')
+  pickupCollect(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PickupCollectDto,
+  ) {
+    return this.pickups.collect(user, requireTenantId(user), id, dto);
+  }
+
+  /** Đơn khách tới lấy đã thu đủ: giao hàng cho khách, trừ tồn, PACKED → COMPLETED. Quyền kiểm trong `OrderPickupService`. */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/pickup/hand-over')
+  pickupHandOver(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PickupHandOverDto,
+  ) {
+    return this.pickups.handOver(user, requireTenantId(user), id, dto);
   }
 
   /** Hủy đơn hành trình trước khi hàng rời kho (A-5): CONFIRMED / PACKED / PICKED_UP. Đơn đã đóng gói thì hàng khóa trả về kệ; cọc hoàn theo số tiền người gọi chỉ định. */

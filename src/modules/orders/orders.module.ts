@@ -12,6 +12,7 @@ import { OrderCancelService } from './order-cancel.service';
 import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderRemittanceService } from './order-remittance.service';
+import { OrderPickupService } from './order-pickup.service';
 import { CustomerModule } from '../customers/customers.module';
 import { ProductionRequestModule } from '../production-requests/production-requests.module';
 import { OrderShortageAlerts } from './order-shortage-alerts';
@@ -48,6 +49,7 @@ import { InvoiceModule } from '../invoices/invoices.module';
     OrderEditService,
     OrderCustomizationService,
     OrderRemittanceService,
+    OrderPickupService,
     OrderShortageAlerts,
   ],
   exports: [OrderService],

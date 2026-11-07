@@ -299,6 +299,7 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
     await prisma.branch.deleteMany({ where: { tenantId } });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -589,6 +590,81 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
       ).rejects.toMatchObject({
         response: { code: ErrorCode.ORDER_BRANCH_DENIED },
       });
+    });
+  });
+
+  describe('store pickup', () => {
+    const LINES = [{ productItemId: tableId, quantity: 1 }];
+    const created: string[] = [];
+
+    // Các ca khác đếm tổng đơn của tenant, nên đơn của nhóm này được dọn ngay sau khi xong.
+    afterAll(async () => {
+      await prisma.orderItem.deleteMany({
+        where: { orderId: { in: created } },
+      });
+      await prisma.order.deleteMany({ where: { id: { in: created } } });
+    });
+
+    it('filters by fulfillment type and flags a packed pickup past its date', async () => {
+      await createOrder('PICK-LATE', {
+        status: OrderStatus.PACKED,
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2020-01-01',
+        lines: LINES,
+      });
+      await createOrder('PICK-FUTURE', {
+        status: OrderStatus.PACKED,
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2999-01-01',
+        lines: LINES,
+      });
+      await createOrder('PICK-WAITING-CONFIRM', {
+        status: OrderStatus.CONFIRMED,
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2020-01-01',
+        lines: LINES,
+      });
+      await createOrder('HOME-LATE', {
+        status: OrderStatus.PACKED,
+        requestedDeliveryDate: '2020-01-01',
+        lines: LINES,
+      });
+      created.push(
+        ids['PICK-LATE'],
+        ids['PICK-FUTURE'],
+        ids['PICK-WAITING-CONFIRM'],
+        ids['HOME-LATE'],
+      );
+
+      const pickups = await reads.findAll(
+        owner,
+        tenantId,
+        query({ fulfillmentType: FulfillmentType.STORE_PICKUP }),
+      );
+      expect(codesOf(pickups).sort()).toEqual(
+        [
+          `${P}-PICK-FUTURE`,
+          `${P}-PICK-LATE`,
+          `${P}-PICK-WAITING-CONFIRM`,
+        ].sort(),
+      );
+      const flagged = Object.fromEntries(
+        pickups.data.map((order) => [order.code, order.pickupOverdue]),
+      );
+      expect(flagged).toEqual({
+        [`${P}-PICK-LATE`]: true,
+        [`${P}-PICK-FUTURE`]: false,
+        [`${P}-PICK-WAITING-CONFIRM`]: false,
+      });
+
+      // Bộ lọc “quá hạn lấy hàng” chỉ nhận đơn khách tới lấy, đã đóng gói, quá ngày hẹn.
+      const overdue = await reads.findAll(
+        owner,
+        tenantId,
+        query({ attention: 'PICKUP_OVERDUE' }),
+      );
+      expect(codesOf(overdue)).toEqual([`${P}-PICK-LATE`]);
+      expect((await reads.alerts(owner, tenantId)).pickupOverdue).toBe(1);
     });
   });
 });

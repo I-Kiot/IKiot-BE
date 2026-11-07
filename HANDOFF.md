@@ -212,3 +212,27 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Dialog giao hàng của shipper chưa bấm thử trên trình duyệt (BE có e2e).
 - `.env.{dev,prod}` trên VPS cần `SEPAY_ORDER_WEBHOOK_API_KEY` và `SEPAY_API_KEY`; webhook phải trỏ về API dev.
 - Khách tự gõ nội dung vào VietinBank phải gõ cả `SEVQR`, màn hình chưa hiện.
+
+## 2026-11-07 – Đơn khách tới lấy: chặn thu trùng và hoàn được tiền thu tại quầy (PR #54, FE PR #51)
+
+- Đã thu tiền tại quầy thì không đổi sang giao tận nơi (`ORDER_PICKUP_ALREADY_COLLECTED`), vì shipper thu theo `grandTotal − cọc`. Chưa có tiền về thì đổi được, khoản QR đang chờ bị huỷ.
+- `resolveRefund` tính cả `BALANCE` đã thu vào số đang giữ. Đơn giao tận nơi chỉ có `BALANCE` sau khi giao, lúc đó không huỷ được nên không đổi hành vi. `depositHeld` giữ nguyên cho kiểm tra khi sửa đơn.
+- Huỷ đơn cũng huỷ khoản QR tại quầy đang chờ. Khoản thu qua QR mặc định hoàn bằng `BANK_TRANSFER`.
+- Bộ lọc `DUE_SOON` bỏ đơn khách quá hạn lấy, để badge không đếm hai lần.
+
+**Chưa kiểm chứng:** máy không có Postgres nên chưa chạy `test:e2e`, gồm 2 case mới trong `test/order-pickup.e2e-spec.ts`.
+**Còn lại:** FE chưa có màn huỷ đơn hành trình kèm số tiền hoàn. `CashFlow` vẫn chưa ghi tiền cọc, tiền thu khi giao và tiền thu tại quầy (E-5).
+
+## 2026-11-07 – Sổ thu chi cho đơn hành trình (E-5, phần CashFlow) và nút Huỷ đơn
+
+- `writePaymentCashFlow` (`orders/order-cash-flow.ts`): mỗi `Payment` tiền đã đổi chủ là một dòng `CashFlow` (`paymentId` unique). Cọc ghi khi tạo đơn; tiền thu tại quầy ghi khi thu; QR ghi khi webhook báo về, theo số thực nhận; tiền mặt shipper ghi ở `confirm-remittance`; hoàn tiền khi huỷ là dòng EXPENSE. Không cần migration.
+- Tiền giữ lại khi huỷ không ghi thêm dòng: dòng thu lúc nhận tiền vẫn còn.
+- FE: nút "Huỷ đơn" cạnh "Sửa đơn", nhập số tiền hoàn (0 = shop giữ lại), lý do, cách hoàn (`cancel-order-dialog.tsx`).
+
+**Đã kiểm chứng:** `test:e2e` 317/317 trên Postgres local (gồm cả các case của mục trên).
+**Còn lại:**
+- Đơn tạo trước thay đổi này không có dòng sổ cho khoản đã thu. Không backfill vì dev chỉ có dữ liệu test; cần xem lại trước khi lên prod.
+- Đối soát két tính mọi dòng CASH ở chi nhánh, nên tiền shipper nộp cho chủ mà không bỏ vào két sẽ báo thiếu.
+- Trả hàng (`order-returns`) chưa ghi `Payment` hoàn tiền, nên cũng không có dòng sổ.
+
+**Sửa thêm:** huỷ và hoàn 0 thì giữ nguyên `paymentStatus` của đơn, đúng contract. Trước đó `resolveRefund` gán cứng `PARTIALLY_PAID`, nên đơn đã thu đủ tụt về "Đã cọc".

@@ -10,6 +10,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { requireTenantBanking } from '../orders/tenant-banking';
+import { writePaymentCashFlow } from '../orders/order-cash-flow';
+import { FlowType } from '../stats/stats.constants';
 import { DeliverShipmentDto } from './dto/deliver-shipment.dto';
 import { PayCashDto } from './dto/pay-cash.dto';
 import {
@@ -32,6 +34,7 @@ import {
   onTheRoadWhere,
 } from './shipment-actor';
 import {
+  FulfillmentType,
   OrderPaymentStatus,
   OrderStatus,
   RemittanceStatus,
@@ -474,7 +477,9 @@ export class ShipmentDeliveryService {
         id: true,
         amount: true,
         status: true,
-        order: { select: { id: true, code: true, assigneeId: true } },
+        order: {
+          select: { id: true, code: true, assigneeId: true, branchId: true },
+        },
       },
     });
     if (!payment) return false;
@@ -514,6 +519,22 @@ export class ShipmentDeliveryService {
       });
       if (paid.count !== 1) return false;
 
+      // Tiền đã về tài khoản shop dù đơn đang ở trạng thái nào; ghi số thực nhận như dòng SePay của bán tại quầy, để khớp sao kê.
+      await writePaymentCashFlow(tx, {
+        tenantId,
+        paymentId: payment.id,
+        orderId: payment.order.id,
+        orderCode: payment.order.code,
+        flowType: FlowType.INCOME,
+        amount: transferAmount,
+        method: PaymentMethod.SEPAY,
+        locationId: payment.order.branchId,
+        createdById: null,
+        paymentReference,
+        sepayTransactionId,
+        description: `SePay đơn ${payment.order.code}`,
+      });
+
       const completed = await tx.order.updateMany({
         where: { id: payment.order.id, status: OrderStatus.RECEIVED },
         data: {
@@ -525,6 +546,16 @@ export class ShipmentDeliveryService {
         await this.invoices.issueForOrder(tx, payment.order.id, null);
       }
       if (completed.count !== 1) {
+        // Đơn khách tới lấy đang chờ ở quầy: tiền về thì chỉ đánh dấu đã thu, nhân viên bấm giao hàng sau (OrderPickupService).
+        const atCounter = await tx.order.updateMany({
+          where: {
+            id: payment.order.id,
+            status: OrderStatus.PACKED,
+            fulfillmentType: FulfillmentType.STORE_PICKUP,
+          },
+          data: { paymentStatus: OrderPaymentStatus.PAID },
+        });
+        if (atCounter.count === 1) return true;
         this.logger.warn(
           `SePay transfer for ${paymentReference} was recorded, but order ${payment.order.code} is no longer RECEIVED and was not completed.`,
         );
