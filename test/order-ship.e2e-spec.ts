@@ -322,6 +322,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
     await prisma.role.deleteMany({ where: { tenantId } }); // role_permissions: onDelete Cascade
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });

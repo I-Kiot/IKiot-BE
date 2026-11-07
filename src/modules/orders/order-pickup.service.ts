@@ -19,6 +19,8 @@ import {
   pickupAmountDue,
 } from './order-pickup.rules';
 import { assigneeClaim } from './order-handler';
+import { writePaymentCashFlow } from './order-cash-flow';
+import { FlowType } from '../stats/stats.constants';
 import { buildSepayQrUrl, requireTenantBanking } from './tenant-banking';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
@@ -189,7 +191,7 @@ export class OrderPickupService {
             message: 'The order has just changed, please reload',
           });
         }
-        await tx.payment.create({
+        const payment = await tx.payment.create({
           data: {
             tenantId,
             orderId: id,
@@ -203,6 +205,19 @@ export class OrderPickupService {
             createdById: user.userId,
             note: dto.note ?? null,
           },
+          select: { id: true },
+        });
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: id,
+          orderCode: order.code,
+          flowType: FlowType.INCOME,
+          amount: amountDue,
+          method: PaymentMethod.CASH,
+          locationId: order.branchId,
+          createdById: user.userId,
+          description: `Thu tiền tại quầy đơn ${order.code}`,
         });
       });
       return {

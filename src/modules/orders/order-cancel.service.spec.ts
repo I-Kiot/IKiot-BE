@@ -103,7 +103,7 @@ describe('resolveRefund', () => {
   it('keeps it all when the refund is 0', () => {
     expect(resolveRefund([deposit], 0, undefined)).toMatchObject({
       amount: 0,
-      paymentStatus: 'PARTIALLY_PAID',
+      paymentStatus: null,
     });
   });
 

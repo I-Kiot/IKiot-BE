@@ -22,6 +22,8 @@ import {
   PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
+import { FlowType } from '../stats/stats.constants';
+import { writePaymentCashFlow } from './order-cash-flow';
 import { pendingCounterQr } from './order-pickup.rules';
 import { cancelCounterQr } from './order-pickup.service';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
@@ -52,7 +54,8 @@ export interface ResolvedRefund {
   amount: number;
   method: string;
   refundOfPaymentId: string;
-  paymentStatus: string;
+  /** Null: giữ nguyên trạng thái thanh toán của đơn. */
+  paymentStatus: string | null;
 }
 
 /** Cọc shop còn giữ: tổng cọc PAID trừ tổng hoàn PAID. Dùng để kiểm tra khi sửa đơn (A-8); hoàn khi huỷ còn tính cả khoản thu tại quầy (`resolveRefund`). */
@@ -129,9 +132,10 @@ export function resolveRefund(
         ? PaymentMethod.BANK_TRANSFER
         : latest.method),
     refundOfPaymentId: latest.id,
+    // Không hoàn gì thì khoản đã thu không đổi, nên giữ nguyên trạng thái thanh toán của đơn.
     paymentStatus:
       amount === 0
-        ? OrderPaymentStatus.PARTIALLY_PAID
+        ? null
         : amount === held
           ? OrderPaymentStatus.REFUNDED
           : OrderPaymentStatus.PARTIALLY_REFUNDED,
@@ -230,7 +234,9 @@ export class OrderCancelService {
           cancelledById: user.userId,
           cancelledAt: now,
           cancelReason: dto.reason || null,
-          ...(refund ? { paymentStatus: refund.paymentStatus } : {}),
+          ...(refund?.paymentStatus
+            ? { paymentStatus: refund.paymentStatus }
+            : {}),
         },
       });
       if (claimed.count !== 1) {
@@ -277,8 +283,8 @@ export class OrderCancelService {
       });
 
       if (refund && refund.amount > 0) {
-        // Tiền hoàn là dòng REFUND gắn với khoản thu gần nhất. Dòng CashFlow do E-5 ghi, như với cọc.
-        await tx.payment.create({
+        // Tiền hoàn là dòng REFUND gắn với khoản thu gần nhất, và là một dòng chi trong sổ. Phần shop giữ lại không ghi thêm: dòng thu lúc nhận tiền vẫn còn.
+        const payment = await tx.payment.create({
           data: {
             tenantId,
             orderId: id,
@@ -292,6 +298,19 @@ export class OrderCancelService {
             createdById: user.userId,
             note: dto.reason || null,
           },
+          select: { id: true },
+        });
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: id,
+          orderCode: order.code,
+          flowType: FlowType.EXPENSE,
+          amount: refund.amount,
+          method: refund.method,
+          locationId: order.branchId,
+          createdById: user.userId,
+          description: `Hoàn tiền huỷ đơn ${order.code}`,
         });
       }
     });

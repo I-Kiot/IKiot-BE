@@ -189,7 +189,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
         id: tenantId,
         name: 'pickup-e2e',
         bankingBankName: 'VCB',
-        bankingAccountNumber: '0123456702',
+        bankingAccountNumber: '0123456703',
         bankingAccountName: 'NOI THAT DEMO',
         bankingSepayLinkedAt: new Date(),
       },
@@ -270,6 +270,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
     await prisma.branch.deleteMany({ where: { tenantId } });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -486,6 +487,56 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       const order = await orderOf(id);
       expect(order.status).toBe(OrderStatus.CANCELLED);
       expect(order.paymentStatus).toBe(OrderPaymentStatus.REFUNDED);
+
+      const flows = await prisma.cashFlow.findMany({
+        where: { orderId: id },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(flows.map((flow) => [flow.flowType, Number(flow.amount)])).toEqual(
+        [
+          ['INCOME', 700],
+          ['EXPENSE', 1000],
+        ],
+      );
+    });
+
+    it('books nothing more when the shop keeps the money', async () => {
+      const id = await packedPickup();
+      await pickups.collect(owner, tenantId, id, {
+        method: DeliveryCollectionMethod.CASH,
+      });
+      await cancels.cancel(owner, tenantId, id, { refundAmount: 0 });
+      // Khách đã trả đủ và shop giữ cả: vẫn là đã thanh toán, không tụt về "đã cọc".
+      expect((await orderOf(id)).paymentStatus).toBe(OrderPaymentStatus.PAID);
+      expect(
+        (await prisma.cashFlow.findMany({ where: { orderId: id } })).map(
+          (flow) => flow.flowType,
+        ),
+      ).toEqual(['INCOME']);
+    });
+
+    it('books a QR transfer once, when the money lands', async () => {
+      const id = await packedPickup();
+      const { payment } = await pickups.collect(owner, tenantId, id, {
+        method: DeliveryCollectionMethod.BANK_TRANSFER_QR,
+      });
+      expect(await prisma.cashFlow.count({ where: { orderId: id } })).toBe(0);
+
+      for (let call = 0; call < 2; call += 1) {
+        await delivery.settleSepayBalance(
+          tenantId,
+          payment!.reference,
+          `tx-book-${id}`,
+          700,
+        );
+      }
+      const flows = await prisma.cashFlow.findMany({ where: { orderId: id } });
+      expect(flows).toHaveLength(1);
+      expect(flows[0]).toMatchObject({
+        flowType: 'INCOME',
+        paymentMethod: PaymentMethod.SEPAY,
+        paymentReference: payment!.reference,
+      });
     });
 
     it('voids a QR still waiting, so a late transfer is not booked as collected', async () => {
