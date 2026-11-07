@@ -1,3 +1,4 @@
+import { postingOf } from '../../common/utils/tenant-scope';
 import {
   BadRequestException,
   ConflictException,
@@ -805,7 +806,7 @@ export class ShipmentService {
       { order: { assigneeId: user.userId } },
       { driverId: user.userId },
     ];
-    const posting = user.branchId ?? user.warehouseId;
+    const posting = postingOf(user);
     if (posting && can(user, 'shipments', 'read')) {
       reachable.push(
         { fulfillment: { locationId: posting } },

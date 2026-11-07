@@ -100,6 +100,13 @@ export class OrderController {
     return this.reads.alerts(user, requireTenantId(user), branchId);
   }
 
+  /** Chi nhánh và kho mà đơn lấy hàng được, cho ô "Nguồn hàng" khi tạo / sửa đơn. Khai báo trên `:id`. */
+  @Permissions('orders', 'create', 'update')
+  @Get('source-locations')
+  sourceLocations(@CurrentUser() user: AuthUser) {
+    return this.manualOrders.listSourceLocations(requireTenantId(user));
+  }
+
   @Permissions('orders', 'read')
   @Get(':id')
   findOne(

@@ -39,3 +39,8 @@ export function requireTenantId(user: AuthUser, requested?: string): string {
   }
   return tenantId;
 }
+
+/** Nơi tài khoản làm việc, chi nhánh hay kho. Đơn thuộc địa điểm bán, và kho cũng bán được, nên phạm vi xem đơn đọc ở đây. */
+export function postingOf(user: AuthUser): string | null {
+  return user.branchId ?? user.warehouseId ?? null;
+}

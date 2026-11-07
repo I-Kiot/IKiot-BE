@@ -1,3 +1,4 @@
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ConflictException,
@@ -700,7 +701,10 @@ export class CashDrawerSessionService {
         where: {
           id: branchId,
           tenantId,
-          location: { status: LocationStatus.ACTIVE },
+          location: {
+            status: LocationStatus.ACTIVE,
+            type: LocationType.BRANCH,
+          },
         },
         select: { id: true },
       }),

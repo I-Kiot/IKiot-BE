@@ -134,7 +134,9 @@ export class ManualOrderService {
       where: { id: dto.branchId, tenantId },
       select: {
         id: true,
-        location: { select: { defaultFulfillmentLocationId: true } },
+        location: {
+          select: { defaultFulfillmentLocationId: true, isSellable: true },
+        },
       },
     });
     if (!branch)
@@ -142,6 +144,13 @@ export class ManualOrderService {
         code: ErrorCode.BRANCH_NOT_FOUND,
         message: 'Branch not found',
       });
+    // Chi nhánh và kho đều bán được, trừ kho hàng hỏng.
+    if (!branch.location.isSellable) {
+      throw new BadRequestException({
+        code: ErrorCode.LOCATION_NOT_SELLABLE,
+        message: 'This location holds stock that is not for sale',
+      });
+    }
 
     await this.assertAssignee(tenantId, dto.assigneeId);
     if (dto.customerId)
@@ -324,6 +333,23 @@ export class ManualOrderService {
         message: 'The person in charge is not an active account of this shop',
       });
     }
+  }
+
+  /**
+   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
+   * nên danh sách địa điểm thường trả rỗng với họ. Chỉ trả tên và loại. Cùng quy tắc với `assertSourceLocations`.
+   */
+  listSourceLocations(tenantId: string) {
+    return this.prisma.location.findMany({
+      where: { tenantId, status: LocationStatus.ACTIVE, isSellable: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        defaultFulfillmentLocationId: true,
+      },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+    });
   }
 
   /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant và có hàng bán được; kho hàng hỏng không bao giờ giao cho khách. */

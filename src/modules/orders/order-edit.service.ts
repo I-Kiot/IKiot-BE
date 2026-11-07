@@ -134,6 +134,17 @@ export class OrderEditService {
         message: `The lines of an order in ${order.status} are packed and cannot change; cancel and re-create it`,
       });
     }
+    if (dto.sourceLocationId) {
+      if (order.status !== OrderStatus.CONFIRMED) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_NOT_EDITABLE,
+          message: `An order in ${order.status} is packed; its source can no longer change`,
+        });
+      }
+      await this.manual.assertSourceLocations(tenantId, [
+        { sourceLocationId: dto.sourceLocationId },
+      ]);
+    }
     if (dto.assigneeId)
       await this.manual.assertAssignee(tenantId, dto.assigneeId);
     if (dto.customerId)
@@ -226,18 +237,27 @@ export class OrderEditService {
         : undefined;
     const customerId = dto.customerId ?? typedInCustomerId;
 
-    // Chỉ đổi dòng mới làm thay đổi nhu cầu trên danh sách sản xuất (B-3).
-    const shortage = dto.items
-      ? await this.shortages.snapshot(tenantId, [
-          ...order.items,
-          ...(money?.lines ?? []).map((line) => ({
-            productItemId: line.productItemId,
-            sourceLocationId: line.sourceLocationId,
-            lineType: line.itemType,
-          })),
-          ...addedRows,
-        ])
-      : null;
+    // Chỉ đổi dòng hoặc đổi nguồn hàng mới làm thay đổi nhu cầu trên danh sách sản xuất (B-3).
+    const { sourceLocationId } = dto;
+    const shortage =
+      dto.items || sourceLocationId
+        ? await this.shortages.snapshot(tenantId, [
+            ...order.items,
+            ...(sourceLocationId
+              ? order.items.map((line) => ({
+                  productItemId: line.productItemId,
+                  sourceLocationId,
+                  lineType: line.lineType,
+                }))
+              : []),
+            ...(money?.lines ?? []).map((line) => ({
+              productItemId: line.productItemId,
+              sourceLocationId: line.sourceLocationId,
+              lineType: line.itemType,
+            })),
+            ...addedRows,
+          ])
+        : null;
 
     await this.prisma.$transaction(async (tx) => {
       // Chiếm đơn theo bản ghi vừa đọc: đóng gói, hủy hoặc sửa khác xen giữa thì lần này thua trọn.
@@ -299,6 +319,13 @@ export class OrderEditService {
       // Rời luồng khách tới lấy thì mã QR tại quầy không còn hiệu lực: giao tận nơi sẽ thu qua shipper.
       if (leavingPickup) {
         await cancelCounterQr(tx, pendingCounterQr(order.payments));
+      }
+      // Dòng không giữ tồn (combo cha, dịch vụ) không có nguồn nên giữ nguyên null.
+      if (sourceLocationId) {
+        await tx.orderItem.updateMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          data: { sourceLocationId },
+        });
       }
       if (!money) return;
 
@@ -531,6 +558,7 @@ export class OrderEditService {
             ? Number(existing.listUnitPrice)
             : line.listUnitPrice,
         sourceLocationId:
+          dto.sourceLocationId ??
           items[index].sourceLocationId ??
           (existing && sourceOf(existing, order.items)) ??
           defaultSource,

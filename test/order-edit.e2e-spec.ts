@@ -562,6 +562,64 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     expect(after.discountType).toBe('ORDER');
   });
 
+  describe('changing the source of the whole order', () => {
+    const sourcesOf = async (id: string) =>
+      (
+        await prisma.orderItem.findMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          select: { sourceLocationId: true },
+        })
+      ).map((line) => line.sourceLocationId);
+
+    it('moves every line while the order is still confirmed', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1 },
+          { productItemId: comboId, quantity: 1 },
+        ],
+      });
+      await edit(id, { sourceLocationId: otherWarehouseId });
+      const sources = await sourcesOf(id);
+      expect(sources.length).toBeGreaterThan(1);
+      expect(new Set(sources)).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('wins over the source of the lines sent with it, so the order stays on one place', async () => {
+      const id = await createOrder();
+      const [line] = await prisma.orderItem.findMany({
+        where: { orderId: id },
+      });
+      await edit(id, {
+        sourceLocationId: otherWarehouseId,
+        items: [
+          { id: line.id, productItemId: sofaId, quantity: 2 },
+          {
+            productItemId: tableId,
+            quantity: 1,
+            sourceLocationId: warehouseId,
+          },
+        ],
+      });
+      expect(new Set(await sourcesOf(id))).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('refuses once the order is packed', async () => {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      expect(
+        await codeOf(edit(id, { sourceLocationId: otherWarehouseId })),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+      expect(new Set(await sourcesOf(id))).not.toContain(otherWarehouseId);
+    });
+
+    it('refuses a location of another tenant', async () => {
+      const id = await createOrder();
+      expect(await codeOf(edit(id, { sourceLocationId: randomUUID() }))).toBe(
+        ErrorCode.ORDER_SOURCE_LOCATION_INVALID,
+      );
+    });
+  });
+
   describe('store pickup', () => {
     it('creates a pickup order with no shipping fee and no address', async () => {
       expect(

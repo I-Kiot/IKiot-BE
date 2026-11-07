@@ -1,3 +1,4 @@
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ForbiddenException,
@@ -573,7 +574,11 @@ export class PromotionService {
     const unique = [...new Set(branchIds)];
     if (unique.length === 0) return;
     const found = await this.prisma.branch.count({
-      where: { tenantId, id: { in: unique } },
+      where: {
+        tenantId,
+        id: { in: unique },
+        location: { type: LocationType.BRANCH },
+      },
     });
     if (found !== unique.length) {
       throw new NotFoundException({
