@@ -121,13 +121,21 @@ export class ProductVariantService {
   ): Promise<string> {
     const freeDetails = base.details.filter((detail) => !detail.attributeId);
     return this.prisma.$transaction(async (tx) => {
-      // SKU = SKU gốc + "-V<n>", n là số nhỏ nhất còn trống (@@unique([tenantId, sku]) là chốt chặn thật).
+      // SKU = mã hàng = SKU gốc + "-V<n>", n là số nhỏ nhất chưa là SKU hay mã hàng của mặt hàng nào
+      // (hai @@unique theo tenant là chốt chặn thật). Mã hàng từng chép nguyên của gốc - nay phải duy nhất.
       const stem = base.sku ?? base.productCode;
+      const prefix = `${stem}-V`;
       const taken = await tx.productItem.findMany({
-        where: { tenantId: base.tenantId, sku: { startsWith: `${stem}-V` } },
-        select: { sku: true },
+        where: {
+          tenantId: base.tenantId,
+          OR: [
+            { sku: { startsWith: prefix } },
+            { productCode: { startsWith: prefix } },
+          ],
+        },
+        select: { sku: true, productCode: true },
       });
-      const used = new Set(taken.map((row) => row.sku));
+      const used = new Set(taken.flatMap((row) => [row.sku, row.productCode]));
       let n = 1;
       while (used.has(`${stem}-V${n}`)) n++;
 
@@ -136,7 +144,7 @@ export class ProductVariantService {
           tenantId: base.tenantId,
           productId: base.productId,
           productName: base.productName,
-          productCode: base.productCode,
+          productCode: `${stem}-V${n}`,
           sku: `${stem}-V${n}`,
           description: base.description,
           retailPrice: retailPrice ?? base.retailPrice,
