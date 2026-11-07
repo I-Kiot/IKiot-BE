@@ -16,6 +16,7 @@ const ALLOWED: [string, OrderStatus][] = [
   [S.CONFIRMED, S.PACKED],
   [S.CONFIRMED, S.CANCELLED],
   [S.PACKED, S.PICKED_UP],
+  [S.PACKED, S.COMPLETED], // khách tới lấy
   [S.PACKED, S.CANCELLED],
   [S.PICKED_UP, S.SHIPPING],
   [S.PICKED_UP, S.CANCELLED],

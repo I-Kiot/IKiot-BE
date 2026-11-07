@@ -183,6 +183,11 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     await prisma.branch.create({
       data: { id: branchId, tenantId, locationId: branchId },
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     await prisma.product.create({
       data: { id: productId, tenantId, name: 'Nội thất' },
     });
@@ -274,6 +279,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -559,6 +565,160 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     after = await orderRow(id);
     expect(Number(after.grandTotal)).toBe(19_000_000);
     expect(after.discountType).toBe('ORDER');
+  });
+
+  it('only hands an order to someone working at its location, or the owner', async () => {
+    const id = await createOrder({ assigneeId: staffId });
+    const elsewhereId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: elsewhereId,
+        tenantId,
+        phoneNumber: `edit-${elsewhereId}`,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+        locationId: warehouseId,
+      },
+    });
+    expect(
+      await codeOf(
+        edits.setAssignee(owner, tenantId, id, { assigneeId: elsewhereId }),
+      ),
+    ).toBe(ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION);
+    expect(await codeOf(edit(id, { assigneeId: elsewhereId }))).toBe(
+      ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+    );
+    await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+    await prisma.user.delete({ where: { id: elsewhereId } });
+  });
+
+  describe('changing the source of the whole order', () => {
+    const sourcesOf = async (id: string) =>
+      (
+        await prisma.orderItem.findMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          select: { sourceLocationId: true },
+        })
+      ).map((line) => line.sourceLocationId);
+
+    it('moves every line while the order is still confirmed', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1 },
+          { productItemId: comboId, quantity: 1 },
+        ],
+      });
+      await edit(id, { sourceLocationId: otherWarehouseId });
+      const sources = await sourcesOf(id);
+      expect(sources.length).toBeGreaterThan(1);
+      expect(new Set(sources)).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('wins over the source of the lines sent with it, so the order stays on one place', async () => {
+      const id = await createOrder();
+      const [line] = await prisma.orderItem.findMany({
+        where: { orderId: id },
+      });
+      await edit(id, {
+        sourceLocationId: otherWarehouseId,
+        items: [
+          { id: line.id, productItemId: sofaId, quantity: 2 },
+          {
+            productItemId: tableId,
+            quantity: 1,
+            sourceLocationId: warehouseId,
+          },
+        ],
+      });
+      expect(new Set(await sourcesOf(id))).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('refuses once the order is packed', async () => {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      expect(
+        await codeOf(edit(id, { sourceLocationId: otherWarehouseId })),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+      expect(new Set(await sourcesOf(id))).not.toContain(otherWarehouseId);
+    });
+
+    it('refuses a location of another tenant', async () => {
+      const id = await createOrder();
+      expect(await codeOf(edit(id, { sourceLocationId: randomUUID() }))).toBe(
+        ErrorCode.ORDER_SOURCE_LOCATION_INVALID,
+      );
+    });
+  });
+
+  describe('store pickup', () => {
+    it('creates a pickup order with no shipping fee and no address', async () => {
+      expect(
+        await codeOf(
+          createOrder({
+            fulfillmentType: FulfillmentType.STORE_PICKUP,
+            shippingFee: 50_000,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        deliveryAddress: '12 Lê Lợi',
+        requestedDeliveryDate: '2026-12-01',
+      });
+      const row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.shippingFee)).toBe(0);
+    });
+
+    it('switches a confirmed order between delivery and pickup, clearing the address and the fee', async () => {
+      const id = await createOrder({
+        deliveryAddress: '12 Lê Lợi',
+        shippingFee: 300_000,
+      });
+      const withFee = Number((await orderRow(id)).grandTotal);
+
+      // Đổi sang khách tới lấy mà quên bỏ phí giao hàng.
+      expect(
+        await codeOf(
+          edit(id, { fulfillmentType: FulfillmentType.STORE_PICKUP }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      await edit(id, {
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        shippingFee: 0,
+      });
+      let row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.grandTotal)).toBe(withFee - 300_000);
+
+      // Khách đổi ý muốn nhận tại nhà.
+      await edit(id, {
+        fulfillmentType: FulfillmentType.HOME_DELIVERY,
+        deliveryAddress: '5 Trần Hưng Đạo',
+        shippingFee: 200_000,
+      });
+      row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.HOME_DELIVERY);
+      expect(row.deliveryAddress).toBe('5 Trần Hưng Đạo');
+    });
+
+    it('moves the pickup date of a packed order when the customer comes later', async () => {
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2026-12-01',
+      });
+      await fulfillments.packOrder(owner, id, {});
+      await edit(id, { requestedDeliveryDate: '2026-12-10' });
+      const row = await orderRow(id);
+      expect(row.status).toBe(OrderStatus.PACKED);
+      expect(row.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-10',
+      );
+    });
   });
 
   it('leaves the till’s sales out of GET /orders with excludePos', async () => {

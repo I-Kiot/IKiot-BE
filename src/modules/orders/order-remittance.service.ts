@@ -17,13 +17,16 @@ import {
 } from '../../common/constants/order-status';
 import {
   PaymentKind,
+  PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
+import { FlowType } from '../stats/stats.constants';
+import { writePaymentCashFlow } from './order-cash-flow';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 /**
- * `POST /orders/:id/confirm-remittance` (A-10): bước cuối khi đơn thu tiền lúc giao. Tiền shipper thu nằm ở Payment `BALANCE` PENDING (đang ở tay shipper). Chủ chỉ chốt khi nhận đủ; khi đó Payment thành RECEIVED và đơn COMPLETED. Nộp thiếu bị từ chối. `CashFlow` do E-5 ghi, không ở đây.
+ * `POST /orders/:id/confirm-remittance` (A-10): bước cuối khi đơn thu tiền lúc giao. Tiền shipper thu nằm ở Payment `BALANCE` PENDING (đang ở tay shipper). Chủ chỉ chốt khi nhận đủ; khi đó Payment thành RECEIVED và đơn COMPLETED. Nộp thiếu bị từ chối. Tiền vào sổ thu chi ở bước này, vì trước đó nó còn ở tay shipper.
  */
 @Injectable()
 export class OrderRemittanceService {
@@ -44,6 +47,7 @@ export class OrderRemittanceService {
       where: { id, tenantId },
       select: {
         id: true,
+        code: true,
         branchId: true,
         status: true,
         payments: {
@@ -128,6 +132,18 @@ export class OrderRemittanceService {
             message: 'The payment has just changed, please reload',
           });
         }
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: id,
+          orderCode: order.code,
+          flowType: FlowType.INCOME,
+          amount: Number(payment.amount),
+          method: PaymentMethod.CASH,
+          locationId: order.branchId,
+          createdById: user.userId,
+          description: `Shipper nộp tiền đơn ${order.code}`,
+        });
       }
     });
 

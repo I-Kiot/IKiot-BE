@@ -1,3 +1,4 @@
+import { postingOf } from '../../common/utils/tenant-scope';
 import {
   ForbiddenException,
   Injectable,
@@ -6,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   FulfillmentType,
+  OrderStatus,
   RemittanceStatus,
   UNSHIPPED_ORDER_STATUSES,
 } from '../../common/constants/order-status';
@@ -92,7 +94,7 @@ export class OrderReadService {
   }
 
   /**
-   * `GET /orders/alerts`: số đơn chưa giao cần chú ý, cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
+   * `GET /orders/alerts`: số đơn chưa giao cần chú ý (thiếu hàng, sắp tới ngày giao, khách tới lấy quá hạn), cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
    */
   async alerts(user: AuthUser, tenantId: string, branchId?: string) {
     const base = Object.assign(new QueryOrderJourneyDto(), {
@@ -108,12 +110,18 @@ export class OrderReadService {
       attention: 'DUE_SOON',
     });
 
-    const [candidates, dueSoon] = await Promise.all([
+    const overdueWhere = this.listWhere(user, tenantId, {
+      ...base,
+      attention: 'PICKUP_OVERDUE',
+    });
+
+    const [candidates, dueSoon, pickupOverdue] = await Promise.all([
       this.prisma.order.findMany({
         where: shortWhere,
         select: STOCK_SUMMARY_CANDIDATE_SELECT,
       }),
       this.prisma.order.count({ where: dueWhere }),
+      this.prisma.order.count({ where: overdueWhere }),
     ]);
     const stockChecks = await computeStockChecks(
       this.prisma,
@@ -124,7 +132,7 @@ export class OrderReadService {
       isShort(summarizeStock(order.items.map((l) => stockChecks.get(l.id)))),
     ).length;
 
-    return { short, dueSoon, dueSoonDays: DUE_SOON_DAYS };
+    return { short, dueSoon, pickupOverdue, dueSoonDays: DUE_SOON_DAYS };
   }
 
   async findOne(user: AuthUser, tenantId: string, id: string) {
@@ -208,6 +216,9 @@ export class OrderReadService {
     if (query.channel) and.push({ channel: query.channel });
     if (query.assigneeId) and.push({ assigneeId: query.assigneeId });
     if (query.priority) and.push({ priority: query.priority });
+    if (query.fulfillmentType) {
+      and.push({ fulfillmentType: query.fulfillmentType });
+    }
     if (query.excludePos) {
       and.push({ fulfillmentType: { not: FulfillmentType.TAKEAWAY } });
     }
@@ -251,6 +262,13 @@ export class OrderReadService {
       const cutoff = businessDate();
       cutoff.setUTCDate(cutoff.getUTCDate() + DUE_SOON_DAYS);
       and.push({ requestedDeliveryDate: { not: null, lte: cutoff } });
+      // Đơn khách quá hạn lấy đã có nhóm riêng; đếm ở cả hai thì badge cộng hai lần.
+      and.push({ NOT: pickupOverdueWhere() });
+    }
+
+    // Khách hẹn lấy hàng nhưng quá hạn mà vẫn chưa tới: nhân viên cần liên hệ. Chỉ đánh cờ, không tự huỷ.
+    if (query.attention === 'PICKUP_OVERDUE') {
+      and.push(pickupOverdueWhere());
     }
 
     return { AND: and };
@@ -258,13 +276,14 @@ export class OrderReadService {
 
   private branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
-    if (!user.branchId) {
+    const posting = postingOf(user);
+    if (!posting) {
       throw new ForbiddenException({
         code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
         message: 'This account has not been assigned to a branch',
       });
     }
-    return { branchId: user.branchId };
+    return { branchId: posting };
   }
 
   /**
@@ -338,6 +357,15 @@ export class OrderReadService {
 
     return { rows, total: matched.length, stockChecks };
   }
+}
+
+/** Cùng quy tắc với `isPickupOverdue`, ở dạng bộ lọc: khách tới lấy, đã đóng gói, quá ngày hẹn theo lịch Việt Nam. */
+function pickupOverdueWhere(): Prisma.OrderWhereInput {
+  return {
+    fulfillmentType: FulfillmentType.STORE_PICKUP,
+    status: OrderStatus.PACKED,
+    requestedDeliveryDate: { not: null, lt: businessDate() },
+  };
 }
 
 function isShort(summary: string | null | undefined): boolean {

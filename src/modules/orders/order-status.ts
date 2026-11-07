@@ -26,6 +26,7 @@ export const ORDER_JOURNEY_TRANSITIONS: Readonly<
   ],
   [OrderStatus.PACKED]: [
     OrderStatus.PICKED_UP, // C-2 tạo shipment (POST /shipments)
+    OrderStatus.COMPLETED, // khách tới lấy: giao tại quầy, bỏ qua shipment (chỉ STORE_PICKUP, OrderPickupService chặn)
     OrderStatus.CANCELLED,
   ],
   [OrderStatus.PICKED_UP]: [

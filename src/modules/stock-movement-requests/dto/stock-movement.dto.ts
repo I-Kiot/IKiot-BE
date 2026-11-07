@@ -10,6 +10,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IMPORT_SOURCES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { MOVEMENT_STATUSES, MOVEMENT_TYPES } from '../stock-movement.constants';
 
@@ -108,4 +109,9 @@ export class QueryStockMovementDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(MOVEMENT_TYPES)
   movementType?: string;
+
+  /** Chỉ phiếu IMPORT mới có nguồn: màn Nhập hàng lọc ở đây vì danh sách phân trang ở server, lọc ở client sẽ thiếu phiếu cũ. */
+  @IsOptional()
+  @IsIn(IMPORT_SOURCES)
+  importSource?: string;
 }

@@ -262,6 +262,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.notification.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -278,7 +279,21 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     expect(pending.status).toBe('PENDING');
     expect(pending.invoiceNumber).toBeNull();
 
+    // Tiền còn ở tay shipper thì chưa vào sổ thu chi.
+    const balanceFlow = { orderId, payment: { kind: 'BALANCE' } };
+    expect(await prisma.cashFlow.count({ where: balanceFlow })).toBe(0);
+
     const detail = await confirm(orderId, 7_000_000, 'Đã đếm đủ');
+
+    const flow = await prisma.cashFlow.findFirstOrThrow({
+      where: balanceFlow,
+    });
+    expect(flow).toMatchObject({
+      flowType: 'INCOME',
+      paymentMethod: 'CASH',
+      createdById: ownerId,
+    });
+    expect(Number(flow.amount)).toBe(7_000_000);
 
     const after = await orderOf(orderId);
     expect(after.status).toBe(OrderStatus.COMPLETED);

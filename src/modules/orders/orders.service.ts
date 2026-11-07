@@ -1,3 +1,5 @@
+import { postingOf } from '../../common/utils/tenant-scope';
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ConflictException,
@@ -103,8 +105,13 @@ export class OrderService {
       });
     }
 
+    // Bán tại quầy vẫn chỉ ở chi nhánh; kho chỉ tạo đơn tay.
     const branch = await this.prisma.branch.findFirst({
-      where: { id: dto.branchId, tenantId },
+      where: {
+        id: dto.branchId,
+        tenantId,
+        location: { type: LocationType.BRANCH },
+      },
       select: { id: true },
     });
     if (!branch)
@@ -297,14 +304,15 @@ export class OrderService {
   /** Tài khoản này đọc/ghi được đơn của chi nhánh nào: của mình, hoặc mọi chi nhánh với `orders:view_all`. Dùng chung với `ManualOrderService` để hai bên tạo đơn từ chối chi nhánh khác theo cùng quy tắc. */
   branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
-    if (!user.branchId) {
-      // Không gắn chi nhánh nào và không có view_all: không đọc được đơn của chi nhánh nào.
+    const posting = postingOf(user);
+    if (!posting) {
+      // Không gắn nơi nào và không có view_all: không đọc được đơn của nơi nào.
       throw new ForbiddenException({
         code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
         message: 'This account has not been assigned to a branch',
       });
     }
-    return { branchId: user.branchId };
+    return { branchId: posting };
   }
 
   /** Chuyển đơn sang trạng thái mới, đưa tồn kho và tiền về đúng theo trạng thái đó. Lệnh ghi có điều kiện theo status đã đọc, nên hai quầy bấm cùng lúc không thể cùng áp dụng hiệu ứng phụ. */

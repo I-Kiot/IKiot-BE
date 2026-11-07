@@ -11,10 +11,14 @@ import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
+import { assertNoPickupShippingFee } from './order-pickup.rules';
+import { writePaymentCashFlow } from './order-cash-flow';
+import { FlowType } from '../stats/stats.constants';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import type { ComboLeaf } from './combo-expansion';
 import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
+  FulfillmentType,
   OrderChannel,
   OrderLineType,
   OrderPaymentStatus,
@@ -130,7 +134,9 @@ export class ManualOrderService {
       where: { id: dto.branchId, tenantId },
       select: {
         id: true,
-        location: { select: { defaultFulfillmentLocationId: true } },
+        location: {
+          select: { defaultFulfillmentLocationId: true, isSellable: true },
+        },
       },
     });
     if (!branch)
@@ -138,8 +144,15 @@ export class ManualOrderService {
         code: ErrorCode.BRANCH_NOT_FOUND,
         message: 'Branch not found',
       });
+    // Chi nhánh và kho đều bán được, trừ kho hàng hỏng.
+    if (!branch.location.isSellable) {
+      throw new BadRequestException({
+        code: ErrorCode.LOCATION_NOT_SELLABLE,
+        message: 'This location holds stock that is not for sale',
+      });
+    }
 
-    await this.assertAssignee(tenantId, dto.assigneeId);
+    await this.assertAssignee(tenantId, dto.assigneeId, dto.branchId);
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -171,6 +184,9 @@ export class ManualOrderService {
       discountValue,
     );
     const shippingFee = Math.round(dto.shippingFee ?? 0);
+    const isPickup = dto.fulfillmentType === FulfillmentType.STORE_PICKUP;
+    // Khách tới lấy thì không có phí giao hàng và không có địa chỉ giao.
+    if (isPickup) assertNoPickupShippingFee(shippingFee);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
     const paymentStatus = paymentStatusForDeposit(
@@ -222,7 +238,7 @@ export class ManualOrderService {
           paymentStatus,
           recipientName: dto.recipientName,
           recipientPhone: dto.recipientPhone,
-          deliveryAddress: dto.deliveryAddress,
+          deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
           requestedDeliveryDate: dto.requestedDeliveryDate
             ? new Date(dto.requestedDeliveryDate)
             : undefined,
@@ -231,12 +247,12 @@ export class ManualOrderService {
           items: { createMany: { data: items } },
           appliedPromotions: { create: appliedPromotions },
         },
-        select: { id: true },
+        select: { id: true, code: true },
       });
 
       if (deposit) {
-        // Tiền cọc đã nhận nên Payment là PAID ngay. Dòng CashFlow do E-5 ghi (`CashFlow.paymentId`), không ghi ở đây.
-        await tx.payment.create({
+        // Tiền cọc đã nhận nên Payment là PAID và vào sổ thu chi ngay.
+        const payment = await tx.payment.create({
           data: {
             tenantId,
             orderId: created.id,
@@ -249,6 +265,19 @@ export class ManualOrderService {
             collectedById: userId,
             createdById: userId,
           },
+          select: { id: true },
+        });
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: created.id,
+          orderCode: created.code,
+          flowType: FlowType.INCOME,
+          amount: deposit.amount,
+          method: deposit.method,
+          locationId: branch.id,
+          createdById: userId,
+          description: `Tiền cọc đơn ${created.code}`,
         });
       }
       for (const [index, item] of dto.items.entries()) {
@@ -287,8 +316,11 @@ export class ManualOrderService {
     }
   }
 
-  /** Người phụ trách phải đăng nhập được vào shop và làm đơn. Dùng chung với route sửa đơn (A-8). */
-  async assertAssignee(tenantId: string, assigneeId: string) {
+  /**
+   * Người phụ trách phải đăng nhập được vào shop và làm việc tại địa điểm bán của đơn: phạm vi xem đơn theo địa điểm, nên nhân viên nơi khác được giao cũng không thấy đơn.
+   * Chủ shop xem được mọi nơi nên không bị giới hạn. Dùng chung với route sửa đơn (A-8).
+   */
+  async assertAssignee(tenantId: string, assigneeId: string, placeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
         id: assigneeId,
@@ -296,7 +328,7 @@ export class ManualOrderService {
         status: UserStatus.ACTIVE,
         systemRole: { in: [...ASSIGNABLE_ROLES] },
       },
-      select: { id: true },
+      select: { systemRole: true, locationId: true },
     });
     if (!assignee) {
       throw new BadRequestException({
@@ -304,6 +336,32 @@ export class ManualOrderService {
         message: 'The person in charge is not an active account of this shop',
       });
     }
+    if (
+      assignee.systemRole !== SystemRole.TENANT_OWNER &&
+      assignee.locationId !== placeId
+    ) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+        message: 'The person in charge must work at the location of the order',
+      });
+    }
+  }
+
+  /**
+   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
+   * nên danh sách địa điểm thường trả rỗng với họ. Chỉ trả tên và loại. Cùng quy tắc với `assertSourceLocations`.
+   */
+  listSourceLocations(tenantId: string) {
+    return this.prisma.location.findMany({
+      where: { tenantId, status: LocationStatus.ACTIVE, isSellable: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        defaultFulfillmentLocationId: true,
+      },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+    });
   }
 
   /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant và có hàng bán được; kho hàng hỏng không bao giờ giao cho khách. */

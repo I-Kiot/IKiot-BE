@@ -18,16 +18,19 @@ function seesWholeTenant(user: AuthUser): boolean {
   );
 }
 
-/** Phạm vi cho những gì đếm từ `Order`. Đơn chỉ bán ở chi nhánh, nên tài khoản gắn kho nhận bộ lọc không khớp và kết quả rỗng - tốt hơn nhiều so với báo doanh số cả tenant. */
+/** Phạm vi cho những gì đếm từ `Order`. Kho cũng tạo được đơn nên tài khoản gắn kho thấy đơn bán tại kho của mình. */
 export function orderScope(
   user: AuthUser,
   requestedBranchId?: string,
-): { branchId?: string; impossible?: true } {
+): { branchId?: string } {
   if (user.branchId) {
     assertOwnLocation(requestedBranchId, user.branchId, 'branch');
     return { branchId: user.branchId };
   }
-  if (user.warehouseId) return { impossible: true };
+  if (user.warehouseId) {
+    assertOwnLocation(requestedBranchId, user.warehouseId, 'warehouse');
+    return { branchId: user.warehouseId };
+  }
   if (!seesWholeTenant(user)) {
     // Không gắn nơi nào và không phải chủ: không có gì xác định phạm vi để hiện.
     throw new ForbiddenException({

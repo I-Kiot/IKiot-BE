@@ -1,3 +1,4 @@
+import { postingOf } from '../../common/utils/tenant-scope';
 import {
   BadRequestException,
   ConflictException,
@@ -11,6 +12,7 @@ import { InventoryService } from '../inventories/inventories.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { ShipmentNotificationTemplates } from '../notifications/templates/shipment.templates';
 import { assertTransition } from '../orders/order-status';
+import { assertNotStorePickup } from '../orders/order-pickup.rules';
 import {
   assertOrderStepAccess,
   assigneeClaim,
@@ -92,6 +94,7 @@ export class ShipmentService {
         recipientName: true,
         recipientPhone: true,
         deliveryAddress: true,
+        fulfillmentType: true,
         fulfillments: {
           where: { status: FulfillmentStatus.PACKED },
           select: { id: true, locationId: true },
@@ -104,6 +107,7 @@ export class ShipmentService {
         message: 'Order not found',
       });
     }
+    assertNotStorePickup(order);
     const [fulfillment] = order.fulfillments;
     if (order.status !== OrderStatus.PACKED || !fulfillment) {
       throw new ConflictException({
@@ -802,7 +806,7 @@ export class ShipmentService {
       { order: { assigneeId: user.userId } },
       { driverId: user.userId },
     ];
-    const posting = user.branchId ?? user.warehouseId;
+    const posting = postingOf(user);
     if (posting && can(user, 'shipments', 'read')) {
       reachable.push(
         { fulfillment: { locationId: posting } },

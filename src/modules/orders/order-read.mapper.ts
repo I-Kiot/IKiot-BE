@@ -5,6 +5,7 @@ import {
 } from '../../common/constants/order-status';
 import { PaymentMethod } from '../../common/constants/payment-method';
 import type { OrderDetailRow, OrderListRow } from './order-read';
+import { isPickupOverdue } from './order-pickup.rules';
 import { summarizeStock, type StockCheck } from './stock-check';
 
 // Dòng DB -> `OrderListItem` / `OrderDetail` của contract (A-9). Mọi trường POS đang đọc từ hai route này (src/types/order.ts bên FE)
@@ -225,6 +226,11 @@ function toOrderBase(row: OrderListRow) {
     amountDue,
     collection: collectionOf(row, amountDue),
     requestedDeliveryDate: dateOnly(requestedDeliveryDate),
+    // Khách tới lấy đã quá ngày hẹn mà chưa tới: cờ để nhân viên liên hệ khách.
+    pickupOverdue: isPickupOverdue(
+      { ...rest, requestedDeliveryDate },
+      new Date(),
+    ),
     appliedPromotions: appliedPromotions.map((promotion) => ({
       ...promotion,
       discountAmount: numOrNull(promotion.discountAmount),

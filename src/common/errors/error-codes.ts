@@ -229,6 +229,8 @@ export const ErrorCode = {
   /** Mọi đơn sau DRAFT / PENDING_CONFIRMATION phải có người phụ trách. */
   ORDER_ASSIGNEE_REQUIRED: 'ORDER_ASSIGNEE_REQUIRED',
   ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
+  /** Nhân viên phụ trách đơn phải làm việc tại địa điểm bán của đơn, không thì họ không xem được đơn. Chủ shop không bị giới hạn. */
+  ORDER_ASSIGNEE_WRONG_LOCATION: 'ORDER_ASSIGNEE_WRONG_LOCATION',
   /** Đã đóng gói và bàn giao - đường quay lại duy nhất là OrderReturn. */
   ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
   ORDER_COMBO_INVALID: 'ORDER_COMBO_INVALID',
@@ -450,6 +452,21 @@ export const ErrorCode = {
   TENANT_SEPAY_NOT_LINKED: 'TENANT_SEPAY_NOT_LINKED',
   SEPAY_API_NOT_CONFIGURED: 'SEPAY_API_NOT_CONFIGURED',
   SEPAY_API_FAILED: 'SEPAY_API_FAILED',
+
+  /** Thao tác chỉ dành cho đơn khách tới lấy (STORE_PICKUP) nhưng đơn này giao theo cách khác. */
+  ORDER_NOT_STORE_PICKUP: 'ORDER_NOT_STORE_PICKUP',
+  /** Đơn khách tới lấy không đi qua shipment: không tạo lần giao, không bấm "Bắt đầu vận chuyển". */
+  SHIPMENT_NOT_FOR_PICKUP: 'SHIPMENT_NOT_FOR_PICKUP',
+  /** Đơn khách tới lấy không có phí giao hàng. */
+  ORDER_PICKUP_NO_SHIPPING_FEE: 'ORDER_PICKUP_NO_SHIPPING_FEE',
+  /** Giao hàng cho khách khi còn tiền chưa thu. */
+  ORDER_PICKUP_BALANCE_DUE: 'ORDER_PICKUP_BALANCE_DUE',
+  /** Đơn khách tới lấy chưa đóng gói xong (không ở PACKED) nên chưa thu tiền hay giao được. */
+  ORDER_PICKUP_NOT_READY: 'ORDER_PICKUP_NOT_READY',
+  /** Đơn đã có shipment nên không đổi sang hoặc khỏi hình thức khách tới lấy được. */
+  ORDER_FULFILLMENT_TYPE_LOCKED: 'ORDER_FULFILLMENT_TYPE_LOCKED',
+  /** Đơn khách tới lấy đã thu tiền tại quầy nên không đổi sang giao tận nơi được: shipper sẽ thu lần nữa. */
+  ORDER_PICKUP_ALREADY_COLLECTED: 'ORDER_PICKUP_ALREADY_COLLECTED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

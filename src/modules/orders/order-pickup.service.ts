@@ -1,0 +1,387 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { InventoryService } from '../inventories/inventories.service';
+import { InvoiceService } from '../invoices/invoices.service';
+import { OrderService } from './orders.service';
+import { assertOrderStepAccess, OrderStepPermission } from './order-handler';
+import { PickupCollectDto } from './dto/pickup-collect.dto';
+import { PickupHandOverDto } from './dto/pickup-hand-over.dto';
+import {
+  assertPickupReady,
+  assertStorePickup,
+  pendingCounterQr,
+  pickupAmountDue,
+} from './order-pickup.rules';
+import { assigneeClaim } from './order-handler';
+import { writePaymentCashFlow } from './order-cash-flow';
+import { FlowType } from '../stats/stats.constants';
+import { buildSepayQrUrl, requireTenantBanking } from './tenant-banking';
+import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
+import {
+  InventoryRefType,
+  InventoryTxType,
+} from '../../common/constants/inventory-ledger';
+import {
+  OrderItemStatus,
+  OrderPaymentStatus,
+  OrderStatus,
+} from '../../common/constants/order-status';
+import {
+  DeliveryCollectionMethod,
+  PaymentKind,
+  PaymentMethod,
+  PaymentRecordStatus,
+} from '../../common/constants/payment-method';
+import {
+  generateReference,
+  REFERENCE_PREFIX,
+} from '../../common/utils/reference-generator';
+import { ErrorCode } from '../../common/errors/error-codes';
+import type { AuthUser } from '../../common/types/auth-user.type';
+import type { Prisma } from '../../../generated/prisma/client';
+
+/** Huỷ các khoản QR tại quầy đang chờ, trong transaction của người gọi. Tiền vừa về đúng lúc này thì dừng để người dùng tải lại, không ghi đè khoản đã thu. */
+export async function cancelCounterQr(
+  tx: Prisma.TransactionClient,
+  pending: readonly { id: string }[],
+): Promise<void> {
+  for (const payment of pending) {
+    const cancelled = await tx.payment.updateMany({
+      where: { id: payment.id, status: PaymentRecordStatus.PENDING },
+      data: { status: PaymentRecordStatus.CANCELLED },
+    });
+    if (cancelled.count !== 1) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
+        message: 'The transfer has just arrived, please reload',
+      });
+    }
+  }
+}
+
+/**
+ * Đơn khách tới lấy (STORE_PICKUP): đóng gói xong thì đơn nằm ở PACKED chờ khách, không có shipment.
+ * - `collect`: thu số còn lại tại quầy (tiền mặt ghi luôn, QR chờ webhook SePay).
+ * - `handOver`: đã thu đủ thì giao hàng cho khách: trừ tồn, PACKED → COMPLETED, xuất hoá đơn.
+ * Bước thu tiền và giao dùng chung quyền với “Bắt đầu vận chuyển” (`OrderStepPermission.SHIP`): chủ shop, người có `orders:ship` tại kho xuất.
+ */
+@Injectable()
+export class OrderPickupService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly inventory: InventoryService,
+    private readonly orders: OrderService,
+    private readonly invoices: InvoiceService,
+  ) {}
+
+  /** Nạp đơn cùng fulfillment đã đóng gói; chặn đơn không phải khách tới lấy, chưa sẵn sàng, hay người gọi không có quyền. */
+  private async loadPickupOrder(user: AuthUser, tenantId: string, id: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id, tenantId },
+      select: {
+        id: true,
+        code: true,
+        status: true,
+        fulfillmentType: true,
+        assigneeId: true,
+        branchId: true,
+        grandTotal: true,
+        note: true,
+        payments: {
+          select: {
+            id: true,
+            kind: true,
+            method: true,
+            status: true,
+            amount: true,
+            paymentReference: true,
+          },
+        },
+        fulfillments: {
+          where: { status: FulfillmentStatus.PACKED },
+          select: {
+            id: true,
+            locationId: true,
+            items: {
+              select: {
+                quantity: true,
+                orderItemId: true,
+                orderItem: {
+                  select: { productItemId: true, sku: true, productName: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException({
+        code: ErrorCode.ORDER_NOT_FOUND,
+        message: 'Order not found',
+      });
+    }
+    const scope = this.orders.branchScope(user);
+    if (scope.branchId !== undefined && order.branchId !== scope.branchId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_BRANCH_DENIED,
+        message: 'This order does not belong to your branch',
+      });
+    }
+    assertStorePickup(order);
+    assertPickupReady(order);
+    const [fulfillment] = order.fulfillments;
+    const access = assertOrderStepAccess(
+      user,
+      order,
+      OrderStepPermission.SHIP,
+      fulfillment?.locationId ?? order.branchId,
+    );
+    return { order, fulfillment, access };
+  }
+
+  /**
+   * Thu số còn lại của đơn đang chờ khách. Số tiền do server tính (tổng đơn trừ mọi khoản đã thu), không nhận từ client.
+   * Tiền mặt ghi luôn là đã thu tại quầy (không có bước nộp lại như shipper); QR dựng khoản SEPAY chờ webhook và trả `qrUrl`.
+   * Gọi lại với QR khi khoản chờ còn đúng số tiền thì dùng lại khoản đó, để mã QR khách đang quét không đổi.
+   */
+  async collect(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: PickupCollectDto,
+  ) {
+    const { order, access } = await this.loadPickupOrder(user, tenantId, id);
+    const amountDue = pickupAmountDue(
+      Number(order.grandTotal),
+      order.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    );
+    if (amountDue === 0) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
+        message: 'Nothing is left to collect on this order',
+      });
+    }
+
+    const pending = pendingCounterQr(order.payments);
+    const now = new Date();
+
+    if (dto.method === DeliveryCollectionMethod.CASH) {
+      await this.prisma.$transaction(async (tx) => {
+        // Khách trả tiền mặt thay vì quét QR: huỷ khoản QR đang chờ, nếu tiền vừa về thì dừng.
+        await cancelCounterQr(tx, pending);
+        const claimed = await tx.order.updateMany({
+          where: {
+            id,
+            tenantId,
+            status: OrderStatus.PACKED,
+            ...assigneeClaim(access, user),
+          },
+          data: { paymentStatus: OrderPaymentStatus.PAID },
+        });
+        if (claimed.count !== 1) {
+          throw new ConflictException({
+            code: ErrorCode.ORDER_STATUS_CONFLICT,
+            message: 'The order has just changed, please reload',
+          });
+        }
+        const payment = await tx.payment.create({
+          data: {
+            tenantId,
+            orderId: id,
+            kind: PaymentKind.BALANCE,
+            method: PaymentMethod.CASH,
+            amount: amountDue,
+            status: PaymentRecordStatus.PAID,
+            paidAt: now,
+            locationId: order.branchId,
+            collectedById: user.userId,
+            createdById: user.userId,
+            note: dto.note ?? null,
+          },
+          select: { id: true },
+        });
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          paymentId: payment.id,
+          orderId: id,
+          orderCode: order.code,
+          flowType: FlowType.INCOME,
+          amount: amountDue,
+          method: PaymentMethod.CASH,
+          locationId: order.branchId,
+          createdById: user.userId,
+          description: `Thu tiền tại quầy đơn ${order.code}`,
+        });
+      });
+      return {
+        order: await this.orders.findOne(user, tenantId, id),
+        payment: null,
+      };
+    }
+
+    const banking = await requireTenantBanking(this.prisma, tenantId);
+    const reusable = pending.find((p) => Number(p.amount) === amountDue);
+    let reference = reusable?.paymentReference ?? null;
+    if (!reusable) {
+      reference = generateReference(REFERENCE_PREFIX.ORDER);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.payment.updateMany({
+          where: {
+            id: { in: pending.map((p) => p.id) },
+            status: PaymentRecordStatus.PENDING,
+          },
+          data: { status: PaymentRecordStatus.CANCELLED },
+        });
+        await tx.payment.create({
+          data: {
+            tenantId,
+            orderId: id,
+            kind: PaymentKind.BALANCE,
+            method: PaymentMethod.SEPAY,
+            amount: amountDue,
+            status: PaymentRecordStatus.PENDING,
+            paymentReference: reference,
+            locationId: order.branchId,
+            collectedById: user.userId,
+            createdById: user.userId,
+            note: dto.note ?? null,
+          },
+        });
+      });
+    }
+    return {
+      order: await this.orders.findOne(user, tenantId, id),
+      payment: {
+        reference: reference!,
+        amount: amountDue,
+        status: PaymentRecordStatus.PENDING,
+        qrUrl: buildSepayQrUrl(banking, amountDue, reference!),
+      },
+    };
+  }
+
+  /**
+   * Giao hàng cho khách tại quầy, khi đã thu đủ. Một transaction: đơn PACKED → COMPLETED, hàng khoá rời kho (rút theo lô,
+   * ghi sổ SALE kèm dòng đơn nên hoàn hàng sau này tra được), dòng đơn SHIPPED, fulfillment HANDED_OVER, hoá đơn phát hành.
+   * Còn tiền chưa thu thì từ chối (`ORDER_PICKUP_BALANCE_DUE`); khoản QR đang chờ chưa tính là đã thu.
+   */
+  async handOver(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: PickupHandOverDto,
+  ) {
+    const { order, fulfillment, access } = await this.loadPickupOrder(
+      user,
+      tenantId,
+      id,
+    );
+    if (!fulfillment) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_PICKUP_NOT_READY,
+        message: 'The order has no packed fulfillment to hand over',
+      });
+    }
+    const amountDue = pickupAmountDue(
+      Number(order.grandTotal),
+      order.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    );
+    if (amountDue > 0) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_PICKUP_BALANCE_DUE,
+        message: `${amountDue} is still due; collect it before handing the goods over`,
+      });
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: OrderStatus.PACKED,
+          ...assigneeClaim(access, user),
+        },
+        data: {
+          status: OrderStatus.COMPLETED,
+          paymentStatus: OrderPaymentStatus.PAID,
+          shippedById: user.userId,
+          shippedAt: now,
+          ...(dto.receiverName || dto.note
+            ? { note: appendHandOverNote(order.note, dto) }
+            : {}),
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order has just changed, please reload',
+        });
+      }
+
+      // Một UPDATE có điều kiện cho mỗi dòng (locked_stock ≥ quantity) là chốt chặn, nên không gom được thành một query.
+      for (const item of fulfillment.items) {
+        await this.inventory.shipLockedStock(tx, {
+          tenantId,
+          locationId: fulfillment.locationId,
+          productItemId: item.orderItem.productItemId,
+          quantity: item.quantity,
+          label:
+            item.orderItem.sku ??
+            item.orderItem.productName ??
+            item.orderItemId,
+          ledger: {
+            type: InventoryTxType.SALE,
+            referenceType: InventoryRefType.ORDER,
+            referenceId: id,
+            orderItemId: item.orderItemId,
+            createdById: user.userId,
+          },
+        });
+      }
+      await tx.orderItem.updateMany({
+        where: {
+          id: { in: fulfillment.items.map((item) => item.orderItemId) },
+          status: OrderItemStatus.PENDING,
+        },
+        data: { status: OrderItemStatus.SHIPPED },
+      });
+      const handed = await tx.fulfillment.updateMany({
+        where: { id: fulfillment.id, status: FulfillmentStatus.PACKED },
+        data: { status: FulfillmentStatus.HANDED_OVER, handedOverAt: now },
+      });
+      if (handed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The fulfillment has just changed, please reload',
+        });
+      }
+      await this.invoices.issueForOrder(tx, id, user.userId);
+    });
+
+    return { order: await this.orders.findOne(user, tenantId, id) };
+  }
+}
+
+/** Ghi người nhận và ghi chú giao hàng vào ghi chú của đơn, để người xem sau còn biết ai đã nhận hàng. */
+function appendHandOverNote(
+  current: string | null,
+  dto: PickupHandOverDto,
+): string {
+  const parts = [
+    dto.receiverName ? `Người nhận: ${dto.receiverName}` : null,
+    dto.note ?? null,
+  ].filter(Boolean);
+  const line = `[Giao tại quầy] ${parts.join(' - ')}`;
+  return current
+    ? `${current}
+${line}`
+    : line;
+}

@@ -272,3 +272,43 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 **Kiểm chứng**
 - tsc, lint, build, unit (42 suite / 427 ca, thêm 1 ca parser), e2e toàn bộ trên `ikiot_e2e` (23 suite / 303 ca; smoke kiểm thêm 409 mã hàng / mã vạch, 400 trùng trong request, `barcode: ''` → null).
 - Chạy thử cả hai migration hôm nay trên `ikiot_db` trong transaction rồi rollback: qua, 13/13 mặt hàng có barcode NULL. **Chưa chạy thật trên `ikiot_db`, dev, prod.**
+## 2026-11-07 – Đơn khách tới lấy: chặn thu trùng và hoàn được tiền thu tại quầy (PR #54, FE PR #51)
+
+- Đã thu tiền tại quầy thì không đổi sang giao tận nơi (`ORDER_PICKUP_ALREADY_COLLECTED`), vì shipper thu theo `grandTotal − cọc`. Chưa có tiền về thì đổi được, khoản QR đang chờ bị huỷ.
+- `resolveRefund` tính cả `BALANCE` đã thu vào số đang giữ. Đơn giao tận nơi chỉ có `BALANCE` sau khi giao, lúc đó không huỷ được nên không đổi hành vi. `depositHeld` giữ nguyên cho kiểm tra khi sửa đơn.
+- Huỷ đơn cũng huỷ khoản QR tại quầy đang chờ. Khoản thu qua QR mặc định hoàn bằng `BANK_TRANSFER`.
+- Bộ lọc `DUE_SOON` bỏ đơn khách quá hạn lấy, để badge không đếm hai lần.
+
+**Chưa kiểm chứng:** máy không có Postgres nên chưa chạy `test:e2e`, gồm 2 case mới trong `test/order-pickup.e2e-spec.ts`.
+**Còn lại:** FE chưa có màn huỷ đơn hành trình kèm số tiền hoàn. `CashFlow` vẫn chưa ghi tiền cọc, tiền thu khi giao và tiền thu tại quầy (E-5).
+
+## 2026-11-07 – Sổ thu chi cho đơn hành trình (E-5, phần CashFlow) và nút Huỷ đơn
+
+- `writePaymentCashFlow` (`orders/order-cash-flow.ts`): mỗi `Payment` tiền đã đổi chủ là một dòng `CashFlow` (`paymentId` unique). Cọc ghi khi tạo đơn; tiền thu tại quầy ghi khi thu; QR ghi khi webhook báo về, theo số thực nhận; tiền mặt shipper ghi ở `confirm-remittance`; hoàn tiền khi huỷ là dòng EXPENSE. Không cần migration.
+- Tiền giữ lại khi huỷ không ghi thêm dòng: dòng thu lúc nhận tiền vẫn còn.
+- FE: nút "Huỷ đơn" cạnh "Sửa đơn", nhập số tiền hoàn (0 = shop giữ lại), lý do, cách hoàn (`cancel-order-dialog.tsx`).
+
+**Đã kiểm chứng:** `test:e2e` 317/317 trên Postgres local (gồm cả các case của mục trên).
+**Còn lại:**
+- Đơn tạo trước thay đổi này không có dòng sổ cho khoản đã thu. Không backfill vì dev chỉ có dữ liệu test; cần xem lại trước khi lên prod.
+- Đối soát két tính mọi dòng CASH ở chi nhánh, nên tiền shipper nộp cho chủ mà không bỏ vào két sẽ báo thiếu.
+- Trả hàng (`order-returns`) chưa ghi `Payment` hoàn tiền, nên cũng không có dòng sổ.
+
+**Sửa thêm:** huỷ và hoàn 0 thì giữ nguyên `paymentStatus` của đơn, đúng contract. Trước đó `resolveRefund` gán cứng `PARTIALLY_PAID`, nên đơn đã thu đủ tụt về "Đã cọc".
+
+## 2026-11-07 – Tạo đơn chọn được nguồn hàng từ kho, kho tạo được đơn
+
+- Trước đây form tạo đơn không có ô chọn, luôn lấy mặc định của chi nhánh, dù `sourceLocationId` đã có ở API.
+- `GET /orders/source-locations` (`orders:create` hoặc `orders:update`): chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho.
+- FE chọn một nguồn cho cả đơn, vì `pack` chỉ nhận đơn xuất từ một nơi. Dòng thêm mới khi sửa đơn đi theo nguồn của đơn.
+
+- Đổi nguồn hàng của cả đơn: `PATCH /orders/:id` với `sourceLocationId`, chỉ khi còn `CONFIRMED`.
+
+- Kho tạo được đơn tay: migration `20261107100000_warehouse_can_sell` thêm dòng `branches` cho mọi kho (chỉ INSERT), kho tạo mới cũng có. `Order.branchId` giờ là "địa điểm bán". Kho hàng hỏng không bán được (`LOCATION_NOT_SELLABLE`). Nhân viên ở kho xem đơn bán tại kho của mình (`postingOf`).
+- Giữ chỉ cho chi nhánh: bán tại quầy, két, khuyến mãi theo chi nhánh, phân công `branchId` của nhân viên. Shopee để sau.
+- Prod phải chạy `deploy:migrate` trước khi merge lên `main`, như mọi migration.
+
+- Người phụ trách đơn phải làm việc tại địa điểm bán (`ORDER_ASSIGNEE_WRONG_LOCATION`), chủ shop không bị giới hạn. Chọn cách này thay vì mở phạm vi xem đơn cho người phụ trách ở nơi khác, vì ít việc hơn.
+- FE `/reports` và dashboard tổng quan: chọn kho thấy đủ doanh thu của kho, như chi nhánh.
+
+**Lưu ý:** yêu cầu sản xuất đang mở giữ nguyên nơi nhận, nên sau khi đổi nguồn hàng xưởng vẫn về nơi cũ; đơn sẽ báo thiếu ở nơi mới tới khi chuyển kho.

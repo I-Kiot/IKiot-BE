@@ -248,6 +248,15 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ name: 'Kho Trung Tam', phoneNumber: ['0987650011'] })
       .expect(201);
     warehouseId = warehouse.body.data.id;
+    // Kho cũng tạo được đơn, nên có dòng `branches` cùng id, nhưng không lẫn vào danh sách chi nhánh.
+    expect(await prisma.branch.count({ where: { id: warehouseId } })).toBe(1);
+    const listedBranches = await http()
+      .get('/branches')
+      .set(auth())
+      .expect(200);
+    expect(
+      listedBranches.body.data.map((row: { id: string }) => row.id),
+    ).not.toContain(warehouseId);
     note('branch + warehouse: OK');
 
     const supplier = await http()
