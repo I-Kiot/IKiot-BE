@@ -1,3 +1,4 @@
+import { postingOf } from '../../common/utils/tenant-scope';
 import {
   ForbiddenException,
   Injectable,
@@ -145,13 +146,14 @@ export class InvoiceReadService {
 
   private branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
-    if (!user.branchId) {
+    const posting = postingOf(user);
+    if (!posting) {
       throw new ForbiddenException({
         code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
         message: 'This account has not been assigned to a branch',
       });
     }
-    return { branchId: user.branchId };
+    return { branchId: posting };
   }
 }
 

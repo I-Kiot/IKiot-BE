@@ -191,6 +191,11 @@ describe('POST /orders – ManualOrderService.create', () => {
         { id: otherBranchId, tenantId, locationId: otherBranchId },
       ],
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     await prisma.warehouse.createMany({
       data: [
         { id: warehouseId, tenantId, locationId: warehouseId },
@@ -484,6 +489,93 @@ describe('POST /orders – ManualOrderService.create', () => {
     await expect(create(base({ assigneeId }))).rejects.toMatchObject({
       response: { code },
     });
+  });
+
+  describe('selling from a warehouse', () => {
+    beforeAll(async () => {
+      // Như migration: mỗi kho có một dòng `branches` cùng id.
+      await prisma.branch.createMany({
+        data: [warehouseId, damagedId].map((id) => ({
+          id,
+          tenantId,
+          locationId: id,
+        })),
+        skipDuplicates: true,
+      });
+    });
+
+    it('creates an order sold at the warehouse, shipped from it by default', async () => {
+      const order = await create(
+        base({ branchId: warehouseId, assigneeId: ownerId }),
+      );
+      const row = await prisma.order.findUniqueOrThrow({
+        where: { id: order.id },
+        include: { items: true },
+      });
+      expect(row.branchId).toBe(warehouseId);
+      expect(row.items[0].sourceLocationId).toBe(warehouseId);
+    });
+
+    it('refuses a person in charge who works elsewhere, but not the owner', async () => {
+      await expect(
+        create(base({ branchId: warehouseId, assigneeId: staffId })),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION },
+      });
+      const order = await create(
+        base({ branchId: warehouseId, assigneeId: ownerId }),
+      );
+      expect(order.id).toBeDefined();
+    });
+
+    it('refuses the damaged-goods warehouse as the place of sale', async () => {
+      await expect(
+        create(base({ branchId: damagedId, assigneeId: ownerId })),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.LOCATION_NOT_SELLABLE },
+      });
+    });
+
+    it('lets staff posted at a warehouse sell there, and only there', async () => {
+      const staff = {
+        ...owner,
+        systemRole: SystemRole.STAFF,
+        permissions: new Set(['orders:create']),
+        branchId: null,
+        warehouseId,
+      } as unknown as AuthUser;
+      const order = await create(
+        base({ branchId: warehouseId, assigneeId: ownerId }),
+        staff,
+      );
+      expect(order.id).toBeDefined();
+      await expect(
+        create(base({ branchId, assigneeId: ownerId }), staff),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_BRANCH_DENIED },
+      });
+    });
+  });
+
+  it('offers the branch and the warehouses as a source, never the damaged-goods one', async () => {
+    const locations = await manual.listSourceLocations(tenantId);
+    const ids = locations.map((location) => location.id);
+    expect(ids).toEqual(expect.arrayContaining([branchId, warehouseId]));
+    expect(ids).not.toContain(damagedId);
+  });
+
+  it('ships every line from the source the seller picked, over the default warehouse', async () => {
+    const order = await create(
+      base({
+        items: [
+          { productItemId: sofaId, quantity: 1, sourceLocationId: branchId },
+        ],
+      }),
+    );
+    const [line] = await prisma.orderItem.findMany({
+      where: { orderId: order.id },
+    });
+    expect(line.sourceLocationId).toBe(branchId);
   });
 
   it('refuses to ship from a damaged-goods warehouse', async () => {

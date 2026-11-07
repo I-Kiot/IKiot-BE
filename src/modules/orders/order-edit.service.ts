@@ -134,8 +134,24 @@ export class OrderEditService {
         message: `The lines of an order in ${order.status} are packed and cannot change; cancel and re-create it`,
       });
     }
-    if (dto.assigneeId)
-      await this.manual.assertAssignee(tenantId, dto.assigneeId);
+    if (dto.sourceLocationId) {
+      if (order.status !== OrderStatus.CONFIRMED) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_NOT_EDITABLE,
+          message: `An order in ${order.status} is packed; its source can no longer change`,
+        });
+      }
+      await this.manual.assertSourceLocations(tenantId, [
+        { sourceLocationId: dto.sourceLocationId },
+      ]);
+    }
+    // Giữ nguyên người đang phụ trách thì không kiểm lại: đơn cũ có thể giao cho người đã chuyển nơi làm.
+    if (dto.assigneeId && dto.assigneeId !== order.assigneeId)
+      await this.manual.assertAssignee(
+        tenantId,
+        dto.assigneeId,
+        order.branchId,
+      );
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -226,18 +242,27 @@ export class OrderEditService {
         : undefined;
     const customerId = dto.customerId ?? typedInCustomerId;
 
-    // Chỉ đổi dòng mới làm thay đổi nhu cầu trên danh sách sản xuất (B-3).
-    const shortage = dto.items
-      ? await this.shortages.snapshot(tenantId, [
-          ...order.items,
-          ...(money?.lines ?? []).map((line) => ({
-            productItemId: line.productItemId,
-            sourceLocationId: line.sourceLocationId,
-            lineType: line.itemType,
-          })),
-          ...addedRows,
-        ])
-      : null;
+    // Chỉ đổi dòng hoặc đổi nguồn hàng mới làm thay đổi nhu cầu trên danh sách sản xuất (B-3).
+    const { sourceLocationId } = dto;
+    const shortage =
+      dto.items || sourceLocationId
+        ? await this.shortages.snapshot(tenantId, [
+            ...order.items,
+            ...(sourceLocationId
+              ? order.items.map((line) => ({
+                  productItemId: line.productItemId,
+                  sourceLocationId,
+                  lineType: line.lineType,
+                }))
+              : []),
+            ...(money?.lines ?? []).map((line) => ({
+              productItemId: line.productItemId,
+              sourceLocationId: line.sourceLocationId,
+              lineType: line.itemType,
+            })),
+            ...addedRows,
+          ])
+        : null;
 
     await this.prisma.$transaction(async (tx) => {
       // Chiếm đơn theo bản ghi vừa đọc: đóng gói, hủy hoặc sửa khác xen giữa thì lần này thua trọn.
@@ -300,6 +325,13 @@ export class OrderEditService {
       if (leavingPickup) {
         await cancelCounterQr(tx, pendingCounterQr(order.payments));
       }
+      // Dòng không giữ tồn (combo cha, dịch vụ) không có nguồn nên giữ nguyên null.
+      if (sourceLocationId) {
+        await tx.orderItem.updateMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          data: { sourceLocationId },
+        });
+      }
       if (!money) return;
 
       await tx.orderAppliedPromotion.deleteMany({ where: { orderId: id } });
@@ -334,8 +366,8 @@ export class OrderEditService {
     id: string,
     dto: SetOrderAssigneeDto,
   ) {
-    await this.loadEditable(user, tenantId, id);
-    await this.manual.assertAssignee(tenantId, dto.assigneeId);
+    const order = await this.loadEditable(user, tenantId, id);
+    await this.manual.assertAssignee(tenantId, dto.assigneeId, order.branchId);
     await this.claimUnshipped(tenantId, id, { assigneeId: dto.assigneeId });
     return this.reads.findOne(user, tenantId, id);
   }
@@ -531,6 +563,7 @@ export class OrderEditService {
             ? Number(existing.listUnitPrice)
             : line.listUnitPrice,
         sourceLocationId:
+          dto.sourceLocationId ??
           items[index].sourceLocationId ??
           (existing && sourceOf(existing, order.items)) ??
           defaultSource,

@@ -236,3 +236,20 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - Trả hàng (`order-returns`) chưa ghi `Payment` hoàn tiền, nên cũng không có dòng sổ.
 
 **Sửa thêm:** huỷ và hoàn 0 thì giữ nguyên `paymentStatus` của đơn, đúng contract. Trước đó `resolveRefund` gán cứng `PARTIALLY_PAID`, nên đơn đã thu đủ tụt về "Đã cọc".
+
+## 2026-11-07 – Tạo đơn chọn được nguồn hàng từ kho, kho tạo được đơn
+
+- Trước đây form tạo đơn không có ô chọn, luôn lấy mặc định của chi nhánh, dù `sourceLocationId` đã có ở API.
+- `GET /orders/source-locations` (`orders:create` hoặc `orders:update`): chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho.
+- FE chọn một nguồn cho cả đơn, vì `pack` chỉ nhận đơn xuất từ một nơi. Dòng thêm mới khi sửa đơn đi theo nguồn của đơn.
+
+- Đổi nguồn hàng của cả đơn: `PATCH /orders/:id` với `sourceLocationId`, chỉ khi còn `CONFIRMED`.
+
+- Kho tạo được đơn tay: migration `20261107100000_warehouse_can_sell` thêm dòng `branches` cho mọi kho (chỉ INSERT), kho tạo mới cũng có. `Order.branchId` giờ là "địa điểm bán". Kho hàng hỏng không bán được (`LOCATION_NOT_SELLABLE`). Nhân viên ở kho xem đơn bán tại kho của mình (`postingOf`).
+- Giữ chỉ cho chi nhánh: bán tại quầy, két, khuyến mãi theo chi nhánh, phân công `branchId` của nhân viên. Shopee để sau.
+- Prod phải chạy `deploy:migrate` trước khi merge lên `main`, như mọi migration.
+
+- Người phụ trách đơn phải làm việc tại địa điểm bán (`ORDER_ASSIGNEE_WRONG_LOCATION`), chủ shop không bị giới hạn. Chọn cách này thay vì mở phạm vi xem đơn cho người phụ trách ở nơi khác, vì ít việc hơn.
+- FE `/reports` và dashboard tổng quan: chọn kho thấy đủ doanh thu của kho, như chi nhánh.
+
+**Lưu ý:** yêu cầu sản xuất đang mở giữ nguyên nơi nhận, nên sau khi đổi nguồn hàng xưởng vẫn về nơi cũ; đơn sẽ báo thiếu ở nơi mới tới khi chuyển kho.

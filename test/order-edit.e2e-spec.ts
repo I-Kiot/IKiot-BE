@@ -183,6 +183,11 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     await prisma.branch.create({
       data: { id: branchId, tenantId, locationId: branchId },
     });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
     await prisma.product.create({
       data: { id: productId, tenantId, name: 'Nội thất' },
     });
@@ -560,6 +565,89 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     after = await orderRow(id);
     expect(Number(after.grandTotal)).toBe(19_000_000);
     expect(after.discountType).toBe('ORDER');
+  });
+
+  it('only hands an order to someone working at its location, or the owner', async () => {
+    const id = await createOrder({ assigneeId: staffId });
+    const elsewhereId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: elsewhereId,
+        tenantId,
+        phoneNumber: `edit-${elsewhereId}`,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+        locationId: warehouseId,
+      },
+    });
+    expect(
+      await codeOf(
+        edits.setAssignee(owner, tenantId, id, { assigneeId: elsewhereId }),
+      ),
+    ).toBe(ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION);
+    expect(await codeOf(edit(id, { assigneeId: elsewhereId }))).toBe(
+      ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+    );
+    await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+    await prisma.user.delete({ where: { id: elsewhereId } });
+  });
+
+  describe('changing the source of the whole order', () => {
+    const sourcesOf = async (id: string) =>
+      (
+        await prisma.orderItem.findMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          select: { sourceLocationId: true },
+        })
+      ).map((line) => line.sourceLocationId);
+
+    it('moves every line while the order is still confirmed', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1 },
+          { productItemId: comboId, quantity: 1 },
+        ],
+      });
+      await edit(id, { sourceLocationId: otherWarehouseId });
+      const sources = await sourcesOf(id);
+      expect(sources.length).toBeGreaterThan(1);
+      expect(new Set(sources)).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('wins over the source of the lines sent with it, so the order stays on one place', async () => {
+      const id = await createOrder();
+      const [line] = await prisma.orderItem.findMany({
+        where: { orderId: id },
+      });
+      await edit(id, {
+        sourceLocationId: otherWarehouseId,
+        items: [
+          { id: line.id, productItemId: sofaId, quantity: 2 },
+          {
+            productItemId: tableId,
+            quantity: 1,
+            sourceLocationId: warehouseId,
+          },
+        ],
+      });
+      expect(new Set(await sourcesOf(id))).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('refuses once the order is packed', async () => {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      expect(
+        await codeOf(edit(id, { sourceLocationId: otherWarehouseId })),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+      expect(new Set(await sourcesOf(id))).not.toContain(otherWarehouseId);
+    });
+
+    it('refuses a location of another tenant', async () => {
+      const id = await createOrder();
+      expect(await codeOf(edit(id, { sourceLocationId: randomUUID() }))).toBe(
+        ErrorCode.ORDER_SOURCE_LOCATION_INVALID,
+      );
+    });
   });
 
   describe('store pickup', () => {

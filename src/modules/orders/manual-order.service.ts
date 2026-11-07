@@ -134,7 +134,9 @@ export class ManualOrderService {
       where: { id: dto.branchId, tenantId },
       select: {
         id: true,
-        location: { select: { defaultFulfillmentLocationId: true } },
+        location: {
+          select: { defaultFulfillmentLocationId: true, isSellable: true },
+        },
       },
     });
     if (!branch)
@@ -142,8 +144,15 @@ export class ManualOrderService {
         code: ErrorCode.BRANCH_NOT_FOUND,
         message: 'Branch not found',
       });
+    // Chi nhánh và kho đều bán được, trừ kho hàng hỏng.
+    if (!branch.location.isSellable) {
+      throw new BadRequestException({
+        code: ErrorCode.LOCATION_NOT_SELLABLE,
+        message: 'This location holds stock that is not for sale',
+      });
+    }
 
-    await this.assertAssignee(tenantId, dto.assigneeId);
+    await this.assertAssignee(tenantId, dto.assigneeId, dto.branchId);
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -307,8 +316,11 @@ export class ManualOrderService {
     }
   }
 
-  /** Người phụ trách phải đăng nhập được vào shop và làm đơn. Dùng chung với route sửa đơn (A-8). */
-  async assertAssignee(tenantId: string, assigneeId: string) {
+  /**
+   * Người phụ trách phải đăng nhập được vào shop và làm việc tại địa điểm bán của đơn: phạm vi xem đơn theo địa điểm, nên nhân viên nơi khác được giao cũng không thấy đơn.
+   * Chủ shop xem được mọi nơi nên không bị giới hạn. Dùng chung với route sửa đơn (A-8).
+   */
+  async assertAssignee(tenantId: string, assigneeId: string, placeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
         id: assigneeId,
@@ -316,7 +328,7 @@ export class ManualOrderService {
         status: UserStatus.ACTIVE,
         systemRole: { in: [...ASSIGNABLE_ROLES] },
       },
-      select: { id: true },
+      select: { systemRole: true, locationId: true },
     });
     if (!assignee) {
       throw new BadRequestException({
@@ -324,6 +336,32 @@ export class ManualOrderService {
         message: 'The person in charge is not an active account of this shop',
       });
     }
+    if (
+      assignee.systemRole !== SystemRole.TENANT_OWNER &&
+      assignee.locationId !== placeId
+    ) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+        message: 'The person in charge must work at the location of the order',
+      });
+    }
+  }
+
+  /**
+   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
+   * nên danh sách địa điểm thường trả rỗng với họ. Chỉ trả tên và loại. Cùng quy tắc với `assertSourceLocations`.
+   */
+  listSourceLocations(tenantId: string) {
+    return this.prisma.location.findMany({
+      where: { tenantId, status: LocationStatus.ACTIVE, isSellable: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        defaultFulfillmentLocationId: true,
+      },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+    });
   }
 
   /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant và có hàng bán được; kho hàng hỏng không bao giờ giao cho khách. */

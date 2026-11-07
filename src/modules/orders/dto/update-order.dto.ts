@@ -32,6 +32,11 @@ export class UpdateOrderDto extends PartialType(
   @ValidateNested({ each: true })
   @Type(() => UpdateOrderItemDto)
   items?: UpdateOrderItemDto[];
+
+  /** Đổi nơi lấy hàng của cả đơn. Chỉ khi còn CONFIRMED: đóng gói xong hàng đã khoá tại nơi cũ. Cả đơn một nơi vì `pack` chỉ nhận đơn xuất từ một nơi. */
+  @IsOptional()
+  @IsUUID()
+  sourceLocationId?: string;
 }
 
 export class SetOrderAssigneeDto {

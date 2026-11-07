@@ -140,6 +140,7 @@ export abstract class LocationService {
     );
 
     // Dòng chuyên biệt dùng chung id của Location, để `branchId` / `locationId` trỏ tới bảng nào cũng được.
+    // Mọi địa điểm đều có dòng `branches` vì kho cũng tạo được đơn; loại địa điểm vẫn do `type` quyết định.
     const id = randomUUID();
     const specialization = { create: { id, tenantId } };
     const row = await this.prisma.location.create({
@@ -147,9 +148,10 @@ export abstract class LocationService {
         id,
         tenantId,
         type: this.config.kind,
-        ...(this.config.specialization === 'branch'
-          ? { branch: specialization }
-          : { warehouse: specialization }),
+        branch: specialization,
+        ...(this.config.specialization === 'warehouse'
+          ? { warehouse: specialization }
+          : {}),
         name: dto.name,
         phoneNumber: dto.phoneNumber ?? [],
         address: dto.address,

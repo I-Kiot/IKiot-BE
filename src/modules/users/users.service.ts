@@ -1,3 +1,4 @@
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ConflictException,
@@ -652,7 +653,11 @@ export class UserService {
   ) {
     if (branchId) {
       const branch = await this.prisma.branch.findFirst({
-        where: { id: branchId, tenantId },
+        where: {
+          id: branchId,
+          tenantId,
+          location: { type: LocationType.BRANCH },
+        },
       });
       if (!branch)
         throw new BadRequestException({

@@ -137,19 +137,9 @@ export class StatsService {
 
   private async summarize(
     user: AuthUser,
-    scope: { branchId?: string; impossible?: true },
+    scope: { branchId?: string },
     { fromDate, toDate }: DateRange,
   ) {
-    if (scope.impossible) {
-      return {
-        revenue: 0,
-        orderCount: 0,
-        customerCount: 0,
-        aov: 0,
-        grossProfit: 0,
-        linesMissingCost: 0,
-      };
-    }
     const branchFilter = scope.branchId
       ? Prisma.sql`AND o.branch_id = ${scope.branchId}`
       : Prisma.empty;
@@ -214,8 +204,6 @@ export class StatsService {
       });
     }
 
-    if (scope.impossible) return { groupBy, series: [] };
-
     const rows = await this.prisma.$queryRaw<BucketRow[]>`
       SELECT to_char(created_at AT TIME ZONE ${TZ_NAME}, ${BUCKET_FORMAT[groupBy]}) AS "bucket",
              COALESCE(SUM(grand_total), 0) AS "revenue",
@@ -242,7 +230,6 @@ export class StatsService {
 
   async getRevenueByPaymentMethod(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { breakdown: [] };
 
     const rows = await this.prisma.order.groupBy({
       by: ['paymentMethod'],
@@ -265,7 +252,6 @@ export class StatsService {
   /** Doanh thu gắn với người lên đơn. Dùng hai truy vấn thay vì `$lookup` cũ: join sẽ lặp lại dòng user theo từng đơn chỉ để lấy một cái tên. */
   async getRevenueByStaff(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { staff: [] };
 
     const rows = await this.prisma.order.groupBy({
       by: ['userId'],
@@ -311,8 +297,6 @@ export class StatsService {
       query.sortBy === TopProductsSort.REVENUE
         ? TopProductsSort.REVENUE
         : TopProductsSort.QUANTITY;
-
-    if (scope.impossible) return { sortBy, products: [] };
 
     const { fromDate, toDate } = query.range();
     // Không phải bind parameter vì Postgres không nhận tham số trong ORDER BY. An toàn vì luôn là một trong hai literal ở trên, không lấy từ query string.
@@ -360,9 +344,6 @@ export class StatsService {
     const windows = comparisonWindows(new Date());
 
     const sum = async (range: DateRange) => {
-      if (scope.impossible) {
-        return { ...range, revenue: 0, orderCount: 0, aov: 0 };
-      }
       const agg = await this.prisma.order.aggregate({
         where: this.orderWhere(user, scope, range),
         _sum: { grandTotal: true },
@@ -403,7 +384,6 @@ export class StatsService {
   /** Mọi đơn tạo trong khoảng, bất kể trạng thái - phễu và tỉ lệ huỷ cần cả những đơn mà doanh thu bỏ qua. */
   async getOrdersByStatus(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { totalCount: 0, statuses: [] };
     const { fromDate, toDate } = query.range();
 
     const rows = await this.prisma.order.groupBy({
@@ -440,9 +420,7 @@ export class StatsService {
    */
   async getOrderPipeline(user: AuthUser, query: OrderPipelineQueryDto) {
     const scope = orderScope(user, query.branchId);
-    const rows = scope.impossible
-      ? []
-      : await this.countOpenOrders(user.tenantId, scope.branchId);
+    const rows = await this.countOpenOrders(user.tenantId, scope.branchId);
 
     const countOf = (statuses: readonly string[], deliveryFailed: boolean) =>
       rows
@@ -494,7 +472,6 @@ export class StatsService {
    */
   async getSlowProducts(user: AuthUser, query: SlowProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { products: [] };
     const { fromDate, toDate } = query.range();
 
     const rows = await this.prisma.$queryRaw<
@@ -558,7 +535,6 @@ export class StatsService {
 
   async getRevenueByBranch(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { branches: [] };
 
     const rows = await this.prisma.order.groupBy({
       by: ['branchId'],
@@ -593,7 +569,6 @@ export class StatsService {
   /** Chỉ các cặp thứ/giờ có bán mới có ô; `weekday` 0 = Chủ nhật .. 6, `hour` 0-23, đều theo giờ địa phương của shop. */
   async getSalesHeatmap(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { cells: [] };
     const { fromDate, toDate } = query.range();
 
     const rows = await this.prisma.$queryRaw<
@@ -631,7 +606,6 @@ export class StatsService {
   /** Chỉ khách có tên: dòng `KH_VANGLAI` gom mọi đơn vãng lai và sẽ đứng đầu mọi danh sách. */
   async getTopCustomers(user: AuthUser, query: TopCustomersQueryDto) {
     const scope = orderScope(user, query.branchId);
-    if (scope.impossible) return { customers: [] };
 
     const rows = await this.prisma.order.groupBy({
       by: ['customerId'],
