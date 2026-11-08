@@ -45,3 +45,37 @@ describe('customer phone', () => {
     ).toHaveLength(1);
   });
 });
+
+describe('customer email', () => {
+  const base = { name: 'Anh Nam' };
+
+  it('rejects an email that is not an address', async () => {
+    for (const email of ['bad-email', 'a@', '@b.com', 'a b@c.com']) {
+      expect(
+        await errorsOn(CreateCustomerDto, { ...base, email }, 'email'),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('accepts an address and lower-cases it', async () => {
+    const dto = plainToInstance(CreateCustomerDto, {
+      ...base,
+      email: ' Nam.Nguyen@Example.COM ',
+    });
+    expect(await validate(dto)).toHaveLength(0);
+    expect(dto.email).toBe('nam.nguyen@example.com');
+  });
+
+  it('lets a customer be created without an email', async () => {
+    expect(await errorsOn(CreateCustomerDto, base, 'email')).toHaveLength(0);
+  });
+
+  it('lets an update clear the email with null, but not set junk', async () => {
+    expect(
+      await errorsOn(UpdateCustomerDto, { email: null }, 'email'),
+    ).toHaveLength(0);
+    expect(
+      await errorsOn(UpdateCustomerDto, { email: 'bad-email' }, 'email'),
+    ).toHaveLength(1);
+  });
+});
