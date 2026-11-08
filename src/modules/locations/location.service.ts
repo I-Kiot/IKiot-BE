@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { LocationStatus } from '../../common/constants/location-status';
 import { UserStatus } from '../../common/constants/user-status';
 import { paginate, skipFor } from '../../common/utils/pagination';
+import { isSameName } from '../../common/utils/same-name';
 import { LOCATION_INCLUDE } from './location.types';
 import {
   assertCanBecomeSellable,
@@ -117,7 +122,30 @@ export abstract class LocationService {
     return this.toResponse(await this.findRow(tenantId, id));
   }
 
+  /** Hai chi nhánh (hoặc hai kho) còn hoạt động trong cùng shop không được trùng tên; nơi đã xoá mềm không tính, để tên cũ dùng lại được. */
+  private async assertNameFree(
+    tenantId: string,
+    name: string,
+    exceptId?: string,
+  ) {
+    const rows = await this.prisma.location.findMany({
+      where: {
+        tenantId,
+        type: this.config.kind,
+        status: { not: LocationStatus.DELETED },
+      },
+      select: { id: true, name: true },
+    });
+    if (rows.some((row) => row.id !== exceptId && isSameName(row.name, name))) {
+      throw new ConflictException({
+        code: ErrorCode.LOCATION_NAME_TAKEN,
+        message: `A ${this.config.specialization} named "${name.trim()}" already exists`,
+      });
+    }
+  }
+
   async create(tenantId: string, dto: LocationInput & { name: string }) {
+    await this.assertNameFree(tenantId, dto.name);
     // Hành vi cũ: POST /branches qua requireActiveSubscription rồi kiểm hạn mức gói; nay cả hai ở SubscriptionService (maxWarehouses là mới khi port).
     await this.subscriptions.assertQuota(
       tenantId,
@@ -170,6 +198,9 @@ export abstract class LocationService {
   async update(tenantId: string, id: string, dto: LocationInput) {
     // Prisma update({ where: { id } }) không nhận bộ lọc tenant không unique, nên phải kiểm phạm vi trước, không thì tenant nào cũng ghi được dòng theo id.
     const existing = await this.findRow(tenantId, id);
+    if (dto.name !== undefined && !isSameName(dto.name, existing.name)) {
+      await this.assertNameFree(tenantId, dto.name, id);
+    }
     await assertDamagedLocationTarget(
       this.prisma,
       tenantId,

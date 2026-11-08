@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { paginate, skipFor } from '../../common/utils/pagination';
+import { isSameName } from '../../common/utils/same-name';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { QueryCategoryDto } from './dto/query-category.dto';
@@ -172,14 +173,12 @@ export class CategoryService {
     parentId: string | null,
     exceptId?: string,
   ) {
-    // So trong code thay vì `mode: 'insensitive'`: Postgres không đổi hoa/thường chữ có dấu khi DB dùng collation `C`, nên "Bàn" và "bÀN" lọt qua.
-    const fold = (value: string) => value.trim().normalize('NFC').toLowerCase();
     const siblings = await this.prisma.category.findMany({
       where: { tenantId, parentId },
       select: { id: true, name: true },
     });
     const taken = siblings.some(
-      (sibling) => sibling.id !== exceptId && fold(sibling.name) === fold(name),
+      (sibling) => sibling.id !== exceptId && isSameName(sibling.name, name),
     );
     if (taken) {
       throw new ConflictException({
