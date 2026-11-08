@@ -11,6 +11,7 @@ import {
   IsUUID,
 } from 'class-validator';
 import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export const CUSTOMER_GENDERS: readonly string[] = ['MALE', 'FEMALE', 'OTHER'];
@@ -39,6 +40,11 @@ export class CreateCustomerDto {
     typeof value === 'string' ? value.trim() : value,
   )
   phone?: string;
+
+  /** Sai định dạng thì bị từ chối; `null` ở PATCH để xoá email đã lưu. */
+  @IsOptional()
+  @NormalizeEmail()
+  email?: string | null;
 
   @IsOptional()
   @IsIn(CUSTOMER_GENDERS, {
