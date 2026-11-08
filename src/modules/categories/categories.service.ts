@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -164,9 +165,36 @@ export class CategoryService {
     }
   }
 
+  /** Hai danh mục cùng cha không được trùng tên (không phân biệt hoa thường, bỏ khoảng trắng hai đầu). Khác cha thì trùng được: "Khác" dưới nhiều nhóm là bình thường. */
+  private async assertNameFree(
+    tenantId: string,
+    name: string,
+    parentId: string | null,
+    exceptId?: string,
+  ) {
+    // So trong code thay vì `mode: 'insensitive'`: Postgres không đổi hoa/thường chữ có dấu khi DB dùng collation `C`, nên "Bàn" và "bÀN" lọt qua.
+    const fold = (value: string) => value.trim().normalize('NFC').toLowerCase();
+    const siblings = await this.prisma.category.findMany({
+      where: { tenantId, parentId },
+      select: { id: true, name: true },
+    });
+    const taken = siblings.some(
+      (sibling) => sibling.id !== exceptId && fold(sibling.name) === fold(name),
+    );
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.CATEGORY_NAME_TAKEN,
+        message: `A category named "${name.trim()}" already exists here`,
+      });
+    }
+  }
+
   async create(tenantId: string, dto: CreateCategoryDto) {
     if (dto.parentId) await this.assertParentExists(tenantId, dto.parentId);
-    return this.prisma.category.create({ data: { ...dto, tenantId } });
+    await this.assertNameFree(tenantId, dto.name, dto.parentId ?? null);
+    return this.prisma.category.create({
+      data: { ...dto, name: dto.name.trim(), tenantId },
+    });
   }
 
   async update(tenantId: string, id: string, dto: UpdateCategoryDto) {
@@ -179,8 +207,23 @@ export class CategoryService {
 
     const renamed = dto.name !== undefined && dto.name !== existing.name;
 
+    // Đổi tên hoặc đổi cha đều có thể đẩy danh mục vào chỗ đã có tên đó.
+    const nextParentId =
+      dto.parentId === undefined ? existing.parentId : dto.parentId;
+    if (renamed || nextParentId !== existing.parentId) {
+      await this.assertNameFree(
+        tenantId,
+        dto.name ?? existing.name,
+        nextParentId,
+        id,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      const category = await tx.category.update({ where: { id }, data: dto });
+      const category = await tx.category.update({
+        where: { id },
+        data: dto.name === undefined ? dto : { ...dto, name: dto.name.trim() },
+      });
 
       // `Product.categoryName` là bản sao phi chuẩn hoá cho màn danh sách, nên phải đổi theo khi đổi tên. iKiotMS-BE trước đây không làm, và mọi sản phẩm vẫn hiện tên cũ.
       if (renamed) {
