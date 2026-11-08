@@ -7,6 +7,7 @@ import {
   IsString,
   IsUUID,
 } from 'class-validator';
+import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
 // Theo CreateBranchRequestDTO của iKiotMS-BE. Không có `status`: chi nhánh mới luôn ACTIVE (DTO generated cũ cho phép tạo sẵn ở trạng thái đã xoá).
 export class CreateBranchDto {
@@ -19,6 +20,7 @@ export class CreateBranchDto {
   @ArrayNotEmpty({ message: 'Chi nhánh phải có ít nhất một số điện thoại' })
   @IsString({ each: true })
   @IsNotEmpty({ each: true })
+  @IsContactPhone({ each: true })
   phoneNumber: string[];
 
   @IsOptional()
