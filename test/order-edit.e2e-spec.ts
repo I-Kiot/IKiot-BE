@@ -47,6 +47,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
   let edits: OrderEditService;
   let reads: OrderReadService;
   let fulfillments: FulfillmentService;
+  let notify: jest.Mock;
 
   const tenantId = randomUUID();
   const ownerId = randomUUID();
@@ -141,6 +142,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     edits = moduleRef.get(OrderEditService);
     reads = moduleRef.get(OrderReadService);
     fulfillments = moduleRef.get(FulfillmentService);
+    notify = moduleRef.get<{ notify: jest.Mock }>(NotificationService).notify;
     const inventory = moduleRef.get(InventoryService);
 
     await prisma.tenant.create({ data: { id: tenantId, name: 'edit-e2e' } });
@@ -590,6 +592,116 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     );
     await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
     await prisma.user.delete({ where: { id: elsewhereId } });
+  });
+
+  describe('who may change the person in charge (2026-11-08)', () => {
+    const colleagueId = randomUUID();
+    const strangerId = randomUUID();
+    // Nhân viên ở nơi bán, không có `orders:update`: chỉ được đổi khi đang phụ trách đơn.
+    const asStaff = (userId: string, permissions: string[] = []) =>
+      ({
+        userId,
+        tenantId,
+        systemRole: SystemRole.STAFF,
+        permissions: new Set(['orders:read', ...permissions]),
+        branchId,
+        warehouseId: null,
+        shiftSupervision: null,
+      }) as unknown as AuthUser;
+
+    beforeAll(async () => {
+      for (const id of [colleagueId, strangerId]) {
+        await prisma.user.create({
+          data: {
+            id,
+            tenantId,
+            phoneNumber: `edit-${id}`,
+            systemRole: SystemRole.STAFF,
+            status: UserStatus.ACTIVE,
+            locationId: branchId,
+          },
+        });
+      }
+    });
+
+    beforeEach(() => notify.mockClear());
+
+    it('lets the person in charge hand it on without orders:update, and tells both people', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      await edits.setAssignee(asStaff(staffId), tenantId, id, {
+        assigneeId: colleagueId,
+      });
+      expect((await orderRow(id)).assigneeId).toBe(colleagueId);
+      const sent = notify.mock.calls.map(
+        ([input]: [{ recipientIds: string[]; type: string }]) => [
+          input.recipientIds[0],
+          input.type,
+        ],
+      );
+      // Người tự giao lại không nhận thông báo "không còn phụ trách".
+      expect(sent).toEqual([[colleagueId, 'ORDER_ASSIGNED']]);
+
+      // Đã giao đi thì hết quyền: người cũ không đổi lại được nữa.
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(staffId), tenantId, id, {
+            assigneeId: staffId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+    });
+
+    it('refuses someone who is neither in charge nor holds orders:update, and lets one who does', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(strangerId), tenantId, id, {
+            assigneeId: strangerId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+      expect(
+        await codeOf(edits.listAssignees(asStaff(strangerId), tenantId, id)),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+
+      await edits.setAssignee(
+        asStaff(strangerId, ['orders:update']),
+        tenantId,
+        id,
+        { assigneeId: colleagueId },
+      );
+      expect((await orderRow(id)).assigneeId).toBe(colleagueId);
+      const recipients = notify.mock.calls.map(
+        ([input]: [{ recipientIds: string[] }]) => input.recipientIds[0],
+      );
+      expect(recipients.sort()).toEqual([colleagueId, staffId].sort());
+    });
+
+    it('lists the people who can take the order, marking the current one', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      const people = await edits.listAssignees(asStaff(staffId), tenantId, id);
+      const ids = people.map((person) => person.id);
+      expect(ids).toEqual(
+        expect.arrayContaining([ownerId, staffId, colleagueId, strangerId]),
+      );
+      expect(people.find((p) => p.id === staffId)?.isCurrent).toBe(true);
+      expect(people.find((p) => p.id === ownerId)?.isOwner).toBe(true);
+    });
+
+    it('still refuses once the order is shipping, even for the person in charge', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      await prisma.order.update({
+        where: { id },
+        data: { status: OrderStatus.SHIPPING },
+      });
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(staffId), tenantId, id, {
+            assigneeId: colleagueId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+    });
   });
 
   describe('changing the source of the whole order', () => {

@@ -47,7 +47,12 @@ export const ORDER_LIST_INCLUDE = {
   shipments: {
     orderBy: { createdAt: 'desc' },
     take: 1,
-    select: { status: true, driver: USER_REF_SELECT },
+    select: {
+      id: true,
+      status: true,
+      carrierType: true,
+      driver: USER_REF_SELECT,
+    },
   },
 } as const satisfies Prisma.OrderInclude;
 

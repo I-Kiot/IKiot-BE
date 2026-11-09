@@ -5,9 +5,11 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import {
   ASSIGNEE_MAY_SHIP,
   assertOrderStepAccess,
+  assertReassignAccess,
   assigneeClaim,
   orderStepAccess,
   OrderStepPermission,
+  reassignAccess,
 } from './order-handler';
 
 const WAREHOUSE = 'warehouse-1';
@@ -132,5 +134,36 @@ describe('assigneeClaim', () => {
     });
     expect(assigneeClaim('PERMISSION', user)).toEqual({});
     expect(assigneeClaim('OWNER', user)).toEqual({});
+  });
+});
+
+describe('reassignAccess', () => {
+  const order = { assigneeId: 'assignee-1' };
+
+  it('lets the shop owner hand any order to someone else', () => {
+    const owner = { ...staff([]), systemRole: SystemRole.TENANT_OWNER };
+    expect(reassignAccess(owner, order)).toBe('OWNER');
+  });
+
+  it('lets the person in charge hand it on without orders:update', () => {
+    expect(reassignAccess(staff([], 'assignee-1'), order)).toBe('ASSIGNEE');
+  });
+
+  it('lets someone holding orders:update do it, and nobody else', () => {
+    expect(reassignAccess(staff(['orders:update']), order)).toBe('PERMISSION');
+    expect(reassignAccess(staff(['orders:read']), order)).toBeNull();
+    expect(reassignAccess(staff([]), { assigneeId: null })).toBeNull();
+  });
+
+  it('refuses with ORDER_STEP_DENIED', () => {
+    try {
+      assertReassignAccess(staff(['orders:pack']), order);
+      throw new Error('expected a refusal');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect((error as ForbiddenException).getResponse()).toMatchObject({
+        code: ErrorCode.ORDER_STEP_DENIED,
+      });
+    }
   });
 });

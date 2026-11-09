@@ -312,3 +312,14 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 - FE `/reports` và dashboard tổng quan: chọn kho thấy đủ doanh thu của kho, như chi nhánh.
 
 **Lưu ý:** yêu cầu sản xuất đang mở giữ nguyên nơi nhận, nên sau khi đổi nguồn hàng xưởng vẫn về nơi cũ; đơn sẽ báo thiếu ở nơi mới tới khi chuyển kho.
+
+## 2026-11-08 – Đổi người phụ trách đơn: người đang phụ trách cũng đổi được, và ô chọn ở danh sách đơn
+
+- `PATCH /orders/:id/assignee` bỏ `@Permissions('orders','update')`, kiểm trong service bằng `assertReassignAccess` (`order-handler.ts`): chủ shop, người đang phụ trách đơn, hoặc người có `orders:update`. Người khác → `ORDER_STEP_DENIED`. Vẫn chỉ trước Đang vận chuyển (chốt cùng ngày: không đổi khi hàng đang trên đường).
+- Người đang phụ trách được qua phạm vi chi nhánh như các bước khác của đơn. Lúc ghi có điều kiện `assigneeId = mình`, hai người cùng giao lại thì người sau nhận `ORDER_STATUS_CONFLICT`.
+- `GET /orders/:id/assignees` (mới, cùng luật quyền): nhân viên ACTIVE tại nơi bán và chủ shop, kèm `isOwner`, `isCurrent`. Cùng hàm `worksAt` với `assertAssignee`. Trước đây FE lấy từ `GET /users`, cần `users:read`, nên người phụ trách không có quyền đó thấy danh sách rỗng.
+- Thông báo `ORDER_ASSIGNED` cho người mới, `ORDER_UNASSIGNED` cho người cũ, trừ chính người vừa đổi. Cả `PATCH /orders/:id` có `assigneeId` cũng báo.
+- `GET /orders` mỗi dòng thêm `latestShipment: { id, status, carrierType } | null`, để FE đổi shipper ngay ở danh sách (`PATCH /shipments/:id/driver`, luật quyền không đổi). Không có migration.
+
+**Đã kiểm chứng:** `tsc`, lint, build, `check-permissions`, unit 463/463, `test:e2e` 337/337 trên Postgres local (4 case mới trong `test/order-edit.e2e-spec.ts`).
+**Chưa kiểm chứng:** chưa bấm thử trên dev.
