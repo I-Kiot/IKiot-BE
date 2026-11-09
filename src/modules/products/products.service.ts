@@ -357,6 +357,10 @@ export class ProductService {
         },
       ];
     }
+    // Dùng AND để không đè bộ lọc `productItems` theo nhà cung cấp mà buildProductWhere có thể đã đặt.
+    if (query.itemIds?.length) {
+      where.AND = [{ productItems: { some: { id: { in: query.itemIds } } } }];
+    }
 
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({

@@ -3,6 +3,8 @@ import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsIn,
   IsInt,
   IsOptional,
@@ -81,6 +83,19 @@ export class SearchProductDto extends ProductFilterDto {
     typeof value === 'string' ? value.trim() : value,
   )
   q?: string;
+
+  /**
+   * Chỉ lấy sản phẩm chứa các phiên bản này (`?itemIds=a,b`), để POS đọc lại tồn của cả giỏ tại nơi bán mới bằng một request.
+   * Tối đa 100, bằng trần `limit`: mỗi id thuộc đúng một sản phẩm nên một trang luôn đủ chứa.
+   */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.split(',').filter(Boolean) : value,
+  )
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  itemIds?: string[];
 }
 
 /** Danh sách phẳng các phiên bản cho bộ chọn theo SKU, vì `GET /products` cố ý không gắn phiên bản. */
