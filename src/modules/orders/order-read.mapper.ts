@@ -254,6 +254,14 @@ export function toOrderListItem(
     driver: toUserRef(row.shipments[0]?.driver ?? null),
     // Giao thất bại thì đơn vẫn ở SHIPPING (hàng còn ngoài kho); trường này để danh sách hiển thị điều đó.
     latestShipmentStatus: row.shipments[0]?.status ?? null,
+    // Lần giao mới nhất, để ô chọn shipper ở danh sách gọi được `PATCH /shipments/:id/driver` (2026-11-08).
+    latestShipment: row.shipments[0]
+      ? {
+          id: row.shipments[0].id,
+          status: row.shipments[0].status,
+          carrierType: row.shipments[0].carrierType,
+        }
+      : null,
     // Chỉ tính dòng gốc: một combo tính một lần, không tính theo từng thành phần.
     itemCount: row.items.filter((item) => item.parentItemId === null).length,
     stockSummary: summarizeStock(items.map((item) => item.stockCheck)),

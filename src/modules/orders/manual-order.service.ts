@@ -45,6 +45,17 @@ const ASSIGNABLE_ROLES: readonly string[] = [
   SystemRole.STAFF,
 ];
 
+/** Chủ shop xem được đơn ở mọi nơi nên phụ trách được ở mọi nơi; nhân viên chỉ ở nơi mình làm. */
+function worksAt(
+  person: { systemRole: string; locationId: string | null },
+  placeId: string,
+): boolean {
+  return (
+    person.systemRole === SystemRole.TENANT_OWNER ||
+    person.locationId === placeId
+  );
+}
+
 export interface ResolvedDeposit {
   amount: number;
   percent: number | null;
@@ -336,15 +347,35 @@ export class ManualOrderService {
         message: 'The person in charge is not an active account of this shop',
       });
     }
-    if (
-      assignee.systemRole !== SystemRole.TENANT_OWNER &&
-      assignee.locationId !== placeId
-    ) {
+    if (!worksAt(assignee, placeId)) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
         message: 'The person in charge must work at the location of the order',
       });
     }
+  }
+
+  /** Mọi người `assertAssignee` nhận cho nơi bán này, cho ô chọn người phụ trách. Cùng điều kiện, nên chọn trong danh sách thì không bị từ chối. */
+  async listAssignableAt(tenantId: string, placeId: string) {
+    const people = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        status: UserStatus.ACTIVE,
+        systemRole: { in: [...ASSIGNABLE_ROLES] },
+        OR: [{ systemRole: SystemRole.TENANT_OWNER }, { locationId: placeId }],
+      },
+      select: {
+        id: true,
+        phoneNumber: true,
+        profileFirstName: true,
+        profileLastName: true,
+        systemRole: true,
+        locationId: true,
+      },
+      orderBy: [{ profileFirstName: 'asc' }, { phoneNumber: 'asc' }],
+    });
+    // Lọc lại bằng chính `worksAt`, để danh sách và lần kiểm khi ghi là một luật.
+    return people.filter((person) => worksAt(person, placeId));
   }
 
   /**
