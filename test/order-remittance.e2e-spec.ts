@@ -267,6 +267,29 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     await prisma.$disconnect();
   });
 
+  it('shows nothing left to collect once the shipper has collected', async () => {
+    const { orderId, shipmentId } = await shippingOrder();
+    const dueOf = async () =>
+      (await delivery.listMine(owner, tenantId)).find(
+        (row) => row.id === shipmentId,
+      )?.order.amountDue;
+    expect(await dueOf()).toBe(7_000_000);
+
+    await delivery.deliver(owner, tenantId, shipmentId, {
+      proofPhotoUrls: proof,
+      paymentMethod: DeliveryCollectionMethod.CASH,
+      collectedAmount: 7_000_000,
+    });
+
+    const history = await delivery.listMyHistory(owner, tenantId, {
+      page: 1,
+      limit: 50,
+    } as never);
+    const row = history.data.find((r) => r.id === shipmentId);
+    expect(row?.order.amountDue).toBe(0);
+    expect(orderId).toBeDefined();
+  });
+
   it('completes a cash delivery once the owner has all of it, recording who and when', async () => {
     const orderId = await deliveredOrder(DeliveryCollectionMethod.CASH);
     const before = await orderOf(orderId);
