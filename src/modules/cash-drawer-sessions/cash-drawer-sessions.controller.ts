@@ -43,6 +43,16 @@ export class CashDrawerSessionController {
     return this.service.current(user, query.branchId);
   }
 
+  /** Ai nhận được két khi mở két đầu ngày - chỉ tên. Cùng quyền với `POST` (mở két), để màn mở két không phải cần `users:read`. Khai báo trên `:id` như `current`. */
+  @Permissions('cash_drawers', 'open')
+  @Get('eligible-staff')
+  eligibleStaff(
+    @CurrentUser() user: AuthUser,
+    @Query() query: CurrentCashDrawerDto,
+  ) {
+    return this.service.eligibleStaff(user, query.branchId);
+  }
+
   /** Báo cáo chênh lệch - những ngày nào không khớp. Khai báo trên `:id` vì cả hai đều một đoạn, và chịu cùng phạm vi `read`/`read_own`, nên không bao giờ lộ phiên mà caller không mở được. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('reconciliation')
@@ -73,6 +83,16 @@ export class CashDrawerSessionController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.service.reconcile(user, id);
+  }
+
+  /** Ai nhận được bàn giao của phiên này - chỉ tên, chỉ cho người đang giữ két. Cùng quyền với shift log, nơi danh sách được dùng. */
+  @Permissions('cash_drawers', 'report')
+  @Get(':id/handover-candidates')
+  handoverCandidates(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.handoverCandidates(user, id);
   }
 
   /** Thu ngân nhận két (START) hoặc bàn giao lại (END). */

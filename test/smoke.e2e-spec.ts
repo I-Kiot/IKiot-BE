@@ -2094,6 +2094,50 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(201);
     const secondToken = second.body.data.accessToken;
 
+    // Danh sách cho ô chọn: thay cho `GET /users`, mà thu ngân không có quyền đọc.
+    const eligible = await http()
+      .get(`/cash-drawer-sessions/eligible-staff?branchId=${branchId}`)
+      .set(auth())
+      .expect(200);
+    const eligibleIds = eligible.body.data.map((u: { id: string }) => u.id);
+    expect(eligibleIds).toEqual(
+      expect.arrayContaining([staffId, secondStaff.body.data.id]),
+    );
+    expect(eligible.body.data[0]).not.toHaveProperty('phoneNumber');
+    expect(Object.keys(eligible.body.data[0].profile).sort()).toEqual([
+      'firstName',
+      'lastName',
+    ]);
+    await http()
+      .get('/cash-drawer-sessions/eligible-staff')
+      .set(auth(secondToken))
+      .expect(403);
+    note(
+      'GET /cash-drawer-sessions/eligible-staff: names only for the opener, 403 without cash_drawers:open OK',
+    );
+
+    const candidates = await http()
+      .get(`/cash-drawer-sessions/${sessionId}/handover-candidates`)
+      .set(auth(staffToken))
+      .expect(200);
+    const candidateIds = candidates.body.data.map((u: { id: string }) => u.id);
+    expect(candidateIds).toContain(secondStaff.body.data.id);
+    expect(candidateIds).not.toContain(staffId);
+    expect(candidates.body.data[0]).not.toHaveProperty('phoneNumber');
+    // Người không giữ két không thấy phiên (read_own) nên không liệt kê được đồng nghiệp qua đây.
+    await http()
+      .get(`/cash-drawer-sessions/${sessionId}/handover-candidates`)
+      .set(auth(secondToken))
+      .expect(404);
+    // Chủ shop thấy phiên nhưng không giữ két: cùng luật với shift log.
+    await http()
+      .get(`/cash-drawer-sessions/${sessionId}/handover-candidates`)
+      .set(auth())
+      .expect(403);
+    note(
+      'GET /cash-drawer-sessions/:id/handover-candidates: holder only, excludes self, names only OK',
+    );
+
     // Chỉ người đang giữ ngăn kéo mới được ghi vào đó.
     await http()
       .post(`/cash-drawer-sessions/${sessionId}/shift-logs`)
