@@ -10,6 +10,8 @@ import {
   IsString,
   IsUUID,
 } from 'class-validator';
+import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export const CUSTOMER_GENDERS: readonly string[] = ['MALE', 'FEMALE', 'OTHER'];
@@ -30,13 +32,19 @@ export class CreateCustomerDto {
   )
   customerCode?: string;
 
-  // Không qua validateVietnamPhoneNumber: SĐT khách là thông tin liên lạc gõ từ hoá đơn, từ chối số bàn sẽ làm đơn không lên được.
+  // Không qua validateVietnamPhoneNumber: SĐT khách là thông tin liên lạc gõ từ hoá đơn, từ chối số bàn sẽ làm đơn không lên được. Chỉ chặn giá trị hiển nhiên không phải số (`123`, `abc`); chuỗi rỗng vẫn được để PATCH xoá số đã lưu.
   @IsOptional()
   @IsString()
+  @IsContactPhone({ allowEmpty: true })
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
   phone?: string;
+
+  /** Sai định dạng thì bị từ chối; `null` ở PATCH để xoá email đã lưu. */
+  @IsOptional()
+  @NormalizeEmail()
+  email?: string | null;
 
   @IsOptional()
   @IsIn(CUSTOMER_GENDERS, {
