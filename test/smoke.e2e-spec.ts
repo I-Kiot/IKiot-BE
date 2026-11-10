@@ -515,6 +515,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({ phoneNumber: '0651234567', roleId, branchId })
       .expect(400);
+
+    const noWorkplace = await http()
+      .post('/users')
+      .set(auth())
+      .send({ phoneNumber: '0987650009', roleId })
+      .expect(400);
+    expect(noWorkplace.body.code).toBe('STAFF_WORKPLACE_REQUIRED');
     note('POST /users with VoIP prefix 065: 400 OK (phone validator wired)');
 
     // Thuê và cấp quyền truy cập là hai lệnh, như hệ cũ: POST /users ghi nhân viên vào sổ không có mật khẩu, POST /users/:id/account mới bật đăng nhập.

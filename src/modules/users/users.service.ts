@@ -147,6 +147,12 @@ export class UserService {
     // Cùng quy tắc tập quyền như update: nếu không, có thể tuyển thẳng đồng nghiệp vào role đặc quyền nhất rồi bật login.
     await this.assertRoleIsWithinGrant(actor, tenantId, dto.roleId);
     const posting = this.resolvePosting(dto);
+    // Nhân viên xưởng làm cho một nhà cung cấp xưởng nên không có địa điểm; mọi người khác phải thuộc một chi nhánh hoặc kho.
+    if (!dto.branchId && !dto.warehouseId && !dto.workshopId)
+      throw new BadRequestException({
+        code: ErrorCode.STAFF_WORKPLACE_REQUIRED,
+        message: 'An employee must belong to a branch or a warehouse',
+      });
     await this.assertWorkplaceBelongsToTenant(
       tenantId,
       dto.branchId,
