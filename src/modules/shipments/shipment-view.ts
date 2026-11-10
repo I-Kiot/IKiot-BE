@@ -30,6 +30,7 @@ export const SHIPMENT_SUMMARY_INCLUDE = {
       status: true,
       grandTotal: true,
       depositAmount: true,
+      payments: { select: { kind: true, status: true, amount: true } },
       customer: { select: { name: true } },
     },
   },
@@ -48,12 +49,39 @@ type ShipmentSummaryRow = Prisma.ShipmentGetPayload<{
   include: typeof SHIPMENT_SUMMARY_INCLUDE;
 }>;
 
-/** Số shipper thu khi giao = tổng đơn − tiền cọc (schema: tính chứ không lưu). */
+/** Số shipper thu khi giao = tổng đơn − tiền cọc (schema: tính chứ không lưu). Dùng để đối chiếu số tiền shipper nhập lúc giao, nên không trừ khoản thu về sau. */
 export function amountDueOf(order: {
   grandTotal: unknown;
   depositAmount: unknown;
 }): number {
   return Number(order.grandTotal) - Number(order.depositAmount ?? 0);
+}
+
+/**
+ * Số còn phải thu của đơn tại thời điểm xem: tổng đơn trừ tiền cọc và mọi khoản đã thu (kể cả lần shipper vừa thu), cộng lại khoản đã hoàn. Khoản đang chờ chưa tính. Không âm.
+ * Đơn cũ có `depositAmount` nhưng không có dòng Payment cọc vẫn tính cọc theo `depositAmount`.
+ */
+export function amountStillDueOf(order: {
+  grandTotal: unknown;
+  depositAmount: unknown;
+  payments: readonly { kind: string; status: string; amount: unknown }[];
+}): number {
+  const paid = order.payments.filter(
+    (p) => p.status === PaymentRecordStatus.PAID,
+  );
+  const sum = (kinds: readonly string[]) =>
+    paid
+      .filter((p) => kinds.includes(p.kind))
+      .reduce((total, p) => total + Number(p.amount), 0);
+  const deposit = Math.max(
+    Number(order.depositAmount ?? 0),
+    sum([PaymentKind.DEPOSIT]),
+  );
+  const received =
+    deposit +
+    sum([PaymentKind.BALANCE, PaymentKind.FULL]) -
+    sum([PaymentKind.REFUND]);
+  return Math.max(0, Math.round(Number(order.grandTotal) - received));
 }
 
 export function toSummary(row: ShipmentSummaryRow) {
@@ -66,7 +94,7 @@ export function toSummary(row: ShipmentSummaryRow) {
       code: order.code,
       status: order.status,
       customerName: order.customer.name,
-      amountDue: amountDueOf(order),
+      amountDue: amountStillDueOf(order),
     },
     driver: driver ? withNestedProfile(driver) : null,
   };
