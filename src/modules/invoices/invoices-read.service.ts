@@ -14,6 +14,7 @@ import {
 } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { narrowToScope } from '../../common/utils/scope-filter';
+import { phoneSearchTerms } from '../../common/utils/phone-search';
 import { can } from '../../common/utils/permission';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { toUserRef } from '../orders/order-read.mapper';
@@ -94,6 +95,10 @@ export class InvoiceReadService {
           { order: { code: contains } },
           { order: { customer: { name: contains } } },
           { order: { customer: { phone: contains } } },
+          // `Customer.phone` chỉ còn chữ số: số gõ có dấu cách, dấu chấm hay +84 phải đổi về dạng đó mới khớp.
+          ...phoneSearchTerms(query.search).map((term) => ({
+            order: { customer: { phone: { contains: term } } },
+          })),
         ],
       });
     }

@@ -16,6 +16,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { can } from '../../common/utils/permission';
 import { narrowToScope } from '../../common/utils/scope-filter';
+import { phoneSearchTerms } from '../../common/utils/phone-search';
 import type { Prisma } from '../../../generated/prisma/client';
 import { businessDate } from '../cash-drawer-sessions/business-date';
 import { QueryOrderJourneyDto } from './dto/query-order-journey.dto';
@@ -232,6 +233,10 @@ export class OrderReadService {
         OR: [
           { code: contains },
           { customer: { OR: [{ name: contains }, { phone: contains }] } },
+          // `Customer.phone` chỉ còn chữ số: số gõ có dấu cách, dấu chấm hay +84 phải đổi về dạng đó mới khớp.
+          ...phoneSearchTerms(query.search).map((term) => ({
+            customer: { phone: { contains: term } },
+          })),
         ],
       });
     }
