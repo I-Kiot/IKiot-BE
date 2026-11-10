@@ -57,6 +57,30 @@ const STAFF_SELECT = {
   profileLastName: true,
 } as const;
 
+/**
+ * Ai được giữ két của một chi nhánh: nhân viên STAFF đang hoạt động, được gán đúng chi nhánh đó. Một bản duy nhất:
+ * bước kiểm tra khi mở két / bàn giao (`assertBranchAndStaff`) và hai danh sách cho ô chọn (`eligibleStaff`,
+ * `handoverCandidates`) đều đi qua đây, nên ô chọn không bao giờ hiện ra người mà lúc gửi lại bị từ chối.
+ */
+function cashierWhere(
+  tenantId: string,
+  branchId: string,
+): Prisma.UserWhereInput {
+  return {
+    tenantId,
+    locationId: branchId,
+    status: UserStatus.ACTIVE,
+    systemRole: SystemRole.STAFF,
+  };
+}
+
+/** Chỉ tên - đủ cho ô chọn. Hai route danh sách mở cho thu ngân, những người không có `users:read`, nên không trả số điện thoại hay hồ sơ. */
+const CASHIER_SELECT = {
+  id: true,
+  profileFirstName: true,
+  profileLastName: true,
+} as const satisfies Prisma.UserSelect;
+
 const SESSION_INCLUDE = {
   branch: BRANCH_NAME_SELECT,
   openedBy: { select: STAFF_SELECT },
@@ -203,6 +227,41 @@ export class CashDrawerSessionService {
 
   async findOne(user: AuthUser, id: string) {
     return this.toResponse(await this.findRow(user, id));
+  }
+
+  /**
+   * Ai có thể nhận két khi mở két đầu ngày ở chi nhánh này. Thay cho việc màn mở két gọi `GET /users` (cần
+   * `users:read` và trả cả hồ sơ nhân sự): người được mở két không nhất thiết được xem hồ sơ đồng nghiệp.
+   * Chi nhánh đi qua `resolveBranch` như `open`, nên nhân viên được gán chỉ xem được chi nhánh của mình.
+   */
+  async eligibleStaff(user: AuthUser, requestedBranchId?: string) {
+    const tenantId = this.tenantOf(user);
+    const branchId = this.resolveBranch(user, requestedBranchId)!;
+    await this.assertActiveBranch(tenantId, branchId);
+    return this.listCashiers(tenantId, branchId);
+  }
+
+  /**
+   * Ai có thể nhận bàn giao của phiên này. Chỉ người đang giữ két được hỏi, cùng điều kiện `submitShiftLog` đặt
+   * cho việc ghi log: chỉ người đó gửi được END có `nextStaffId`, nên với bất kỳ ai khác danh sách này chỉ là một
+   * cách liệt kê đồng nghiệp. Không gồm chính người hỏi (`SHIFT_LOG_NEXT_STAFF_SELF`).
+   */
+  async handoverCandidates(user: AuthUser, id: string) {
+    const session = await this.findRow(user, id);
+    if (session.status !== CashDrawerStatus.OPEN) {
+      throw new ConflictException({
+        code: ErrorCode.CASH_DRAWER_CLOSED,
+        message: 'This drawer session is closed',
+      });
+    }
+    if (session.currentStaffId !== user.userId) {
+      throw new ForbiddenException({
+        code: ErrorCode.CASH_DRAWER_NOT_HOLDER,
+        message:
+          'Only the cashier currently holding the drawer can hand it over',
+      });
+    }
+    return this.listCashiers(session.tenantId, session.branchId, user.userId);
   }
 
   /** Tiền mặt lẽ ra phải có so với số đã đếm, chia theo ca. Chỉ tính tiền mặt: thẻ và SePay không vào két, doanh thu không tiền mặt chỉ để làm ngữ cảnh, không nằm trong chênh lệch. */
@@ -696,42 +755,63 @@ export class CashDrawerSessionService {
     branchId: string,
     staffId: string,
   ) {
-    const [branch, staff] = await Promise.all([
-      this.prisma.branch.findFirst({
-        where: {
-          id: branchId,
-          tenantId,
-          location: {
-            status: LocationStatus.ACTIVE,
-            type: LocationType.BRANCH,
-          },
-        },
-        select: { id: true },
-      }),
+    const [, staff] = await Promise.all([
+      this.assertActiveBranch(tenantId, branchId),
       this.prisma.user.findFirst({
-        where: {
-          id: staffId,
-          tenantId,
-          locationId: branchId,
-          status: UserStatus.ACTIVE,
-          systemRole: SystemRole.STAFF,
-        },
+        where: { id: staffId, ...cashierWhere(tenantId, branchId) },
         select: { id: true },
       }),
     ]);
 
-    if (!branch) {
-      throw new NotFoundException({
-        code: ErrorCode.BRANCH_NOT_FOUND,
-        message: 'No active branch found',
-      });
-    }
     if (!staff) {
       throw new NotFoundException({
         code: ErrorCode.STAFF_NOT_AT_BRANCH,
         message: 'No active employee found at this branch',
       });
     }
+  }
+
+  private async assertActiveBranch(tenantId: string, branchId: string) {
+    const branch = await this.prisma.branch.findFirst({
+      where: {
+        id: branchId,
+        tenantId,
+        location: {
+          status: LocationStatus.ACTIVE,
+          type: LocationType.BRANCH,
+        },
+      },
+      select: { id: true },
+    });
+    if (!branch) {
+      throw new NotFoundException({
+        code: ErrorCode.BRANCH_NOT_FOUND,
+        message: 'No active branch found',
+      });
+    }
+  }
+
+  /** Danh sách người đủ điều kiện, chỉ tên: lọc bằng đúng `cashierWhere` mà bước kiểm tra khi ghi dùng. */
+  private async listCashiers(
+    tenantId: string,
+    branchId: string,
+    excludeUserId?: string,
+  ) {
+    const rows = await this.prisma.user.findMany({
+      where: {
+        ...cashierWhere(tenantId, branchId),
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
+      select: CASHIER_SELECT,
+      orderBy: [{ profileFirstName: 'asc' }, { id: 'asc' }],
+    });
+    return rows.map(({ profileFirstName, profileLastName, ...rest }) => ({
+      ...rest,
+      profile: {
+        firstName: profileFirstName ?? null,
+        lastName: profileLastName ?? null,
+      },
+    }));
   }
 
   private isUniqueViolation(error: unknown): boolean {

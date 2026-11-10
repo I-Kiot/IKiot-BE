@@ -323,3 +323,15 @@ Nhật ký bàn giao (tiếng Việt, chỉ thêm mục mới, không sửa các
 
 **Đã kiểm chứng:** `tsc`, lint, build, `check-permissions`, unit 463/463, `test:e2e` 337/337 trên Postgres local (4 case mới trong `test/order-edit.e2e-spec.ts`).
 **Chưa kiểm chứng:** chưa bấm thử trên dev.
+
+## 2026-11-10 – Chọn người giữ két không cần quyền xem danh sách nhân viên
+
+- Màn mở két và dialog báo cáo cuối ca trước đây lấy danh sách từ `GET /users`, cần `users:read` và trả cả hồ sơ nhân sự. Thu ngân thường không có quyền này nên nhận 403 và ô chọn rỗng. Màn mở két còn gọi API đó ngay khi vào trang, với mọi tài khoản, kể cả người không mở két được.
+- `GET /cash-drawer-sessions/eligible-staff?branchId=` (`cash_drawers:open`): ai nhận được két khi mở két đầu ngày. Chi nhánh đi qua `resolveBranch` như `POST /cash-drawer-sessions`.
+- `GET /cash-drawer-sessions/:id/handover-candidates` (`cash_drawers:report`): ai nhận được bàn giao. Chỉ người đang giữ két gọi được (`CASH_DRAWER_NOT_HOLDER`, chủ shop cũng vậy, cùng luật với `submitShiftLog`), phiên đã đóng → `CASH_DRAWER_CLOSED`, không gồm chính người gọi.
+- Cả hai chỉ trả `{ id, profile: { firstName, lastName } }`. Lọc bằng `cashierWhere()`, đúng điều kiện `assertBranchAndStaff` dùng khi ghi, nên người hiện trong ô chọn không bao giờ bị từ chối lúc gửi.
+- Không thêm cặp quyền mới, không có migration.
+- FE: màn mở két chỉ tải danh sách khi bấm "Mở két đầu ngày" (một chi nhánh) hoặc bấm vào chi nhánh (chủ shop xem nhiều chi nhánh); dialog báo cáo cuối ca gọi `handover-candidates`. Ô chọn không còn hiện tên role.
+
+**Đã kiểm chứng:** `tsc`, lint, build, `check-permissions`, unit 463/463, `test:e2e -- smoke` 52/52 trên `ikiot_e2e` (thêm kiểm tra cho hai route trong kịch bản két). FE: `tsc` sạch.
+**Chưa kiểm chứng:** chưa chạy toàn bộ `test:e2e`, chưa bấm thử trên dev.
