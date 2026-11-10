@@ -88,6 +88,41 @@ export function assertOrderStepAccess(
   return access;
 }
 
+/**
+ * Ai đổi được người phụ trách (chốt 2026-11-08): chủ shop, người đang phụ trách đơn (giao lại cho người khác), hoặc người có `orders:update`.
+ * Đường `PERMISSION` vẫn phải thấy được đơn (phạm vi chi nhánh), việc đó do nơi gọi kiểm. Thuần, không đọc DB.
+ */
+export function reassignAccess(
+  user: AuthUser,
+  order: { assigneeId: string | null },
+): OrderStepAccess | null {
+  if (
+    user.systemRole === SystemRole.TENANT_OWNER ||
+    user.systemRole === SystemRole.ADMIN
+  ) {
+    return 'OWNER';
+  }
+  if (order.assigneeId !== null && order.assigneeId === user.userId) {
+    return 'ASSIGNEE';
+  }
+  return can(user, 'orders', 'update') ? 'PERMISSION' : null;
+}
+
+export function assertReassignAccess(
+  user: AuthUser,
+  order: { assigneeId: string | null },
+): OrderStepAccess {
+  const access = reassignAccess(user, order);
+  if (access === null) {
+    throw new ForbiddenException({
+      code: ErrorCode.ORDER_STEP_DENIED,
+      message:
+        "Only the shop owner, the order's person in charge, or someone holding orders:update can change who is in charge",
+    });
+  }
+  return access;
+}
+
 /** Mệnh đề chiếm đơn: nếu quyền đến từ người phụ trách thì lúc ghi họ vẫn phải là người phụ trách. */
 export function assigneeClaim(
   access: OrderStepAccess,

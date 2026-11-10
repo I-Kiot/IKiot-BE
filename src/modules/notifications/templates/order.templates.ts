@@ -24,6 +24,22 @@ export const OrderNotificationTemplates = {
     link: `/sales/orders/${orderId}?confirmCash=1`,
   }),
 
+  /** Gửi người vừa được giao phụ trách đơn, trừ khi họ tự nhận. */
+  assigned: (orderId: string, orderCode: string): NotificationContent => ({
+    type: 'ORDER_ASSIGNED',
+    title: 'Bạn được giao phụ trách đơn',
+    description: `Bạn là người phụ trách đơn ${orderCode} từ bây giờ.`,
+    link: `/sales/orders/${orderId}`,
+  }),
+
+  /** Gửi người vừa thôi phụ trách đơn, trừ khi chính họ giao lại. */
+  unassigned: (orderId: string, orderCode: string): NotificationContent => ({
+    type: 'ORDER_UNASSIGNED',
+    title: 'Bạn không còn phụ trách đơn',
+    description: `Đơn ${orderCode} đã được giao cho người khác phụ trách.`,
+    link: `/sales/orders/${orderId}`,
+  }),
+
   deliveryTransferReceived: (
     orderCode: string,
     amount: number,

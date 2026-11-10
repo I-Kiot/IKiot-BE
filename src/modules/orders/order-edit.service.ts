@@ -26,6 +26,11 @@ import {
 import { assertDeliveryInfoComplete } from './order-delivery.rules';
 import { cancelCounterQr } from './order-pickup.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
+import { assertReassignAccess, assigneeClaim } from './order-handler';
+import { toUserRef } from './order-read.mapper';
+import { NotificationService } from '../notifications/notifications.service';
+import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
+import { SystemRole } from '../../common/constants/system-role';
 import {
   SetOrderAssigneeDto,
   SetOrderPriorityDto,
@@ -120,6 +125,7 @@ export class OrderEditService {
     private readonly reads: OrderReadService,
     private readonly customers: CustomerService,
     private readonly shortages: OrderShortageAlerts,
+    private readonly notifications: NotificationService,
   ) {}
 
   async update(
@@ -373,6 +379,8 @@ export class OrderEditService {
 
     if (shortage)
       await this.shortages.notify(tenantId, id, shortage, user.userId);
+    if (dto.assigneeId)
+      await this.notifyReassigned(tenantId, order, dto.assigneeId, user);
     return this.reads.findOne(user, tenantId, id);
   }
 
@@ -382,10 +390,62 @@ export class OrderEditService {
     id: string,
     dto: SetOrderAssigneeDto,
   ) {
-    const order = await this.loadEditable(user, tenantId, id);
+    const order = await this.loadEditable(user, tenantId, id, {
+      assigneeMayEdit: true,
+    });
+    const access = assertReassignAccess(user, order);
+    if (dto.assigneeId === order.assigneeId)
+      return this.reads.findOne(user, tenantId, id);
     await this.manual.assertAssignee(tenantId, dto.assigneeId, order.branchId);
-    await this.claimUnshipped(tenantId, id, { assigneeId: dto.assigneeId });
+    // Quyền đến từ việc đang phụ trách thì lúc ghi vẫn phải đang phụ trách: hai người cùng giao lại thì người sau thua.
+    await this.claimUnshipped(
+      tenantId,
+      id,
+      { assigneeId: dto.assigneeId },
+      assigneeClaim(access, user),
+    );
+    await this.notifyReassigned(tenantId, order, dto.assigneeId, user);
     return this.reads.findOne(user, tenantId, id);
+  }
+
+  /** `GET /orders/:id/assignees`: ai nhận được đơn này, cho ô chọn người phụ trách. Chỉ ai đổi được người phụ trách mới xem được. */
+  async listAssignees(user: AuthUser, tenantId: string, id: string) {
+    const order = await this.loadEditable(user, tenantId, id, {
+      assigneeMayEdit: true,
+    });
+    assertReassignAccess(user, order);
+    const people = await this.manual.listAssignableAt(tenantId, order.branchId);
+    return people.map(({ systemRole, ...person }) => ({
+      ...toUserRef(person)!,
+      isOwner: systemRole === SystemRole.TENANT_OWNER,
+      isCurrent: person.id === order.assigneeId,
+    }));
+  }
+
+  /** Báo người mới và người cũ sau khi đã ghi, trừ chính người vừa đổi. Không bao giờ ném lỗi (`notify` nuốt lỗi). */
+  private async notifyReassigned(
+    tenantId: string,
+    order: { id: string; code: string; assigneeId: string | null },
+    nextId: string,
+    actor: AuthUser,
+  ) {
+    if (nextId === order.assigneeId) return;
+    if (nextId !== actor.userId) {
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [nextId],
+        referenceId: order.id,
+        ...OrderNotificationTemplates.assigned(order.id, order.code),
+      });
+    }
+    if (order.assigneeId && order.assigneeId !== actor.userId) {
+      await this.notifications.notify({
+        tenantId,
+        recipientIds: [order.assigneeId],
+        referenceId: order.id,
+        ...OrderNotificationTemplates.unassigned(order.id, order.code),
+      });
+    }
   }
 
   async setPriority(
@@ -399,8 +459,16 @@ export class OrderEditService {
     return this.reads.findOne(user, tenantId, id);
   }
 
-  /** Đơn nếu người này được sửa lúc này: trong phạm vi quyền, thuộc hành trình và chưa giao. */
-  private async loadEditable(user: AuthUser, tenantId: string, id: string) {
+  /**
+   * Đơn nếu người này được sửa lúc này: trong phạm vi quyền, thuộc hành trình và chưa giao.
+   * `assigneeMayEdit`: người đang phụ trách được bỏ qua phạm vi chi nhánh (vd. đã chuyển nơi làm sau khi nhận đơn), như các bước khác của đơn.
+   */
+  private async loadEditable(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    { assigneeMayEdit = false }: { assigneeMayEdit?: boolean } = {},
+  ) {
     const order = await this.prisma.order.findFirst({
       where: { id, tenantId },
       include: {
@@ -419,12 +487,18 @@ export class OrderEditService {
         code: ErrorCode.ORDER_NOT_FOUND,
         message: 'Order not found',
       });
-    const scope = this.orders.branchScope(user);
-    if (scope.branchId !== undefined && order.branchId !== scope.branchId) {
-      throw new ForbiddenException({
-        code: ErrorCode.ORDER_BRANCH_DENIED,
-        message: 'This order does not belong to your branch',
-      });
+    const asAssignee =
+      assigneeMayEdit &&
+      order.assigneeId !== null &&
+      order.assigneeId === user.userId;
+    if (!asAssignee) {
+      const scope = this.orders.branchScope(user);
+      if (scope.branchId !== undefined && order.branchId !== scope.branchId) {
+        throw new ForbiddenException({
+          code: ErrorCode.ORDER_BRANCH_DENIED,
+          message: 'This order does not belong to your branch',
+        });
+      }
     }
     // Đơn bán tại quầy đã thanh toán và giao xong ngay; sửa theo hành trình không áp dụng cho đơn này.
     if (
@@ -497,9 +571,15 @@ export class OrderEditService {
     tenantId: string,
     id: string,
     data: Prisma.OrderUncheckedUpdateManyInput,
+    claim: { assigneeId?: string } = {},
   ) {
     const claimed = await this.prisma.order.updateMany({
-      where: { id, tenantId, status: { in: [...UNSHIPPED_ORDER_STATUSES] } },
+      where: {
+        id,
+        tenantId,
+        status: { in: [...UNSHIPPED_ORDER_STATUSES] },
+        ...claim,
+      },
       data,
     });
     if (claimed.count !== 1) {

@@ -127,8 +127,22 @@ export class OrderController {
     return this.edits.update(user, requireTenantId(user), id, dto);
   }
 
-  /** Đổi người phụ trách mà không cần mở form sửa (A-8). */
-  @Permissions('orders', 'update')
+  /**
+   * Người có thể phụ trách đơn này (nhân viên làm tại nơi bán, và chủ shop), cho ô chọn ở danh sách đơn. Cùng luật quyền với `PATCH :id/assignee`.
+   * **Cố ý không có `@Permissions`**: người đang phụ trách được xem dù không có `orders:update`; quyền kiểm trong service (`assertReassignAccess`).
+   */
+  @Get(':id/assignees')
+  listAssignees(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.edits.listAssignees(user, requireTenantId(user), id);
+  }
+
+  /**
+   * Đổi người phụ trách mà không cần mở form sửa (A-8). Chủ shop, người đang phụ trách (giao lại), hoặc người có `orders:update` (chốt 2026-11-08).
+   * **Cố ý không có `@Permissions`**: guard chạy trước khi biết ai đang phụ trách đơn, nên quyền kiểm trong service (`assertReassignAccess`).
+   */
   @Patch(':id/assignee')
   setAssignee(
     @CurrentUser() user: AuthUser,
