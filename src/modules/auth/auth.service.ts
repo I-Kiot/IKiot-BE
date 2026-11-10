@@ -206,6 +206,12 @@ export class AuthService {
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
+    if (dto.newPassword !== dto.reEnterPassword)
+      throw new BadRequestException({
+        code: ErrorCode.PASSWORD_CONFIRMATION_MISMATCH,
+        message: 'The password confirmation does not match',
+      });
+
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
     });
