@@ -12,6 +12,7 @@ import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
 import { assertNoPickupShippingFee } from './order-pickup.rules';
+import { assertDeliveryInfoComplete } from './order-delivery.rules';
 import { writePaymentCashFlow } from './order-cash-flow';
 import { FlowType } from '../stats/stats.constants';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
@@ -187,6 +188,7 @@ export class ManualOrderService {
     const isPickup = dto.fulfillmentType === FulfillmentType.STORE_PICKUP;
     // Khách tới lấy thì không có phí giao hàng và không có địa chỉ giao.
     if (isPickup) assertNoPickupShippingFee(shippingFee);
+    assertDeliveryInfoComplete(dto.fulfillmentType, dto);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
     const paymentStatus = paymentStatusForDeposit(

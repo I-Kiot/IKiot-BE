@@ -23,6 +23,7 @@ import {
   assertNoPickupShippingFee,
   pendingCounterQr,
 } from './order-pickup.rules';
+import { assertDeliveryInfoComplete } from './order-delivery.rules';
 import { cancelCounterQr } from './order-pickup.service';
 import { OrderShortageAlerts } from './order-shortage-alerts';
 import {
@@ -191,6 +192,21 @@ export class OrderEditService {
     if (nextType === FulfillmentType.STORE_PICKUP) {
       assertNoPickupShippingFee(shippingFee);
     }
+    // Kiểm tra trên kết quả sau khi ghép (giá trị gửi lên đè giá trị đang lưu): trường nào cũng có thể là trường đang bị xoá.
+    assertDeliveryInfoComplete(nextType, {
+      recipientName:
+        dto.recipientName !== undefined
+          ? dto.recipientName
+          : order.recipientName,
+      recipientPhone:
+        dto.recipientPhone !== undefined
+          ? dto.recipientPhone
+          : order.recipientPhone,
+      deliveryAddress:
+        dto.deliveryAddress !== undefined
+          ? dto.deliveryAddress
+          : order.deliveryAddress,
+    });
 
     let money: Awaited<ReturnType<OrderEditService['reprice']>> | null = null;
     let grandTotal = Number(order.grandTotal) - storedShipping + shippingFee;

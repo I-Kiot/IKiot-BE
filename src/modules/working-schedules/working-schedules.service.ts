@@ -85,6 +85,8 @@ export class WorkingScheduleService {
   ) {
     const resolved = await this.resolveAssignments(tenantId, dto.schedules);
     const merged = this.mergeBySlot(resolved);
+    // Kiểm tra cả lô trước khi ghi bất cứ gì, để một dòng trùng không để lại các dòng trước đó đã lưu dở.
+    await this.assertNotAlreadyAssigned(tenantId, merged);
 
     const saved: ScheduleRow[] = [];
     for (const assignment of merged) {
@@ -433,7 +435,9 @@ export class WorkingScheduleService {
       });
     }
 
-    // `skipDuplicates` thay cho `$addToSet` cũ: xếp lại người đã có trong ca là no-op, không phải lỗi.
+    // Người đã có trong ca bị `assertNotAlreadyAssigned` từ chối từ trước (bug DEF-ST-08: trước đây là no-op trả 201).
+    // Không `skipDuplicates`: hai request cùng phân một người đã qua kiểm tra thì khoá `@@id([scheduleId, userId])`
+    // làm người chậm hơn nhận P2002 → 409, thay vì cả hai cùng báo thành công.
     const already = new Set(existing.assignedUsers.map((a) => a.userId));
     const toAdd = assignment.userIds.filter((id) => !already.has(id));
     return this.prisma.workingSchedule.update({
@@ -443,12 +447,78 @@ export class WorkingScheduleService {
         assignedUsers: {
           createMany: {
             data: toAdd.map((userId) => ({ userId })),
-            skipDuplicates: true,
           },
         },
       },
       include: SCHEDULE_INCLUDE,
     });
+  }
+
+  /**
+   * Từ chối phân lại một người vào đúng ca (cùng loại, ca mẫu, ngày, giờ) họ đã có. Một query cho cả lô:
+   * tải mọi lịch còn sống của các slot trong lô, rồi đối chiếu người trong bộ nhớ.
+   */
+  private async assertNotAlreadyAssigned(
+    tenantId: string,
+    assignments: ResolvedAssignment[],
+  ) {
+    if (assignments.length === 0) return;
+    const existing = await this.prisma.workingSchedule.findMany({
+      where: {
+        tenantId,
+        status: { in: LIVE_SCHEDULE_STATUSES },
+        OR: assignments.map((assignment) => ({
+          scheduleType: assignment.scheduleType,
+          shiftTemplateId: assignment.shiftTemplateId,
+          workDate: assignment.workDate,
+          startAt: assignment.startAt,
+          endAt: assignment.endAt,
+        })),
+      },
+      select: {
+        scheduleType: true,
+        shiftTemplateId: true,
+        workDate: true,
+        startAt: true,
+        endAt: true,
+        shiftTemplate: { select: { name: true } },
+        assignedUsers: { select: { userId: true } },
+      },
+    });
+
+    const duplicates: {
+      userId: string;
+      workDate: string;
+      shiftName: string;
+    }[] = [];
+    for (const assignment of assignments) {
+      const slot = existing.find(
+        (row) =>
+          row.scheduleType === assignment.scheduleType &&
+          row.shiftTemplateId === assignment.shiftTemplateId &&
+          row.workDate?.getTime() === assignment.workDate.getTime() &&
+          row.startAt?.getTime() === assignment.startAt.getTime() &&
+          row.endAt?.getTime() === assignment.endAt.getTime(),
+      );
+      if (!slot) continue;
+      const onShift = new Set(slot.assignedUsers.map((a) => a.userId));
+      for (const userId of assignment.userIds) {
+        if (!onShift.has(userId)) continue;
+        duplicates.push({
+          userId,
+          workDate: localDateText(assignment.workDate),
+          shiftName: slot.shiftTemplate?.name ?? 'shift',
+        });
+      }
+    }
+
+    if (duplicates.length > 0) {
+      throw new ConflictException({
+        code: ErrorCode.SCHEDULE_ALREADY_ASSIGNED,
+        message: 'One or more employees are already assigned to this shift',
+        errors: duplicates,
+      });
+    }
   }
 
   /** Không ai được ở hai ca chồng nhau. Mỗi assignment một query; trường hợp trùng trong cùng batch được bắt vì dòng sau đối chiếu với dòng đã lưu trước đó. */

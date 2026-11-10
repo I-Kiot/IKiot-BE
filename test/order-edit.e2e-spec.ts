@@ -78,6 +78,9 @@ describe('PATCH /orders/:id – OrderEditService', () => {
         customerId,
         assigneeId: ownerId,
         fulfillmentType: 'HOME_DELIVERY',
+        recipientName: 'Khách e2e',
+        recipientPhone: '0912345678',
+        deliveryAddress: '1 Tràng Tiền, Hà Nội',
         items: [{ productItemId: sofaId, quantity: 2 }],
         ...over,
       })
@@ -303,6 +306,21 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     expect(Number(after.grandTotal)).toBe(Number(before.grandTotal));
     expect(after.items.map((i) => i.id)).toEqual(before.items.map((i) => i.id));
     expect(detail).toMatchObject({ id, priority: OrderPriority.URGENT });
+  });
+
+  it('refuses an edit that would leave a home delivery without its address, changing nothing', async () => {
+    const id = await createOrder();
+    await expect(
+      edit(id, { deliveryAddress: null as unknown as string, note: 'mới' }),
+    ).rejects.toMatchObject({
+      response: {
+        code: ErrorCode.ORDER_DELIVERY_INFO_REQUIRED,
+        errors: [{ field: 'deliveryAddress' }],
+      },
+    });
+    const after = await orderRow(id);
+    expect(after.deliveryAddress).toBe('1 Tràng Tiền, Hà Nội');
+    expect(after.note).not.toBe('mới');
   });
 
   it('keeps, changes, adds and removes lines, and prices the order again', async () => {
