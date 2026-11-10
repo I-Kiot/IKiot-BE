@@ -2773,6 +2773,30 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note('logout: session revoked, its refresh token no longer works OK');
   });
 
+  it('refuses a password change whose confirmation does not match', async () => {
+    const login = await http()
+      .post('/auth/login')
+      .send({ phoneNumber: PHONE_OWNER, password: 'password123' })
+      .expect(201);
+
+    const res = await http()
+      .post('/auth/change-password')
+      .set(auth(login.body.data.accessToken))
+      .send({
+        currentPassword: 'password123',
+        newPassword: 'password456',
+        reEnterPassword: 'different1',
+      })
+      .expect(400);
+    expect(res.body.code).toBe('PASSWORD_CONFIRMATION_MISMATCH');
+
+    // Mật khẩu không đổi: mật khẩu cũ vẫn đăng nhập được.
+    await http()
+      .post('/auth/login')
+      .send({ phoneNumber: PHONE_OWNER, password: 'password123' })
+      .expect(201);
+  });
+
   it('ends every other session when the password changes', async () => {
     const a = await http()
       .post('/auth/login')
@@ -2786,7 +2810,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http()
       .post('/auth/change-password')
       .set(auth(a.body.data.accessToken))
-      .send({ currentPassword: 'password123', newPassword: 'password123' })
+      .send({
+        currentPassword: 'password123',
+        newPassword: 'password123',
+        reEnterPassword: 'password123',
+      })
       .expect(201);
 
     // Cả hai phiên, không chỉ phiên kia: hệ cũ thu hồi theo userId.
