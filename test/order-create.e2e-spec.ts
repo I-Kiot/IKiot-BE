@@ -86,6 +86,9 @@ describe('POST /orders – ManualOrderService.create', () => {
     customerId,
     assigneeId: staffId,
     fulfillmentType: 'HOME_DELIVERY',
+    recipientName: 'Khách e2e',
+    recipientPhone: '0912345678',
+    deliveryAddress: '1 Tràng Tiền, Hà Nội',
     items: [{ productItemId: sofaId, quantity: 1 }],
     ...over,
   });
@@ -397,6 +400,29 @@ describe('POST /orders – ManualOrderService.create', () => {
       ),
     ).rejects.toMatchObject({
       response: { code: ErrorCode.ORDER_DEPOSIT_EXCEEDS_TOTAL },
+    });
+    expect(await orderCount()).toBe(before);
+  });
+
+  it('refuses a home delivery with no recipient, phone or address, writing nothing', async () => {
+    const before = await orderCount();
+    await expect(
+      create(
+        base({
+          recipientName: undefined,
+          recipientPhone: '  ',
+          deliveryAddress: undefined,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      response: {
+        code: ErrorCode.ORDER_DELIVERY_INFO_REQUIRED,
+        errors: [
+          { field: 'recipientName' },
+          { field: 'recipientPhone' },
+          { field: 'deliveryAddress' },
+        ],
+      },
     });
     expect(await orderCount()).toBe(before);
   });

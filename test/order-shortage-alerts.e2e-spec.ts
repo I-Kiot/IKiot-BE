@@ -71,6 +71,9 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
         customerId,
         assigneeId: ownerId,
         fulfillmentType: 'HOME_DELIVERY',
+        recipientName: 'Khách e2e',
+        recipientPhone: '0912345678',
+        deliveryAddress: '1 Tràng Tiền, Hà Nội',
         items: [{ productItemId: sofaId, quantity: 1 }],
         ...over,
       })
