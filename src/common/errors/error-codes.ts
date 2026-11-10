@@ -467,6 +467,8 @@ export const ErrorCode = {
   ORDER_FULFILLMENT_TYPE_LOCKED: 'ORDER_FULFILLMENT_TYPE_LOCKED',
   /** Đơn khách tới lấy đã thu tiền tại quầy nên không đổi sang giao tận nơi được: shipper sẽ thu lần nữa. */
   ORDER_PICKUP_ALREADY_COLLECTED: 'ORDER_PICKUP_ALREADY_COLLECTED',
+  /** Tạo nhân viên không chọn chi nhánh, kho hay xưởng nào. */
+  STAFF_WORKPLACE_REQUIRED: 'STAFF_WORKPLACE_REQUIRED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
