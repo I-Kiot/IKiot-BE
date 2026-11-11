@@ -25,10 +25,14 @@ export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.CANCELLED,
 ];
 
-/** Chỉ đổi được tài xế khi hàng còn ở shop. Khi đơn đang SHIPPING, shipper đã chở hàng và đang cầm tiền cần thu; đổi lúc này sẽ giao cả hai cho người chưa nhận hàng. */
+/**
+ * Chỉ đổi được tài xế khi hàng còn ở shop, tức shipper chưa xác nhận đã lấy hàng.
+ * PICKED_UP cố ý không có (2026-11-11): từ lúc đó hàng đã nằm trong tay shipper và sự kiện PICKED_UP ghi tên người
+ * đó - đổi người lúc này sẽ giao hàng (và tiền cần thu) cho người chưa từng cầm nó, còn nhật trình thì ghi một người
+ * khác. Muốn đổi thật thì huỷ chuyến này rồi tạo chuyến mới.
+ */
 export const DRIVER_CHANGEABLE_STATUSES: readonly string[] = [
   ShipmentStatus.CREATED,
-  ShipmentStatus.PICKED_UP,
 ];
 
 /** INTERNAL: shipper của shop xác nhận bằng ảnh minh chứng. EXTERNAL: đơn vị vận chuyển (hoặc logistics của sàn) báo DELIVERED; khi chưa có API vận chuyển thì nhân viên đánh dấu tay. */

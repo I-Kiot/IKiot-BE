@@ -756,6 +756,25 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       });
     });
 
+    it('refuses once the driver has confirmed the pick-up', async () => {
+      const orderId = await packedOrder();
+      const picked = await handedOver(orderId);
+      expect(picked.status).toBe(ShipmentStatus.PICKED_UP);
+      await expect(
+        shipments.changeDriver(owner, tenantId, picked.id, {
+          driverId: ownerId,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.SHIPMENT_STATUS_INVALID },
+      });
+      expect(
+        await prisma.shipment.findUnique({
+          where: { id: picked.id },
+          select: { driverId: true },
+        }),
+      ).toEqual({ driverId });
+    });
+
     it('refuses an ineligible driver, a carrier shipment and a finished one', async () => {
       const orderId = await packedOrder();
       const created = await shipments.create(

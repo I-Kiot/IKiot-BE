@@ -484,3 +484,12 @@ Quyết định của user: "giữ tiền treo, quyết định sau". Trước �
 
 **Đã kiểm chứng:** `tsc` sạch (gồm file seed), chạy lại `seed-fashion.ts` không tạo trùng.
 **Chưa kiểm chứng:** chưa mở thử trên dashboard; kịch bản K1–K11 trong tài liệu test viết cho SKU nội thất nên không áp dụng trên dữ liệu này.
+
+## 2026-11-11 – Shipper đã xác nhận lấy hàng thì không đổi người giao hàng nữa
+
+- **BE**: `DRIVER_CHANGEABLE_STATUSES` (`common/constants/shipment-status.ts`) chỉ còn `CREATED`, bỏ `PICKED_UP`. `PATCH /shipments/:id/driver` sau khi shipper bấm "Đã lấy hàng" trả 409 `SHIPMENT_STATUS_INVALID` (cả câu ghi có điều kiện trong transaction cũng dùng hằng này). Lý do: hàng (và tiền cần thu) đã ở tay shipper, event `PICKED_UP` ghi tên người đó; muốn đổi thì huỷ lần giao và tạo lần mới.
+- **FE**: ô "Người giao hàng" ở danh sách đơn (`orders-person-cells.tsx`) chỉ cho chọn khi shipment `CREATED`; nút "Đổi shipper" ở trang giao hàng (`shipment-detail-sheet.tsx`) chỉ hiện khi `CREATED` (trước đó hiện cả `PICKED_UP`).
+- **Tài liệu**: `docs/api-contract-order-flow.md` (dòng `PATCH /shipments/:id/driver`), kịch bản U3 trong `docs/tai-khoan-test-hanh-trinh.md`.
+- **Test**: e2e `order-ship` thêm ca "refuses once the driver has confirmed the pick-up" (đi qua `pickUp` thật, kiểm driverId không đổi). 56/56 trên `ikiot_e2e`. BE `tsc` sạch, FE `tsc` sạch.
+
+**Chưa kiểm chứng:** chưa bấm thử trên dashboard.
