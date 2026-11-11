@@ -9,6 +9,7 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { can } from '../../common/utils/permission';
 import { sameValues, valueMap } from './product-attributes';
+import { recordPriceChange } from './product-price-history';
 
 export type AttributeChange = { attributeId: string; value: string };
 
@@ -89,6 +90,7 @@ export class ProductVariantService {
           target,
           attributes,
           retailPrice,
+          user.userId,
         );
         created = true;
       }
@@ -96,9 +98,22 @@ export class ProductVariantService {
 
     if (retailPrice !== undefined && !created) {
       this.require(user, 'update');
-      await this.prisma.productItem.update({
-        where: { id: productItemId },
-        data: { retailPrice },
+      await this.prisma.$transaction(async (tx) => {
+        const current = await tx.productItem.findUniqueOrThrow({
+          where: { id: productItemId },
+          select: { retailPrice: true },
+        });
+        await recordPriceChange(tx, {
+          tenantId,
+          productItemId,
+          before: current,
+          after: { retailPrice },
+          actorId: user.userId,
+        });
+        await tx.productItem.update({
+          where: { id: productItemId },
+          data: { retailPrice },
+        });
       });
     }
     return { productItemId, created };
@@ -118,6 +133,7 @@ export class ProductVariantService {
     target: Map<string, string>,
     attributes: Map<string, { id: string; name: string; position: number }>,
     retailPrice: number | undefined,
+    actorId: string,
   ): Promise<string> {
     const freeDetails = base.details.filter((detail) => !detail.attributeId);
     return this.prisma.$transaction(async (tx) => {
@@ -205,6 +221,16 @@ export class ProductVariantService {
           },
         },
         select: { id: true },
+      });
+      await recordPriceChange(tx, {
+        tenantId: base.tenantId,
+        productItemId: item.id,
+        before: null,
+        after: {
+          retailPrice: retailPrice ?? base.retailPrice,
+          costPrice: base.costPrice,
+        },
+        actorId,
       });
       return item.id;
     });

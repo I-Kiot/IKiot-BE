@@ -14,7 +14,8 @@ import { OrderShortageAlerts } from './order-shortage-alerts';
 import { assertNoPickupShippingFee } from './order-pickup.rules';
 import { assertDeliveryInfoComplete } from './order-delivery.rules';
 import { writePaymentCashFlow } from './order-cash-flow';
-import { FlowType } from '../stats/stats.constants';
+import { CashFlowCategory } from '../../common/constants/cash-flow-category';
+import { syncOrderPaymentStatus } from './payment-status';
 import { CreateOrderDto, DepositType } from './dto/create-order.dto';
 import type { ComboLeaf } from './combo-expansion';
 import { buildOrderItemRows, expandCombos } from './order-combo';
@@ -22,7 +23,6 @@ import {
   FulfillmentType,
   OrderChannel,
   OrderLineType,
-  OrderPaymentStatus,
   OrderPriority,
   OrderStatus,
 } from '../../common/constants/order-status';
@@ -40,6 +40,12 @@ import {
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import {
+  type OrderEventInput,
+  recordOrderEvents,
+  userActor,
+} from './order-events';
 
 const ASSIGNABLE_ROLES: readonly string[] = [
   SystemRole.TENANT_OWNER,
@@ -100,17 +106,6 @@ export function resolveDeposit(
   }
   if (amount === 0) return null;
   return { amount, percent, method: deposit.method };
-}
-
-/** `paymentStatus` của đơn khi tiền duy nhất là cọc (trước khi giao thu phần còn lại). */
-export function paymentStatusForDeposit(
-  depositAmount: number,
-  grandTotal: number,
-): string {
-  if (depositAmount <= 0) return OrderPaymentStatus.UNPAID;
-  return depositAmount >= grandTotal
-    ? OrderPaymentStatus.PAID
-    : OrderPaymentStatus.PARTIALLY_PAID;
 }
 
 /** `POST /orders` (A-2): đơn tay nhân viên nhập cho khách đặt qua online hay điện thoại. Sinh ra ở CONFIRMED có người phụ trách, không giữ kho và không bị từ chối vì thiếu hàng; thiếu hàng chỉ chặn ở bước đóng gói (C-1). Bán tại quầy là `OrderService.createPosSale`. */
@@ -186,10 +181,7 @@ export class ManualOrderService {
     });
     const components = await this.expandCombos(tenantId, lines);
 
-    const subtotal = lines.reduce(
-      (sum, line) => sum + this.pricing.lineTotalOf(line),
-      0,
-    );
+    const subtotal = this.pricing.subtotalOf(lines);
     const goodsTotal = this.pricing.grandTotalOf(
       lines,
       discountType,
@@ -202,10 +194,6 @@ export class ManualOrderService {
     assertDeliveryInfoComplete(dto.fulfillmentType, dto);
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
-    const paymentStatus = paymentStatusForDeposit(
-      deposit?.amount ?? 0,
-      grandTotal,
-    );
 
     // Tạo khách trước transaction vì CustomerService giữ dãy mã và quy tắc một số điện thoại một khách. Mọi bước có thể từ chối đơn đã chạy xong, nên khách thừa chỉ còn lại khi DB lỗi, và vẫn là khách thật.
     const typedInCustomerId =
@@ -248,7 +236,7 @@ export class ManualOrderService {
           discountValue,
           depositAmount: deposit?.amount ?? null,
           depositPercent: deposit?.percent ?? null,
-          paymentStatus,
+          // paymentStatus để mặc định UNPAID: cọc ghi bên dưới rồi `syncOrderPaymentStatus` suy ra trạng thái từ khoản thật.
           recipientName: dto.recipientName,
           recipientPhone: dto.recipientPhone,
           deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
@@ -263,6 +251,16 @@ export class ManualOrderService {
         select: { id: true, code: true },
       });
 
+      const events: OrderEventInput[] = [
+        {
+          tenantId,
+          orderId: created.id,
+          type: OrderEventType.CREATED,
+          fromStatus: null,
+          toStatus: OrderStatus.CONFIRMED,
+          metadata: { grandTotal, fulfillmentType: dto.fulfillmentType },
+        },
+      ];
       if (deposit) {
         // Tiền cọc đã nhận nên Payment là PAID và vào sổ thu chi ngay.
         const payment = await tx.payment.create({
@@ -278,19 +276,28 @@ export class ManualOrderService {
             collectedById: userId,
             createdById: userId,
           },
-          select: { id: true },
+          select: { id: true, amount: true, method: true },
         });
         await writePaymentCashFlow(tx, {
           tenantId,
-          paymentId: payment.id,
+          payment,
+          category: CashFlowCategory.ORDER_PAYMENT,
           orderId: created.id,
           orderCode: created.code,
-          flowType: FlowType.INCOME,
-          amount: deposit.amount,
-          method: deposit.method,
           locationId: branch.id,
           createdById: userId,
           description: `Tiền cọc đơn ${created.code}`,
+        });
+        await syncOrderPaymentStatus(tx, created.id);
+        events.push({
+          tenantId,
+          orderId: created.id,
+          type: OrderEventType.DEPOSIT_RECORDED,
+          metadata: {
+            paymentId: payment.id,
+            amount: deposit.amount,
+            method: deposit.method,
+          },
         });
       }
       for (const [index, item] of dto.items.entries()) {
@@ -306,10 +313,12 @@ export class ManualOrderService {
             isCustom: false,
           },
           item.customization,
+          user.userId,
         );
       }
       // Hóa đơn chỉ phát hành khi đơn COMPLETED (đã giao và thu đủ); trước đó là hóa đơn PENDING.
       await this.invoices.ensurePending(tx, created.id);
+      await recordOrderEvents(tx, userActor(user), events);
       return created.id;
     });
 

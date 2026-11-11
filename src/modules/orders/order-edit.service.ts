@@ -11,17 +11,20 @@ import { OrderService } from './orders.service';
 import { OrderPricingService, type PricedLine } from './order-pricing.service';
 import { OrderReadService } from './order-read.service';
 import type { PricingResult } from '../promotions/pricing-engine';
+import { ManualOrderService, resolveDeposit } from './manual-order.service';
+import { lockOrder } from './order-lock';
+import { derivePaymentStatus, syncOrderPaymentStatus } from './payment-status';
 import {
-  ManualOrderService,
-  paymentStatusForDeposit,
-  resolveDeposit,
-} from './manual-order.service';
+  PaymentKind,
+  PaymentRecordStatus,
+} from '../../common/constants/payment-method';
+import { toDong } from '../../common/utils/money';
 import { depositHeld } from './order-cancel.service';
 import {
   assertFulfillmentTypeChangeAllowed,
   assertNoCounterPayment,
   assertNoPickupShippingFee,
-  pendingCounterQr,
+  openCounterQr,
 } from './order-pickup.rules';
 import { assertDeliveryInfoComplete } from './order-delivery.rules';
 import { cancelCounterQr } from './order-pickup.service';
@@ -47,6 +50,35 @@ import { FINAL_SHIPMENT_STATUSES } from '../../common/constants/shipment-status'
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import {
+  diffOrderFields,
+  diffOrderLines,
+  displayNamesOf,
+  type OrderEventInput,
+  type OrderFieldValue,
+  recordOrderEvents,
+  userActor,
+} from './order-events';
+import { USER_REF_SELECT } from './order-read';
+
+/** Trường của đơn mà nhật ký EDITED so trước/sau. Người phụ trách và mức ưu tiên có sự kiện riêng nên không nằm đây. */
+const EDIT_FIELDS = [
+  'recipientName',
+  'recipientPhone',
+  'deliveryAddress',
+  'requestedDeliveryDate',
+  'note',
+  'fulfillmentType',
+  'customer',
+  'sourceLocation',
+  'shippingFee',
+  'discountType',
+  'discountValue',
+  'depositAmount',
+  'grandTotal',
+] as const;
+type EditField = (typeof EDIT_FIELDS)[number];
 
 export interface EditedDeposit {
   amount: number;
@@ -95,6 +127,44 @@ export function resolveEditedDeposit(input: {
     });
   }
   return next;
+}
+
+/**
+ * Sửa tiền của đơn đã có khoản thu thật thì lệch sổ, nên bị chặn:
+ * - `ORDER_EDIT_LOCKED_BY_PAYMENT`: tổng tiền, phí giao, cọc hay các dòng đổi trong khi đã có khoản FULL / BALANCE đã thu (tiền thu tại quầy, tại cửa, hay shipper): huỷ đơn rồi tạo lại.
+ * - `ORDER_TOTAL_BELOW_PAID`: tổng đơn mới thấp hơn số shop đang giữ (kèm `paid`, `grandTotal`). Cọc thì sửa được, miễn tổng mới không thấp hơn cọc.
+ * Thuần (nhận các khoản đã đọc) để chạy cả ngoài lẫn trong transaction, sau khi khoá đơn.
+ */
+export function assertEditAllowedByPayments(
+  payments: readonly { kind: string; status: string; amount: unknown }[],
+  next: { grandTotal: number; moneyChanged: boolean },
+): void {
+  const settled = payments.some(
+    (p) =>
+      p.status === PaymentRecordStatus.PAID &&
+      (p.kind === PaymentKind.FULL || p.kind === PaymentKind.BALANCE),
+  );
+  // Đơn chỉ có cọc thì luật cọc (`resolveEditedDeposit`: ORDER_DEPOSIT_EXCEEDS_TOTAL / ORDER_DEPOSIT_CHANGED) đã lo; hai mã mới chỉ áp cho đơn đã có khoản thu thật.
+  if (!settled) return;
+  const { net } = derivePaymentStatus(
+    next.grandTotal,
+    payments.map((p) => ({ ...p, amount: toDong(p.amount as number) })),
+  );
+  if (next.grandTotal < net) {
+    throw new ConflictException({
+      code: ErrorCode.ORDER_TOTAL_BELOW_PAID,
+      message: `The new total of ${next.grandTotal} is below the ${net} already paid`,
+      paid: net,
+      grandTotal: next.grandTotal,
+    });
+  }
+  if (next.moneyChanged) {
+    throw new ConflictException({
+      code: ErrorCode.ORDER_EDIT_LOCKED_BY_PAYMENT,
+      message:
+        'This order has already been paid at the counter or on delivery; its amounts can no longer change',
+    });
+  }
 }
 
 type ExistingLine = {
@@ -221,6 +291,16 @@ export class OrderEditService {
       grandTotal = money.goodsTotal + shippingFee;
     }
 
+    // Tiền chỉ đổi khi số tiền thật sự đổi (không phải khi client gửi lại đúng giá trị cũ): tổng, phí giao hay cọc. Dòng không cần xét riêng: chỉ sửa được lúc CONFIRMED, khi chưa thể có khoản FULL / BALANCE.
+    const depositAmountNow = Number(order.depositAmount ?? 0);
+    const moneyChanged =
+      shippingFee !== storedShipping ||
+      grandTotal !== Number(order.grandTotal) ||
+      (dto.deposit !== undefined &&
+        (resolveDeposit(dto.deposit, grandTotal)?.amount ?? 0) !==
+          depositAmountNow);
+    assertEditAllowedByPayments(order.payments, { grandTotal, moneyChanged });
+
     const removed = dto.items
       ? topLines.filter((line) => !dto.items!.some((i) => i.id === line.id))
       : [];
@@ -287,6 +367,20 @@ export class OrderEditService {
         : null;
 
     await this.prisma.$transaction(async (tx) => {
+      // Khoá đơn trước, đọc lại các khoản rồi kiểm lại luật tiền: một lần thu tiền xen vào giữa lúc đọc và lúc ghi không lọt qua.
+      if (!(await lockOrder(tx, tenantId, id))) {
+        throw new NotFoundException({
+          code: ErrorCode.ORDER_NOT_FOUND,
+          message: 'Order not found',
+        });
+      }
+      assertEditAllowedByPayments(
+        await tx.payment.findMany({
+          where: { orderId: id },
+          select: { kind: true, status: true, amount: true },
+        }),
+        { grandTotal, moneyChanged },
+      );
       // Chiếm đơn theo bản ghi vừa đọc: đóng gói, hủy hoặc sửa khác xen giữa thì lần này thua trọn.
       const claimed = await tx.order.updateMany({
         where: {
@@ -329,10 +423,6 @@ export class OrderEditService {
             ? {
                 depositAmount: deposit?.amount ?? null,
                 depositPercent: deposit?.percent ?? null,
-                paymentStatus: paymentStatusForDeposit(
-                  deposit?.amount ?? 0,
-                  grandTotal,
-                ),
               }
             : {}),
         },
@@ -343,10 +433,28 @@ export class OrderEditService {
           message: 'The order has just changed, please reload',
         });
       }
+      await recordOrderEvents(
+        tx,
+        userActor(user),
+        await this.editEvents(tx, {
+          tenantId,
+          order,
+          dto,
+          topLines,
+          money,
+          deposit,
+          nextType,
+          customerId,
+          shippingFee,
+          grandTotal,
+        }),
+      );
       // Rời luồng khách tới lấy thì mã QR tại quầy không còn hiệu lực: giao tận nơi sẽ thu qua shipper.
       if (leavingPickup) {
-        await cancelCounterQr(tx, pendingCounterQr(order.payments));
+        await cancelCounterQr(tx, openCounterQr(order.payments), user.userId);
       }
+      // Tổng đơn hay cọc đổi thì trạng thái thanh toán suy lại từ các khoản thật.
+      if (moneyChanged) await syncOrderPaymentStatus(tx, id);
       // Dòng không giữ tồn (combo cha, dịch vụ) không có nguồn nên giữ nguyên null.
       if (sourceLocationId) {
         await tx.orderItem.updateMany({
@@ -399,9 +507,11 @@ export class OrderEditService {
     await this.manual.assertAssignee(tenantId, dto.assigneeId, order.branchId);
     // Quyền đến từ việc đang phụ trách thì lúc ghi vẫn phải đang phụ trách: hai người cùng giao lại thì người sau thua.
     await this.claimUnshipped(
+      user,
       tenantId,
       id,
       { assigneeId: dto.assigneeId },
+      (tx) => this.assigneeEvents(tx, tenantId, order, dto.assigneeId),
       assigneeClaim(access, user),
     );
     await this.notifyReassigned(tenantId, order, dto.assigneeId, user);
@@ -454,8 +564,26 @@ export class OrderEditService {
     id: string,
     dto: SetOrderPriorityDto,
   ) {
-    await this.loadEditable(user, tenantId, id);
-    await this.claimUnshipped(tenantId, id, { priority: dto.priority });
+    const order = await this.loadEditable(user, tenantId, id);
+    await this.claimUnshipped(
+      user,
+      tenantId,
+      id,
+      { priority: dto.priority },
+      () =>
+        dto.priority === order.priority
+          ? []
+          : [
+              {
+                tenantId,
+                orderId: id,
+                type: OrderEventType.PRIORITY_CHANGED,
+                changes: {
+                  priority: { from: order.priority, to: dto.priority },
+                },
+              },
+            ],
+    );
     return this.reads.findOne(user, tenantId, id);
   }
 
@@ -474,6 +602,8 @@ export class OrderEditService {
       include: {
         items: true,
         payments: true,
+        customer: { select: { name: true } },
+        assignee: USER_REF_SELECT,
         appliedPromotions: { select: { promotionId: true } },
         branch: {
           select: {
@@ -566,28 +696,204 @@ export class OrderEditService {
     }
   }
 
-  /** Chỉ đổi các trường được gửi, miễn là đơn chưa bắt đầu giao trong lúc đó. */
+  /** Chỉ đổi các trường được gửi, miễn là đơn chưa bắt đầu giao trong lúc đó. Lệnh chiếm và sự kiện nằm chung một transaction: `events` chỉ chạy sau khi chiếm được. */
   private async claimUnshipped(
+    user: AuthUser,
     tenantId: string,
     id: string,
     data: Prisma.OrderUncheckedUpdateManyInput,
+    events: (
+      tx: Prisma.TransactionClient,
+    ) => readonly OrderEventInput[] | Promise<readonly OrderEventInput[]>,
     claim: { assigneeId?: string } = {},
   ) {
-    const claimed = await this.prisma.order.updateMany({
-      where: {
-        id,
-        tenantId,
-        status: { in: [...UNSHIPPED_ORDER_STATUSES] },
-        ...claim,
-      },
-      data,
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: { in: [...UNSHIPPED_ORDER_STATUSES] },
+          ...claim,
+        },
+        data,
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order has just changed, please reload',
+        });
+      }
+      await recordOrderEvents(tx, userActor(user), await events(tx));
     });
-    if (claimed.count !== 1) {
-      throw new ConflictException({
-        code: ErrorCode.ORDER_STATUS_CONFLICT,
-        message: 'The order has just changed, please reload',
+  }
+
+  /** Đổi người phụ trách: tên hai người (không phải id) nằm trong `changes` để màn hình hiện thẳng, id nằm trong `metadata`. Không đổi thì không ghi gì. */
+  private async assigneeEvents(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    order: { id: string; assigneeId: string | null },
+    nextId: string,
+  ): Promise<OrderEventInput[]> {
+    if (nextId === order.assigneeId) return [];
+    const names = await displayNamesOf(tx, [order.assigneeId, nextId]);
+    return [
+      {
+        tenantId,
+        orderId: order.id,
+        type: OrderEventType.ASSIGNEE_CHANGED,
+        changes: {
+          assignee: {
+            from: order.assigneeId
+              ? (names.get(order.assigneeId) ?? null)
+              : null,
+            to: names.get(nextId) ?? null,
+          },
+        },
+        metadata: { fromId: order.assigneeId, toId: nextId },
+      },
+    ];
+  }
+
+  /** Sự kiện của một lần `PATCH /orders/:id`: EDITED (trường + dòng), rồi ASSIGNEE_CHANGED, PRIORITY_CHANGED nếu có. Mọi giá trị trong `changes` là dạng hiển thị được: tên thay cho id, số thay cho Decimal. */
+  private async editEvents(
+    tx: Prisma.TransactionClient,
+    ctx: {
+      tenantId: string;
+      order: Awaited<ReturnType<OrderEditService['loadEditable']>>;
+      dto: UpdateOrderDto;
+      topLines: readonly (ExistingLine & {
+        productName: string | null;
+        sku: string | null;
+      })[];
+      money: Awaited<ReturnType<OrderEditService['reprice']>> | null;
+      deposit: EditedDeposit | null | undefined;
+      nextType: string;
+      customerId: string | undefined;
+      shippingFee: number;
+      grandTotal: number;
+    },
+  ): Promise<OrderEventInput[]> {
+    const { tenantId, order, dto, topLines, money, deposit } = ctx;
+    const base = { tenantId, orderId: order.id };
+
+    const customerChanged =
+      ctx.customerId !== undefined && ctx.customerId !== order.customerId;
+    const customer = customerChanged
+      ? await tx.customer.findUnique({
+          where: { id: ctx.customerId },
+          select: { name: true },
+        })
+      : null;
+    const fromSourceId =
+      topLines
+        .map((line) => sourceOf(line, order.items))
+        .find((placeId) => placeId !== null) ?? null;
+    const sourceChanged =
+      dto.sourceLocationId !== undefined &&
+      dto.sourceLocationId !== fromSourceId;
+    const places = sourceChanged
+      ? await tx.location.findMany({
+          where: {
+            id: {
+              in: [fromSourceId, dto.sourceLocationId].filter(
+                (placeId): placeId is string => !!placeId,
+              ),
+            },
+          },
+          select: { id: true, name: true },
+        })
+      : [];
+    const placeName = (placeId: string | null | undefined) =>
+      places.find((place) => place.id === placeId)?.name ?? null;
+
+    const before: Record<EditField, OrderFieldValue> = {
+      recipientName: order.recipientName,
+      recipientPhone: order.recipientPhone,
+      deliveryAddress: order.deliveryAddress,
+      requestedDeliveryDate: order.requestedDeliveryDate,
+      note: order.note,
+      fulfillmentType: order.fulfillmentType,
+      customer: order.customer.name,
+      sourceLocation: placeName(fromSourceId),
+      shippingFee: order.shippingFee,
+      discountType: order.discountType,
+      discountValue: order.discountValue,
+      depositAmount: order.depositAmount,
+      grandTotal: order.grandTotal,
+    };
+    const after: Partial<Record<EditField, OrderFieldValue>> = {
+      recipientName: dto.recipientName,
+      recipientPhone: dto.recipientPhone,
+      deliveryAddress:
+        ctx.nextType === FulfillmentType.STORE_PICKUP &&
+        ctx.nextType !== order.fulfillmentType
+          ? null
+          : dto.deliveryAddress,
+      requestedDeliveryDate:
+        dto.requestedDeliveryDate === undefined
+          ? undefined
+          : dto.requestedDeliveryDate
+            ? new Date(dto.requestedDeliveryDate)
+            : null,
+      note: dto.note,
+      fulfillmentType: dto.fulfillmentType,
+      customer: customerChanged ? (customer?.name ?? null) : undefined,
+      sourceLocation: sourceChanged
+        ? placeName(dto.sourceLocationId)
+        : undefined,
+      shippingFee: ctx.shippingFee,
+      discountType: money ? money.discountType : undefined,
+      discountValue: money ? money.discountValue : undefined,
+      depositAmount:
+        deposit === undefined ? undefined : (deposit?.amount ?? null),
+      grandTotal: ctx.grandTotal,
+    };
+    const changes = diffOrderFields(before, after, EDIT_FIELDS);
+
+    const lines = dto.items
+      ? diffOrderLines(
+          topLines.map((line) => ({
+            id: line.id,
+            name: line.productName ?? line.sku ?? '',
+            sku: line.sku ?? '',
+            quantity: line.quantity,
+            unitPrice: Number(line.unitPrice),
+          })),
+          (money?.lines ?? []).map((line) => ({
+            id: line.id,
+            name: line.productName ?? line.sku ?? '',
+            sku: line.sku ?? '',
+            quantity: line.quantity,
+            unitPrice: line.unitPrice,
+          })),
+        )
+      : null;
+    const linesChanged =
+      lines !== null &&
+      lines.added.length + lines.removed.length + lines.changed.length > 0;
+
+    const events: OrderEventInput[] = [];
+    if (Object.keys(changes).length > 0 || linesChanged) {
+      events.push({
+        ...base,
+        type: OrderEventType.EDITED,
+        changes,
+        metadata: linesChanged ? { lines } : undefined,
       });
     }
+    if (dto.assigneeId) {
+      events.push(
+        ...(await this.assigneeEvents(tx, tenantId, order, dto.assigneeId)),
+      );
+    }
+    if (dto.priority && dto.priority !== order.priority) {
+      events.push({
+        ...base,
+        type: OrderEventType.PRIORITY_CHANGED,
+        changes: { priority: { from: order.priority, to: dto.priority } },
+      });
+    }
+    return events;
   }
 
   /**
@@ -671,10 +977,7 @@ export class OrderEditService {
       appliedPromotions: priced.appliedPromotions,
       discountType: priced.discountType,
       discountValue: priced.discountValue,
-      subtotal: lines.reduce(
-        (sum, line) => sum + this.pricing.lineTotalOf(line),
-        0,
-      ),
+      subtotal: this.pricing.subtotalOf(lines),
       goodsTotal: this.pricing.grandTotalOf(
         lines,
         priced.discountType,

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
+import { assertMoneyInvariants } from './helpers/money-invariants';
 import { HttpException, INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppModule } from './../src/app.module';
@@ -181,6 +182,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
     if (!prisma) return;
     const where = { tenantId };
     await prisma.cashFlow.deleteMany({ where });
+    await prisma.payment.deleteMany({ where });
     await prisma.inventoryTransaction.deleteMany({ where });
     await prisma.inventoryLot.deleteMany({
       where: { tenantId, parentLotId: { not: null } },
@@ -419,5 +421,10 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
         expect(takenBy.get(line.id)).toBe(line.quantity);
       }
     });
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

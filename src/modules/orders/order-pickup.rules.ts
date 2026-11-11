@@ -4,12 +4,15 @@ import {
   OrderStatus,
 } from '../../common/constants/order-status';
 import {
+  OPEN_QR_PAYMENT_STATUSES,
   PaymentKind,
   PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { derivePaymentStatus } from './payment-status';
+import type { MoneyLike } from '../../common/utils/money';
 
 // Quy tắc thuần của đơn khách tới lấy (STORE_PICKUP). Không đọc DB để OrderPickupService, bộ lọc danh sách và test dùng chung một nguồn.
 
@@ -99,41 +102,33 @@ export function assertNoCounterPayment(
   }
 }
 
-/** Khoản QR thu tại quầy còn đang chờ tiền về. */
-export function pendingCounterQr<
+/** Khoản QR thu tại quầy còn mở (PENDING hoặc EXPIRED): chưa thu, chưa huỷ. Hết hạn vẫn tính là mở vì tiền về muộn vẫn chốt được, và khi đổi cách thu phải huỷ cả khoản đó. */
+export function openCounterQr<
   T extends { kind: string; method: string; status: string },
 >(payments: readonly T[]): T[] {
   return payments.filter(
     (p) =>
       p.kind === PaymentKind.BALANCE &&
       p.method === PaymentMethod.SEPAY &&
-      p.status === PaymentRecordStatus.PENDING,
+      OPEN_QR_PAYMENT_STATUSES.includes(p.status),
   );
 }
 
 export interface PickupPaymentRow {
   kind: string;
   status: string;
-  amount: number;
+  amount: MoneyLike;
 }
 
 /**
- * Số khách còn phải trả để nhận hàng: tổng đơn trừ mọi khoản đã thu (cọc, thanh toán còn lại, thanh toán một lần) cộng lại khoản đã hoàn.
- * Khoản đang chờ (QR chưa về tiền) chưa tính. Không âm.
+ * Số khách còn phải trả để nhận hàng: lớp mỏng trên `derivePaymentStatus(...).due` (một quy tắc cho mọi nơi tính số còn thu).
+ * Khoản đang chờ (QR chưa về tiền) chưa tính; không âm; đơn đã có hoàn tiền thì không còn gì để thu.
  */
 export function pickupAmountDue(
-  grandTotal: number,
+  grandTotal: MoneyLike,
   payments: readonly PickupPaymentRow[],
 ): number {
-  const paid = payments.filter((p) => p.status === PaymentRecordStatus.PAID);
-  const sum = (kinds: readonly string[]) =>
-    paid
-      .filter((p) => kinds.includes(p.kind))
-      .reduce((total, p) => total + p.amount, 0);
-  const received =
-    sum([PaymentKind.DEPOSIT, PaymentKind.BALANCE, PaymentKind.FULL]) -
-    sum([PaymentKind.REFUND]);
-  return Math.max(0, Math.round(grandTotal - received));
+  return derivePaymentStatus(grandTotal, payments).due;
 }
 
 /** Ngày (YYYY-MM-DD) theo lịch Việt Nam của một thời điểm. */

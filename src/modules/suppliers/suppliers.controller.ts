@@ -17,6 +17,7 @@ import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { QuerySupplierDto } from './dto/query-supplier.dto';
 import { PaySupplierDebtDto } from './dto/pay-supplier-debt.dto';
+import { QuerySupplierDebtEntryDto } from './dto/query-supplier-debt-entry.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
@@ -85,7 +86,22 @@ export class SupplierController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: PaySupplierDebtDto,
   ) {
-    return this.service.payDebt(requireTenantId(user), user.userId, id, dto);
+    return this.service.payDebt(requireTenantId(user), user, id, dto);
+  }
+
+  @Permissions('suppliers', 'read')
+  @Get(':id/debt-entries')
+  @ApiOperation({
+    summary: 'Sổ công nợ nhà cung cấp',
+    description:
+      'Mỗi lần công nợ đổi (nhận hàng, trả nợ, số dư đầu) là một dòng chỉ-ghi-thêm: số đổi, dư sau lần đó, chứng từ và người làm (null = hệ thống). Mới nhất trước.',
+  })
+  debtEntries(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: QuerySupplierDebtEntryDto,
+  ) {
+    return this.service.debtEntries(requireTenantId(user), id, query);
   }
 
   @Permissions('suppliers', 'delete')

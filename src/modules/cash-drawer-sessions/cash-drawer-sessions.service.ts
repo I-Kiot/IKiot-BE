@@ -39,6 +39,7 @@ import {
 } from './cash-reconciliation';
 import { PaymentMethod } from '../../common/constants/payment-method';
 import { FlowType } from '../stats/stats.constants';
+import { CashFlowFund } from '../../common/constants/cash-flow-category';
 import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
@@ -274,6 +275,8 @@ export class CashDrawerSessionService {
         where: {
           ...this.dayFlowWhere(session.tenantId, session.branchId, window),
           paymentMethod: PaymentMethod.CASH,
+          // Chỉ tiền mặt đã qua két: tiền shipper nộp thẳng chủ (OWNER) cùng chi nhánh không nằm trong két nên không được đếm vào số lẽ ra phải có.
+          fund: CashFlowFund.DRAWER,
         },
         select: { id: true, createdAt: true, flowType: true, amount: true },
         orderBy: { createdAt: 'asc' },
@@ -428,6 +431,8 @@ export class CashDrawerSessionService {
       JOIN branches b ON b.id = c.location_id
       WHERE c.tenant_id = ${tenantId}
         AND c.payment_method = ${PaymentMethod.CASH}
+        -- Only cash that went through the drawer: remitted cash (fund OWNER) never did.
+        AND c.fund = ${CashFlowFund.DRAWER}
         AND c.created_at >= ${start}
         AND c.created_at < ${end}
         ${branchId ? Prisma.sql`AND c.location_id = ${branchId}` : Prisma.empty}
@@ -653,6 +658,7 @@ export class CashDrawerSessionService {
         finalLogAmount: dto.finalAmount,
         finalLogManagerId: user.userId,
         finalLogNote: dto.note,
+        closedAt: new Date(),
       },
     });
     if (claimed.count === 0) {

@@ -10,6 +10,19 @@ export const SubscriptionNotificationTemplates = {
     link: '/settings/billing',
   }),
 
+  /** Gửi operator: tiền về tài khoản iKiot nhưng gói không được kích hoạt; cần xử lý tay. */
+  platformTransferNeedsAction: (
+    outcome: string,
+    amount: number,
+    reference: string | null,
+    content: string | null,
+  ): NotificationContent => ({
+    type: 'SYSTEM_PLATFORM_TRANSFER_NEEDS_ACTION',
+    title: 'Tiền gói dịch vụ cần xử lý tay',
+    description: `Nhận ${amount.toLocaleString('vi-VN')}đ vào tài khoản iKiot (mã ${reference ?? 'không có'}, nội dung "${content ?? ''}"), kết quả ${outcome}: gói chưa được kích hoạt, cần đối soát hoặc hoàn tiền.`,
+    link: '/admin/notifications',
+  }),
+
   trialExpired: (): NotificationContent => ({
     type: 'SUBSCRIPTION_EXPIRED',
     title: 'Bản dùng thử đã kết thúc',

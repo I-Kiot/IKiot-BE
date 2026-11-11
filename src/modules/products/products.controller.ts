@@ -41,6 +41,7 @@ import {
   QueryProductItemDto,
   SearchProductDto,
 } from './dto/query-product.dto';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -60,7 +61,7 @@ export class ProductController {
   @Permissions('products', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateProductDto) {
-    return this.service.create(requireTenantId(user), dto);
+    return this.service.create(requireTenantId(user), dto, user.userId);
   }
 
   @Permissions('products', 'read')
@@ -100,7 +101,7 @@ export class ProductController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.importer.import(requireTenantId(user), file);
+    return this.importer.import(requireTenantId(user), file, user.userId);
   }
 
   // `items` và `search` phải nằm trên `:id`, nếu không router coi chúng là product id và mọi lần gọi 404.
@@ -160,6 +161,16 @@ export class ProductController {
   }
 
   // Route ba đoạn nên không đụng `/products/:id`; chỉ `GET items` và `GET search` cần đặt trên.
+  @Permissions('products', 'read')
+  @Get('items/:itemId/price-history')
+  priceHistory(
+    @CurrentUser() user: AuthUser,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Query() query: QueryPriceHistoryDto,
+  ) {
+    return this.service.priceHistory(requireTenantId(user), itemId, query);
+  }
+
   @Permissions('products', 'update')
   @Patch('items/:itemId')
   updateItem(
@@ -167,7 +178,12 @@ export class ProductController {
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateProductItemDto,
   ) {
-    return this.service.updateItem(requireTenantId(user), itemId, dto);
+    return this.service.updateItem(
+      requireTenantId(user),
+      itemId,
+      dto,
+      user.userId,
+    );
   }
 
   @Permissions('products', 'delete')
@@ -200,6 +216,11 @@ export class ProductController {
     @Param('productId', ParseUUIDPipe) productId: string,
     @Body() dto: CreateProductItemDto,
   ) {
-    return this.service.createItem(requireTenantId(user), productId, dto);
+    return this.service.createItem(
+      requireTenantId(user),
+      productId,
+      dto,
+      user.userId,
+    );
   }
 }

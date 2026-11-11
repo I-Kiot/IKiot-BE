@@ -25,6 +25,8 @@ import {
   assigneeClaim,
   OrderStepPermission,
 } from '../orders/order-handler';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import { recordOrderEvent, userActor } from '../orders/order-events';
 
 /** Đóng gói đơn hàng (C-1): tạo Fulfillment + thùng và khoá hàng tại kho xuất. Route nằm ở OrderController. */
 
@@ -180,6 +182,18 @@ export class FulfillmentService {
             packedById: user.userId,
             packedAt: now,
           })),
+        });
+
+        await recordOrderEvent(tx, userActor(user), {
+          tenantId,
+          orderId: order.id,
+          type: OrderEventType.PACKED,
+          fromStatus: OrderStatus.CONFIRMED,
+          toStatus: OrderStatus.PACKED,
+          metadata: {
+            fulfillmentId: fulfillment.id,
+            packageCount: boxes.length,
+          },
         });
 
         // Khoá hàng. Thiếu ở bất kỳ dòng nào thì INSUFFICIENT_STOCK, rollback cả hai bước trên.

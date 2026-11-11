@@ -5,6 +5,8 @@ import type { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { assertMoneyInvariants } from './helpers/money-invariants';
+import { businessDate } from '../src/modules/cash-drawer-sessions/business-date';
 
 /**
  * F-1: toàn bộ hành trình đơn qua HTTP trên Postgres thật, từ đơn tay đầu tiên tới đơn mua lại. Mỗi bước kiểm những gì màn hình đọc và sổ kho phải ghi (tồn, tồn đang khoá, kho hàng hỏng). Các test chạy theo thứ tự và chia sẻ state; suite tự tạo tenant và xoá đi.
@@ -35,6 +37,8 @@ describe('F-1 order journey, end to end over HTTP', () => {
   let requestId = '';
   let shipmentId = '';
   let returnId = '';
+  let againId = '';
+  let saleBefore: Record<string, unknown> | null = null;
 
   const auth = () => ({ Authorization: `Bearer ${token}` });
   const order = async () =>
@@ -93,6 +97,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       where: { fulfillment: { tenantId: t } },
     });
     await prisma.fulfillment.deleteMany({ where: { tenantId: t } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.payment.deleteMany({
       where: { tenantId: t, refundOfPaymentId: { not: null } },
     });
@@ -421,6 +426,39 @@ describe('F-1 order journey, end to end over HTTP', () => {
     expect(completed.collection.cashRemittanceStatus).toBe('RECEIVED');
   });
 
+  it('posts exactly one SALE journal entry when the order completes, costed from the lots', async () => {
+    const done = await prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const sales = await prisma.salesJournalEntry.findMany({
+      where: { orderId, entryType: 'SALE' },
+      include: { lines: true },
+    });
+    expect(sales).toHaveLength(1);
+    const sale = sales[0];
+    expect(sale.businessDate.toISOString().slice(0, 10)).toBe(
+      businessDate(done.completedAt!).toISOString().slice(0, 10),
+    );
+    expect(Number(sale.totalAmount)).toBe(Number(done.grandTotal));
+    expect(Number(sale.goodsAmount) + Number(sale.shippingAmount)).toBe(
+      Number(sale.totalAmount),
+    );
+    // Giá vốn = Σ(-số lượng × giá lô) của các dòng sổ kho SALE của đơn, không phải giá vốn danh mục.
+    const ledger = await prisma.inventoryTransaction.findMany({
+      where: { orderItem: { orderId }, type: 'SALE' },
+    });
+    const expectedCogs = ledger.reduce(
+      (sum, row) => sum - row.quantity * Number(row.unitCost ?? 0),
+      0,
+    );
+    expect(expectedCogs).toBeGreaterThan(0);
+    expect(Number(sale.cogsAmount)).toBe(Math.round(expectedCogs));
+    expect(sale.lines.reduce((s, l) => s + Number(l.amount), 0)).toBe(
+      Number(sale.goodsAmount),
+    );
+    saleBefore = JSON.parse(JSON.stringify(sale)) as Record<string, unknown>;
+  });
+
   it('takes back a damaged piece into the damaged-goods warehouse', async () => {
     const created = await http()
       .post('/order-returns')
@@ -437,17 +475,76 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send({})
       .expect(200);
-    const inspected = await http()
+    // Đơn đã thu đủ nên phải nói rõ số hoàn: màn kiểm điền sẵn số gợi ý (giá trị một chiếc), người kiểm có thể sửa.
+    const reading = await http()
+      .get(`/order-returns/${returnId}`)
+      .set(auth())
+      .expect(200);
+    const { suggested, max } = reading.body.data.refundSuggestion;
+    expect(suggested).toBeGreaterThan(0);
+    expect(max).toBeGreaterThanOrEqual(suggested);
+    await http()
       .post(`/order-returns/${returnId}/inspect`)
       .set(auth())
       .send({ items: [{ orderItemId: lineId, condition: 'DAMAGED' }] })
+      .expect(400);
+    const inspected = await http()
+      .post(`/order-returns/${returnId}/inspect`)
+      .set(auth())
+      .send({
+        items: [{ orderItemId: lineId, condition: 'DAMAGED' }],
+        refund: { amount: suggested, method: 'CASH', note: 'Hoàn một chiếc' },
+      })
       .expect(200);
     expect(inspected.body.data.status).toBe('COMPLETED');
+    const refund = await prisma.payment.findFirstOrThrow({
+      where: { orderId, kind: 'REFUND' },
+    });
+    expect(Number(refund.amount)).toBe(suggested);
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: orderId } }))
+        .paymentStatus,
+    ).toBe('PARTIALLY_REFUNDED');
 
     expect((await stockAt(damagedId))?.stock).toBe(2);
     expect(await stockAt(warehouseId)).toEqual({ stock: 0, lockedStock: 0 });
     // Trả một phần: đơn vẫn hoàn thành.
     expect((await order()).status).toBe('COMPLETED');
+  });
+
+  it('books the damaged return as a negative RETURN entry dated at inspection and leaves the SALE row untouched', async () => {
+    const entries = await prisma.salesJournalEntry.findMany({
+      where: { orderId },
+      include: { lines: true },
+      orderBy: { postedAt: 'asc' },
+    });
+    expect(entries.map((e) => e.entryType)).toEqual(['SALE', 'RETURN']);
+    expect(JSON.parse(JSON.stringify(entries[0]))).toEqual(saleBefore);
+    const ret = entries[1];
+    expect(ret.orderReturnId).toBe(returnId);
+    expect(Number(ret.totalAmount)).toBeLessThan(0);
+    expect(Number(ret.shippingAmount)).toBe(0);
+    expect(Number(ret.goodsAmount)).toBe(Number(ret.totalAmount));
+    expect(Number(ret.cogsAmount)).toBeLessThan(0);
+    expect(ret.lines).toHaveLength(1);
+    expect(ret.lines[0].quantity).toBe(-1);
+    expect(ret.businessDate.toISOString().slice(0, 10)).toBe(
+      businessDate(new Date()).toISOString().slice(0, 10),
+    );
+    // Cùng một quy tắc với hoàn tiền và hoá đơn: lát giá trị trả = giá trị gợi ý hoàn.
+    const refund = await prisma.payment.findFirstOrThrow({
+      where: { orderId, kind: 'REFUND' },
+    });
+    expect(-Number(ret.goodsAmount)).toBe(Number(refund.amount));
+  });
+
+  it('refuses to update a journal row (append-only)', async () => {
+    await expect(
+      prisma.$executeRaw`UPDATE sales_journal_entries SET total_amount = 1 WHERE order_id = ${orderId}`,
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prisma.$executeRaw`UPDATE sales_journal_lines SET amount = 1 WHERE entry_id IN (SELECT id FROM sales_journal_entries WHERE order_id = ${orderId})`,
+    ).rejects.toThrow(/append-only/);
   });
 
   it('sells the customer a new sofa and links it to the return as its buy-again order', async () => {
@@ -467,15 +564,137 @@ describe('F-1 order journey, end to end over HTTP', () => {
         ],
       })
       .expect(201);
+    againId = again.body.data.id;
     const linked = await http()
       .patch(`/order-returns/${returnId}/replacement-order`)
       .set(auth())
-      .send({ orderId: again.body.data.id })
+      .send({ orderId: againId })
       .expect(200);
     expect(linked.body.data.replacementOrder).toMatchObject({
       id: again.body.data.id,
     });
     // Sofa mới lại thiếu nên quay lại danh sách sản xuất.
     expect((await shortRow()).shortQuantity).toBe(1);
+  });
+
+  it('leaves an action trail: one event per step that happened, none for the refused ones', async () => {
+    const events = async (id: string) =>
+      prisma.orderEvent.findMany({
+        where: { orderId: id },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+
+    const trail = await events(orderId);
+    // Đóng gói thiếu hàng và nộp tiền thiếu bị từ chối trước khi ghi gì nên không để lại sự kiện.
+    expect(trail.map((e) => e.type)).toEqual([
+      'CREATED',
+      'DEPOSIT_RECORDED',
+      'PRODUCTION_REQUESTED',
+      'PRODUCTION_RECEIVED',
+      'PACKED',
+      'SHIPMENT_CREATED',
+      'PICKED_UP',
+      'SHIPPED',
+      'DELIVERED',
+      'REMITTANCE_CONFIRMED',
+      'RETURN_CREATED',
+      'RETURN_RECEIVED',
+      'RETURN_INSPECTED',
+      'REFUNDED',
+      'REPLACEMENT_LINKED',
+    ]);
+    for (const event of trail) {
+      expect(event).toMatchObject({
+        tenantId,
+        source: 'USER',
+        actorId: ownerId,
+        actorRole: 'TENANT_OWNER',
+      });
+      expect(event.actorName).toBeTruthy();
+    }
+    const at = (type: string) => trail.find((e) => e.type === type)!;
+    expect(at('CREATED')).toMatchObject({
+      fromStatus: null,
+      toStatus: 'CONFIRMED',
+    });
+    expect(at('DEPOSIT_RECORDED').metadata).toMatchObject({
+      amount: 6_000_000,
+      method: 'CASH',
+    });
+    expect(at('PRODUCTION_REQUESTED').metadata).toMatchObject({
+      refType: 'PRODUCTION_REQUEST',
+      refId: requestId,
+    });
+    expect(at('PACKED')).toMatchObject({
+      fromStatus: 'CONFIRMED',
+      toStatus: 'PACKED',
+    });
+    // Giao nội bộ: gán shipper chưa đổi trạng thái đơn, shipper bấm lấy hàng mới đổi.
+    expect(at('SHIPMENT_CREATED')).toMatchObject({
+      fromStatus: null,
+      toStatus: null,
+    });
+    expect(at('SHIPMENT_CREATED').metadata).toMatchObject({
+      refType: 'SHIPMENT',
+      refId: shipmentId,
+      carrierType: 'INTERNAL',
+    });
+    expect(at('PICKED_UP')).toMatchObject({
+      fromStatus: 'PACKED',
+      toStatus: 'PICKED_UP',
+    });
+    expect(at('DELIVERED')).toMatchObject({
+      fromStatus: 'SHIPPING',
+      toStatus: 'RECEIVED',
+    });
+    expect(at('REMITTANCE_CONFIRMED')).toMatchObject({
+      fromStatus: 'RECEIVED',
+      toStatus: 'COMPLETED',
+    });
+    // Trả một phần: đơn không đổi trạng thái.
+    expect(at('RETURN_INSPECTED')).toMatchObject({
+      fromStatus: null,
+      toStatus: null,
+    });
+    expect(at('RETURN_INSPECTED').metadata).toMatchObject({
+      refType: 'ORDER_RETURN',
+      refId: returnId,
+      good: 0,
+      damaged: 1,
+    });
+    expect(at('REPLACEMENT_LINKED').metadata).toMatchObject({
+      refType: 'ORDER',
+      refId: againId,
+      returnId,
+    });
+
+    // Đơn mua lại thấy liên kết ngược về phiếu hoàn.
+    expect((await events(againId)).map((e) => e.type)).toEqual([
+      'CREATED',
+      'REPLACEMENT_LINKED',
+    ]);
+
+    // Route đọc trả đúng nhật ký, cũ nhất trước, trong envelope chuẩn.
+    const read = await http()
+      .get(`/orders/${orderId}/events`)
+      .set(auth())
+      .expect(200);
+    expect(read.body.success).toBe(true);
+    expect(read.body.data.map((e: { type: string }) => e.type)).toEqual(
+      trail.map((e) => e.type),
+    );
+    expect(read.body.data[0]).toMatchObject({
+      type: 'CREATED',
+      source: 'USER',
+      actorId: ownerId,
+      actorRole: 'TENANT_OWNER',
+      changes: null,
+    });
+    expect(typeof read.body.data[0].occurredAt).toBe('string');
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

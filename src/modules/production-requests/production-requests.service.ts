@@ -39,6 +39,8 @@ import {
   resolveLocations,
 } from '../../common/dto/location-ref.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { SupplierDebtRefType } from '../../common/constants/supplier-debt';
+import { sumDong } from '../../common/utils/money';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { canActAt } from '../../common/utils/location-access';
 import { paginate, skipFor } from '../../common/utils/pagination';
@@ -62,6 +64,15 @@ import {
   type RuleViolation,
 } from './production-request-rules';
 import { ProductVariantService } from '../products/product-variant.service';
+import {
+  OrderEventRefType,
+  OrderEventType,
+} from '../../common/constants/order-event-type';
+import {
+  type OrderEventMetadata,
+  recordOrderEvents,
+  userActor,
+} from '../orders/order-events';
 
 const PERSON_SELECT = {
   select: {
@@ -200,6 +211,26 @@ interface PreparedLine {
   quantity: number;
   orderItemId: string | null;
   note: string | null;
+}
+
+/** Các đơn có dòng nằm trong yêu cầu, mỗi đơn một lần; dòng không gắn đơn (hàng làm để bán chung) bị bỏ qua. */
+function orderIdsOf(
+  items: readonly { orderItem: { orderId: string } | null }[],
+): string[] {
+  return [
+    ...new Set(
+      items.flatMap((line) => (line.orderItem ? [line.orderItem.orderId] : [])),
+    ),
+  ];
+}
+
+/** Liên kết tới yêu cầu sản xuất (trang danh sách tìm theo mã). */
+function productionRef(request: { id: string; code: string }) {
+  return {
+    refType: OrderEventRefType.PRODUCTION_REQUEST,
+    refId: request.id,
+    refCode: request.code,
+  } satisfies OrderEventMetadata;
 }
 
 /** Số lần thử lại tạo mã YCSX mới khi có create đồng thời lấy mất mã vừa tính. */
@@ -483,20 +514,36 @@ export class ProductionRequestService {
     const reason = dto.note?.trim();
     const now = new Date();
     // Có điều kiện theo trạng thái đã xét, để hai lần bấm (hoặc một lần nhận chen giữa) không cùng qua được.
-    const moved = await this.prisma.productionRequest.updateMany({
-      where: { id, status: request.status },
-      data: {
-        status: dto.status,
-        sentAt: dto.status === ProductionRequestStatus.SENT ? now : undefined,
-        statusUpdatedById: user.userId,
-        statusUpdatedAt: now,
-        // Lý do đóng thiếu được ghi vào ghi chú có nhãn, vì đó là dấu vết duy nhất về lý do hàng đã đặt không về.
-        note: reason
-          ? [request.note, closingShort ? `Đóng thiếu: ${reason}` : reason]
-              .filter(Boolean)
-              .join('\n')
-          : undefined,
-      },
+    const moved = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.productionRequest.updateMany({
+        where: { id, status: request.status },
+        data: {
+          status: dto.status,
+          sentAt: dto.status === ProductionRequestStatus.SENT ? now : undefined,
+          statusUpdatedById: user.userId,
+          statusUpdatedAt: now,
+          // Lý do đóng thiếu được ghi vào ghi chú có nhãn, vì đó là dấu vết duy nhất về lý do hàng đã đặt không về.
+          note: reason
+            ? [request.note, closingShort ? `Đóng thiếu: ${reason}` : reason]
+                .filter(Boolean)
+                .join('\n')
+            : undefined,
+        },
+      });
+      // Chỉ lúc gửi xưởng mới là việc của đơn: mỗi đơn có dòng nằm trong yêu cầu này được ghi một lần.
+      if (claimed.count === 1 && dto.status === ProductionRequestStatus.SENT) {
+        await recordOrderEvents(
+          tx,
+          userActor(user),
+          orderIdsOf(request.items).map((orderId) => ({
+            tenantId,
+            orderId,
+            type: OrderEventType.PRODUCTION_REQUESTED,
+            metadata: productionRef(request),
+          })),
+        );
+      }
+      return claimed;
     });
     if (moved.count === 0) {
       throw new ConflictException({
@@ -631,7 +678,7 @@ export class ProductionRequestService {
       };
     });
     // Xưởng được trả tiền cho các cái đạt, theo giá của xưởng – giống nhập NCC.
-    const amount = priced.reduce((sum, p) => sum + p.good * p.unitCost, 0);
+    const amount = sumDong(priced.map((p) => p.good * p.unitCost));
     const supplier = await this.suppliers.requireForImport(
       tenantId,
       request.supplierId,
@@ -666,6 +713,30 @@ export class ProductionRequestService {
           });
           if (bumped.count === 0) throw this.qtyExceeds(p.line);
         }
+        // Mỗi đơn có dòng trong lần nhận này thấy một sự kiện, với tổng số lượng hàng về cho đơn đó.
+        const arrivedByOrder = new Map<string, number>();
+        for (const p of priced) {
+          const orderId = p.line.orderItem?.orderId;
+          if (!orderId) continue;
+          arrivedByOrder.set(
+            orderId,
+            (arrivedByOrder.get(orderId) ?? 0) + p.entry.receivedQuantity,
+          );
+        }
+        await recordOrderEvents(
+          tx,
+          userActor(user),
+          [...arrivedByOrder].map(([orderId, quantity]) => ({
+            tenantId,
+            orderId,
+            type: OrderEventType.PRODUCTION_RECEIVED,
+            metadata: {
+              ...productionRef(request),
+              quantity,
+              deliveryCode: delivery?.code ?? null,
+            },
+          })),
+        );
 
         const movement = await tx.stockMovementRequest.create({
           data: {
@@ -790,6 +861,12 @@ export class ProductionRequestService {
           request.supplierId,
           amount,
           priced.filter((p) => p.good > 0).map((p) => p.line.productItemId),
+          {
+            actorId: user.userId,
+            type: SupplierDebtRefType.PRODUCTION_REQUEST,
+            id: request.id,
+            code: request.code,
+          },
         );
         return {
           movementId: movement.id,

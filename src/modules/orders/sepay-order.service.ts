@@ -5,13 +5,19 @@ import {
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import { normalizeAccountNumber } from '../../common/utils/bank-account';
+import { NotificationService } from '../notifications/notifications.service';
+import { SepayRejectReason } from '../../common/constants/payment-method';
+import { recordUnmatchedTransfer, type SepayTransfer } from './sepay-qr';
 
 /** Tách khỏi `SepaySubscriptionService`: service kia thu vào tài khoản iKiot lấy từ env, service này thu vào tài khoản riêng của từng shop. */
 @Injectable()
 export class SepayOrderService {
   private readonly logger = new Logger(SepayOrderService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   /** Mọi đơn đều có mã `ORD`, không chỉ đơn SePay; tiền tố này giúp nhận ra dòng CashFlow là doanh thu bán hàng. */
   generateOrderReference(): string {
@@ -24,11 +30,39 @@ export class SepayOrderService {
     return match ? match[0].toUpperCase() : null;
   }
 
+  /** Webhook đang dùng key dùng chung của nền tảng (chứ không phải key riêng của một shop). */
+  isSharedKey(apiKey: string): boolean {
+    const sharedKey = process.env.SEPAY_ORDER_WEBHOOK_API_KEY?.trim();
+    return !!sharedKey && apiKey === sharedKey;
+  }
+
+  /**
+   * Tiền về mà không gắn được đơn nào: ghi sổ UNMATCHED (xem `recordUnmatchedTransfer`). `tenantId` null khi tài khoản nhận không thuộc shop nào.
+   * Webhook chỉ gọi với `tenantId` null khi người gọi dùng key dùng chung: một request key sai không được ghi gì, kẻ lạ không làm đầy sổ được.
+   */
+  recordUnmatched(
+    tenantId: string | null,
+    transfer: SepayTransfer,
+    reference: string | null,
+    reason: SepayRejectReason,
+  ) {
+    return recordUnmatchedTransfer(
+      this.prisma,
+      this.notifications,
+      this.logger,
+      {
+        tenantId,
+        transfer,
+        paymentReference: reference,
+        reason,
+      },
+    );
+  }
+
   /** Key riêng của shop xác định tenant; key dùng chung thì nhường cho tài khoản trong payload. */
   async resolveTenant(apiKey: string, payload: Record<string, unknown>) {
     if (!apiKey) return null;
-    const sharedKey = process.env.SEPAY_ORDER_WEBHOOK_API_KEY?.trim();
-    if (sharedKey && apiKey === sharedKey) {
+    if (this.isSharedKey(apiKey)) {
       return this.findTenantByAccount(payload);
     }
     return this.findTenantByWebhookKey(apiKey);

@@ -17,9 +17,12 @@ import {
 } from '../../common/constants/order-status';
 import { ProductionRequestStatus } from '../../common/constants/production-request-status';
 import { generateReference } from '../../common/utils/reference-generator';
+import { recordPriceChange } from '../products/product-price-history';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import { recordOrderEvent, userActor } from './order-events';
 
 /** Dòng có hàng riêng. Dòng COMBO chỉ là giá, SERVICE không có gì để làm. */
 const CUSTOMIZABLE_LINE_TYPES: readonly string[] = [
@@ -130,6 +133,8 @@ export class OrderCustomizationService {
             lineType: true,
             isCustom: true,
             sourceLocationId: true,
+            sku: true,
+            productName: true,
           },
         },
       },
@@ -180,7 +185,18 @@ export class OrderCustomizationService {
           message: 'The order status has just changed, please reload',
         });
       }
-      await this.apply(tx, tenantId, line, dto);
+      await this.apply(tx, tenantId, line, dto, user.userId);
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId,
+        type: OrderEventType.CUSTOMIZATION_SET,
+        metadata: {
+          itemId: line.id,
+          sku: line.sku ?? undefined,
+          productName: line.productName ?? undefined,
+          firstTime: !line.isCustom,
+        },
+      });
     });
 
     await this.shortages.notify(tenantId, orderId, shortage, user.userId);
@@ -206,6 +222,7 @@ export class OrderCustomizationService {
     tenantId: string,
     line: CustomizableLine,
     dto: OrderItemCustomizationDto,
+    actorId: string | null = null,
   ) {
     const item = await tx.productItem.findFirstOrThrow({
       where: { id: line.productItemId, tenantId },
@@ -305,6 +322,14 @@ export class OrderCustomizationService {
           },
         },
         select: { id: true, sku: true },
+      });
+      // Hàng may đo là một mặt hàng mới mang giá của hàng gốc: ghi giá lúc tạo, người làm là người sửa đơn.
+      await recordPriceChange(tx, {
+        tenantId,
+        productItemId: custom.id,
+        before: null,
+        after: { retailPrice: item.retailPrice, costPrice: item.costPrice },
+        actorId,
       });
       await tx.orderItem.update({
         where: { id: line.id },

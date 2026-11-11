@@ -198,6 +198,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   });
 
   afterAll(async () => {
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });

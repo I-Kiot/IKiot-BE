@@ -64,6 +64,13 @@ import { can } from '../../common/utils/permission';
 import { paginate } from '../../common/utils/pagination';
 import { withNestedProfile } from '../../common/utils/user-profile';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import {
+  displayNamesOf,
+  recordOrderEvent,
+  shipmentRef,
+  userActor,
+} from '../orders/order-events';
 
 const DRIVER_PERMISSION = { resource: 'shipments', action: 'deliver' } as const;
 
@@ -215,6 +222,29 @@ export class ShipmentService {
         },
         select: { id: true },
       });
+      const driverNames = await displayNamesOf(tx, [dto.driverId]);
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: order.id,
+        type: OrderEventType.SHIPMENT_CREATED,
+        // Giao nội bộ vẫn ở PACKED tới khi shipper xác nhận đã lấy hàng, nên không có chuyển trạng thái.
+        fromStatus: pickedUpNow ? OrderStatus.PACKED : null,
+        toStatus: pickedUpNow ? OrderStatus.PICKED_UP : null,
+        changes: dto.driverId
+          ? {
+              driver: {
+                from: null,
+                to: driverNames.get(dto.driverId) ?? null,
+              },
+            }
+          : undefined,
+        metadata: {
+          ...shipmentRef(shipment.id, dto.trackingCode),
+          carrierType: dto.carrierType,
+          carrierName: dto.carrierName ?? null,
+          toId: dto.driverId ?? null,
+        },
+      });
       return shipment.id;
     });
 
@@ -246,6 +276,7 @@ export class ShipmentService {
         status: true,
         driverId: true,
         fulfillmentId: true,
+        trackingCode: true,
         fulfillment: { select: { locationId: true } },
         order: {
           select: { id: true, code: true, status: true, assigneeId: true },
@@ -321,6 +352,14 @@ export class ShipmentService {
           createdById: user.userId,
         },
       });
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.PICKED_UP,
+        fromStatus: OrderStatus.PACKED,
+        toStatus: OrderStatus.PICKED_UP,
+        metadata: shipmentRef(id, shipment.trackingCode),
+      });
     });
 
     // Sau commit: người phụ trách cần biết hàng đã rời kho để xác nhận Đang vận chuyển. Tự bấm thì không tự báo.
@@ -350,6 +389,7 @@ export class ShipmentService {
         status: true,
         carrierType: true,
         driverId: true,
+        trackingCode: true,
         fulfillment: { select: { locationId: true } },
         order: { select: { id: true, code: true, assigneeId: true } },
       },
@@ -384,23 +424,44 @@ export class ShipmentService {
     await this.assertEligibleDriver(tenantId, dto.driverId, shipment.order);
 
     // Ghi có điều kiện: shipment vừa đi giao hoặc kết thúc, hoặc người gọi vừa thôi phụ trách đơn, thì không ghi.
-    const updated = await this.prisma.shipment.updateMany({
-      where: {
-        id,
-        tenantId,
-        status: { in: [...DRIVER_CHANGEABLE_STATUSES] },
-        ...(access === 'ASSIGNEE'
-          ? { order: { assigneeId: user.userId } }
-          : {}),
-      },
-      data: { driverId: dto.driverId },
-    });
-    if (updated.count !== 1) {
-      throw new ConflictException({
-        code: ErrorCode.SHIPMENT_STATUS_INVALID,
-        message: 'The shipment has just changed, please reload',
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.shipment.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: { in: [...DRIVER_CHANGEABLE_STATUSES] },
+          ...(access === 'ASSIGNEE'
+            ? { order: { assigneeId: user.userId } }
+            : {}),
+        },
+        data: { driverId: dto.driverId },
       });
-    }
+      if (updated.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.SHIPMENT_STATUS_INVALID,
+          message: 'The shipment has just changed, please reload',
+        });
+      }
+      const names = await displayNamesOf(tx, [shipment.driverId, dto.driverId]);
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.DRIVER_CHANGED,
+        changes: {
+          driver: {
+            from: shipment.driverId
+              ? (names.get(shipment.driverId) ?? null)
+              : null,
+            to: names.get(dto.driverId) ?? null,
+          },
+        },
+        metadata: {
+          ...shipmentRef(id, shipment.trackingCode),
+          fromId: shipment.driverId,
+          toId: dto.driverId,
+        },
+      });
+    });
 
     await this.notifyDriver(
       tenantId,
@@ -447,7 +508,7 @@ export class ShipmentService {
         },
         shipments: {
           where: { status: ShipmentStatus.PICKED_UP },
-          select: { id: true },
+          select: { id: true, trackingCode: true },
         },
       },
     });
@@ -527,6 +588,14 @@ export class ShipmentService {
       await tx.shipment.updateMany({
         where: { id: shipment.id, status: ShipmentStatus.PICKED_UP },
         data: { status: ShipmentStatus.IN_TRANSIT },
+      });
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId,
+        type: OrderEventType.SHIPPED,
+        fromStatus: OrderStatus.PICKED_UP,
+        toStatus: OrderStatus.SHIPPING,
+        metadata: shipmentRef(shipment.id, shipment.trackingCode),
       });
       await tx.shipmentEvent.create({
         data: {
@@ -730,6 +799,15 @@ export class ShipmentService {
           createdById: user.userId,
         },
       });
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.OUT_FOR_DELIVERY,
+        metadata: {
+          ...shipmentRef(id, shipment.trackingCode),
+          note: dto.note ?? null,
+        },
+      });
     });
     return this.findDetail(tenantId, id);
   }
@@ -766,6 +844,15 @@ export class ShipmentService {
           source: ShipmentEventSource.MANUAL,
           note: dto.note,
           createdById: user.userId,
+        },
+      });
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.DELIVERY_FAILED,
+        metadata: {
+          ...shipmentRef(id, shipment.trackingCode),
+          note: dto.note,
         },
       });
     });
@@ -824,6 +911,7 @@ export class ShipmentService {
         id: true,
         status: true,
         driverId: true,
+        trackingCode: true,
         fulfillment: { select: { locationId: true } },
         order: {
           select: { id: true, code: true, status: true, assigneeId: true },

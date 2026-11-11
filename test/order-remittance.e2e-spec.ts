@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { InvoiceService } from './../src/modules/invoices/invoices.service';
 import { randomUUID } from 'crypto';
+import { assertMoneyInvariants } from './helpers/money-invariants';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
 import { PrismaService } from './../src/prisma/prisma.service';
@@ -246,6 +247,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
       where: { fulfillment: { tenantId } },
     });
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
@@ -287,7 +289,7 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     const history = await delivery.listMyHistory(owner, tenantId, {
       page: 1,
       limit: 50,
-    } as never);
+    });
     const row = history.data.find((r) => r.id === shipmentId);
     expect(row?.order.amountDue).toBe(0);
     expect(orderId).toBeDefined();
@@ -316,6 +318,9 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     });
     expect(flow).toMatchObject({
       flowType: 'INCOME',
+      category: 'ORDER_PAYMENT',
+      // Shipper nộp thẳng chủ shop: không vào két nào.
+      fund: 'OWNER',
       paymentMethod: 'CASH',
       createdById: ownerId,
     });
@@ -327,7 +332,9 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
     expect(cash.remittanceStatus).toBe(RemittanceStatus.RECEIVED);
     expect(cash.remittanceConfirmedById).toBe(ownerId);
     expect(cash.remittanceConfirmedAt).not.toBeNull();
-    expect(cash.note).toContain('Đã đếm đủ');
+    // Ghi chú của chủ có cột riêng; lời người thu (`note`) không bị sửa.
+    expect(cash.remittanceNote).toBe('Đã đếm đủ');
+    expect(cash.note ?? '').not.toContain('Đã đếm đủ');
     expect(detail).toMatchObject({ id: orderId });
 
     // COMPLETED là lúc hóa đơn được phát hành: có số, các dòng đơn được chốt vào hóa đơn.
@@ -411,5 +418,10 @@ describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () =>
         }),
       ),
     ).toBe(ErrorCode.ORDER_NOT_FOUND);
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

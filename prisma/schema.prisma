@@ -34,6 +34,9 @@
 //   - payments: CHECK (amount > 0)
 //   - invoices: mỗi đơn tối đa một hoá đơn SALE chưa huỷ (index một phần)
 //   - shipments: mỗi đơn tối đa một lần giao chưa kết thúc (index một phần shipments_one_open_per_order)
+//   - order_events: CHECK type thuộc danh sách (order_events_type_check), CHECK source IN (USER, SYSTEM, WEBHOOK)
+//   - order_events: CHECK (source = 'USER' OR actor_id IS NULL)
+//   - sepay_transactions: CHECK outcome IN (SETTLED, SETTLED_LATE, REJECTED) (sepay_transactions_outcome_check)
 
 generator client {
   provider     = "prisma-client"
@@ -71,53 +74,60 @@ model Tenant {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  users                   User[]                     @relation("TenantUsers")
-  roles                   Role[]
-  subscriptions           Subscription[]
-  subscriptionInvoices    SubscriptionInvoice[]
-  locations               Location[]
-  branches                Branch[]
-  warehouses              Warehouse[]
-  brands                  Brand[]
-  categories              Category[]
-  suppliers               Supplier[]
-  customers               Customer[]
-  products                Product[]
-  productItems            ProductItem[]
-  inventories             Inventory[]
-  inventoryTransactions   InventoryTransaction[]
-  inventoryLots           InventoryLot[]
-  stockMovementRequests   StockMovementRequest[]
-  shiftTemplates          ShiftTemplate[]
-  workingSchedules        WorkingSchedule[]
-  holidays                Holiday[]
-  salesChannels           SalesChannel[]
-  channelProductMappings  ChannelProductMapping[]
-  orders                  Order[]
-  orderItemCustomizations OrderItemCustomization[]
-  productionRequests      ProductionRequest[]
-  productionDeliveries    ProductionDelivery[]
-  orderReturns            OrderReturn[]
-  promotions              Promotion[]
-  promotionLogs           PromotionLog[]
-  cashDrawerSessions      CashDrawerSession[]
-  cashFlows               CashFlow[]
-  notifications           Notification[]
-  targetedByNotifications NotificationTargetTenant[]
-  tickets                 Ticket[]
-  aiChatHistories         AIChatHistory[]
-  auditLogs               AuditLog[]
-  storageNodes            StorageNode[]
-  skuPlacements           SkuPlacement[]
-  payments                Payment[]
-  fulfillments            Fulfillment[]
-  fulfillmentPackages     FulfillmentPackage[]
-  shipments               Shipment[]
-  operationEvents         OperationEvent[]
-  vouchers                Voucher[]
-  voucherCodes            VoucherCode[]
-  invoices                Invoice[]
-  productAttributes       ProductAttribute[]
+  users                     User[]                     @relation("TenantUsers")
+  roles                     Role[]
+  subscriptions             Subscription[]
+  subscriptionInvoices      SubscriptionInvoice[]
+  locations                 Location[]
+  branches                  Branch[]
+  warehouses                Warehouse[]
+  brands                    Brand[]
+  categories                Category[]
+  suppliers                 Supplier[]
+  customers                 Customer[]
+  products                  Product[]
+  productItems              ProductItem[]
+  inventories               Inventory[]
+  inventoryTransactions     InventoryTransaction[]
+  inventoryLots             InventoryLot[]
+  stockMovementRequests     StockMovementRequest[]
+  shiftTemplates            ShiftTemplate[]
+  workingSchedules          WorkingSchedule[]
+  holidays                  Holiday[]
+  salesChannels             SalesChannel[]
+  channelProductMappings    ChannelProductMapping[]
+  orders                    Order[]
+  orderItemCustomizations   OrderItemCustomization[]
+  productionRequests        ProductionRequest[]
+  productionDeliveries      ProductionDelivery[]
+  orderReturns              OrderReturn[]
+  promotions                Promotion[]
+  promotionLogs             PromotionLog[]
+  cashDrawerSessions        CashDrawerSession[]
+  cashFlows                 CashFlow[]
+  notifications             Notification[]
+  targetedByNotifications   NotificationTargetTenant[]
+  tickets                   Ticket[]
+  aiChatHistories           AIChatHistory[]
+  auditLogs                 AuditLog[]
+  storageNodes              StorageNode[]
+  skuPlacements             SkuPlacement[]
+  payments                  Payment[]
+  fulfillments              Fulfillment[]
+  fulfillmentPackages       FulfillmentPackage[]
+  shipments                 Shipment[]
+  operationEvents           OperationEvent[]
+  vouchers                  Voucher[]
+  voucherCodes              VoucherCode[]
+  invoices                  Invoice[]
+  productAttributes         ProductAttribute[]
+  orderEvents               OrderEvent[]
+  sepayTransactions         SepayTransaction[]
+  platformSepayTransactions PlatformSepayTransaction[]
+  salesJournalEntries       SalesJournalEntry[]
+  supplierDebtEntries       SupplierDebtEntry[]
+  bankingChanges            TenantBankingChange[]
+  productItemPriceChanges   ProductItemPriceChange[]
 
   @@map("tenants")
 }
@@ -194,6 +204,7 @@ model User {
   stockMovementsShipped         StockMovementRequest[]   @relation("StockMovementShippedBy")
   stockMovementsReceived        StockMovementRequest[]   @relation("StockMovementReceivedBy")
   stockMovementsApproved        StockMovementRequest[]   @relation("StockMovementApprovedBy")
+  stockMovementsCancelled       StockMovementRequest[]   @relation("StockMovementCancelledBy")
   fulfillmentsAssigned          Fulfillment[]            @relation("FulfillmentAssignee")
   fulfillmentsVerified          Fulfillment[]            @relation("FulfillmentVerifiedBy")
   packagesPacked                FulfillmentPackage[]
@@ -203,6 +214,8 @@ model User {
   paymentsCreated               Payment[]                @relation("PaymentCreatedBy")
   paymentsCollected             Payment[]                @relation("PaymentCollectedBy")
   paymentsRemittanceConfirmed   Payment[]                @relation("PaymentRemittanceConfirmedBy")
+  paymentsCancelled             Payment[]                @relation("PaymentCancelledBy")
+  sepayTransactionsResolved     SepayTransaction[]       @relation("SepayTransactionResolvedBy")
   ordersShipped                 Order[]                  @relation("OrderShippedBy")
   ordersCancelled               Order[]                  @relation("OrderCancelledBy")
   orderReturnsReceived          OrderReturn[]            @relation("OrderReturnReceivedBy")
@@ -210,6 +223,11 @@ model User {
   productionDeliveriesCreated   ProductionDelivery[]     @relation("ProductionDeliveryCreatedBy")
   productionDeliveriesReceived  ProductionDelivery[]     @relation("ProductionDeliveryReceivedBy")
   productionDeliveriesCancelled ProductionDelivery[]     @relation("ProductionDeliveryCancelledBy")
+  orderEvents                   OrderEvent[]             @relation("OrderEventActor")
+  salesJournalActed             SalesJournalEntry[]      @relation("SalesJournalActor")
+  supplierDebtEntries           SupplierDebtEntry[]      @relation("SupplierDebtActor")
+  bankingChangesMade            TenantBankingChange[]    @relation("TenantBankingActor")
+  priceChangesMade              ProductItemPriceChange[] @relation("PriceChangeActor")
 
   @@index([tenantId, workshopId])
   @@map("users")
@@ -392,9 +410,13 @@ model SubscriptionInvoice {
   paymentReference   String?      @unique @map("payment_reference") // nội dung chuyển khoản
   paymentMethod      String?      @map("payment_method") // BANK_TRANSFER | MOMO | VNPAY | SEPAY
   transactionRef     String?      @map("transaction_ref") // mã giao dịch phía cổng thanh toán
+  /// Số tiền thực nhận (có thể dư; với chuyển thiếu là số của lần chuyển gần nhất, hoá đơn vẫn PENDING).
+  amountReceived     Decimal?     @map("amount_received") @db.Decimal(12, 2)
   invoiceUrl         String?      @map("invoice_url")
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  platformTransfers PlatformSepayTransaction[]
 
   @@map("subscription_invoices")
 }
@@ -475,6 +497,7 @@ model Branch {
   promotionLogs      PromotionLog[]
   cashDrawerSessions CashDrawerSession[]
   salesChannels      SalesChannel[]
+  salesJournal       SalesJournalEntry[]
 
   @@map("branches")
 }
@@ -549,6 +572,7 @@ model Supplier {
   productionRequests    ProductionRequest[]
   inventoryLots         InventoryLot[]
   workshopStaff         User[]                 @relation("WorkshopStaff")
+  debtEntries           SupplierDebtEntry[]
 
   @@map("suppliers")
 }
@@ -685,6 +709,7 @@ model ProductItem {
   suppliers             ProductItemSupplier[]
   details               ProductItemDetail[]
   images                ProductItemImage[]
+  priceChanges          ProductItemPriceChange[]
   inventories           Inventory[]
   inventoryTransactions InventoryTransaction[]
   inventoryLots         InventoryLot[]
@@ -959,18 +984,20 @@ model StockMovementRequest {
   toLocationId String?   @map("to_location_id")
   toLocation   Location? @relation("StockMovementToLocation", fields: [toLocationId], references: [id])
 
-  createdById  String    @map("created_by")
-  createdBy    User      @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
-  shippedById  String?   @map("shipped_by")
-  shippedBy    User?     @relation("StockMovementShippedBy", fields: [shippedById], references: [id])
-  shippedAt    DateTime? @map("shipped_at") @db.Timestamptz(6)
-  receivedById String?   @map("received_by")
-  receivedBy   User?     @relation("StockMovementReceivedBy", fields: [receivedById], references: [id])
-  receivedAt   DateTime? @map("received_at") @db.Timestamptz(6)
-  approvedById String?   @map("approved_by") // người duyệt phiếu kiểm kê
-  approvedBy   User?     @relation("StockMovementApprovedBy", fields: [approvedById], references: [id])
-  approvedAt   DateTime? @map("approved_at") @db.Timestamptz(6)
-  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdById   String    @map("created_by")
+  createdBy     User      @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
+  shippedById   String?   @map("shipped_by")
+  shippedBy     User?     @relation("StockMovementShippedBy", fields: [shippedById], references: [id])
+  shippedAt     DateTime? @map("shipped_at") @db.Timestamptz(6)
+  receivedById  String?   @map("received_by")
+  receivedBy    User?     @relation("StockMovementReceivedBy", fields: [receivedById], references: [id])
+  receivedAt    DateTime? @map("received_at") @db.Timestamptz(6)
+  approvedById  String?   @map("approved_by") // người duyệt phiếu kiểm kê
+  approvedBy    User?     @relation("StockMovementApprovedBy", fields: [approvedById], references: [id])
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+  cancelledAt   DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledById String?   @map("cancelled_by")
+  cancelledBy   User?     @relation("StockMovementCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
 
   totalPrice Decimal  @default(0) @map("total_price") @db.Decimal(14, 2) // tổng tiền hàng (phiếu nhập)
   note       String?
@@ -1189,6 +1216,8 @@ model Order {
   cancelledBy   User?     @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
   cancelledAt   DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelReason  String?   @map("cancel_reason")
+  // Lúc đơn COMPLETED (CHECK orders_completed_at_required). Doanh thu và báo cáo theo ngày này, không theo created_at.
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz(6)
 
   channel         String        @default("MANUAL") // MANUAL (nhân viên nhập đơn khách đặt qua mạng; POS cũng là MANUAL) | SHOPEE
   channelId       String?       @map("channel_id")
@@ -1244,6 +1273,9 @@ model Order {
   returns           OrderReturn[]           @relation("OrderReturnOrder")
   replacementFor    OrderReturn[]           @relation("OrderReturnReplacement")
   voucherCodesUsed  VoucherCode[]
+  events            OrderEvent[]
+  sepayTransactions SepayTransaction[]
+  salesJournal      SalesJournalEntry[]
 
   @@unique([tenantId, code])
   @@unique([channelId, channelOrderRef])
@@ -1253,7 +1285,35 @@ model Order {
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, customerId, createdAt])
   @@index([tenantId, channel, createdAt])
+  @@index([status, createdAt])
+  @@index([tenantId, completedAt])
   @@map("orders")
+}
+
+/// Nhật ký thao tác trên đơn. Chỉ ghi thêm (không có route sửa/xoá), ghi trong cùng transaction với thay đổi.
+model OrderEvent {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  orderId    String   @map("order_id")
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type       String // src/common/constants/order-event-type.ts (CHECK order_events_type_check)
+  fromStatus String?  @map("from_status")
+  toStatus   String?  @map("to_status")
+  source     String // USER | SYSTEM | WEBHOOK (CHECK)
+  actorId    String?  @map("actor_id")
+  actor      User?    @relation("OrderEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  // Chụp tên và vai trò người thao tác lúc ghi: đọc lại vẫn đúng khi tài khoản đổi tên, đổi vai trò hay bị xoá.
+  actorName  String?  @map("actor_name")
+  actorRole  String?  @map("actor_role")
+  changes    Json? // { <trường>: { from, to } } - giá trị đã đổi sang dạng hiển thị được
+  metadata   Json?
+  // clock_timestamp() chứ không phải now(): now() là giờ bắt đầu transaction nên các sự kiện cùng transaction sẽ trùng giờ.
+  occurredAt DateTime @default(dbgenerated("clock_timestamp()")) @map("occurred_at") @db.Timestamptz(6)
+
+  @@index([tenantId, orderId, occurredAt])
+  @@index([tenantId, actorId, occurredAt])
+  @@map("order_events")
 }
 
 /// Một dòng của đơn. Giá, tên, SKU được chụp lại lúc bán.
@@ -1296,6 +1356,7 @@ model OrderItem {
   productionRequestItems ProductionRequestItem[]
   fulfillmentItems       FulfillmentItem[]
   returnItems            OrderReturnItem[]
+  journalLines           SalesJournalLine[]
   invoiceLines           InvoiceLine[]
   customLots             InventoryLot[]          @relation("InventoryLotCustomFor")
   inventoryTransactions  InventoryTransaction[]
@@ -1492,7 +1553,8 @@ model OrderReturn {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  items OrderReturnItem[]
+  items          OrderReturnItem[]
+  journalEntries SalesJournalEntry[]
 
   @@unique([tenantId, code])
   @@index([tenantId, orderId])
@@ -1640,10 +1702,11 @@ model CashDrawerSession {
   currentStaff   User     @relation("CashDrawerCurrentStaff", fields: [currentStaffId], references: [id])
 
   // Chốt két cuối ngày: số tiền đếm được, người chốt, ghi chú
-  finalLogAmount    Decimal? @map("final_log_amount") @db.Decimal(14, 2)
-  finalLogManagerId String?  @map("final_log_manager_id")
-  finalLogManager   User?    @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
-  finalLogNote      String?  @map("final_log_note")
+  finalLogAmount    Decimal?  @map("final_log_amount") @db.Decimal(14, 2)
+  finalLogManagerId String?   @map("final_log_manager_id")
+  finalLogManager   User?     @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
+  finalLogNote      String?   @map("final_log_note")
+  closedAt          DateTime? @map("closed_at") @db.Timestamptz(6) // lúc chốt két (status CLOSED)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1673,31 +1736,39 @@ model CashDrawerShiftLog {
 
 /// Sổ quỹ: chỉ ghi tự động khi có sự kiện tiền (bán, trả NCC, hoàn...), không có API nhập tay.
 model CashFlow {
-  id                 String    @id @default(uuid())
-  tenantId           String    @map("tenant_id")
-  tenant             Tenant    @relation(fields: [tenantId], references: [id])
-  flowType           String    @map("flow_type") // INCOME (thu) | EXPENSE (chi)
-  amount             Decimal   @db.Decimal(14, 2)
-  paymentMethod      String?   @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
-  locationId         String?   @map("location_id")
-  location           Location? @relation(fields: [locationId], references: [id])
-  paymentId          String?   @unique @map("payment_id")
-  payment            Payment?  @relation(fields: [paymentId], references: [id])
-  orderId            String?   @map("order_id")
-  order              Order?    @relation(fields: [orderId], references: [id])
-  supplierId         String?   @map("supplier_id")
-  supplier           Supplier? @relation(fields: [supplierId], references: [id])
-  createdById        String?   @map("created_by")
-  createdBy          User?     @relation(fields: [createdById], references: [id])
-  paymentReference   String?   @map("payment_reference")
-  sepayTransactionId String?   @map("sepay_transaction_id")
+  id                 String             @id @default(uuid())
+  tenantId           String             @map("tenant_id")
+  tenant             Tenant             @relation(fields: [tenantId], references: [id])
+  flowType           String             @map("flow_type") // INCOME (thu) | EXPENSE (chi)
+  amount             Decimal            @db.Decimal(14, 2)
+  paymentMethod      String?            @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
+  locationId         String?            @map("location_id")
+  location           Location?          @relation(fields: [locationId], references: [id])
+  paymentId          String?            @unique @map("payment_id")
+  payment            Payment?           @relation(fields: [paymentId], references: [id])
+  orderId            String?            @map("order_id")
+  order              Order?             @relation(fields: [orderId], references: [id])
+  supplierId         String?            @map("supplier_id")
+  supplier           Supplier?          @relation(fields: [supplierId], references: [id])
+  createdById        String?            @map("created_by")
+  createdBy          User?              @relation(fields: [createdById], references: [id])
+  paymentReference   String?            @map("payment_reference")
+  sepayTransactionId String?            @map("sepay_transaction_id")
+  /// Dòng sổ SePay mà khoản này ghi nhận: tiền về không gắn được đơn (UNALLOCATED_RECEIPT) và lần hoàn lại nó (UNALLOCATED_REFUND). Unique (sepay_ledger_id, category) chỉ có trong SQL.
+  sepayLedgerId      String?            @map("sepay_ledger_id")
+  sepayLedger        SepayTransaction?  @relation(fields: [sepayLedgerId], references: [id], onDelete: SetNull)
+  supplierDebtEntry  SupplierDebtEntry?
   description        String?
-  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Loại tiền (CHECK cash_flows_category_check; src/common/constants/cash-flow-category.ts) và quỹ nơi tiền nằm (CHECK cash_flows_fund_check).
+  category           String             @map("category")
+  fund               String             @map("fund") // DRAWER (tiền mặt qua két chi nhánh) | OWNER (tiền mặt giao thẳng chủ) | BANK (không phải tiền mặt)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([tenantId, createdAt])
   @@index([tenantId, locationId, createdAt])
   @@index([tenantId, orderId])
+  @@index([tenantId, category, createdAt])
   @@map("cash_flows")
 }
 
@@ -1712,7 +1783,7 @@ model Payment {
   method String // CASH | BANK_TRANSFER | SEPAY | CHANNEL (sàn thu hộ, trả sau)
   kind   String // FULL (trả đủ) | DEPOSIT (cọc) | BALANCE (thu phần còn lại khi giao) | REFUND (hoàn)
   amount Decimal @db.Decimal(14, 2) // luôn dương; REFUND là tiền ra
-  status String  @default("PENDING") // PENDING | PAID | FAILED | CANCELLED
+  status String  @default("PENDING") // PENDING | PAID | FAILED | CANCELLED | EXPIRED (QR hết hạn, do cron đặt)
 
   refundOfPaymentId String?   @map("refund_of_payment_id") // khoản được hoàn (cho REFUND)
   refundOf          Payment?  @relation("PaymentRefund", fields: [refundOfPaymentId], references: [id])
@@ -1721,6 +1792,14 @@ model Payment {
   paymentReference   String?   @unique @map("payment_reference") // nội dung khách ghi khi chuyển khoản
   sepayTransactionId String?   @map("sepay_transaction_id")
   paidAt             DateTime? @map("paid_at") @db.Timestamptz(6)
+  // Hạn mã QR SePay (chỉ khoản SEPAY BALANCE): phát + 15 phút, xem orders/sepay-qr.ts. Null = khoản cũ, hạn tính từ createdAt.
+  expiresAt          DateTime? @map("expires_at") @db.Timestamptz(6)
+  // Số tiền mã QR đã yêu cầu; `amount` là số tiền thực đã về (khoản chuyển thiếu / dư vẫn ghi đúng số thực nhận).
+  requestedAmount    Decimal?  @map("requested_amount") @db.Decimal(14, 2)
+  // Khoản bị huỷ (tay): ai huỷ, lúc nào. Cron QR hết hạn đặt EXPIRED chứ không điền hai cột này.
+  cancelledAt        DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledById      String?   @map("cancelled_by")
+  cancelledBy        User?     @relation("PaymentCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
 
   locationId    String?   @map("location_id") // nơi thu tiền
   location      Location? @relation(fields: [locationId], references: [id])
@@ -1733,6 +1812,7 @@ model Payment {
   remittanceConfirmedById String?   @map("remittance_confirmed_by")
   remittanceConfirmedBy   User?     @relation("PaymentRemittanceConfirmedBy", fields: [remittanceConfirmedById], references: [id])
   remittanceConfirmedAt   DateTime? @map("remittance_confirmed_at") @db.Timestamptz(6)
+  remittanceNote          String?   @map("remittance_note") // ghi chú của người xác nhận nhận tiền; `note` giữ nguyên lời người thu
 
   createdById String?  @map("created_by")
   createdBy   User?    @relation("PaymentCreatedBy", fields: [createdById], references: [id])
@@ -1745,7 +1825,126 @@ model Payment {
   @@index([tenantId, orderId])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, remittanceStatus])
+  @@index([status, expiresAt])
   @@map("payments")
+}
+
+/// Sổ giao dịch SePay của webhook đơn hàng: MỌI lần SePay báo tiền về đều có đúng một dòng (khoá chống lặp `dedupe_key`), dù kết cục là chốt, chốt thiếu, từ chối hay không gắn được đơn nào. Là bản ghi bền của tiền đã về nhưng chưa chốt (QR hết hạn, đơn đã huỷ, không có mã, mã lạ) để chủ shop hoàn tiền / đối soát.
+/// `tenant_id` null = tiền về tài khoản không thuộc shop nào. Hai unique index một phần (tenant + dedupe_key, và account + dedupe_key cho dòng không có tenant) chỉ có trong SQL.
+model SepayTransaction {
+  id                 String    @id @default(uuid())
+  tenantId           String?   @map("tenant_id")
+  tenant             Tenant?   @relation(fields: [tenantId], references: [id])
+  sepayTransactionId String?   @map("sepay_transaction_id") // mã giao dịch SePay; có thể không có
+  /// `id:<mã>` | `ref:<referenceCode>` | `h:<sha256>` (xem sepayDedupeKey).
+  dedupeKey          String    @map("dedupe_key")
+  paymentReference   String?   @map("payment_reference") // mã ORD trích từ nội dung; null = không có mã
+  accountNumber      String?   @map("account_number")
+  content            String?
+  bankReferenceCode  String?   @map("bank_reference_code")
+  transactionDate    String?   @map("transaction_date")
+  amount             Decimal   @db.Decimal(14, 2)
+  /// Phần khách chuyển dư so với đơn (đã chốt, tiền nằm trong khoản Payment; chờ hoàn).
+  excessAmount       Decimal   @default(0) @map("excess_amount") @db.Decimal(14, 2)
+  outcome            String // SETTLED | SETTLED_LATE | SETTLED_PARTIAL | REJECTED | UNMATCHED (CHECK)
+  rejectReason       String?   @map("reject_reason") // ORDER_CANCELLED | ALREADY_PAID | PAYMENT_SUPERSEDED | ORDER_NOT_WAITING | NO_REFERENCE | UNKNOWN_REFERENCE | UNKNOWN_TENANT
+  orderId            String?   @map("order_id")
+  order              Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  paymentId          String?   @map("payment_id") // không có FK: chỉ để đối chiếu
+  /// Bốn cột xử lý tay: chỉ `POST /sepay-transactions/:id/resolve` ghi, một lần (`resolved_at IS NULL`).
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedById       String?   @map("resolved_by")
+  resolvedBy         User?     @relation("SepayTransactionResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolution         String? // REFUNDED_MANUALLY | MATCHED_MANUALLY | IGNORED (CHECK)
+  resolutionNote     String?   @map("resolution_note")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  cashFlows CashFlow[]
+
+  @@index([tenantId, outcome, resolvedAt])
+  @@map("sepay_transactions")
+}
+
+/// Sổ giao dịch SePay của tài khoản iKiot (tenant trả tiền gói). Mỗi lần SePay báo tiền về có đúng một dòng
+/// (`dedupe_key` unique, xem sepayDedupeKey). Không bao giờ sửa.
+model PlatformSepayTransaction {
+  id                    String               @id @default(uuid())
+  dedupeKey             String               @unique @map("dedupe_key")
+  sepayTransactionId    String?              @map("sepay_transaction_id")
+  accountNumber         String?              @map("account_number")
+  content               String?
+  bankReferenceCode     String?              @map("bank_reference_code")
+  amount                Decimal              @db.Decimal(14, 2)
+  outcome               String // ACTIVATED | UNDERPAID | INVOICE_NOT_PENDING | UNMATCHED | NO_REFERENCE (CHECK)
+  paymentReference      String?              @map("payment_reference")
+  subscriptionInvoiceId String?              @map("subscription_invoice_id")
+  subscriptionInvoice   SubscriptionInvoice? @relation(fields: [subscriptionInvoiceId], references: [id], onDelete: SetNull)
+  tenantId              String?              @map("tenant_id")
+  tenant                Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, createdAt])
+  @@index([outcome])
+  @@map("platform_sepay_transactions")
+}
+
+/// Nhật ký doanh thu, chỉ ghi thêm (trigger chặn UPDATE). SALE một lần khi đơn COMPLETED; RETURN âm khi trả hàng (chỉ khi đã có SALE);
+/// OTHER_INCOME khi shop giữ tiền của đơn không thành (huỷ / trả trước khi hoàn thành). Báo cáo là phép cộng trên bảng này, kỳ cũ không bao giờ đổi.
+/// Dấu: goods/shipping/other/total âm ở RETURN; cogs_amount dương ở SALE, âm ở RETURN; shipping_cost, channel_fee dương (chi phí, chỉ SALE).
+model SalesJournalEntry {
+  id            String       @id @default(uuid())
+  tenantId      String       @map("tenant_id")
+  tenant        Tenant       @relation(fields: [tenantId], references: [id])
+  branchId      String       @map("branch_id")
+  branch        Branch       @relation(fields: [branchId], references: [id])
+  orderId       String       @map("order_id")
+  order         Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderReturnId String?      @map("order_return_id")
+  orderReturn   OrderReturn? @relation(fields: [orderReturnId], references: [id], onDelete: Cascade)
+  entryType     String       @map("entry_type") // SALE | RETURN | OTHER_INCOME (CHECK)
+  postedAt      DateTime     @default(dbgenerated("clock_timestamp()")) @map("posted_at") @db.Timestamptz(6)
+  businessDate  DateTime     @map("business_date") @db.Date // ngày theo giờ Việt Nam: SALE = ngày completed_at, RETURN / OTHER_INCOME = ngày ghi
+
+  goodsAmount       Decimal @default(0) @map("goods_amount") @db.Decimal(14, 2)
+  shippingAmount    Decimal @default(0) @map("shipping_amount") @db.Decimal(14, 2)
+  otherIncomeAmount Decimal @default(0) @map("other_income_amount") @db.Decimal(14, 2)
+  totalAmount       Decimal @map("total_amount") @db.Decimal(14, 2)
+  cogsAmount        Decimal @default(0) @map("cogs_amount") @db.Decimal(14, 2)
+  shippingCost      Decimal @default(0) @map("shipping_cost") @db.Decimal(14, 2)
+  channelFee        Decimal @default(0) @map("channel_fee") @db.Decimal(14, 2)
+
+  // Chụp lúc ghi (không có khoá ngoại): báo cáo theo khách / nhân viên vẫn đúng khi tài khoản đổi hay bị xoá.
+  customerId      String? @map("customer_id")
+  assigneeId      String? @map("assignee_id")
+  creatorId       String? @map("creator_id")
+  channel         String?
+  fulfillmentType String? @map("fulfillment_type")
+  source          String // điểm ghi (src/common/constants/sales-journal.ts)
+  actorId         String? @map("actor_id")
+  actor           User?   @relation("SalesJournalActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  lines SalesJournalLine[]
+
+  // Các chỉ mục duy nhất một phần (một SALE / OTHER_INCOME / RETURN-quầy cho mỗi đơn, một RETURN cho mỗi đơn hoàn) chỉ nằm trong SQL.
+  @@index([tenantId, businessDate])
+  @@index([tenantId, branchId, businessDate])
+  @@map("sales_journal_entries")
+}
+
+model SalesJournalLine {
+  id            String            @id @default(uuid())
+  entryId       String            @map("entry_id")
+  entry         SalesJournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  orderItemId   String            @map("order_item_id")
+  orderItem     OrderItem         @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  productItemId String            @map("product_item_id")
+  quantity      Int // có dấu như entry: âm ở RETURN
+  amount        Decimal           @db.Decimal(14, 2) // Σ = goods_amount của entry; món trong combo mang 0
+  cogs          Decimal           @default(0) @db.Decimal(14, 2) // Σ = cogs_amount của entry
+
+  @@index([entryId])
+  @@index([productItemId])
+  @@map("sales_journal_lines")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2011,17 +2210,18 @@ model Invoice {
 
 /// Một dòng của hoá đơn bán hàng.
 model InvoiceLine {
-  id          String     @id @default(uuid())
-  invoiceId   String     @map("invoice_id")
-  invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  orderItemId String?    @map("order_item_id")
-  orderItem   OrderItem? @relation(fields: [orderItemId], references: [id])
-  description String // tên + phiên bản + thông số custom ngắn gọn
-  quantity    Int
-  unitPrice   Decimal    @map("unit_price") @db.Decimal(12, 2)
-  vatRate     Decimal    @default(0) @map("vat_rate") @db.Decimal(5, 2)
-  amount      Decimal    @db.Decimal(14, 2)
-  position    Int        @default(0)
+  id             String     @id @default(uuid())
+  invoiceId      String     @map("invoice_id")
+  invoice        Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  orderItemId    String?    @map("order_item_id")
+  orderItem      OrderItem? @relation(fields: [orderItemId], references: [id])
+  description    String // tên + phiên bản + thông số custom ngắn gọn
+  quantity       Int
+  unitPrice      Decimal    @map("unit_price") @db.Decimal(12, 2)
+  vatRate        Decimal    @default(0) @map("vat_rate") @db.Decimal(5, 2)
+  amount         Decimal    @db.Decimal(14, 2) // giá trị thực của dòng sau giảm giá cả đơn; Σ dòng = tổng hoá đơn
+  discountAmount Decimal    @default(0) @map("discount_amount") @db.Decimal(14, 2) // phần giảm giá cả đơn đã chia vào dòng (chỉ để hiển thị)
+  position       Int        @default(0)
 
   @@index([invoiceId])
   @@map("invoice_lines")
@@ -2121,4 +2321,64 @@ model AIChatHistory {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("ai_chat_histories")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 9. Sổ công nợ NCC, lịch sử thông tin nhận tiền, lịch sử giá
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Sổ công nợ nhà cung cấp, chỉ ghi thêm (trigger trong SQL). amount có dấu: + nhận hàng / số dư đầu, - trả nợ. Σ amount = suppliers.outstanding_debt. created_by null = hệ thống.
+model SupplierDebtEntry {
+  id            String    @id @default(uuid())
+  tenantId      String    @map("tenant_id")
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  supplierId    String    @map("supplier_id")
+  supplier      Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  entryType     String    @map("entry_type") // OPENING | CHARGE | PAYMENT
+  amount        Decimal   @db.Decimal(14, 2)
+  balanceAfter  Decimal   @map("balance_after") @db.Decimal(14, 2)
+  referenceType String?   @map("reference_type") // STOCK_MOVEMENT | PRODUCTION_REQUEST | CASH_FLOW
+  referenceId   String?   @map("reference_id")
+  referenceCode String?   @map("reference_code")
+  cashFlowId    String?   @unique @map("cash_flow_id")
+  cashFlow      CashFlow? @relation(fields: [cashFlowId], references: [id], onDelete: SetNull)
+  createdById   String?   @map("created_by")
+  createdBy     User?     @relation("SupplierDebtActor", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime  @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, supplierId, createdAt])
+  @@map("supplier_debt_entries")
+}
+
+/// Lịch sử đổi thông tin nhận tiền của shop, chỉ ghi thêm. changes = { field: { from, to } }; key webhook chỉ ghi { keyChanged: true }.
+model TenantBankingChange {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  changedById String?  @map("changed_by")
+  changedBy   User?    @relation("TenantBankingActor", fields: [changedById], references: [id], onDelete: SetNull)
+  source      String // OWNER | ADMIN | SEPAY_SYNC
+  changes     Json
+  createdAt   DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, createdAt])
+  @@map("tenant_banking_changes")
+}
+
+/// Lịch sử giá bán lẻ / giá vốn danh mục của mặt hàng, chỉ ghi thêm. fromValue null = lúc tạo.
+model ProductItemPriceChange {
+  id            String      @id @default(uuid())
+  tenantId      String      @map("tenant_id")
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  productItemId String      @map("product_item_id")
+  productItem   ProductItem @relation(fields: [productItemId], references: [id], onDelete: Cascade)
+  field         String // RETAIL_PRICE | COST_PRICE
+  fromValue     Decimal?    @map("from_value") @db.Decimal(12, 2)
+  toValue       Decimal     @map("to_value") @db.Decimal(12, 2)
+  changedById   String?     @map("changed_by")
+  changedBy     User?       @relation("PriceChangeActor", fields: [changedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime    @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, productItemId, createdAt])
+  @@map("product_item_price_changes")
 }

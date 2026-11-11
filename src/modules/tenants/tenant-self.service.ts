@@ -20,6 +20,24 @@ import {
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import { SepayAccountSyncService } from './sepay-account-sync.service';
+import {
+  diffBanking,
+  recordBankingChange,
+  type BankingState,
+} from './tenant-banking-history';
+import { TenantBankingChangeSource } from '../../common/constants/tenant-banking-change';
+import { Prisma } from '../../../generated/prisma/client';
+import { paginate, skipFor } from '../../common/utils/pagination';
+import { withNestedProfile } from '../../common/utils/user-profile';
+import { QueryBankingHistoryDto } from './dto/query-banking-history.dto';
+
+const BANKING_STATE_SELECT = {
+  bankingAccountNumber: true,
+  bankingBankName: true,
+  bankingAccountName: true,
+  bankingSepayLinkedAt: true,
+  bankingSepayWebhookApiKey: true,
+} as const satisfies Prisma.TenantSelect;
 
 interface BankingSnapshot {
   bankingAccountNumber: string | null;
@@ -75,40 +93,77 @@ export class TenantSelfService {
   }
 
   /** `PUT /tenant/me`. Báo cho operator khi tài khoản ngân hàng đổi. */
-  async updateMine(tenantId: string, dto: UpdateMyTenantDto) {
+  async updateMine(tenantId: string, actorId: string, dto: UpdateMyTenantDto) {
     const before = await this.bankingOf(tenantId);
     const banking = dto.banking
       ? await this.bankingWrite(tenantId, before, dto.banking)
       : {};
 
-    const tenant = await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
+    const tenant = await this.updateWithHistory(
+      tenantId,
+      actorId,
+      TenantBankingChangeSource.OWNER,
+      {
         name: dto.name,
         phoneNumber: dto.phoneNumber,
         mainAddress: dto.mainAddress,
         taxNumber: dto.taxNumber,
         ...banking,
       },
-      select: TENANT_SELECT,
-    });
+    );
 
     if (dto.banking) await this.afterBankChange(before, tenant);
     return withNestedBanking(tenant);
   }
 
   /** `PUT /tenant/banking`: cùng thao tác ghi như `PUT /tenant/me`, tách route riêng như API cũ. */
-  async updateBanking(tenantId: string, dto: BankingDto) {
+  async updateBanking(tenantId: string, actorId: string, dto: BankingDto) {
     const before = await this.bankingOf(tenantId);
 
-    const tenant = await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: await this.bankingWrite(tenantId, before, dto),
-      select: TENANT_SELECT,
-    });
+    const tenant = await this.updateWithHistory(
+      tenantId,
+      actorId,
+      TenantBankingChangeSource.OWNER,
+      await this.bankingWrite(tenantId, before, dto),
+    );
 
     await this.afterBankChange(before, tenant);
     return withNestedBanking(tenant);
+  }
+
+  /** Ghi hồ sơ shop và, nếu cột nhận tiền đổi (kể cả liên kết SePay / key bị xoá theo), một dòng `tenant_banking_changes` trong cùng transaction. Ảnh trước đọc LẠI trong transaction, nên hai lần lưu đua nhau không ghi cùng một "từ". */
+  private async updateWithHistory(
+    tenantId: string,
+    actorId: string | null,
+    source: TenantBankingChangeSource,
+    data: Prisma.TenantUpdateInput,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const before: BankingState | null = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: BANKING_STATE_SELECT,
+      });
+      const tenant = await tx.tenant.update({
+        where: { id: tenantId },
+        data,
+        select: { ...TENANT_SELECT, ...BANKING_STATE_SELECT },
+      });
+      if (before) {
+        await recordBankingChange(tx, {
+          tenantId,
+          actorId,
+          source,
+          changes: diffBanking(before, tenant),
+        });
+      }
+      // Key webhook và mốc liên kết chỉ phục vụ lịch sử: không được lọt ra response (xem TENANT_SELECT).
+      const {
+        bankingSepayWebhookApiKey: _key,
+        bankingSepayLinkedAt: _linkedAt,
+        ...safe
+      } = tenant;
+      return safe;
+    });
   }
 
   /** Webhook tìm shop theo tài khoản, nên một số chỉ thuộc một shop và không được đổi khi QR in với số đó còn chờ thanh toán. SePay đang theo dõi số cũ, nên đổi số sẽ huỷ liên kết shop. */
@@ -185,7 +240,11 @@ export class TenantSelfService {
   }
 
   /** Chỉ admin: key định danh tenant với webhook thanh toán. */
-  async setSepayKey(tenantId: string, sepayWebhookApiKey: string) {
+  async setSepayKey(
+    tenantId: string,
+    actorId: string,
+    sepayWebhookApiKey: string,
+  ) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { id: true },
@@ -196,10 +255,12 @@ export class TenantSelfService {
         message: 'Shop not found',
       });
 
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { bankingSepayWebhookApiKey: sepayWebhookApiKey },
-    });
+    await this.updateWithHistory(
+      tenantId,
+      actorId,
+      TenantBankingChangeSource.ADMIN,
+      { bankingSepayWebhookApiKey: sepayWebhookApiKey },
+    );
 
     const owners = await this.notifications.tenantOwners(tenantId);
     await this.notifications.notify({
@@ -210,6 +271,35 @@ export class TenantSelfService {
     });
 
     return { message: 'SePay key saved' };
+  }
+
+  /** `GET /tenant/banking/history`: ai đổi tài khoản nhận tiền / key SePay / liên kết SePay và đổi từ gì sang gì. Mới nhất trước. Key webhook không bao giờ nằm trong đây, chỉ có `keyChanged`. */
+  async bankingHistory(tenantId: string, query: QueryBankingHistoryDto) {
+    const where: Prisma.TenantBankingChangeWhereInput = { tenantId };
+    const [rows, total] = await Promise.all([
+      this.prisma.tenantBankingChange.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: {
+          changedBy: {
+            select: {
+              id: true,
+              phoneNumber: true,
+              profileFirstName: true,
+              profileLastName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.tenantBankingChange.count({ where }),
+    ]);
+    const data = rows.map(({ changedBy, changedById: _by, ...row }) => ({
+      ...row,
+      changedBy: changedBy ? withNestedProfile(changedBy) : null,
+    }));
+    return paginate(data, total, query.page, query.limit);
   }
 
   private async bankingOf(tenantId: string): Promise<BankingSnapshot> {

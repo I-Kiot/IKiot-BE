@@ -56,6 +56,7 @@ describe('Search by customer phone – invoices and orders', () => {
         userId: ownerId,
         assigneeId: ownerId,
         status: 'COMPLETED',
+        completedAt: new Date(),
         grandTotal: total,
         subtotal: total,
       },

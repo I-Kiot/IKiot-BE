@@ -277,6 +277,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
       where: { fulfillment: { tenantId } },
     });
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
@@ -394,6 +395,16 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
     });
     expect(stored.material).toBeNull();
     expect(stored.specs.map((s) => s.name)).toEqual(['Số chỗ']);
+
+    // Lần đầu `firstTime: true`, lần ghi đè sau là `false`.
+    const events = await prisma.orderEvent.findMany({
+      where: { orderId, type: 'CUSTOMIZATION_SET' },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(
+      events.map((e) => (e.metadata as { firstTime: boolean }).firstTime),
+    ).toEqual([true, false]);
+    expect(events[0].metadata).toMatchObject({ itemId: line.id });
   });
 
   it('makes a line custom as the order is created', async () => {

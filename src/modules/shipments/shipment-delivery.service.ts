@@ -10,12 +10,27 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { requireTenantBanking } from '../orders/tenant-banking';
-import { writePaymentCashFlow } from '../orders/order-cash-flow';
-import { FlowType } from '../stats/stats.constants';
+import {
+  buildSepayTransfer,
+  isQrExpired,
+  newQrExpiresAt,
+  type SepayTransfer,
+} from '../orders/sepay-qr';
+import {
+  notifySettled,
+  processSepayTransfer,
+} from '../orders/sepay-settlement';
+import { lockOrder } from '../orders/order-lock';
+import { syncOrderPaymentStatus } from '../orders/payment-status';
+import { completedData } from '../orders/order-status';
+import { postSale } from '../orders/sales-journal';
+import { SalesJournalSource } from '../../common/constants/sales-journal';
+import { cancelCounterQr, openQrPayments } from '../orders/payment-cancel';
+import { toDong } from '../../common/utils/money';
 import { DeliverShipmentDto } from './dto/deliver-shipment.dto';
 import { PayCashDto } from './dto/pay-cash.dto';
 import {
-  amountDueOf,
+  amountStillDueOf,
   loadShipmentDetail,
   localDayWindow,
   SHIPMENT_SUMMARY_INCLUDE,
@@ -34,7 +49,6 @@ import {
   onTheRoadWhere,
 } from './shipment-actor';
 import {
-  FulfillmentType,
   OrderPaymentStatus,
   OrderStatus,
   RemittanceStatus,
@@ -57,12 +71,19 @@ import {
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import {
+  recordOrderEvent,
+  shipmentRef,
+  userActor,
+} from '../orders/order-events';
 
 const DELIVERY_SELECT = {
   id: true,
   status: true,
   carrierType: true,
   driverId: true,
+  trackingCode: true,
   fulfillment: { select: { locationId: true } },
   order: {
     select: {
@@ -73,6 +94,7 @@ const DELIVERY_SELECT = {
       branchId: true,
       grandTotal: true,
       depositAmount: true,
+      payments: { select: { kind: true, status: true, amount: true } },
     },
   },
 } as const;
@@ -82,8 +104,8 @@ const DELIVERY_SELECT = {
  * - Đã cọc đủ → COMPLETED.
  * - Tiền mặt → RECEIVED; khoản CASH còn ở tay shipper (`remittanceStatus` PENDING) tới khi chủ xác nhận (A-10).
  * - QR → RECEIVED; khoản SEPAY chờ webhook, đủ tiền thì COMPLETED. Khách không chuyển thì shipper bấm `payCash`.
- * - Chuyển thiếu: chưa được quyết, webhook chỉ ghi log, khoản vẫn chờ.
- * Lần giao qua ĐVVC ngoài không đi qua đây (hãng tự báo về, C-4). Không ghi `CashFlow` (việc của E-5).
+ * - Chuyển thiếu: khoản QR thành PAID với số thực nhận, đơn PARTIALLY_PAID và vẫn RECEIVED; shipper thu nốt phần còn lại bằng mã mới (`reissueQr`) hay tiền mặt (`payCash`).
+ * Lần giao qua ĐVVC ngoài không đi qua đây (hãng tự báo về, C-4). Dòng thu chi ghi lúc tiền đổi chủ (QR về / chủ nhận tiền shipper nộp), không ở bước giao.
  */
 @Injectable()
 export class ShipmentDeliveryService {
@@ -256,7 +278,8 @@ export class ShipmentDeliveryService {
       });
     }
 
-    const amountDue = amountDueOf(shipment.order);
+    // Số còn phải thu tính từ các khoản đã thu thật (không phải `tổng − cọc`), và được tính lại trong transaction sau khi khoá đơn.
+    const amountDue = amountStillDueOf(shipment.order);
     assertCollectionMatches(amountDue, dto.paymentMethod, dto.collectedAmount);
 
     const method = dto.paymentMethod;
@@ -272,6 +295,7 @@ export class ShipmentDeliveryService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      await lockOrder(tx, tenantId, shipment.order.id);
       const claimed = await tx.shipment.updateMany({
         where: onTheRoadWhere(id, access, user),
         data: {
@@ -298,13 +322,11 @@ export class ShipmentDeliveryService {
         },
       });
 
-      // Tiền mặt nghĩa là khách đã trả đủ, dù tiền còn ở tay shipper.
-      const orderData: { status: string; paymentStatus?: string } = {
-        status: nextOrderStatus,
-      };
-      if (method === DeliveryCollectionMethod.CASH) {
-        orderData.paymentStatus = OrderPaymentStatus.PAID;
-      }
+      // Trạng thái thanh toán không đặt tay ở đây: khoản tiền mặt ghi bên dưới rồi `syncOrderPaymentStatus` suy ra (tiền mặt nghĩa là khách đã trả đủ, dù tiền còn ở tay shipper).
+      const orderData =
+        nextOrderStatus === OrderStatus.COMPLETED
+          ? completedData(now)
+          : { status: nextOrderStatus };
       const orderClaimed = await tx.order.updateMany({
         where: {
           id: shipment.order.id,
@@ -319,8 +341,41 @@ export class ShipmentDeliveryService {
           message: 'The order has just changed, please reload',
         });
       }
-      // Đã cọc đủ thì COMPLETED ngay ở đây, nên hoá đơn xuất luôn.
+      // Sau khi chiếm được lần giao và đơn: số còn phải thu tính lại từ các khoản đã đọc trong transaction (đơn đã khoá). Lệch so với số shipper thấy lúc bấm thì dừng, không ghi sai số.
+      const freshPayments = await tx.payment.findMany({
+        where: { orderId: shipment.order.id },
+        select: { kind: true, status: true, amount: true },
+      });
+      if (
+        amountStillDueOf({ ...shipment.order, payments: freshPayments }) !==
+        amountDue
+      ) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
+          message:
+            'The amount due on this order has just changed, please reload',
+        });
+      }
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.DELIVERED,
+        fromStatus: OrderStatus.SHIPPING,
+        toStatus: nextOrderStatus,
+        metadata: {
+          ...shipmentRef(id, shipment.trackingCode),
+          method,
+          amount: method === DeliveryCollectionMethod.NONE ? 0 : amountDue,
+        },
+      });
+      // Đã cọc đủ thì COMPLETED ngay ở đây: ghi SALE (hàng đã rời kho lúc xuất) và xuất hoá đơn luôn.
       if (nextOrderStatus === OrderStatus.COMPLETED) {
+        await postSale(tx, {
+          orderId: shipment.order.id,
+          actor: { id: user.userId },
+          now,
+          source: SalesJournalSource.DELIVERY,
+        });
         await this.invoices.issueForOrder(tx, shipment.order.id, user.userId);
       }
 
@@ -341,6 +396,7 @@ export class ShipmentDeliveryService {
             note: dto.note ?? null,
           },
         });
+        await syncOrderPaymentStatus(tx, shipment.order.id);
       }
       if (method === DeliveryCollectionMethod.BANK_TRANSFER_QR) {
         // Mã ORD… mới làm nội dung chuyển khoản – webhook SePay nhận ra khoản này nhờ nó.
@@ -351,8 +407,10 @@ export class ShipmentDeliveryService {
             kind: PaymentKind.BALANCE,
             method: PaymentMethod.SEPAY,
             amount: amountDue,
+            requestedAmount: amountDue,
             status: PaymentRecordStatus.PENDING,
             paymentReference: generateReference(REFERENCE_PREFIX.ORDER),
+            expiresAt: newQrExpiresAt(now),
             locationId: shipment.order.branchId,
             collectedById: user.userId,
             createdById: user.userId,
@@ -371,43 +429,48 @@ export class ShipmentDeliveryService {
   }
 
   /**
-   * Đã giao bằng QR nhưng khách không chuyển: shipper thu tiền mặt thay. Khoản QR đang chờ bị huỷ,
-   * ghi khoản tiền mặt (chờ nộp lại cho chủ); đơn giữ RECEIVED.
+   * Đã giao bằng QR nhưng khách không chuyển (hay chuyển thiếu): shipper thu tiền mặt cho phần còn lại. Còn phải thu (`due`) lớn hơn 0 là đủ, KHÔNG cần có khoản QR đang chờ (khách chuyển thiếu rồi trả nốt tiền mặt).
+   * Khoản QR còn mở (nếu có) bị huỷ; ghi khoản tiền mặt đúng bằng `due` (chờ nộp lại cho chủ); đơn giữ RECEIVED. Số tiền do server tính, không nhận từ client.
    */
   async payCash(user: AuthUser, tenantId: string, id: string, dto: PayCashDto) {
     const shipment = await this.loadShipment(tenantId, id);
     const access = deliveryActorAccess(user, shipment);
 
-    const qrPayment = await this.prisma.payment.findFirst({
-      where: {
-        tenantId,
-        orderId: shipment.order.id,
-        kind: PaymentKind.BALANCE,
-        method: PaymentMethod.SEPAY,
-        status: PaymentRecordStatus.PENDING,
-      },
-      select: { id: true, amount: true },
-    });
-    if (!qrPayment) {
-      throw new ConflictException({
-        code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
-        message: 'There is no QR payment waiting for its transfer',
-      });
-    }
-
     const now = new Date();
+    let collected = 0;
     await this.prisma.$transaction(async (tx) => {
-      // Huỷ khoản QR chỉ khi vẫn đang chờ. Tiền vừa về (webhook thắng) thì dừng ở đây.
-      const cancelled = await tx.payment.updateMany({
-        where: { id: qrPayment.id, status: PaymentRecordStatus.PENDING },
-        data: { status: PaymentRecordStatus.CANCELLED },
+      await lockOrder(tx, tenantId, shipment.order.id);
+      // Đọc đơn và các khoản SAU khoá: tiền vừa về (webhook giữ khoá trước) thì đơn đã COMPLETED hay hết phải thu, và dừng ở đây.
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id: shipment.order.id },
+        select: {
+          status: true,
+          grandTotal: true,
+          depositAmount: true,
+          payments: true,
+        },
       });
-      if (cancelled.count !== 1) {
+      if (order.status !== OrderStatus.RECEIVED) {
         throw new ConflictException({
           code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
-          message: 'The transfer has just arrived, please reload',
+          message: 'The order is not waiting for its payment any more',
         });
       }
+      const due = amountStillDueOf(order);
+      if (due === 0) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
+          message: 'Nothing is left to collect on this order',
+        });
+      }
+      collected = due;
+      // Khoản QR còn mở (mã hết hạn cũng vậy) hết hiệu lực. Tiền vừa về thì khoản đã PAID, không nằm trong danh sách mở.
+      await cancelCounterQr(
+        tx,
+        openQrPayments(order.payments),
+        user.userId,
+        now,
+      );
 
       // Đơn vẫn chờ tiền (RECEIVED), và người bấm vẫn phụ trách đơn nếu nhờ đó mà được phép.
       const orderWhere: {
@@ -421,7 +484,8 @@ export class ShipmentDeliveryService {
       }
       const orderClaimed = await tx.order.updateMany({
         where: orderWhere,
-        data: { paymentStatus: OrderPaymentStatus.PAID },
+        // Chỉ để lệnh chiếm là một lệnh thật (nhảy updatedAt); trạng thái thanh toán do `syncOrderPaymentStatus` suy ra sau khi ghi khoản tiền mặt.
+        data: { updatedAt: now },
       });
       if (orderClaimed.count !== 1) {
         throw new ConflictException({
@@ -430,13 +494,13 @@ export class ShipmentDeliveryService {
         });
       }
 
-      await tx.payment.create({
+      const cashPayment = await tx.payment.create({
         data: {
           tenantId,
           orderId: shipment.order.id,
           kind: PaymentKind.BALANCE,
           method: PaymentMethod.CASH,
-          amount: qrPayment.amount,
+          amount: due,
           status: PaymentRecordStatus.PAID,
           paidAt: now,
           locationId: shipment.order.branchId,
@@ -445,134 +509,166 @@ export class ShipmentDeliveryService {
           createdById: user.userId,
           note: dto.note ?? null,
         },
+        select: { id: true },
+      });
+      await syncOrderPaymentStatus(tx, shipment.order.id);
+      // Đơn vẫn RECEIVED (chờ nộp tiền) nên không có chuyển trạng thái.
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: shipment.order.id,
+        type: OrderEventType.CASH_COLLECTED,
+        metadata: {
+          ...shipmentRef(id, shipment.trackingCode),
+          amount: due,
+          method: PaymentMethod.CASH,
+          paymentId: cashPayment.id,
+        },
       });
     });
 
-    await this.notifyCashHeld(
-      tenantId,
-      shipment.order,
-      Number(qrPayment.amount),
-    );
+    await this.notifyCashHeld(tenantId, shipment.order, collected);
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
   /**
-   * Tiền QR lúc giao đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `true` nếu mã thuộc khoản thu khi giao
-   * (đã xử lý, kể cả chỉ ghi log). Không bao giờ ném lỗi: SePay gọi lại mọi câu trả lời khác 200.
+   * Shipper tạo lại mã QR cho phần còn lại: mã cũ đã hết hạn (khách vẫn muốn chuyển khoản) hay khách đã chuyển thiếu một phần. Điều kiện là đơn RECEIVED và còn phải thu (`due`) lớn hơn 0; không cần khoản QR trước đó còn mở.
+   * Mã còn hạn đúng số tiền thì trả nguyên chi tiết, không đổi gì (bấm hai lần không sinh hai mã). Ngược lại các khoản QR còn mở bị huỷ và khoản mới có số tiền = `due` (không phải số của khoản cũ), mã tham chiếu mới, hạn mới.
+   * Chuyển khoản vào mã cũ sau đó bị từ chối (PAYMENT_SUPERSEDED) và báo chủ shop. Không có sự kiện trên đơn: đơn không đổi gì.
    */
-  async settleSepayBalance(
+  async reissueQr(user: AuthUser, tenantId: string, id: string) {
+    const shipment = await this.loadShipment(tenantId, id);
+    const access = deliveryActorAccess(user, shipment);
+    await requireTenantBanking(this.prisma, tenantId);
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await lockOrder(tx, tenantId, shipment.order.id);
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id: shipment.order.id },
+        select: {
+          status: true,
+          grandTotal: true,
+          depositAmount: true,
+          payments: true,
+        },
+      });
+      const due = amountStillDueOf(order);
+      if (order.status !== OrderStatus.RECEIVED || due === 0) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING,
+          message: 'There is nothing left to collect on this order by QR',
+        });
+      }
+      const open = openQrPayments(order.payments);
+      // Mã còn hạn, đúng số tiền, và là mã duy nhất còn mở thì giữ nguyên: màn hình khác vừa tạo lại, hay bấm đúp.
+      const live = open.find(
+        (payment) =>
+          payment.status === PaymentRecordStatus.PENDING &&
+          !isQrExpired(payment, now) &&
+          toDong(payment.requestedAmount ?? payment.amount) === due,
+      );
+      if (live && open.length === 1) return;
+
+      await cancelCounterQr(tx, open, user.userId, now);
+      // Đơn vẫn chờ tiền (RECEIVED, chưa PAID), và người bấm vẫn phụ trách đơn nếu nhờ đó mà được phép. Ghi updatedAt để câu UPDATE là một lệnh chiếm thật.
+      const orderWhere: {
+        id: string;
+        tenantId: string;
+        status: string;
+        paymentStatus: { not: string };
+        assigneeId?: string;
+      } = {
+        id: shipment.order.id,
+        tenantId,
+        status: OrderStatus.RECEIVED,
+        paymentStatus: { not: OrderPaymentStatus.PAID },
+      };
+      if (access === 'ASSIGNEE') {
+        orderWhere.assigneeId = user.userId;
+      }
+      const orderClaimed = await tx.order.updateMany({
+        where: orderWhere,
+        data: { updatedAt: now },
+      });
+      if (orderClaimed.count !== 1) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order has just changed, please reload',
+        });
+      }
+      await tx.payment.create({
+        data: {
+          tenantId,
+          orderId: shipment.order.id,
+          kind: PaymentKind.BALANCE,
+          method: PaymentMethod.SEPAY,
+          amount: due,
+          requestedAmount: due,
+          status: PaymentRecordStatus.PENDING,
+          paymentReference: generateReference(REFERENCE_PREFIX.ORDER),
+          expiresAt: newQrExpiresAt(now),
+          locationId: shipment.order.branchId,
+          collectedById: user.userId,
+          createdById: user.userId,
+        },
+      });
+    });
+    return loadShipmentDetail(this.prisma, tenantId, id);
+  }
+
+  /**
+   * Tiền QR lúc giao / tại quầy đã về, nhận các tham số rời (test và tích hợp gọi trực tiếp). Webhook thật gọi `settleSepayTransfer` với giao dịch đã chuẩn hoá.
+   */
+  settleSepayBalance(
     tenantId: string,
     paymentReference: string,
     sepayTransactionId: string | null,
     transferAmount: number,
+    now: Date = new Date(),
+    meta: Partial<Omit<SepayTransfer, 'dedupeKey' | 'amount'>> = {},
   ): Promise<boolean> {
-    const payment = await this.prisma.payment.findFirst({
-      where: {
-        tenantId,
-        paymentReference,
-        kind: PaymentKind.BALANCE,
-        method: PaymentMethod.SEPAY,
-      },
-      select: {
-        id: true,
-        amount: true,
-        status: true,
-        order: {
-          select: { id: true, code: true, assigneeId: true, branchId: true },
-        },
-      },
-    });
-    if (!payment) return false;
-
-    if (payment.status === PaymentRecordStatus.PAID) {
-      // SePay gọi lại cùng một giao dịch – đã xử lý rồi.
-      return true;
-    }
-    if (payment.status === PaymentRecordStatus.CANCELLED) {
-      this.logger.warn(
-        `SePay transfer ${sepayTransactionId ?? '(no id)'} (${transferAmount}) for ${paymentReference} arrived after the ` +
-          `shipper switched order ${payment.order.code} to cash - the customer may have paid twice. Manual refund may be required.`,
-      );
-      return true;
-    }
-
-    const amount = Number(payment.amount);
-    if (transferAmount < amount) {
-      // Chuyển thiếu: chờ nhóm chốt cách xử lý – khoản vẫn chờ, chỉ ghi log để người xử lý thấy.
-      this.logger.warn(
-        `SePay transfer ${sepayTransactionId ?? '(no id)'} for ${paymentReference} is short: ${amount} due, ` +
-          `${transferAmount} received. Order ${payment.order.code} left waiting - short transfers are not handled yet.`,
-      );
-      return true;
-    }
-
-    const now = new Date();
-    const settled = await this.prisma.$transaction(async (tx) => {
-      // Chỉ từ PENDING: webhook lặp lại, hay "khách trả tiền mặt" vừa thắng, thì không ghi gì.
-      const paid = await tx.payment.updateMany({
-        where: { id: payment.id, status: PaymentRecordStatus.PENDING },
-        data: {
-          status: PaymentRecordStatus.PAID,
-          paidAt: now,
-          sepayTransactionId,
-        },
-      });
-      if (paid.count !== 1) return false;
-
-      // Tiền đã về tài khoản shop dù đơn đang ở trạng thái nào; ghi số thực nhận như dòng SePay của bán tại quầy, để khớp sao kê.
-      await writePaymentCashFlow(tx, {
-        tenantId,
-        paymentId: payment.id,
-        orderId: payment.order.id,
-        orderCode: payment.order.code,
-        flowType: FlowType.INCOME,
-        amount: transferAmount,
-        method: PaymentMethod.SEPAY,
-        locationId: payment.order.branchId,
-        createdById: null,
-        paymentReference,
+    return this.settleSepayTransfer(
+      tenantId,
+      paymentReference,
+      buildSepayTransfer({
+        ...meta,
         sepayTransactionId,
-        description: `SePay đơn ${payment.order.code}`,
-      });
+        amount: transferAmount,
+      }),
+      now,
+    );
+  }
 
-      const completed = await tx.order.updateMany({
-        where: { id: payment.order.id, status: OrderStatus.RECEIVED },
-        data: {
-          status: OrderStatus.COMPLETED,
-          paymentStatus: OrderPaymentStatus.PAID,
-        },
-      });
-      if (completed.count === 1) {
-        await this.invoices.issueForOrder(tx, payment.order.id, null);
-      }
-      if (completed.count !== 1) {
-        // Đơn khách tới lấy đang chờ ở quầy: tiền về thì chỉ đánh dấu đã thu, nhân viên bấm giao hàng sau (OrderPickupService).
-        const atCounter = await tx.order.updateMany({
-          where: {
-            id: payment.order.id,
-            status: OrderStatus.PACKED,
-            fulfillmentType: FulfillmentType.STORE_PICKUP,
-          },
-          data: { paymentStatus: OrderPaymentStatus.PAID },
-        });
-        if (atCounter.count === 1) return true;
-        this.logger.warn(
-          `SePay transfer for ${paymentReference} was recorded, but order ${payment.order.code} is no longer RECEIVED and was not completed.`,
-        );
-      }
-      return true;
-    });
-
-    if (settled && payment.order.assigneeId) {
-      await this.notifications.notify({
+  /**
+   * Tiền QR lúc giao / tại quầy đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `true` nếu mã thuộc một khoản của đơn có giao / khách tới lấy (đã xử lý: chốt, chốt thiếu, trùng, hoặc từ chối), `false` nếu không phải mã của ta.
+   * Không ném lỗi nghiệp vụ: SePay gọi lại mọi câu trả lời khác 200. Toàn bộ chốt tiền nằm ở `processSepayTransfer` (`sepay-settlement.ts`), dùng chung với đơn quầy.
+   * Hết hạn tính TRƯỚC khi quyết định. Khoản còn mở và đơn còn chờ khoản này thì chốt, kể cả khi mã đã hết hạn (tiền về thật; `lateAfterExpiry` trên sự kiện). Chuyển thiếu là khoản trả một phần: đơn chưa hoàn thành, shipper tạo mã mới cho phần còn lại hay thu tiền mặt.
+   * Khoản đã huỷ (tiền mặt, mã mới, đơn huỷ), đã thu bằng giao dịch khác, hay đơn không còn chờ thì KHÔNG chốt: ghi sổ REJECTED + dòng thu chi chưa gắn đơn và báo chủ shop hoàn / đối soát.
+   */
+  async settleSepayTransfer(
+    tenantId: string,
+    paymentReference: string,
+    transfer: SepayTransfer,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    const result = await processSepayTransfer(
+      {
+        prisma: this.prisma,
+        notifications: this.notifications,
+        invoices: this.invoices,
+        logger: this.logger,
+      },
+      {
         tenantId,
-        recipientIds: [payment.order.assigneeId],
-        referenceId: payment.order.id,
-        ...OrderNotificationTemplates.deliveryTransferReceived(
-          payment.order.code,
-          transferAmount,
-        ),
-      });
+        reference: paymentReference,
+        transfer,
+        scope: 'DELIVERY',
+        now,
+      },
+    );
+    if (result.kind === 'NOT_OURS') return false;
+    if (result.kind === 'SETTLED') {
+      await notifySettled({ notifications: this.notifications }, result);
     }
     return true;
   }
@@ -622,7 +718,10 @@ function assertCollectionMatches(
   collectedAmount: number,
 ): void {
   if (amountDue === 0) {
-    if (method !== DeliveryCollectionMethod.NONE || collectedAmount !== 0) {
+    if (
+      method !== DeliveryCollectionMethod.NONE ||
+      toDong(collectedAmount) !== 0
+    ) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
         message: 'Nothing is left to collect on this order',
@@ -636,7 +735,7 @@ function assertCollectionMatches(
       message: `${amountDue} is still due on this order`,
     });
   }
-  if (collectedAmount !== amountDue) {
+  if (toDong(collectedAmount) !== amountDue) {
     throw new BadRequestException({
       code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
       message: `Collected ${collectedAmount}, but ${amountDue} is due`,

@@ -150,3 +150,44 @@ export function exceedsHourlyRange({ fromDate, toDate }: DateRange): boolean {
     toDate.getTime() - fromDate.getTime() > MAX_HOURLY_RANGE_DAYS * MS_PER_DAY
   );
 }
+
+/** Khoảng ngày địa phương (`YYYY-MM-DD`, gồm cả hai đầu) - đơn vị của sổ doanh thu: bút toán chỉ có `business_date`, không có giờ để cắt giữa ngày. */
+export interface BusinessDateRange {
+  from: string;
+  to: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Ngày lịch Việt Nam của một thời điểm. */
+export function vietnamDateOf(at: Date): string {
+  return new Date(at.getTime() + TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function shiftDate(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** Khoảng thời điểm -> khoảng ngày địa phương chứa nó (đầu và cuối đều tính cả ngày). */
+export function businessDatesOf({
+  fromDate,
+  toDate,
+}: DateRange): BusinessDateRange {
+  return { from: vietnamDateOf(fromDate), to: vietnamDateOf(toDate) };
+}
+
+/** Cùng số ngày liền ngay trước khoảng đã cho, không chồng lên nó (khác `previousPeriod`, cắt theo mili-giây và có thể rơi vào cùng một ngày với đầu kỳ này). */
+export function previousBusinessDates({
+  from,
+  to,
+}: BusinessDateRange): BusinessDateRange {
+  const days =
+    Math.round(
+      (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /
+        DAY_MS,
+    ) + 1;
+  const prevTo = shiftDate(from, -1);
+  return { from: shiftDate(prevTo, -(days - 1)), to: prevTo };
+}

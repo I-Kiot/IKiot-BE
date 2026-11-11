@@ -40,6 +40,11 @@ import {
   type StockCheck,
 } from './stock-check';
 
+/** `changes` và `metadata` là cột Json: chỉ trả khi đúng là object, giá trị lạ thành null thay vì lọt ra màn hình. */
+function isJsonObject(value: Prisma.JsonValue): value is Prisma.JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export interface OrderListResult {
   rows: OrderListRow[];
   total: number;
@@ -138,7 +143,27 @@ export class OrderReadService {
 
   async findOne(user: AuthUser, tenantId: string, id: string) {
     const { row, stockChecks } = await this.findRow(user, tenantId, id);
-    return toOrderDetail(row, stockChecks);
+    // `row.payments` chỉ có khoản BALANCE (cho `collection`); tóm tắt tiền cần mọi khoản.
+    const payments = await this.prisma.payment.findMany({
+      where: { orderId: id },
+      select: {
+        kind: true,
+        status: true,
+        amount: true,
+        method: true,
+        remittanceStatus: true,
+      },
+    });
+    const journal = await this.prisma.salesJournalEntry.findMany({
+      where: { orderId: id },
+      select: { entryType: true },
+    });
+    return toOrderDetail(
+      row,
+      stockChecks,
+      payments,
+      journal.map((e) => e.entryType),
+    );
   }
 
   private async listRows(
@@ -168,12 +193,61 @@ export class OrderReadService {
     return { rows, total, stockChecks };
   }
 
+  /** Đơn của tenant khác coi như không tồn tại (contract §0); đơn của chi nhánh khác bị từ chối, như OrderService. Dùng chung cho chi tiết đơn và nhật ký thao tác. */
+  private async assertVisible(user: AuthUser, tenantId: string, id: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id, tenantId },
+      select: { id: true, branchId: true },
+    });
+    if (!order) {
+      throw new NotFoundException({
+        code: ErrorCode.ORDER_NOT_FOUND,
+        message: 'Order not found',
+      });
+    }
+
+    const scope = this.branchScope(user);
+    if (scope.branchId !== undefined && order.branchId !== scope.branchId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_BRANCH_DENIED,
+        message: 'This order does not belong to your branch',
+      });
+    }
+  }
+
+  /** `GET /orders/:id/events`: toàn bộ nhật ký thao tác của đơn, cũ nhất trước (màn hình tự đảo). Không phân trang. */
+  async events(user: AuthUser, tenantId: string, id: string) {
+    await this.assertVisible(user, tenantId, id);
+    const rows = await this.prisma.orderEvent.findMany({
+      where: { tenantId, orderId: id },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        type: true,
+        fromStatus: true,
+        toStatus: true,
+        source: true,
+        actorId: true,
+        actorName: true,
+        actorRole: true,
+        changes: true,
+        metadata: true,
+        occurredAt: true,
+      },
+    });
+    return rows.map((row) => ({
+      ...row,
+      changes: isJsonObject(row.changes) ? row.changes : null,
+      metadata: isJsonObject(row.metadata) ? row.metadata : null,
+    }));
+  }
+
   private async findRow(
     user: AuthUser,
     tenantId: string,
     id: string,
   ): Promise<OrderDetailResult> {
-    // Đơn của tenant khác coi như không tồn tại (contract §0); đơn của chi nhánh khác bị từ chối, như OrderService.
+    await this.assertVisible(user, tenantId, id);
     const row = await this.prisma.order.findFirst({
       where: { id, tenantId },
       include: ORDER_DETAIL_INCLUDE,
@@ -182,14 +256,6 @@ export class OrderReadService {
       throw new NotFoundException({
         code: ErrorCode.ORDER_NOT_FOUND,
         message: 'Order not found',
-      });
-    }
-
-    const scope = this.branchScope(user);
-    if (scope.branchId !== undefined && row.branchId !== scope.branchId) {
-      throw new ForbiddenException({
-        code: ErrorCode.ORDER_BRANCH_DENIED,
-        message: 'This order does not belong to your branch',
       });
     }
 

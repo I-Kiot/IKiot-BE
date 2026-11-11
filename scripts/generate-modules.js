@@ -117,6 +117,8 @@ const PORTED_MODELS = new Set([
   'Ticket', 'AIChatHistory',
   // Order journey (2026-10-02): written by hand from the start, never generated.
   'ProductionRequest', 'Fulfillment', 'Shipment', 'OrderReturn', 'SalesChannel',
+  // Sổ SePay (2026-11-11): đọc + xử lý tay, viết tay từ đầu (modules/sepay-transactions).
+  'SepayTransaction',
 ]);
 
 // Fields the server fills in from the authenticated user instead of accepting from the

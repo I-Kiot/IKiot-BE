@@ -13,6 +13,8 @@ import {
   InventoryTxType,
   LotSourceType,
 } from './../src/common/constants/inventory-ledger';
+import { assertMoneyInvariants } from './helpers/money-invariants';
+import { deleteTenantMoneyTrail } from './helpers/cleanup-money';
 
 /**
  * Smoke test một lần cho mọi thứ port ngày 2026-08-25 (sản phẩm, tồn kho, nhân viên, phiếu chuyển kho) trên Postgres thật. Tạo một tenant, chạy các route, rồi xoá mọi thứ đã tạo.
@@ -109,12 +111,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.orderAppliedPromotion.deleteMany({
       where: { order: { tenantId: t } },
     });
+    await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.payment.deleteMany({
       where: { tenantId: t, refundOfPaymentId: { not: null } },
     });
     await prisma.payment.deleteMany({ where: { tenantId: t } });
     await prisma.invoice.deleteMany({ where: { tenantId: t } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId: t } } });
+    await prisma.supplierDebtEntry.deleteMany({ where: { tenantId: t } });
+    await prisma.tenantBankingChange.deleteMany({ where: { tenantId: t } });
+    await prisma.productItemPriceChange.deleteMany({ where: { tenantId: t } });
     await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
     await prisma.order.deleteMany({ where: { tenantId: t } });
     await prisma.customer.deleteMany({ where: { tenantId: t } });
@@ -188,6 +194,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await prisma.user.deleteMany({ where: { tenantId: t } });
     // Dòng Branch/Warehouse cascade từ Location của chúng.
     await prisma.location.deleteMany({ where: { tenantId: t } });
+    await prisma.sepayTransaction.deleteMany({ where: { tenantId: t } });
     await prisma.tenant.deleteMany({ where: { id: t } });
     // Nằm ngoài tenant (tenantId null) nên lệnh xóa ở trên không chạm tới.
     await prisma.notification.deleteMany({
@@ -920,6 +927,197 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
   });
 
+  it('claims every stock-movement transition: two receipts at once raise stock and debt once, and the actors are written', async () => {
+    const ownerId = (
+      await prisma.user.findFirstOrThrow({
+        where: { tenantId, systemRole: 'TENANT_OWNER' },
+        select: { id: true },
+      })
+    ).id;
+    const before = await prisma.supplier.findUniqueOrThrow({
+      where: { id: supplierId },
+      select: { outstandingDebt: true },
+    });
+    const stockOf = async () =>
+      (
+        await prisma.inventory.findFirst({
+          where: { tenantId, locationId: warehouseId, productItemId: itemBId },
+          select: { stock: true },
+        })
+      )?.stock ?? 0;
+    const stockBefore = await stockOf();
+
+    const created = await http()
+      .post('/stock-movements')
+      .set(auth())
+      .send({
+        movementType: 'IMPORT',
+        fromSupplierId: supplierId,
+        toLocationId: warehouseId,
+        details: [{ productItemId: itemBId, quantity: 2, importPrice: 50000 }],
+      })
+      .expect(201);
+    const id = created.body.data.id as string;
+    const receive = () =>
+      http()
+        .patch(`/stock-movements/${id}/receive`)
+        .set(auth())
+        .send({ details: [{ productItemId: itemBId, receivedQuantity: 2 }] });
+    const [first, second] = await Promise.all([receive(), receive()]);
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const loser = first.status === 409 ? first : second;
+    expect(loser.body.code).toBe('STOCK_MOVEMENT_CONFLICT');
+
+    expect(await stockOf()).toBe(stockBefore + 2);
+    const after = await prisma.supplier.findUniqueOrThrow({
+      where: { id: supplierId },
+      select: { outstandingDebt: true },
+    });
+    expect(Number(after.outstandingDebt) - Number(before.outstandingDebt)).toBe(
+      100000,
+    );
+    const row = await prisma.stockMovementRequest.findUniqueOrThrow({
+      where: { id },
+    });
+    expect(row.status).toBe('RECEIVED');
+    expect(row.receivedById).toBe(ownerId);
+    expect(row.receivedAt).not.toBeNull();
+    const winner = first.status === 200 ? first : second;
+    expect(winner.body.data.receivedBy.id).toBe(ownerId);
+
+    // Hai lần huỷ: một thắng (và ghi người huỷ), một nhận 409; huỷ phiếu đã RECEIVED bị từ chối như cũ.
+    const draft = await http()
+      .post('/stock-movements')
+      .set(auth())
+      .send({
+        movementType: 'IMPORT',
+        fromSupplierId: supplierId,
+        toLocationId: warehouseId,
+        details: [{ productItemId: itemBId, quantity: 1, importPrice: 50000 }],
+      })
+      .expect(201);
+    const cancels = await Promise.all([
+      http().patch(`/stock-movements/${draft.body.data.id}/cancel`).set(auth()),
+      http().patch(`/stock-movements/${draft.body.data.id}/cancel`).set(auth()),
+    ]);
+    expect(cancels.map((r) => r.status).sort()).toEqual([200, 409]);
+    const cancelled = await prisma.stockMovementRequest.findUniqueOrThrow({
+      where: { id: draft.body.data.id },
+    });
+    expect(cancelled.cancelledById).toBe(ownerId);
+    expect(cancelled.cancelledAt).not.toBeNull();
+    note(
+      'stock movement: concurrent receive → 1×200 + 1×409, stock and NCC debt raised once, actors written; concurrent cancel → 1×200 + 1×409 OK',
+    );
+  });
+
+  it('keeps an append-only supplier debt ledger and a product price history', async () => {
+    const ownerId = (
+      await prisma.user.findFirstOrThrow({
+        where: { tenantId, systemRole: 'TENANT_OWNER' },
+        select: { id: true },
+      })
+    ).id;
+    // Mọi lần nợ tăng đã có một dòng CHARGE kèm chứng từ và người nhận hàng.
+    const charges = await prisma.supplierDebtEntry.findMany({
+      where: { supplierId, entryType: 'CHARGE' },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(charges.length).toBeGreaterThanOrEqual(2);
+    expect(charges[0].referenceType).toBe('STOCK_MOVEMENT');
+    expect(charges[0].createdById).toBe(ownerId);
+    expect(Number(charges[0].amount)).toBe(7_800_000);
+    expect(Number(charges[0].balanceAfter)).toBe(7_800_000);
+
+    // Trả nợ: tiền mặt của chủ (quỹ OWNER) mặc định, kèm một dòng PAYMENT gắn dòng thu chi.
+    const paid = await http()
+      .post(`/suppliers/${supplierId}/payments`)
+      .set(auth())
+      .send({ amount: 100000 })
+      .expect(200);
+    expect(paid.body.data.paymentTransaction.fund).toBe('OWNER');
+    const history = await http()
+      .get(`/suppliers/${supplierId}/debt-entries`)
+      .set(auth())
+      .expect(200);
+    expect(history.body.data[0].entryType).toBe('PAYMENT');
+    expect(Number(history.body.data[0].amount)).toBe(-100000);
+    expect(history.body.data[0].cashFlowId).toBe(
+      paid.body.data.paymentTransaction.id,
+    );
+    expect(history.body.data[0].createdBy.id).toBe(ownerId);
+    const total = await prisma.supplierDebtEntry.aggregate({
+      where: { supplierId },
+      _sum: { amount: true },
+    });
+    const supplier = await prisma.supplier.findUniqueOrThrow({
+      where: { id: supplierId },
+    });
+    expect(Number(total._sum.amount)).toBe(Number(supplier.outstandingDebt));
+
+    // Trả nợ bằng tiền mặt gắn một địa điểm: quỹ DRAWER, có nơi (kho, để không chen vào két chi nhánh của các test đối soát sau).
+    const drawerPaid = await http()
+      .post(`/suppliers/${supplierId}/payments`)
+      .set(auth())
+      .send({ amount: 50000, locationId: warehouseId })
+      .expect(200);
+    expect(drawerPaid.body.data.paymentTransaction.fund).toBe('DRAWER');
+    expect(drawerPaid.body.data.paymentTransaction.locationId).toBe(
+      warehouseId,
+    );
+
+    // Sổ chỉ ghi thêm: UPDATE bị trigger chặn.
+    await expect(
+      prisma.supplierDebtEntry.update({
+        where: { id: charges[0].id },
+        data: { amount: 1 },
+      }),
+    ).rejects.toThrow();
+
+    // Giá: tạo = from null; sửa giá bán và giá vốn = hai dòng có người sửa; sửa lại giá cũ thì không ghi gì.
+    const initial = await prisma.productItemPriceChange.findMany({
+      where: { productItemId: itemAId },
+    });
+    expect(initial.map((r) => r.field).sort()).toEqual([
+      'COST_PRICE',
+      'RETAIL_PRICE',
+    ]);
+    expect(initial.every((r) => r.fromValue === null)).toBe(true);
+    await http()
+      .patch(`/products/items/${itemAId}`)
+      .set(auth())
+      .send({ retailPrice: 205000, costPrice: 101000 })
+      .expect(200);
+    await http()
+      .patch(`/products/items/${itemAId}`)
+      .set(auth())
+      .send({ retailPrice: 205000 })
+      .expect(200);
+    const prices = await http()
+      .get(`/products/items/${itemAId}/price-history?field=RETAIL_PRICE`)
+      .set(auth())
+      .expect(200);
+    expect(prices.body.data).toHaveLength(2);
+    expect(Number(prices.body.data[0].fromValue)).toBe(200000);
+    expect(Number(prices.body.data[0].toValue)).toBe(205000);
+    expect(prices.body.data[0].changedBy.id).toBe(ownerId);
+    // Trả giá về như cũ: các ca bán hàng phía sau tính tiền theo giá này.
+    await http()
+      .patch(`/products/items/${itemAId}`)
+      .set(auth())
+      .send({
+        retailPrice: Number(
+          initial.find((r) => r.field === 'RETAIL_PRICE')!.toValue,
+        ),
+        costPrice: Number(
+          initial.find((r) => r.field === 'COST_PRICE')!.toValue,
+        ),
+      })
+      .expect(200);
+    note('supplier debt ledger + price history: OK');
+  });
+
   it('runs an ADJUST stocktake', async () => {
     const created = await http()
       .post('/stock-movements')
@@ -1021,17 +1219,37 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         tenantId,
         paymentReference: sale.body.data.order.paymentReference,
       },
-      select: { flowType: true, amount: true, orderId: true },
+      select: {
+        flowType: true,
+        category: true,
+        amount: true,
+        orderId: true,
+        paymentId: true,
+      },
     });
     expect(flows).toHaveLength(2);
     const income = flows.find((f) => f.flowType === 'INCOME')!;
     const expense = flows.find((f) => f.flowType === 'EXPENSE')!;
     expect(Number(income.amount)).toBe(500_000);
     expect(Number(expense.amount)).toBe(100_000);
-    expect(income.orderId).toBe(orderId);
-    expect(expense.orderId).toBeNull();
+    // Từ Phase 3 đơn quầy có Payment như mọi đơn: dòng thối cũng gắn đơn và khoản của nó (quyết định 7).
+    expect(income).toMatchObject({ category: 'ORDER_PAYMENT', orderId });
+    expect(expense).toMatchObject({ category: 'SALE_CHANGE', orderId });
+    expect(income.paymentId).not.toBeNull();
+    expect(expense.paymentId).not.toBeNull();
+    const payments = await prisma.payment.findMany({
+      where: { orderId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(payments.map((p) => [p.kind, p.status, Number(p.amount)])).toEqual([
+      ['FULL', 'PAID', 500_000],
+      ['CHANGE', 'PAID', 100_000],
+    ]);
+    expect(payments[1].refundOfPaymentId).toBe(payments[0].id);
+    expect(sale.body.data.order.payments).toHaveLength(2);
+    expect(sale.body.data.order.paymentStatus).toBe('PAID');
     note(
-      'cash flows: INCOME 500k (linked) + EXPENSE 100k change (unlinked, keeps the unique index free for a refund) OK',
+      'cash flows: INCOME 500k + EXPENSE 100k change, both linked to the order and to their Payment (FULL + CHANGE) OK',
     );
   });
 
@@ -1173,13 +1391,31 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(after!.stock).toBe(before!.stock + 2);
 
     const refund = await prisma.cashFlow.findFirst({
-      where: { tenantId, orderId, flowType: 'EXPENSE' },
-      select: { amount: true },
+      where: { tenantId, orderId, category: 'ORDER_REFUND' },
+      select: { amount: true, paymentId: true },
     });
     expect(Number(refund!.amount)).toBe(400_000);
+    // Hoàn lại đúng số tiền giữ (400k, không phải 500k khách đưa): khoản REFUND + trạng thái thanh toán REFUNDED.
+    expect(refund!.paymentId).not.toBeNull();
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: orderId } }))
+        .paymentStatus,
+    ).toBe('REFUNDED');
     note(
       `RETURNED: stock ${before!.stock} → ${after!.stock} and a 400k refund row OK`,
     );
+    // Nhật ký doanh thu: bán tiền mặt ghi SALE lúc tạo; trả hàng ghi RETURN âm đúng bằng giá trị đã bán (không đổi dòng SALE), giá vốn đảo ngược từ sổ lô.
+    const journal = await prisma.salesJournalEntry.findMany({
+      where: { orderId },
+      orderBy: { postedAt: 'asc' },
+    });
+    expect(journal.map((e) => e.entryType)).toEqual(['SALE', 'RETURN']);
+    expect(Number(journal[0].totalAmount)).toBeGreaterThan(0);
+    expect(Number(journal[1].totalAmount)).toBe(
+      -Number(journal[0].totalAmount),
+    );
+    expect(Number(journal[1].cogsAmount)).toBe(-Number(journal[0].cogsAmount));
+    expect(journal[1].orderReturnId).toBeNull();
 
     await http()
       .patch(`/orders/${orderId}/status`)
@@ -1187,6 +1423,33 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ status: 'COMPLETED' })
       .expect(409);
     note('RETURNED is terminal: 409 OK');
+
+    // Nhật ký: bán tại quầy ghi CREATED lúc tạo, mỗi lần đổi trạng thái thật một STATUS_CHANGED (trả hàng có tiền thì kèm REFUNDED, ghi ngay trước đó); hai lần bị 409 không để lại gì.
+    const trail = await prisma.orderEvent.findMany({
+      where: { orderId },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(trail.map((e) => e.type)).toEqual([
+      'CREATED',
+      'REFUNDED',
+      'STATUS_CHANGED',
+    ]);
+    expect(trail[0]).toMatchObject({
+      fromStatus: null,
+      toStatus: 'COMPLETED',
+      source: 'USER',
+      metadata: { fulfillmentType: 'TAKEAWAY' },
+    });
+    expect(trail[1]).toMatchObject({
+      metadata: { amount: 400_000, reason: 'POS_RETURN' },
+    });
+    expect(trail[2]).toMatchObject({
+      fromStatus: 'COMPLETED',
+      toStatus: 'RETURNED',
+    });
+    note(
+      'order trail: POS CREATED + STATUS_CHANGED, refused moves leave none OK',
+    );
   });
 
   it('opens a SePay sale as PENDING and settles it offline', async () => {
@@ -1220,6 +1483,19 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(mine.body.data.hasSepayKey).toBe(false);
     expect(mine.body.data.bankingSepayWebhookApiKey).toBeUndefined();
     note('PUT /tenant/banking + GET /tenant/me: saved, secret withheld OK');
+
+    // Lịch sử nhận tiền: một dòng, từ null sang số mới, có người sửa; key webhook không bao giờ lộ.
+    const bankingHistory = await http()
+      .get('/tenant/banking/history')
+      .set(auth())
+      .expect(200);
+    expect(bankingHistory.body.data).toHaveLength(1);
+    expect(bankingHistory.body.data[0].source).toBe('OWNER');
+    expect(bankingHistory.body.data[0].changes.bankingAccountNumber).toEqual({
+      from: null,
+      to: '0000000000',
+    });
+    expect(JSON.stringify(bankingHistory.body)).not.toContain('WebhookApiKey"');
 
     // Operator được báo có tài khoản cần liên kết - nửa đầu của quy trình SePay làm tay, và là thông báo hệ thống (không tenant, không người nhận).
     const heads = await prisma.notification.findFirst({
@@ -1261,6 +1537,30 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'POST /orders SEPAY: PENDING + QR built from the tenant bank details OK',
     );
 
+    // PATCH → COMPLETED trên đơn chờ SePay là chốt đơn không có tiền: bị chặn, không ghi dòng tiền hay doanh thu.
+    const phantom = await http()
+      .patch(`/orders/${sale.body.data.order.id}/status`)
+      .set(auth())
+      .send({ status: 'COMPLETED' })
+      .expect(409);
+    expect(phantom.body.code).toBe('ORDER_USE_PAY_OFFLINE');
+    expect(
+      await prisma.cashFlow.count({
+        where: { tenantId, orderId: sale.body.data.order.id },
+      }),
+    ).toBe(0);
+    expect(
+      (
+        await prisma.order.findUniqueOrThrow({
+          where: { id: sale.body.data.order.id },
+          select: { status: true, completedAt: true },
+        })
+      ).completedAt,
+    ).toBeNull();
+    note(
+      'PATCH status COMPLETED on a pending SePay sale: 409 ORDER_USE_PAY_OFFLINE, no cash flow OK',
+    );
+
     const settled = await http()
       .post(`/orders/${sale.body.data.order.id}/pay-offline`)
       .set(auth())
@@ -1281,6 +1581,21 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({ paymentMethod: 'CASH' })
       .expect(409);
     note('pay-offline twice: 409 OK (cannot double-charge)');
+
+    const trail = await prisma.orderEvent.findMany({
+      where: { orderId: sale.body.data.order.id },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(trail.map((e) => [e.type, e.fromStatus, e.toStatus])).toEqual([
+      ['CREATED', null, 'PENDING'],
+      ['PAID_OFFLINE', 'PENDING', 'COMPLETED'],
+    ]);
+    expect(trail[1].metadata).toMatchObject({
+      method: 'CASH',
+      amount: 200_000,
+      grandTotal: 200_000,
+    });
+    note('order trail: PAID_OFFLINE recorded once OK');
   });
 
   it('settles a SePay sale from the webhook', async () => {
@@ -1369,6 +1684,25 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       'webhook: reference extracted from free text, order COMPLETED, SePay transaction id stored on order + cash flow OK',
     );
 
+    const trail = await prisma.orderEvent.findMany({
+      where: { orderId: sale.body.data.order.id },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(trail.map((e) => e.type)).toEqual(['CREATED', 'QR_PAID']);
+    expect(trail[1]).toMatchObject({
+      source: 'WEBHOOK',
+      actorId: null,
+      fromStatus: 'PENDING',
+      toStatus: 'COMPLETED',
+      metadata: {
+        amount: 200_000,
+        method: 'SEPAY',
+        sepayTransactionId: '987654',
+        paymentReference: reference,
+      },
+    });
+    note('order trail: webhook QR_PAID has source WEBHOOK, no actor OK');
+
     const replay = await http()
       .post('/webhook/sepay/order')
       .set({ Authorization: 'Apikey smoke-webhook-key' })
@@ -1379,12 +1713,13 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         id: 987654,
       })
       .expect(200);
-    expect(replay.body.success).toBe(false);
+    // Giao dịch trùng đã vào sổ: trả success: true (SePay thôi gọi lại), không ghi thêm gì.
+    expect(replay.body.success).toBe(true);
     const flowCount = await prisma.cashFlow.count({
       where: { tenantId, orderId: sale.body.data.order.id, flowType: 'INCOME' },
     });
     expect(flowCount).toBe(1);
-    note('webhook replay: refused, still exactly 1 income row OK');
+    note('webhook replay: acknowledged, still exactly 1 income row OK');
   });
 
   it('settles a SePay sale through the shared webhook, by account number', async () => {
@@ -1441,7 +1776,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
           id: 111001,
         })
         .expect(200);
-      expect(wrongAccount.body.success).toBe(false);
+      // Tài khoản của một shop khác (key dùng chung): tiền về thật nhưng mã không thuộc shop đó nên vào sổ UNMATCHED của shop khác; đơn của ta không bị động tới.
+      expect(wrongAccount.body.success).toBe(true);
+      expect(
+        await prisma.sepayTransaction.findFirstOrThrow({
+          where: { tenantId: otherShop.id, sepayTransactionId: '111001' },
+        }),
+      ).toMatchObject({
+        outcome: 'UNMATCHED',
+        rejectReason: 'UNKNOWN_REFERENCE',
+      });
       const unknownAccount = await http()
         .post('/webhook/sepay/order')
         .set({ Authorization: 'Apikey smoke-shared-key' })
@@ -1453,14 +1797,24 @@ describe('smoke: products / inventory / staff / stock movements', () => {
           id: 111002,
         })
         .expect(200);
-      expect(unknownAccount.body.success).toBe(false);
+      // Không shop nào dùng tài khoản này: sổ không tenant + báo operator (chỉ vì webhook dùng key dùng chung).
+      expect(unknownAccount.body.success).toBe(true);
+      expect(
+        await prisma.sepayTransaction.findFirstOrThrow({
+          where: { tenantId: null, accountNumber: '9999999999' },
+        }),
+      ).toMatchObject({
+        outcome: 'UNMATCHED',
+        rejectReason: 'UNKNOWN_TENANT',
+        sepayTransactionId: '111002',
+      });
       const stillPending = await prisma.order.findUniqueOrThrow({
         where: { id: sale.body.data.order.id },
         select: { status: true },
       });
       expect(stillPending.status).toBe('PENDING');
       note(
-        "shared webhook, another shop's / no shop's account: 200, nothing settled OK",
+        "shared webhook, another shop's / no shop's account: recorded as UNMATCHED, our order untouched OK",
       );
 
       const paid = await http()
@@ -1507,6 +1861,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       });
     } finally {
       delete process.env.SEPAY_ORDER_WEBHOOK_API_KEY;
+      await prisma.sepayTransaction.deleteMany({
+        where: { tenantId: null, accountNumber: '9999999999' },
+      });
+      await deleteTenantMoneyTrail(prisma, otherShop.id);
       await prisma.tenant.delete({ where: { id: otherShop.id } });
     }
   });
@@ -2354,6 +2712,32 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `a 200k cash sale moved expected ${report.expectedClosing} → ${second.body.data.expectedClosing} and variance ${report.variance} → ${second.body.data.variance} OK`,
     );
 
+    // Tiền shipper nộp thẳng chủ shop (fund OWNER), dù ghi cùng chi nhánh, không nằm trong két nên không được đếm vào số lẽ ra phải có.
+    const ownerFlow = await prisma.cashFlow.create({
+      data: {
+        tenantId,
+        locationId: branchId,
+        flowType: 'INCOME',
+        // Loại không gắn khoản (ORDER_PAYMENT bắt buộc có Payment): chỉ cần một dòng thu tiền mặt quỹ OWNER.
+        category: 'UNALLOCATED_RECEIPT',
+        fund: 'OWNER',
+        amount: 5_000_000,
+        paymentMethod: 'CASH',
+        description: 'Shipper nộp tiền (smoke)',
+      },
+    });
+    const withOwnerCash = await http()
+      .get(`/cash-drawer-sessions/${sessionId}/reconciliation`)
+      .set(auth())
+      .expect(200);
+    expect(withOwnerCash.body.data.cashIn).toBe(second.body.data.cashIn);
+    expect(withOwnerCash.body.data.variance).toBe(second.body.data.variance);
+    // Gỡ dòng thử để các báo cáo sau (dashboard, cashflow) đếm đúng số của chúng.
+    await prisma.cashFlow.delete({ where: { id: ownerFlow.id } });
+    note(
+      'reconciliation counts only fund DRAWER cash: a 5M OWNER-fund row at the branch changes nothing OK',
+    );
+
     const variance = second.body.data.variance;
 
     const range = await http()
@@ -3037,8 +3421,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(salesOnly.body.data.income).toBe(cash.body.data.income);
     expect(salesOnly.body.data.expense).toBeGreaterThan(0);
-    // Mọi dòng tiền mặt suite này ghi đều là một đơn bán hoặc khoản hoàn của nó.
-    expect(salesOnly.body.data.expense).toBe(cash.body.data.expense);
+    // Mọi dòng chi suite này ghi là khoản hoàn của một đơn bán, trừ hai khoản trả nợ NCC (100.000 + 50.000) của ca sổ công nợ - tiền tố SUP, không phải ORD.
+    expect(cash.body.data.expense - salesOnly.body.data.expense).toBe(150_000);
     note('GET /stats/cashflow: flow=ORD selects the sales ledger OK');
 
     const transactions = await http()
@@ -3503,5 +3887,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note(
       'envelope: list merges, errors carry success:false, webhook stays raw OK',
     );
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

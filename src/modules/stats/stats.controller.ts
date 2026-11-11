@@ -1,11 +1,14 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { StatsService } from './stats.service';
+import { StatsReportsService } from './stats-reports.service';
 import {
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
   OrderPipelineQueryDto,
+  RevenueByStaffQueryDto,
+  SalesJournalQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
   SlowProductsQueryDto,
@@ -23,7 +26,10 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 @ApiBearerAuth('bearer')
 @Controller('stats')
 export class StatsController {
-  constructor(private readonly service: StatsService) {}
+  constructor(
+    private readonly service: StatsService,
+    private readonly reports: StatsReportsService,
+  ) {}
 
   @Permissions('reports', 'read')
   @Get('overview')
@@ -51,7 +57,10 @@ export class StatsController {
 
   @Permissions('reports', 'read')
   @Get('revenue-by-staff')
-  revenueByStaff(@CurrentUser() user: AuthUser, @Query() query: StatsQueryDto) {
+  revenueByStaff(
+    @CurrentUser() user: AuthUser,
+    @Query() query: RevenueByStaffQueryDto,
+  ) {
     return this.service.getRevenueByStaff(user, query);
   }
 
@@ -158,5 +167,25 @@ export class StatsController {
     @Query() query: OrderPipelineQueryDto,
   ) {
     return this.service.getOrderPipeline(user, query);
+  }
+
+  /** Các bút toán doanh thu nguyên bản (SALE / RETURN / OTHER_INCOME) kèm dòng, phân trang: nền cho báo cáo kế toán. Khoảng ngày theo `business_date`. */
+  @Permissions('reports', 'read')
+  @Get('sales-journal')
+  salesJournal(
+    @CurrentUser() user: AuthUser,
+    @Query() query: SalesJournalQueryDto,
+  ) {
+    return this.reports.getSalesJournal(user, query);
+  }
+
+  /** Tiền chưa khớp tại lúc gọi: tiền shipper đang giữ, giao dịch SePay chưa xử lý, đơn trả dư, tiền chưa gắn đơn, quỹ chủ, tiền mặt quầy kho, hoàn tiền mặt từ két. */
+  @Permissions('reports', 'read')
+  @Get('unreconciled')
+  unreconciled(
+    @CurrentUser() user: AuthUser,
+    @Query() query: OrderPipelineQueryDto,
+  ) {
+    return this.reports.getUnreconciled(user, query.branchId);
   }
 }

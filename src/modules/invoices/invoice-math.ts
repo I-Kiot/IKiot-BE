@@ -1,57 +1,54 @@
 // Quy tắc thuần cho nội dung hoá đơn, tách khỏi service để unit-test không cần DB (cùng kiểu với pricing-engine.ts).
+// Số học nằm ở `orders/sales-math.ts` (`keptLineValues`, `sliceValue`): hoá đơn, nhật ký doanh thu và gợi ý hoàn tiền là MỘT quy tắc.
+import { toDong, type MoneyLike } from '../../common/utils/money';
+import {
+  keptLineValues,
+  type NetLineOrder,
+  type SaleItemInput,
+} from '../orders/sales-math';
 
-export interface InvoiceableLine {
+export interface InvoiceLineAmounts<T extends SaleItemInput> {
+  line: T;
+  /** Số lượng còn lại sau hàng trả trước khi xuất hoá đơn. */
   quantity: number;
-  returnedQuantity: number;
-  lineTotal: number;
-  unitPrice: number;
-}
-
-/** Giá trị số lượng trả lại của một dòng = phần tương ứng của thành tiền dòng, nên giảm giá theo dòng đi theo hàng trả. */
-export function returnedValue(line: {
-  quantity: number;
-  lineTotal: number;
-  returned: number;
-}): number {
-  if (line.quantity <= 0 || line.returned <= 0) return 0;
-  return Math.round((line.lineTotal * line.returned) / line.quantity);
+  /** Giá trị thực của phần còn lại, SAU giảm giá cả đơn. */
+  amount: number;
+  /** Phần giảm giá cả đơn đã chia vào phần còn lại (chỉ để hiển thị: `amount` đã trừ rồi). */
+  discount: number;
 }
 
 /**
  * Dòng của hoá đơn BÁN. Hàng trả về trước khi xuất hoá đơn (trả một phần khi đơn còn đang giao) được trừ luôn tại đây, không xuất rồi điều chỉnh sau.
+ * `amount` là giá trị thực sau giảm giá cả đơn (chia theo tỉ lệ bằng `allocateProportional`), nên Σ dòng + phí ship = tổng hoá đơn đến từng đồng.
  */
-export function saleLines<T extends InvoiceableLine>(lines: T[]) {
-  return lines
-    .map((line) => {
-      const quantity = line.quantity - line.returnedQuantity;
-      const amount =
-        line.lineTotal -
-        returnedValue({
-          quantity: line.quantity,
-          lineTotal: line.lineTotal,
-          returned: line.returnedQuantity,
-        });
-      return { line, quantity, amount };
-    })
-    .filter(({ quantity }) => quantity > 0);
+export function saleLines<T extends SaleItemInput>(
+  order: NetLineOrder,
+  lines: readonly T[],
+): InvoiceLineAmounts<T>[] {
+  const kept = keptLineValues(order, lines);
+  return lines.flatMap((line) => {
+    const k = kept.get(line.id)!;
+    if (k.quantity <= 0) return [];
+    return [
+      {
+        line,
+        quantity: k.quantity,
+        amount: k.amount,
+        discount: Math.max(0, k.gross - k.amount),
+      },
+    ];
+  });
 }
 
-/** Tổng hoá đơn BÁN: tổng đơn trừ phần hàng đã trả (phí ship không hoàn khi trả hàng). */
+/** Tổng hoá đơn BÁN = Σ giá trị dòng còn lại + phí ship thu của khách (phí ship không hoàn khi trả hàng). */
 export function saleTotal(
-  grandTotal: number,
-  lines: InvoiceableLine[],
+  lines: readonly { amount: number }[],
+  shippingFee: MoneyLike,
 ): number {
-  const returned = lines.reduce(
-    (sum, line) =>
-      sum +
-      returnedValue({
-        quantity: line.quantity,
-        lineTotal: line.lineTotal,
-        returned: line.returnedQuantity,
-      }),
-    0,
+  return (
+    lines.reduce((sum, l) => sum + l.amount, 0) +
+    Math.max(0, toDong(shippingFee))
   );
-  return Math.max(0, grandTotal - returned);
 }
 
 export function nextInvoiceNumber(prefix: string, highest: number): string {

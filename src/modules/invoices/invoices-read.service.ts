@@ -195,6 +195,7 @@ function toInvoiceResponse(row: InvoiceRow) {
       unitPrice: num(line.unitPrice),
       vatRate: num(line.vatRate),
       amount: num(line.amount),
+      discountAmount: num(line.discountAmount),
     })),
   };
 }

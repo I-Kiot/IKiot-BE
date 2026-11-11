@@ -15,6 +15,11 @@ import {
 import { CASHFLOW_PREFIXES } from '../../../common/utils/reference-generator';
 import { PAYMENT_METHODS } from '../../../common/constants/payment-method';
 import {
+  CASH_FLOW_CATEGORIES,
+  CASH_FLOW_FUNDS,
+} from '../../../common/constants/cash-flow-category';
+import { SalesJournalEntryType } from '../../../common/constants/sales-journal';
+import {
   ADMIN_GROUP_BY_VALUES,
   DEFAULT_LOW_STOCK_THRESHOLD,
   FLOW_TYPES,
@@ -92,6 +97,22 @@ export class CashflowQueryDto extends StatsQueryDto {
     message: `flowType phải là ${FLOW_TYPES.join(' hoặc ')}`,
   })
   flowType?: string;
+
+  /** Loại tiền (`cash_flows.category`). */
+  @IsOptional()
+  @upper()
+  @IsIn(CASH_FLOW_CATEGORIES, {
+    message: `category phải là ${CASH_FLOW_CATEGORIES.join(', ')}`,
+  })
+  category?: string;
+
+  /** Quỹ nơi tiền nằm (`cash_flows.fund`): DRAWER | OWNER | BANK. */
+  @IsOptional()
+  @upper()
+  @IsIn(CASH_FLOW_FUNDS, {
+    message: `fund phải là ${CASH_FLOW_FUNDS.join(', ')}`,
+  })
+  fund?: string;
 }
 
 export class CashflowListQueryDto extends CashflowQueryDto {
@@ -114,6 +135,49 @@ export class CashflowListQueryDto extends CashflowQueryDto {
   @Min(1)
   @Max(100)
   limit: number = 10;
+}
+
+export const STAFF_GROUP_BY_VALUES: readonly string[] = [
+  'assignee',
+  'creator',
+  'collector',
+];
+
+/** `/stats/revenue-by-staff`: doanh thu gắn với ai. */
+export class RevenueByStaffQueryDto extends StatsQueryDto {
+  /** assignee (mặc định, người phụ trách), creator (người lên đơn) hoặc collector (người thu tiền, theo tiền thực thu). */
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  groupBy: string = 'assignee';
+}
+
+/** `/stats/sales-journal`: đọc thẳng các bút toán doanh thu. Khoảng ngày lọc theo `business_date` (ngày địa phương), không theo giờ. */
+export class SalesJournalQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @upper()
+  @IsIn(Object.values(SalesJournalEntryType), {
+    message: `entryType phải là ${Object.values(SalesJournalEntryType).join(', ')}`,
+  })
+  entryType?: string;
+
+  @IsOptional()
+  @IsString()
+  orderId?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 20;
 }
 
 export class TopProductsQueryDto extends StatsQueryDto {

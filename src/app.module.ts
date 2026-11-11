@@ -25,6 +25,7 @@ import { BranchModule } from './modules/branches/branches.module';
 import { BrandModule } from './modules/brands/brands.module';
 import { CashDrawerSessionModule } from './modules/cash-drawer-sessions/cash-drawer-sessions.module';
 import { CashFlowModule } from './modules/cash-flows/cash-flows.module';
+import { SepayTransactionModule } from './modules/sepay-transactions/sepay-transactions.module';
 import { CategoryModule } from './modules/categories/categories.module';
 import { CustomerModule } from './modules/customers/customers.module';
 import { HolidayModule } from './modules/holidays/holidays.module';
@@ -70,6 +71,7 @@ import { SentryModule } from '@sentry/nestjs/setup';
     BrandModule,
     CashDrawerSessionModule,
     CashFlowModule,
+    SepayTransactionModule,
     CategoryModule,
     CustomerModule,
     HolidayModule,

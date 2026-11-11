@@ -6,6 +6,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InvoiceService } from '../invoices/invoices.service';
+import { lockOrder } from '../orders/order-lock';
+import { postOtherIncome, postReturn } from '../orders/sales-journal';
+import {
+  SalesJournalEntryType,
+  SalesJournalSource,
+} from '../../common/constants/sales-journal';
+import { recordRefund, refundSuggestionOf } from '../orders/order-refund';
+import { derivePaymentStatus, paymentRowsOf } from '../orders/payment-status';
+import { netLineValues } from '../orders/sales-math';
+import { sliceValue, toDong } from '../../common/utils/money';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from '../orders/orders.service';
@@ -40,6 +50,16 @@ import {
 } from '../../common/utils/reference-generator';
 import type { Prisma } from '../../../generated/prisma/client';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import {
+  OrderEventRefType,
+  OrderEventType,
+} from '../../common/constants/order-event-type';
+import {
+  recordOrderEvent,
+  recordOrderEvents,
+  returnRef,
+  userActor,
+} from '../orders/order-events';
 
 /** Đơn đã trừ kho (`ship`): chỉ các đơn này mới hoàn về được. */
 export const RETURNABLE_ORDER_STATUSES: readonly string[] = [
@@ -66,6 +86,7 @@ const RETURN_INCLUDE = {
     select: {
       id: true,
       code: true,
+      branchId: true,
       assigneeId: true,
       customer: { select: { name: true } },
     },
@@ -182,7 +203,64 @@ export class OrderReturnService {
   }
 
   async findOne(user: AuthUser, tenantId: string, id: string) {
-    return toOrderReturn(await this.load(user, tenantId, id));
+    const row = await this.load(user, tenantId, id);
+    const base = toOrderReturn(row);
+    // Đang kiểm hàng: kèm gợi ý số hoàn để màn hình điền sẵn (người kiểm quyết số cuối).
+    return {
+      ...base,
+      refundSuggestion:
+        row.status === OrderReturnStatus.INSPECTING
+          ? await this.refundSuggestion(row)
+          : null,
+    };
+  }
+
+  /**
+   * Gợi ý hoàn tiền cho phiếu đang kiểm: `goodsValue` = giá trị thực (sau giảm giá) của các dòng hoàn theo phân bổ luỹ kế (`sliceValue`),
+   * `max` = tiền shop đang giữ của đơn, `suggested` = nhỏ hơn của hai số. Phí giao không nằm trong gợi ý; chỉ hoàn khi người kiểm tự nhập số lớn hơn.
+   */
+  private async refundSuggestion(row: ReturnRow) {
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: row.order.id },
+      select: {
+        grandTotal: true,
+        depositAmount: true,
+        shippingFee: true,
+        discountType: true,
+        discountValue: true,
+        payments: { select: { kind: true, status: true, amount: true } },
+        items: {
+          select: {
+            id: true,
+            lineType: true,
+            lineTotal: true,
+            quantity: true,
+            returnedQuantity: true,
+          },
+        },
+      },
+    });
+    const derived = derivePaymentStatus(order.grandTotal, paymentRowsOf(order));
+    const net = netLineValues(order, order.items);
+    const lines = new Map(order.items.map((item) => [item.id, item]));
+    let goodsValue = 0;
+    for (const line of row.items) {
+      const item = lines.get(line.orderItemId);
+      if (!item) continue;
+      goodsValue += sliceValue(
+        net.get(item.id) ?? 0,
+        item.quantity,
+        item.returnedQuantity,
+        line.quantity,
+      );
+    }
+    return refundSuggestionOf({
+      held: derived.net,
+      goodsValue,
+      shippingFee: toDong(order.shippingFee),
+      received: derived.received,
+      refunded: derived.refunded,
+    });
   }
 
   /** `POST /order-returns`: tạo ở `REQUESTED`, chưa đụng tồn. */
@@ -293,34 +371,68 @@ export class OrderReturnService {
       }
     }
 
-    const created = await this.prisma.orderReturn.create({
-      data: {
-        tenantId,
-        code: generateReference(REFERENCE_PREFIX.ORDER_RETURN),
-        orderId: order.id,
-        shipmentId: dto.shipmentId ?? null,
-        reason: dto.reason,
-        status: OrderReturnStatus.REQUESTED,
-        note: dto.note ?? null,
-        createdById: user.userId,
-        items: {
-          create: dto.items.map((item) => ({
-            orderItemId: item.orderItemId,
-            quantity: item.quantity,
-            note: item.note ?? null,
-          })),
+    const created = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.orderReturn.create({
+        data: {
+          tenantId,
+          code: generateReference(REFERENCE_PREFIX.ORDER_RETURN),
+          orderId: order.id,
+          shipmentId: dto.shipmentId ?? null,
+          reason: dto.reason,
+          status: OrderReturnStatus.REQUESTED,
+          note: dto.note ?? null,
+          createdById: user.userId,
+          items: {
+            create: dto.items.map((item) => ({
+              orderItemId: item.orderItemId,
+              quantity: item.quantity,
+              note: item.note ?? null,
+            })),
+          },
         },
-      },
-      select: { id: true },
+        select: { id: true, code: true },
+      });
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: order.id,
+        type: OrderEventType.RETURN_CREATED,
+        metadata: {
+          ...returnRef(row),
+          reason: dto.reason,
+          shipmentId: dto.shipmentId ?? null,
+        },
+      });
+      return row;
     });
     return this.findOne(user, tenantId, created.id);
   }
 
   /** `POST /order-returns/:id/receive`: hàng đã về shop. `REQUESTED` → `INSPECTING`. */
   async receive(user: AuthUser, tenantId: string, id: string) {
-    await this.load(user, tenantId, id);
-    const claimed = await this.prisma.orderReturn.updateMany({
-      where: { id, tenantId, status: OrderReturnStatus.REQUESTED },
+    const orderReturn = await this.load(user, tenantId, id);
+    await this.prisma.$transaction((tx) =>
+      this.claimReceived(tx, user, tenantId, {
+        id,
+        code: orderReturn.code,
+        orderId: orderReturn.order.id,
+      }),
+    );
+    return this.findOne(user, tenantId, id);
+  }
+
+  /** Bước "hàng đã về" dùng chung cho `receive` và `confirmFailedDelivery`: REQUESTED → INSPECTING và sự kiện của nó, cùng transaction. */
+  private async claimReceived(
+    tx: Prisma.TransactionClient,
+    user: AuthUser,
+    tenantId: string,
+    orderReturn: { id: string; code: string; orderId: string },
+  ) {
+    const claimed = await tx.orderReturn.updateMany({
+      where: {
+        id: orderReturn.id,
+        tenantId,
+        status: OrderReturnStatus.REQUESTED,
+      },
       data: {
         status: OrderReturnStatus.INSPECTING,
         receivedById: user.userId,
@@ -328,7 +440,12 @@ export class OrderReturnService {
       },
     });
     if (claimed.count !== 1) this.statusInvalid('received', 'REQUESTED');
-    return this.findOne(user, tenantId, id);
+    await recordOrderEvent(tx, userActor(user), {
+      tenantId,
+      orderId: orderReturn.orderId,
+      type: OrderEventType.RETURN_RECEIVED,
+      metadata: returnRef(orderReturn),
+    });
   }
 
   /**
@@ -426,15 +543,13 @@ export class OrderReturnService {
       },
       { skipPermission: true },
     );
-    const received = await this.prisma.orderReturn.updateMany({
-      where: { id: created.id, tenantId, status: OrderReturnStatus.REQUESTED },
-      data: {
-        status: OrderReturnStatus.INSPECTING,
-        receivedById: user.userId,
-        receivedAt: new Date(),
-      },
-    });
-    if (received.count !== 1) this.statusInvalid('received', 'REQUESTED');
+    await this.prisma.$transaction((tx) =>
+      this.claimReceived(tx, user, tenantId, {
+        id: created.id,
+        code: created.code,
+        orderId: order.id,
+      }),
+    );
 
     const verdicts = new Map(
       (dto.items ?? []).map((item) => [item.orderItemId, item]),
@@ -450,6 +565,7 @@ export class OrderReturnService {
           condition:
             verdicts.get(line.orderItemId)?.condition ?? ReturnCondition.GOOD,
         })),
+        refund: dto.refund,
       },
       async (tx) => {
         const closed = await tx.shipment.updateMany({
@@ -472,18 +588,27 @@ export class OrderReturnService {
           },
         });
       },
+      { refundOptional: true },
     );
   }
 
   /** `POST /order-returns/:id/cancel`: chỉ trước khi hàng được đưa về, nên tồn chưa bị đụng tới. */
   async cancel(user: AuthUser, tenantId: string, id: string) {
-    await this.load(user, tenantId, id);
-    const claimed = await this.prisma.orderReturn.updateMany({
-      where: { id, tenantId, status: { in: [...OPEN_RETURN_STATUSES] } },
-      data: { status: OrderReturnStatus.CANCELLED },
+    const orderReturn = await this.load(user, tenantId, id);
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.orderReturn.updateMany({
+        where: { id, tenantId, status: { in: [...OPEN_RETURN_STATUSES] } },
+        data: { status: OrderReturnStatus.CANCELLED },
+      });
+      if (claimed.count !== 1)
+        this.statusInvalid('cancelled', 'REQUESTED or INSPECTING');
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: orderReturn.order.id,
+        type: OrderEventType.RETURN_CANCELLED,
+        metadata: returnRef(orderReturn),
+      });
     });
-    if (claimed.count !== 1)
-      this.statusInvalid('cancelled', 'REQUESTED or INSPECTING');
     return this.findOne(user, tenantId, id);
   }
 
@@ -498,6 +623,8 @@ export class OrderReturnService {
     dto: InspectOrderReturnDto,
     /** Chạy trong transaction chốt, nên ghi của người gọi lên cùng hoặc không lên gì. */
     within?: (tx: Prisma.TransactionClient) => Promise<void>,
+    /** `refundOptional`: bỏ qua việc bắt buộc nêu số hoàn (hàng giao thất bại chưa tới tay khách). */
+    options: { refundOptional?: boolean } = {},
   ) {
     const orderReturn = await this.load(user, tenantId, id);
     if (orderReturn.status !== OrderReturnStatus.INSPECTING) {
@@ -532,6 +659,16 @@ export class OrderReturnService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      // Đơn khoá trước: kiểm hàng đổi tiền (hoàn tiền) nên xếp hàng với thu tiền / huỷ / sửa đơn cùng lúc. Số tiền đang giữ đọc SAU khoá.
+      await lockOrder(tx, tenantId, orderReturn.order.id);
+      const held = await this.heldMoney(tx, orderReturn.order.id);
+      if (held > 0 && !dto.refund && !options.refundOptional) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_RETURN_REFUND_REQUIRED,
+          message: `The order holds ${held}; say how much is refunded (refund.amount, 0 keeps it)`,
+          held,
+        });
+      }
       const claimed = await tx.orderReturn.updateMany({
         where: { id, tenantId, status: OrderReturnStatus.INSPECTING },
         data: {
@@ -614,8 +751,50 @@ export class OrderReturnService {
         });
       }
 
-      await this.settleOrder(tx, tenantId, orderReturn.order.id);
+      const settled = await this.settleOrder(
+        tx,
+        tenantId,
+        orderReturn.order.id,
+      );
+      // Chuyển trạng thái chỉ có khi lần kiểm này hoàn nốt các dòng cuối và đơn thật sự sang RETURNED.
+      const quantityOf = (wanted: ReturnCondition) =>
+        orderReturn.items
+          .filter(
+            (line) => verdicts.get(line.orderItemId)?.condition === wanted,
+          )
+          .reduce((sum, line) => sum + line.quantity, 0);
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: orderReturn.order.id,
+        type: OrderEventType.RETURN_INSPECTED,
+        fromStatus: settled?.from ?? null,
+        toStatus: settled?.to ?? null,
+        metadata: {
+          ...returnRef(orderReturn),
+          good: quantityOf(ReturnCondition.GOOD),
+          damaged: quantityOf(ReturnCondition.DAMAGED),
+        },
+      });
       await within?.(tx);
+      if (dto.refund && dto.refund.amount > 0) {
+        await recordRefund(tx, {
+          order: {
+            id: orderReturn.order.id,
+            tenantId,
+            code: orderReturn.order.code,
+            branchId: orderReturn.order.branchId,
+          },
+          amount: dto.refund.amount,
+          method: dto.refund.method!,
+          cap: 'HELD',
+          actor: user,
+          reason: 'RETURN_INSPECTION',
+          note: dto.refund.note ?? null,
+          description: `Hoàn tiền trả hàng ${orderReturn.code} (đơn ${orderReturn.order.code})`,
+          now,
+          metadata: returnRef(orderReturn),
+        });
+      }
       // Hoá đơn đã xuất thì hàng hoàn là điều chỉnh theo giá trị (hoá đơn PENDING sẽ tự trừ khi xuất).
       await this.invoices.adjustForReturn(
         tx,
@@ -627,9 +806,61 @@ export class OrderReturnService {
           quantity: line.quantity,
         })),
       );
+
+      // Nhật ký doanh thu (Phase 7). Đã có SALE: hàng trả là bút toán RETURN âm vào ngày kiểm (kỳ cũ không đổi). Chưa có SALE (trả trước khi hoàn thành): SALE ghi sau đã trừ số trả,
+      // nên không có gì để đảo; nhưng nếu đơn kết thúc ở RETURNED mà shop vẫn giữ tiền (không hoàn / hoàn thiếu) thì phần giữ là OTHER_INCOME (quyết định D3).
+      const hasSale = await tx.salesJournalEntry.findFirst({
+        where: {
+          orderId: orderReturn.order.id,
+          entryType: SalesJournalEntryType.SALE,
+        },
+        select: { id: true },
+      });
+      if (hasSale) {
+        await postReturn(tx, {
+          orderId: orderReturn.order.id,
+          orderReturnId: id,
+          returning: orderReturn.items.map((line) => ({
+            orderItemId: line.orderItemId,
+            quantity: line.quantity,
+          })),
+          ledgerRef: {
+            referenceType: InventoryRefType.ORDER_RETURN,
+            referenceId: id,
+          },
+          actor: { id: user.userId },
+          now,
+          source: SalesJournalSource.RETURN_INSPECTION,
+        });
+      } else if (settled?.to === OrderStatus.RETURNED && dto.refund) {
+        // Chỉ khi người kiểm ĐÃ nêu số hoàn (kể cả 0 = giữ). Không nêu (giao thất bại, "Chưa hoàn") thì tiền ở lại treo chưa quyết định: `POST /orders/:id/settle-held`.
+        await postOtherIncome(tx, {
+          orderId: orderReturn.order.id,
+          kept: await this.heldMoney(tx, orderReturn.order.id),
+          actor: { id: user.userId },
+          now,
+          source: SalesJournalSource.RETURN_KEPT,
+        });
+      }
     });
 
     return this.findOne(user, tenantId, id);
+  }
+
+  /** Tiền shop đang giữ của đơn (thu trừ hoàn trừ thối), đọc trong transaction đã khoá đơn. */
+  private async heldMoney(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<number> {
+    const order = await tx.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: {
+        grandTotal: true,
+        depositAmount: true,
+        payments: { select: { kind: true, status: true, amount: true } },
+      },
+    });
+    return derivePaymentStatus(order.grandTotal, paymentRowsOf(order)).net;
   }
 
   /** `PATCH /order-returns/:id/replacement-order`: gắn đơn khách đặt để mua lại hàng. */
@@ -648,16 +879,41 @@ export class OrderReturnService {
     }
     const replacement = await this.prisma.order.findFirst({
       where: { id: replacementOrderId, tenantId },
-      select: { id: true },
+      select: { id: true, code: true },
     });
     if (!replacement)
       throw new NotFoundException({
         code: ErrorCode.ORDER_NOT_FOUND,
         message: 'Replacement order not found',
       });
-    await this.prisma.orderReturn.update({
-      where: { id },
-      data: { replacementOrderId },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.orderReturn.update({
+        where: { id },
+        data: { replacementOrderId },
+      });
+      // Gắn lại đúng đơn đã gắn thì không có gì mới để ghi.
+      if (orderReturn.replacementOrderId === replacementOrderId) return;
+      // Hai đơn cùng thấy liên kết: đơn bị hoàn dẫn tới đơn mua lại, đơn mua lại dẫn ngược về phiếu hoàn.
+      await recordOrderEvents(tx, userActor(user), [
+        {
+          tenantId,
+          orderId: orderReturn.order.id,
+          type: OrderEventType.REPLACEMENT_LINKED,
+          metadata: {
+            refType: OrderEventRefType.ORDER,
+            refId: replacement.id,
+            refCode: replacement.code,
+            returnId: orderReturn.id,
+            returnCode: orderReturn.code,
+          },
+        },
+        {
+          tenantId,
+          orderId: replacement.id,
+          type: OrderEventType.REPLACEMENT_LINKED,
+          metadata: returnRef(orderReturn),
+        },
+      ]);
     });
     return this.findOne(user, tenantId, id);
   }
@@ -758,12 +1014,12 @@ export class OrderReturnService {
     return locationId;
   }
 
-  /** Đơn → RETURNED khi mọi dòng đã trừ kho được hoàn đủ; hoàn một phần thì đơn giữ nguyên. */
+  /** Đơn → RETURNED khi mọi dòng đã trừ kho được hoàn đủ; hoàn một phần thì đơn giữ nguyên. Trả trạng thái trước/sau nếu đơn thật sự đổi, không thì `null`. */
   private async settleOrder(
     tx: Prisma.TransactionClient,
     tenantId: string,
     orderId: string,
-  ) {
+  ): Promise<{ from: string; to: string } | null> {
     const order = await tx.order.findFirst({
       where: { id: orderId, tenantId },
       select: {
@@ -771,7 +1027,7 @@ export class OrderReturnService {
         items: { select: { status: true, lineType: true } },
       },
     });
-    if (!order) return;
+    if (!order) return null;
     const stocked = order.items.filter(
       (item) =>
         STOCKED_LINE_TYPES.includes(item.lineType) &&
@@ -782,12 +1038,16 @@ export class OrderReturnService {
       stocked.length > 0 &&
       stocked.every((item) => item.status === OrderItemStatus.RETURNED);
     if (allBack && canTransition(order.status, OrderStatus.RETURNED)) {
-      await tx.order.updateMany({
+      const moved = await tx.order.updateMany({
         where: { id: orderId, tenantId, status: order.status },
         data: { status: OrderStatus.RETURNED },
       });
       // Hoàn đủ trước khi đơn kịp hoàn thành: chưa xuất hoá đơn nên rút hoá đơn PENDING.
       await this.invoices.voidPending(tx, orderId);
+      if (moved.count === 1) {
+        return { from: order.status, to: OrderStatus.RETURNED };
+      }
     }
+    return null;
   }
 }

@@ -44,8 +44,19 @@ import {
 } from './dto/stock-movement.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { SupplierDebtRefType } from '../../common/constants/supplier-debt';
+import { toDong } from '../../common/utils/money';
 import { withNestedProfile } from '../../common/utils/user-profile';
 import { assertHoldsStock } from '../inventories/stockable';
+
+/** Người trong payload của phiếu: nested qua `withNestedProfile` ở `toResponse`. */
+const PERSON_SELECT = {
+  id: true,
+  phoneNumber: true,
+  email: true,
+  profileFirstName: true,
+  profileLastName: true,
+} as const;
 
 const DETAIL_INCLUDE = {
   details: {
@@ -72,15 +83,12 @@ const DETAIL_INCLUDE = {
   fromSupplier: { select: { id: true, supplierName: true } },
   fromLocation: LOCATION_SELECT,
   toLocation: LOCATION_SELECT,
-  createdBy: {
-    select: {
-      id: true,
-      phoneNumber: true,
-      email: true,
-      profileFirstName: true,
-      profileLastName: true,
-    },
-  },
+  createdBy: { select: PERSON_SELECT },
+  // Ai đã mở / xuất / nhận / duyệt / huỷ phiếu: các cột này chỉ do chính bước đó ghi (xem `claim`).
+  shippedBy: { select: PERSON_SELECT },
+  receivedBy: { select: PERSON_SELECT },
+  approvedBy: { select: PERSON_SELECT },
+  cancelledBy: { select: PERSON_SELECT },
 } as const satisfies Prisma.StockMovementRequestInclude;
 
 type MovementRow = Prisma.StockMovementRequestGetPayload<{
@@ -306,12 +314,14 @@ export class StockMovementService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Chiếm phiếu ở trạng thái vừa đọc trước khi thay dòng: hai lần sửa, hay sửa chạy đua với xuất / nhận / huỷ, chỉ một bên được ghi.
+      await this.claim(tx, tenantId, id, [request.status], { totalPrice });
       await tx.stockMovementRequestItem.deleteMany({
         where: { requestId: id },
       });
       return tx.stockMovementRequest.update({
         where: { id },
-        data: { totalPrice, details: { create: details } },
+        data: { details: { create: details } },
         include: DETAIL_INCLUDE,
       });
     });
@@ -326,7 +336,14 @@ export class StockMovementService {
     this.assertStatus(request, [MovementStatus.DRAFT]);
     await this.assertSourceStock(this.prisma, request);
 
-    return this.toResponse(await this.setStatus(id, MovementStatus.OPENING));
+    return this.toResponse(
+      await this.setStatus(
+        this.tenantOf(user),
+        id,
+        [MovementStatus.DRAFT],
+        MovementStatus.OPENING,
+      ),
+    );
   }
 
   /** OPENING → CLOSED: soạn xong, danh sách chốt. */
@@ -342,7 +359,14 @@ export class StockMovementService {
     }
     await this.assertSourceStock(this.prisma, request);
 
-    return this.toResponse(await this.setStatus(id, MovementStatus.CLOSED));
+    return this.toResponse(
+      await this.setStatus(
+        this.tenantOf(user),
+        id,
+        [MovementStatus.OPENING],
+        MovementStatus.CLOSED,
+      ),
+    );
   }
 
   /** → IN_TRANSIT: hàng rời kho thật, nên trừ nguồn và đổi trạng thái chung một transaction. */
@@ -358,6 +382,18 @@ export class StockMovementService {
 
     const { shipped, crossings } = await this.prisma.$transaction(
       async (tx) => {
+        // Chiếm phiếu trước khi trừ kho: hai lần "xuất" cùng lúc thì chỉ một lần trừ.
+        await this.claim(
+          tx,
+          tenantId,
+          id,
+          [MovementStatus.CLOSED, MovementStatus.PENDING],
+          {
+            status: MovementStatus.IN_TRANSIT,
+            shippedById: user.userId,
+            shippedAt: new Date(),
+          },
+        );
         const lowStock: (Inventory | null)[] = [];
 
         if (isTransfer) {
@@ -383,11 +419,7 @@ export class StockMovementService {
         }
 
         return {
-          shipped: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.IN_TRANSIT },
-            include: DETAIL_INCLUDE,
-          }),
+          shipped: await this.reload(tx, id),
           crossings: lowStock,
         };
       },
@@ -457,6 +489,20 @@ export class StockMovementService {
     const to = this.destination(request)!;
     const { received, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
+        // Chiếm phiếu TRƯỚC khi ghi tồn và công nợ: hai lần "nhận" cùng lúc thì chỉ một lần tăng tồn và nợ nhà cung cấp.
+        await this.claim(
+          tx,
+          tenantId,
+          id,
+          request.movementType === MovementType.IMPORT
+            ? [MovementStatus.PENDING, MovementStatus.IN_TRANSIT]
+            : [MovementStatus.IN_TRANSIT],
+          {
+            status: MovementStatus.RECEIVED,
+            receivedById: user.userId,
+            receivedAt: new Date(),
+          },
+        );
         let importCost = 0;
 
         for (const line of request.details) {
@@ -473,7 +519,7 @@ export class StockMovementService {
             createdById: user.userId,
           };
           if (request.movementType === MovementType.IMPORT) {
-            importCost += quantity * Number(line.importPrice ?? 0);
+            importCost += toDong(quantity * Number(line.importPrice ?? 0));
             // Every received import line is its own lot, costed at the import price.
             await this.inventory.openLot(tx, {
               tenantId,
@@ -518,15 +564,16 @@ export class StockMovementService {
                     (line) => (receivedByItem.get(line.productItemId) ?? 0) > 0,
                   )
                   .map((line) => line.productItemId),
+                {
+                  actorId: user.userId,
+                  type: SupplierDebtRefType.STOCK_MOVEMENT,
+                  id: request.id,
+                },
               )
             : null;
 
         return {
-          received: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.RECEIVED },
-            include: DETAIL_INCLUDE,
-          }),
+          received: await this.reload(tx, id),
           creditWarning: warning,
         };
       },
@@ -590,6 +637,11 @@ export class StockMovementService {
 
     const { completed, crossings } = await this.prisma.$transaction(
       async (tx) => {
+        await this.claim(tx, tenantId, id, [MovementStatus.PENDING], {
+          status: MovementStatus.COMPLETED,
+          approvedById: user.userId,
+          approvedAt: new Date(),
+        });
         const lowStock: (Inventory | null)[] = [];
 
         for (const change of changes) {
@@ -645,11 +697,7 @@ export class StockMovementService {
         }
 
         return {
-          completed: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.COMPLETED },
-            include: DETAIL_INCLUDE,
-          }),
+          completed: await this.reload(tx, id),
           crossings: lowStock,
         };
       },
@@ -686,6 +734,12 @@ export class StockMovementService {
       this.isTransferType(request.movementType);
 
     const cancelled = await this.prisma.$transaction(async (tx) => {
+      // Chiếm phiếu trước khi trả hàng về nguồn: huỷ hai lần, hay huỷ chạy đua với nhận, chỉ một bên được ghi.
+      await this.claim(tx, tenantId, id, [request.status], {
+        status: MovementStatus.CANCELLED,
+        cancelledAt: new Date(),
+        cancelledById: user.userId,
+      });
       if (shouldReturnStock) {
         const from = this.source(request)!;
         // Straight back into the lots it left.
@@ -711,11 +765,7 @@ export class StockMovementService {
         }
       }
 
-      return tx.stockMovementRequest.update({
-        where: { id },
-        data: { status: MovementStatus.CANCELLED },
-        include: DETAIL_INCLUDE,
-      });
+      return this.reload(tx, id);
     });
 
     await this.notifyMovement(cancelled, user.userId, {
@@ -1094,10 +1144,46 @@ export class StockMovementService {
     return request;
   }
 
-  private setStatus(id: string, status: string) {
-    return this.prisma.stockMovementRequest.update({
+  /** Đổi trạng thái đơn thuần (mở, chốt) bằng lệnh chiếm có điều kiện, trong transaction. */
+  private setStatus(
+    tenantId: string,
+    id: string,
+    from: readonly string[],
+    status: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.claim(tx, tenantId, id, from, { status });
+      return this.reload(tx, id);
+    });
+  }
+
+  /**
+   * Chiếm phiếu: `updateMany` có điều kiện trạng thái hiện tại, là câu ĐẦU TIÊN của mọi transaction đổi phiếu. Hai người bấm cùng lúc thì chỉ một người được ghi; người thua nhận `STOCK_MOVEMENT_CONFLICT` và không có gì bị ghi (tồn, công nợ, người thao tác).
+   * Cột người làm / lúc làm (shipped, received, approved, cancelled) chỉ do chính bước sở hữu chúng ghi, qua `data` của lệnh này.
+   */
+  private async claim(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    id: string,
+    from: readonly string[],
+    data: Prisma.StockMovementRequestUncheckedUpdateManyInput,
+  ): Promise<void> {
+    const claimed = await tx.stockMovementRequest.updateMany({
+      where: { id, tenantId, status: { in: [...from] } },
+      data,
+    });
+    if (claimed.count !== 1) {
+      throw new ConflictException({
+        code: ErrorCode.STOCK_MOVEMENT_CONFLICT,
+        message:
+          'The stock movement has just been changed by someone else, please reload',
+      });
+    }
+  }
+
+  private reload(tx: Prisma.TransactionClient, id: string) {
+    return tx.stockMovementRequest.findUniqueOrThrow({
       where: { id },
-      data: { status },
       include: DETAIL_INCLUDE,
     });
   }
@@ -1161,6 +1247,10 @@ export class StockMovementService {
       totalPrice,
       details,
       createdBy,
+      shippedBy,
+      receivedBy,
+      approvedBy,
+      cancelledBy,
       ...rest
     } = request;
 
@@ -1168,6 +1258,10 @@ export class StockMovementService {
       ...rest,
       // Nested like every other user payload, so the screens read `createdBy.profile.firstName`.
       createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
+      shippedBy: shippedBy ? withNestedProfile(shippedBy) : null,
+      receivedBy: receivedBy ? withNestedProfile(receivedBy) : null,
+      approvedBy: approvedBy ? withNestedProfile(approvedBy) : null,
+      cancelledBy: cancelledBy ? withNestedProfile(cancelledBy) : null,
       totalPrice: Number(totalPrice),
       details: details.map((line) => ({
         ...line,
