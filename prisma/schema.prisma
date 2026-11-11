@@ -1706,7 +1706,9 @@ model CashDrawerSession {
   finalLogManagerId String?   @map("final_log_manager_id")
   finalLogManager   User?     @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
   finalLogNote      String?   @map("final_log_note")
-  closedAt          DateTime? @map("closed_at") @db.Timestamptz(6) // lúc chốt két (status CLOSED)
+  // Lúc chốt. Cùng `createdAt` (lúc mở) là khoảng thời gian thật của phiên, thứ đối soát cộng dòng tiền theo - không
+  // phải ngày giao dịch, vì két quên chốt có thể kéo sang ngày sau. Null khi còn mở.
+  closedAt          DateTime? @map("closed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
