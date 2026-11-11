@@ -493,3 +493,12 @@ Quyết định của user: "giữ tiền treo, quyết định sau". Trước �
 - **Test**: e2e `order-ship` thêm ca "refuses once the driver has confirmed the pick-up" (đi qua `pickUp` thật, kiểm driverId không đổi). 56/56 trên `ikiot_e2e`. BE `tsc` sạch, FE `tsc` sạch.
 
 **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+
+## 2026-11-11 – "Đơn giao của tôi": bộ lọc cho tab Đang giao
+
+- **Chỉ FE**, không đổi API. Tab "Đang giao" (`shipper/components/current-deliveries.tsx`, tách khỏi `page.tsx`) có cùng bộ lọc với "Lịch sử giao": thẻ đếm theo trạng thái (bấm để lọc) + thẻ "Còn phải thu", khoảng ngày + nút nhanh (Hôm nay / Ngày mai / 7 ngày tới / Mọi ngày), ô chọn trạng thái, ô tìm (mã đơn, mã vận đơn, tên, SĐT, địa chỉ; không phân biệt dấu).
+- Lọc trên trình duyệt vì `GET /shipments/mine` đã trả toàn bộ lần giao còn mở, không phân trang. Khác lịch sử: ngày lọc theo **ngày hẹn giao** (đơn chưa giao thì chưa có ngày giao), mặc định không giới hạn ngày; khi đặt khoảng ngày thì đơn chưa hẹn ngày bị ẩn (có dòng chú thích).
+- `addDaysIso` mới trong `lib/date-input.ts`; tab lịch sử dùng nó thay cho hàm `daysAgoIso` tự viết.
+
+**Đã kiểm chứng:** FE `tsc`, eslint thư mục `shipper` sạch. **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+- (bổ sung) Tab "Lịch sử giao" dùng thanh phân trang chung `DataTablePagination` (luôn hiện ở chân trang, chọn 10/20/30/50 dòng mỗi trang, "Hiển thị a–b / N đơn"), thay cho cặp nút Trước/Sau chỉ hiện khi có hơn một trang. Thanh chỉ hiện khi đang ở tab lịch sử (Radix Tabs bỏ mount tab ẩn).
