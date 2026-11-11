@@ -7,6 +7,7 @@ import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { CashDrawerCronService } from './../src/modules/cash-drawer-sessions/cash-drawer-cron.service';
 import { STAFF_BASE_PERMISSIONS } from './../src/common/constants/system-role';
 import {
   InventoryRefType,
@@ -2603,7 +2604,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     // Lỗ hổng được vá: phiên ghi số người *đếm* được, còn CashFlow ghi số *đã di chuyển*, và chưa từng có gì trừ hai số này cho nhau.
     const session = await prisma.cashDrawerSession.findUniqueOrThrow({
       where: { id: sessionId },
-      select: { businessDate: true, openingAmount: true, finalLogAmount: true },
+      select: {
+        createdAt: true,
+        closedAt: true,
+        openingAmount: true,
+        finalLogAmount: true,
+      },
     });
 
     const first = await http()
@@ -2612,11 +2618,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     const report = first.body.data;
 
-    // Khung ngày bán được kiểm trực tiếp theo offset +07:00 thay vì qua helper đã tạo ra nó - lệch một giờ ở đây sẽ đẩy mọi hóa đơn trước 07:00 sang ngăn kéo của ngày hôm trước, đúng lỗi mà cả tính năng này sinh ra để tìm.
-    const dayStart = new Date(
-      session.businessDate.getTime() - 7 * 60 * 60 * 1000,
-    );
-    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    // Khung là khoảng thật của phiên - lúc mở tới lúc chốt - không phải ngày giao dịch: két chốt muộn hôm sau vẫn
+    // đối soát đúng. Chốt phải ghi `closedAt`, nếu không phiên đóng sẽ đối soát tới "bây giờ".
+    expect(session.closedAt).not.toBeNull();
+    const dayStart = session.createdAt;
+    const dayEnd = session.closedAt!;
     expect(new Date(report.window.start).getTime()).toBe(dayStart.getTime());
     expect(new Date(report.window.end).getTime()).toBe(dayEnd.getTime());
 
@@ -2679,7 +2685,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       report.nonCash.every((row: any) => row.paymentMethod !== 'CASH'),
     ).toBe(true);
 
-    // Giờ chuyển tiền thật và kiểm báo cáo có theo: thêm một đơn tiền mặt tại chi nhánh này làm tăng số ngăn kéo phải có, còn tổng đã đếm giữ nguyên. Tồn được bù đúng bằng lượng đã bán nên tồn tịnh về 0, các test sau thấy đúng như mong đợi.
+    // Bán thêm một đơn tiền mặt SAU khi két đã chốt. Đối soát theo khoảng thật của phiên (mở → chốt), nên đơn này
+    // không thuộc két đã chốt - không có két nào để tiền nằm vào. Trước đây (theo ngày giao dịch) nó bị cộng vào đoạn
+    // đóng ca, và cùng cơ chế đó khiến két chốt muộn hôm sau báo thừa đúng bằng tiền hôm sau. Tồn được bù đúng bằng
+    // lượng đã bán nên tồn tịnh về 0, các test sau thấy đúng như mong đợi.
     await topUp(branchId, itemAId, 1);
     await http()
       .post('/orders/pos')
@@ -2687,7 +2696,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .send({
         branchId,
         paymentMethod: 'CASH',
-        // itemA bán 200.000 và giá lấy theo danh mục, nên số tiền chính xác: không có dòng tiền thối, mọi chênh lệch bên dưới đều đúng +200.000.
         customerPay: 200_000,
         items: [{ productItemId: itemAId, quantity: 1 }],
       })
@@ -2697,19 +2705,15 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .get(`/cash-drawer-sessions/${sessionId}/reconciliation`)
       .set(auth())
       .expect(200);
-    expect(second.body.data.cashIn).toBe(report.cashIn + 200_000);
-    expect(second.body.data.expectedClosing).toBe(
-      report.expectedClosing + 200_000,
-    );
-    expect(second.body.data.countedClosing).toBe(report.countedClosing);
-    expect(second.body.data.variance).toBe(report.variance - 200_000);
-    // Đơn bán sau END cuối rơi vào đoạn đóng ca, lúc không ai giữ ngăn kéo - đúng dạng "tiền vào ngăn kéo sau khi đã đếm".
+    expect(second.body.data.cashIn).toBe(report.cashIn);
+    expect(second.body.data.expectedClosing).toBe(report.expectedClosing);
+    expect(second.body.data.variance).toBe(report.variance);
     expect(second.body.data.segments.at(-1)).toMatchObject({
       kind: 'CLOSING',
-      cashIn: 200_000,
+      cashIn: report.segments.at(-1).cashIn,
     });
     note(
-      `a 200k cash sale moved expected ${report.expectedClosing} → ${second.body.data.expectedClosing} and variance ${report.variance} → ${second.body.data.variance} OK`,
+      'a 200k cash sale after the drawer was closed does not move its reconciliation OK',
     );
 
     // Tiền shipper nộp thẳng chủ shop (fund OWNER), dù ghi cùng chi nhánh, không nằm trong két nên không được đếm vào số lẽ ra phải có.
@@ -2882,6 +2886,128 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     note(
       `two identical START logs at once: ${statuses.join(' + ')}, exactly 1 log written OK`,
     );
+  });
+
+  it('flags, gates and reminds about a drawer left open from a previous day', async () => {
+    // Phiên đang mở (vừa có START ở test trước) được lùi về hôm qua: có người quên chốt két.
+    const opened = await prisma.cashDrawerSession.findFirstOrThrow({
+      where: { tenantId, status: 'OPEN' },
+      select: { id: true, currentStaffId: true, businessDate: true },
+    });
+    const yesterday = new Date(
+      opened.businessDate.getTime() - 24 * 60 * 60 * 1000,
+    );
+    await prisma.cashDrawerSession.update({
+      where: { id: opened.id },
+      data: { businessDate: yesterday },
+    });
+
+    const holder = await prisma.user.findUniqueOrThrow({
+      where: { id: opened.currentStaffId },
+      select: { phoneNumber: true },
+    });
+    const holderToken = (
+      await http()
+        .post('/auth/login')
+        .send({
+          phoneNumber: holder.phoneNumber,
+          password:
+            holder.phoneNumber === PHONE_STAFF ? 'newpass123' : 'password123',
+        })
+        .expect(201)
+    ).body.data.accessToken;
+
+    const list = await http()
+      .get('/cash-drawer-sessions/overdue')
+      .set(auth())
+      .expect(200);
+    expect(list.body.data.map((s: any) => s.id)).toEqual([opened.id]);
+    expect(list.body.data[0]).not.toHaveProperty('openingAmount');
+    expect(list.body.data[0].branch.id).toBe(branchId);
+    // Thu ngân chỉ có read_own vẫn thấy cảnh báo, kể cả khi không phải người giữ két.
+    const staffToken = (
+      await http()
+        .post('/auth/login')
+        .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
+        .expect(201)
+    ).body.data.accessToken;
+    const staffList = await http()
+      .get('/cash-drawer-sessions/overdue')
+      .set(auth(staffToken))
+      .expect(200);
+    expect(staffList.body.data.map((s: any) => s.id)).toEqual([opened.id]);
+    const detail = await http()
+      .get(`/cash-drawer-sessions/${opened.id}`)
+      .set(auth())
+      .expect(200);
+    expect(detail.body.data.overdue).toBe(true);
+    note(
+      'GET /cash-drawer-sessions/overdue + `overdue` flag on the session OK',
+    );
+
+    // Không mở két mới, không bàn giao trên két quá hạn.
+    const blockedOpen = await http()
+      .post('/cash-drawer-sessions')
+      .set(auth())
+      .send({ branchId, staffId, openingAmount: 100_000 })
+      .expect(409);
+    expect(blockedOpen.body.code).toBe('CASH_DRAWER_OVERDUE');
+    expect(blockedOpen.body.sessionId).toBe(opened.id);
+    const blockedHandover = await http()
+      .post(`/cash-drawer-sessions/${opened.id}/shift-logs`)
+      .set(auth(holderToken))
+      .send({ type: 'END', amount: 500_000, nextStaffId: staffId })
+      .expect(409);
+    expect(blockedHandover.body.code).toBe('CASH_DRAWER_OVERDUE');
+    await http()
+      .get(`/cash-drawer-sessions/${opened.id}/handover-candidates`)
+      .set(auth(holderToken))
+      .expect(409);
+    note(
+      'overdue drawer: new open, handover and handover list refused with CASH_DRAWER_OVERDUE OK',
+    );
+
+    // Cron buổi sáng: một thông báo cho quản lý (không có manager thì chủ shop).
+    await app.get(CashDrawerCronService).notifyOverdue();
+    const reminders = await prisma.notification.findMany({
+      where: { tenantId, type: 'CASH_DRAWER_OVERDUE', referenceId: opened.id },
+      select: { recipientId: true, link: true },
+    });
+    expect(reminders.length).toBeGreaterThan(0);
+    expect(reminders[0].link).toBe(`/cash-drawers/${opened.id}`);
+    note(`morning reminder: ${reminders.length} notification(s) OK`);
+
+    // Lối ra duy nhất: END không bàn giao rồi chốt. Chốt muộn vẫn đối soát theo khoảng của phiên.
+    await http()
+      .post(`/cash-drawer-sessions/${opened.id}/shift-logs`)
+      .set(auth(holderToken))
+      .send({ type: 'END', amount: 500_000 })
+      .expect(200);
+    await http()
+      .post(`/cash-drawer-sessions/${opened.id}/finalize`)
+      .set(auth())
+      .send({ finalAmount: 500_000 })
+      .expect(200);
+    const closed = await prisma.cashDrawerSession.findUniqueOrThrow({
+      where: { id: opened.id },
+      select: { createdAt: true, closedAt: true },
+    });
+    const late = await http()
+      .get(`/cash-drawer-sessions/${opened.id}/reconciliation`)
+      .set(auth())
+      .expect(200);
+    expect(new Date(late.body.data.window.start).getTime()).toBe(
+      closed.createdAt.getTime(),
+    );
+    expect(new Date(late.body.data.window.end).getTime()).toBe(
+      closed.closedAt!.getTime(),
+    );
+    const after = await http()
+      .get('/cash-drawer-sessions/overdue')
+      .set(auth())
+      .expect(200);
+    expect(after.body.data).toEqual([]);
+    note('late close: END + finalize allowed, window = opened..closed OK');
   });
 
   it('refuses a staff account that belongs to no branch', async () => {

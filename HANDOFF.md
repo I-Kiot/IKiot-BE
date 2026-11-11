@@ -462,3 +462,25 @@ Quyết định của user: "giữ tiền treo, quyết định sau". Trước �
 - **Tài liệu**: `Ikiot_BE/CLAUDE.md` (sửa dòng cũ: Phase 1-9, hạn QR đơn quầy có `expires_at`, ba trường hợp webhook `success:false`, mục "Held money"), `api-contract-order-flow.md`, `docs/payment-flow.md` (3.7, mới 3.7b, 6, 7.3, 8.2, 9.3 bỏ các điểm đã sửa).
 - **Test**: e2e `order-return` (4 ca mới: không OTHER_INCOME khi Chưa hoàn, refund 0 giữ ngay, hoàn một phần rồi KEEP + bấm đôi + event + báo cáo, từ chối đơn chưa kết thúc), `sepay-ledger` (quy tắc "cần xử lý"). Gate: unit 619/619, e2e 473/473 (34 suite), FE tsc sạch.
 - **Chưa làm / lưu ý**: migration chưa chạy trên dev/prod (đã `migrate deploy` trên DB local). Chưa thêm bất biến vào `assertMoneyInvariants` (tiền treo là trạng thái hợp lệ; ghi đã có trigger + unique một phần bảo vệ).
+
+## 2026-11-10 – Két quên chốt: đối soát theo khoảng thời gian của phiên, cảnh báo và nhắc buổi sáng
+
+- **Đối soát theo khoảng thật của phiên** (`sessionWindow`: lúc mở → lúc chốt, hoặc tới hiện tại nếu chưa chốt), không theo ngày giao dịch nữa. Trước đây két quên chốt, chốt muộn hôm sau thì báo thừa đúng bằng tiền mặt hôm sau, còn hôm sau không có két nào. Cột `closed_at` dùng của migration `20261111090000_money_foundations` bên dev (cùng backfill từ `updated_at` cho phiên đã CLOSED, `finalize` ghi cột này); migration `20261110100000_cash_drawer_closed_at` của nhánh này đã bỏ khi rebase vì trùng cột. Báo cáo theo khoảng ngày cũng lọc `fund = DRAWER` như dev. Tiền thu trước lúc mở két hoặc sau lúc chốt không thuộc két nào (cố ý). Smoke e2e trước đây chờ một đơn bán sau khi chốt bị cộng vào két đã chốt; giờ kiểm điều ngược lại.
+- **Két quá hạn** = còn OPEN nhưng thuộc ngày giao dịch đã qua (`isOverdue`, một bản duy nhất). Response có `overdue`; `GET /cash-drawer-sessions/overdue` (quyền `read`/`read_own`, không lọc theo `read_own`, chỉ trả ngày, chi nhánh, người giữ). Két quá hạn không bàn giao được và chi nhánh không mở két mới được (`CASH_DRAWER_OVERDUE`, kèm `sessionId`). Vẫn cho START và END không bàn giao, vì đó là đường duy nhất để chốt.
+- **Không chặn bán hàng**, chỉ cảnh báo ở màn bán tại quầy. Chặn bán là quyết định của chủ shop, chưa có cài đặt.
+- **Cron 07:00** (`CashDrawerCronService`) nhắc quản lý chi nhánh (không có thì chủ shop) mỗi sáng tới khi két được chốt. Thêm `NotificationService.managersOfLocations` (bản gom nhiều địa điểm); `managersOfLocation` gọi qua nó.
+- FE: banner "Két ngày dd/MM chưa chốt" ở màn két và màn bán tại quầy, nút "Vào chốt két" cho người có `cash_drawers:finalize`; màn chi tiết két quá hạn ẩn ô bàn giao; mở két bị chặn thì toast có nút dẫn tới két cũ.
+
+**Đã kiểm chứng:** `tsc`, lint, build, `check-permissions`, unit 521/521, `test:e2e` 376/376 chạy tuần tự (`--runInBand`) trên `ikiot_e2e`. FE: `tsc` sạch, không thêm lỗi lint.
+**Chưa kiểm chứng:** chưa bấm thử trên dev; cron chỉ được gọi trực tiếp trong e2e, chưa chờ nó tự chạy lúc 07:00. Chạy `test:e2e` song song (mặc định) thì smoke lỗi ngẫu nhiên ở các bước không liên quan tới két (các file e2e dùng chung database) - chạy tuần tự thì qua hết.
+**Prod:** không có migration riêng (cột dùng của `money_foundations`).
+
+## 2026-11-11 – Seed shop thời trang, tên nhân viên test giống người thật
+
+- **`ikiot_db` (local) đã bị truncate toàn bộ** (trừ `_prisma_migrations`) theo yêu cầu, rồi `deploy:migrate` 3 migration còn thiếu (`warehouse_can_sell`, `permission_catalog_missing_pairs`, `cash_drawer_closed_at`) và seed lại: `prisma db seed` → `seed-account-role.ts` → `seed-fashion.ts`.
+- **`seed-account-role.ts`**: tên tài khoản là tên người thật kèm vai trò ở cuối `firstName` (app hiển thị `lastName firstName`), vd. "Nguyễn Hoàng Hải (Shipper)", chủ shop "Nguyễn Thị Mai (Chủ shop)". SĐT, mật khẩu, role, nơi phân công không đổi. Bảng U0–U9 trong `docs/tai-khoan-test-hanh-trinh.md` đã cập nhật theo.
+- **`seed-fashion.ts`** (mới, thay cho seed nội thất): đổi tên shop thành "Thời trang Demo"; 8 danh mục, 3 thương hiệu (Adidas, Nike, IKI Studio), 5 khách, 16 sản phẩm / 87 SKU (màu × size). Hàng Adidas/Nike nhập từ 2 nhà phân phối (Supplier GOODS, phiếu nhập SUPPLIER); hàng IKI Studio `isManufacturable`, tồn đầu qua YCSX000001/000002 COMPLETED + phiếu nhập WORKSHOP từ "Xưởng may Phúc Thịnh"; YCSX000003 SENT chưa nhận để thử bước nhận hàng xưởng. Nhập qua `InventoryService.openLot` nên Σ lot = stock (đã kiểm: 856 = 856).
+- `seed-c5-delivery.ts` / `seed-c6-pack.ts` / `seed-furniture-test.ts` dựa vào SKU nội thất - không chạy chung với seed thời trang.
+
+**Đã kiểm chứng:** `tsc` sạch (gồm file seed), chạy lại `seed-fashion.ts` không tạo trùng.
+**Chưa kiểm chứng:** chưa mở thử trên dashboard; kịch bản K1–K11 trong tài liệu test viết cho SKU nội thất nên không áp dụng trên dữ liệu này.

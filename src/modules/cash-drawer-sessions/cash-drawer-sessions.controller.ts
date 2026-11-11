@@ -43,6 +43,13 @@ export class CashDrawerSessionController {
     return this.service.current(user, query.branchId);
   }
 
+  /** Két còn mở từ ngày giao dịch trước, để màn két và màn bán tại quầy cảnh báo. Cùng quyền đọc với các route khác, nhưng không lọc theo `read_own`: ai ở chi nhánh cũng cần biết. Khai báo trên `:id`. */
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get('overdue')
+  overdue(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
+    return this.service.overdue(user, query.branchId);
+  }
+
   /** Ai nhận được két khi mở két đầu ngày - chỉ tên. Cùng quyền với `POST` (mở két), để màn mở két không phải cần `users:read`. Khai báo trên `:id` như `current`. */
   @Permissions('cash_drawers', 'open')
   @Get('eligible-staff')

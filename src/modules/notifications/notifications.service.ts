@@ -130,28 +130,95 @@ export class NotificationService {
     /** Id của Location, cũng là id của Branch hoặc Warehouse tương ứng. */
     locationId: string | null;
   }): Promise<string[]> {
+    if (!args.locationId) return this.tenantOwners(args.tenantId);
+    const byLocation = await this.managersOfLocations([
+      { tenantId: args.tenantId, locationId: args.locationId },
+    ]);
+    return byLocation.get(args.locationId) ?? [];
+  }
+
+  /**
+   * `managersOfLocation` cho nhiều địa điểm cùng lúc, theo cùng một quy tắc (manager còn hoạt động của địa điểm, không
+   * có thì chủ tenant), trong ba truy vấn bất kể bao nhiêu địa điểm - cho cron quét nhiều tenant. Bản đơn lẻ gọi qua
+   * đây, nên quy tắc chỉ có một chỗ. Khoá của map là `locationId`; lỗi tra cứu trả map rỗng, không throw.
+   */
+  async managersOfLocations(
+    pairs: { tenantId: string; locationId: string }[],
+  ): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    if (pairs.length === 0) return result;
     try {
-      const location = args.locationId
-        ? await this.prisma.location.findFirst({
-            where: { id: args.locationId, tenantId: args.tenantId },
-            select: { managerId: true },
-          })
-        : null;
-
-      if (!location?.managerId) return this.tenantOwners(args.tenantId);
-
-      // Manager đã bị khóa không được là người nhận duy nhất.
-      const manager = await this.prisma.user.findFirst({
-        where: { id: location.managerId, status: UserStatus.ACTIVE },
-        select: { id: true },
+      const locations = await this.prisma.location.findMany({
+        where: { id: { in: [...new Set(pairs.map((p) => p.locationId))] } },
+        select: { id: true, tenantId: true, managerId: true },
       });
-      return manager ? [manager.id] : this.tenantOwners(args.tenantId);
+      const locationById = new Map(locations.map((l) => [l.id, l]));
+      // Địa điểm phải thuộc đúng tenant được hỏi, như `findFirst({ id, tenantId })` của bản cũ.
+      const managerIdOf = (pair: { tenantId: string; locationId: string }) => {
+        const location = locationById.get(pair.locationId);
+        return location?.tenantId === pair.tenantId ? location.managerId : null;
+      };
+
+      const managerIds = [
+        ...new Set(pairs.map(managerIdOf).filter((id): id is string => !!id)),
+      ];
+      // Manager đã bị khóa không được là người nhận duy nhất.
+      const activeManagers = new Set(
+        managerIds.length === 0
+          ? []
+          : (
+              await this.prisma.user.findMany({
+                where: { id: { in: managerIds }, status: UserStatus.ACTIVE },
+                select: { id: true },
+              })
+            ).map((u) => u.id),
+      );
+
+      const needOwners = [
+        ...new Set(
+          pairs
+            .filter((p) => {
+              const managerId = managerIdOf(p);
+              return !managerId || !activeManagers.has(managerId);
+            })
+            .map((p) => p.tenantId),
+        ),
+      ];
+      const ownersByTenant = new Map<string, string[]>();
+      if (needOwners.length > 0) {
+        const owners = await this.prisma.user.findMany({
+          where: {
+            tenantId: { in: needOwners },
+            systemRole: SystemRole.TENANT_OWNER,
+            status: UserStatus.ACTIVE,
+          },
+          select: { id: true, tenantId: true },
+        });
+        for (const owner of owners) {
+          if (!owner.tenantId) continue;
+          ownersByTenant.set(owner.tenantId, [
+            ...(ownersByTenant.get(owner.tenantId) ?? []),
+            owner.id,
+          ]);
+        }
+      }
+
+      for (const pair of pairs) {
+        const managerId = managerIdOf(pair);
+        result.set(
+          pair.locationId,
+          managerId && activeManagers.has(managerId)
+            ? [managerId]
+            : (ownersByTenant.get(pair.tenantId) ?? []),
+        );
+      }
+      return result;
     } catch (error) {
       this.logger.error(
         'managersOfLocation lookup failed',
         error instanceof Error ? error.stack : error,
       );
-      return [];
+      return new Map();
     }
   }
 
