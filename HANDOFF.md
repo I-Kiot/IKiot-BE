@@ -484,3 +484,21 @@ Quyết định của user: "giữ tiền treo, quyết định sau". Trước �
 
 **Đã kiểm chứng:** `tsc` sạch (gồm file seed), chạy lại `seed-fashion.ts` không tạo trùng.
 **Chưa kiểm chứng:** chưa mở thử trên dashboard; kịch bản K1–K11 trong tài liệu test viết cho SKU nội thất nên không áp dụng trên dữ liệu này.
+
+## 2026-11-11 – Shipper đã xác nhận lấy hàng thì không đổi người giao hàng nữa
+
+- **BE**: `DRIVER_CHANGEABLE_STATUSES` (`common/constants/shipment-status.ts`) chỉ còn `CREATED`, bỏ `PICKED_UP`. `PATCH /shipments/:id/driver` sau khi shipper bấm "Đã lấy hàng" trả 409 `SHIPMENT_STATUS_INVALID` (cả câu ghi có điều kiện trong transaction cũng dùng hằng này). Lý do: hàng (và tiền cần thu) đã ở tay shipper, event `PICKED_UP` ghi tên người đó; muốn đổi thì huỷ lần giao và tạo lần mới.
+- **FE**: ô "Người giao hàng" ở danh sách đơn (`orders-person-cells.tsx`) chỉ cho chọn khi shipment `CREATED`; nút "Đổi shipper" ở trang giao hàng (`shipment-detail-sheet.tsx`) chỉ hiện khi `CREATED` (trước đó hiện cả `PICKED_UP`).
+- **Tài liệu**: `docs/api-contract-order-flow.md` (dòng `PATCH /shipments/:id/driver`), kịch bản U3 trong `docs/tai-khoan-test-hanh-trinh.md`.
+- **Test**: e2e `order-ship` thêm ca "refuses once the driver has confirmed the pick-up" (đi qua `pickUp` thật, kiểm driverId không đổi). 56/56 trên `ikiot_e2e`. BE `tsc` sạch, FE `tsc` sạch.
+
+**Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+
+## 2026-11-11 – "Đơn giao của tôi": bộ lọc cho tab Đang giao
+
+- **Chỉ FE**, không đổi API. Tab "Đang giao" (`shipper/components/current-deliveries.tsx`, tách khỏi `page.tsx`) có cùng bộ lọc với "Lịch sử giao": thẻ đếm theo trạng thái (bấm để lọc) + thẻ "Còn phải thu", khoảng ngày + nút nhanh (Hôm nay / Ngày mai / 7 ngày tới / Mọi ngày), ô chọn trạng thái, ô tìm (mã đơn, mã vận đơn, tên, SĐT, địa chỉ; không phân biệt dấu).
+- Lọc trên trình duyệt vì `GET /shipments/mine` đã trả toàn bộ lần giao còn mở, không phân trang. Khác lịch sử: ngày lọc theo **ngày hẹn giao** (đơn chưa giao thì chưa có ngày giao), mặc định không giới hạn ngày; khi đặt khoảng ngày thì đơn chưa hẹn ngày bị ẩn (có dòng chú thích).
+- `addDaysIso` mới trong `lib/date-input.ts`; tab lịch sử dùng nó thay cho hàm `daysAgoIso` tự viết.
+
+**Đã kiểm chứng:** FE `tsc`, eslint thư mục `shipper` sạch. **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+- (bổ sung) Tab "Lịch sử giao" dùng thanh phân trang chung `DataTablePagination` (luôn hiện ở chân trang, chọn 10/20/30/50 dòng mỗi trang, "Hiển thị a–b / N đơn"), thay cho cặp nút Trước/Sau chỉ hiện khi có hơn một trang. Thanh chỉ hiện khi đang ở tab lịch sử (Radix Tabs bỏ mount tab ẩn).
