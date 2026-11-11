@@ -1,5 +1,9 @@
 import { ConflictException } from '@nestjs/common';
-import { OrderStatus } from '../../common/constants/order-status';
+import {
+  FulfillmentType,
+  OrderPaymentStatus,
+  OrderStatus,
+} from '../../common/constants/order-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
 // Quy tắc chuyển trạng thái duy nhất của hành trình (contract §2, A-1). Cuộc họp 2026-10-02 bỏ thiết kế giữ hàng nên
@@ -46,6 +50,47 @@ export const ORDER_JOURNEY_TRANSITIONS: Readonly<
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.RETURNED]: [],
 };
+
+/**
+ * Dữ liệu ghi vào lệnh chiếm đơn COMPLETED: status và `completedAt` đi cùng nhau (CHECK `orders_completed_at_required`), nên mọi chỗ chốt đơn spread hàm này thay vì tự ghi `status: COMPLETED`.
+ * `now` là một lần đọc đồng hồ của người gọi, để cùng transaction các dòng (hoá đơn, sự kiện) dùng đúng một mốc.
+ */
+export function completedData(now: Date): {
+  status: typeof OrderStatus.COMPLETED;
+  completedAt: Date;
+} {
+  return { status: OrderStatus.COMPLETED, completedAt: now };
+}
+
+/**
+ * Bước chuyển trạng thái đơn do MỘT khoản tiền vừa vào (QR về): hàm thuần dùng chung cho đơn quầy và thu khi giao, để hai đường không lệch nhau.
+ * - Đơn quầy chờ QR (PENDING) đã trả đủ → COMPLETED.
+ * - Đơn giao tận nơi RECEIVED đã trả đủ và không còn tiền mặt nào shipper đang giữ → COMPLETED (còn tiền chờ nộp thì chủ xác nhận nộp mới chốt).
+ * - Đơn khách tới lấy (PACKED) → không đổi: nhân viên bấm giao hàng sau (`OrderPickupService.handOver`).
+ * - Trả thiếu (chưa PAID) hay trạng thái khác → không đổi.
+ * Trả `null` khi không đổi.
+ */
+export function nextStatusAfterPayment(
+  order: { status: string; fulfillmentType: string },
+  derived: { status: string },
+  pendingRemittance: boolean,
+): OrderStatus | null {
+  if (derived.status !== OrderPaymentStatus.PAID) return null;
+  if (
+    order.fulfillmentType === FulfillmentType.TAKEAWAY &&
+    order.status === OrderStatus.PENDING
+  ) {
+    return OrderStatus.COMPLETED;
+  }
+  if (
+    order.fulfillmentType === FulfillmentType.HOME_DELIVERY &&
+    order.status === OrderStatus.RECEIVED &&
+    !pendingRemittance
+  ) {
+    return OrderStatus.COMPLETED;
+  }
+  return null;
+}
 
 export function canTransition(from: string, to: OrderStatus): boolean {
   return ORDER_JOURNEY_TRANSITIONS[from]?.includes(to) ?? false;

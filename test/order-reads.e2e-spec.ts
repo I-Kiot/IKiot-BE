@@ -96,6 +96,9 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
         userId: ownerId,
         assigneeId,
         status: opts.status,
+        // CHECK orders_completed_at_required: mọi đơn COMPLETED có completedAt.
+        completedAt:
+          opts.status === OrderStatus.COMPLETED ? new Date() : undefined,
         priority: opts.priority ?? OrderPriority.NORMAL,
         fulfillmentType: opts.fulfillmentType ?? FulfillmentType.HOME_DELIVERY,
         grandTotal: opts.grandTotal ?? 1_000_000,
@@ -288,6 +291,7 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
   });
 
   afterAll(async () => {
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.orderItemCustomization.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
@@ -587,6 +591,84 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
     it('refuses a staff account another branch’s order', async () => {
       await expect(
         reads.findOne(staffAtA, tenantId, ids['OTHER-BRANCH']),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_BRANCH_DENIED },
+      });
+    });
+  });
+
+  describe('action trail (GET /orders/:id/events)', () => {
+    it('lists the order’s events oldest first, with changes and metadata narrowed to objects', async () => {
+      const orderId = ids.URGENT;
+      await prisma.orderEvent.create({
+        data: {
+          tenantId,
+          orderId,
+          type: 'EDITED',
+          source: 'USER',
+          changes: { note: { from: null, to: 'x' } },
+        },
+      });
+      await prisma.orderEvent.create({
+        data: {
+          tenantId,
+          orderId,
+          type: 'PACKED',
+          fromStatus: 'CONFIRMED',
+          toStatus: 'PACKED',
+          source: 'WEBHOOK',
+          metadata: { packageCount: 2 },
+        },
+      });
+      // Giá trị Json không phải object không được lọt ra màn hình.
+      await prisma.orderEvent.create({
+        data: {
+          tenantId,
+          orderId,
+          type: 'STATUS_CHANGED',
+          source: 'SYSTEM',
+          changes: ['lạ'],
+        },
+      });
+
+      const events = await reads.events(owner, tenantId, orderId);
+      expect(events.map((e) => e.type)).toEqual([
+        'EDITED',
+        'PACKED',
+        'STATUS_CHANGED',
+      ]);
+      expect(events[0]).toMatchObject({
+        source: 'USER',
+        actorId: null,
+        metadata: null,
+        changes: { note: { from: null, to: 'x' } },
+      });
+      expect(events[1]).toMatchObject({
+        source: 'WEBHOOK',
+        fromStatus: 'CONFIRMED',
+        toStatus: 'PACKED',
+        metadata: { packageCount: 2 },
+        changes: null,
+      });
+      expect(events[2].changes).toBeNull();
+      expect(events[0].occurredAt).toBeInstanceOf(Date);
+    });
+
+    it('does not find another tenant’s order', async () => {
+      const otherTenantUser = {
+        ...owner,
+        tenantId: randomUUID(),
+      } as unknown as AuthUser;
+      await expect(
+        reads.events(otherTenantUser, otherTenantUser.tenantId!, ids.URGENT),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_NOT_FOUND },
+      });
+    });
+
+    it('refuses a staff account another branch’s order, like the detail', async () => {
+      await expect(
+        reads.events(staffAtA, tenantId, ids['OTHER-BRANCH']),
       ).rejects.toMatchObject({
         response: { code: ErrorCode.ORDER_BRANCH_DENIED },
       });

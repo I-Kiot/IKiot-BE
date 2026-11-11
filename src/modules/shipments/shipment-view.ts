@@ -6,9 +6,11 @@ import {
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import { withNestedProfile } from '../../common/utils/user-profile';
-import { buildSepayQrUrl } from '../orders/tenant-banking';
+import { effectiveQrStatus, sepayQrView } from '../orders/sepay-qr';
 import { businessDayRange } from '../cash-drawer-sessions/business-date';
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
+import { type MoneyLike } from '../../common/utils/money';
+import { derivePaymentStatus, paymentRowsOf } from '../orders/payment-status';
 
 // Hình dạng `Shipment` của contract §4, dùng chung cho ShipmentService và ShipmentDeliveryService
 // để hai nơi không thể trả về hai hình dạng khác nhau.
@@ -49,39 +51,27 @@ type ShipmentSummaryRow = Prisma.ShipmentGetPayload<{
   include: typeof SHIPMENT_SUMMARY_INCLUDE;
 }>;
 
-/** Số shipper thu khi giao = tổng đơn − tiền cọc (schema: tính chứ không lưu). Dùng để đối chiếu số tiền shipper nhập lúc giao, nên không trừ khoản thu về sau. */
-export function amountDueOf(order: {
-  grandTotal: unknown;
-  depositAmount: unknown;
-}): number {
-  return Number(order.grandTotal) - Number(order.depositAmount ?? 0);
-}
-
 /**
- * Số còn phải thu của đơn tại thời điểm xem: tổng đơn trừ tiền cọc và mọi khoản đã thu (kể cả lần shipper vừa thu), cộng lại khoản đã hoàn. Khoản đang chờ chưa tính. Không âm.
- * Đơn cũ có `depositAmount` nhưng không có dòng Payment cọc vẫn tính cọc theo `depositAmount`.
+ * Số còn phải thu của đơn tại thời điểm xem: lớp mỏng trên `derivePaymentStatus(...).due` (một quy tắc cho mọi nơi tính số còn thu): tổng đơn trừ mọi khoản đã thu (cọc, thu khi giao, trả đủ), trừ tiền đã trả lại khách. Khoản đang chờ chưa tính; không âm.
+ * Đơn cũ có `depositAmount` nhưng không có dòng Payment cọc vẫn tính cọc theo `depositAmount` (dữ liệu trước khi cọc có Payment).
+ * Trước đây số shipper thu lúc giao là `grandTotal − depositAmount` (không trừ khoản đã thu thật), nên một khoản QR về trước khi giao làm shipper thu lần hai.
  */
 export function amountStillDueOf(order: {
   grandTotal: unknown;
   depositAmount: unknown;
   payments: readonly { kind: string; status: string; amount: unknown }[];
 }): number {
-  const paid = order.payments.filter(
-    (p) => p.status === PaymentRecordStatus.PAID,
-  );
-  const sum = (kinds: readonly string[]) =>
-    paid
-      .filter((p) => kinds.includes(p.kind))
-      .reduce((total, p) => total + Number(p.amount), 0);
-  const deposit = Math.max(
-    Number(order.depositAmount ?? 0),
-    sum([PaymentKind.DEPOSIT]),
-  );
-  const received =
-    deposit +
-    sum([PaymentKind.BALANCE, PaymentKind.FULL]) -
-    sum([PaymentKind.REFUND]);
-  return Math.max(0, Math.round(Number(order.grandTotal) - received));
+  return derivePaymentStatus(
+    order.grandTotal as MoneyLike,
+    paymentRowsOf({
+      depositAmount: order.depositAmount as MoneyLike,
+      payments: order.payments as {
+        kind: string;
+        status: string;
+        amount: MoneyLike;
+      }[],
+    }),
+  ).due;
 }
 
 export function toSummary(row: ShipmentSummaryRow) {
@@ -100,12 +90,16 @@ export function toSummary(row: ShipmentSummaryRow) {
   };
 }
 
-/** Khoản thu QR lúc giao của đơn, để shipper mở lại mã QR. `qrUrl` chỉ có khi khoản còn chờ tiền về. */
+/**
+ * Khoản thu QR lúc giao của đơn, để shipper mở lại mã QR. `qrUrl` chỉ có khi khoản còn chờ tiền về VÀ chưa hết hạn: hết hạn thì `qrUrl` null, `status` là EXPIRED và `expired` true (kể cả khi cron chưa kịp đổi trạng thái).
+ */
 export interface ShipmentQrPayment {
   reference: string;
   amount: number;
-  status: string;
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
   qrUrl: string | null;
+  expiresAt: string;
+  expired: boolean;
 }
 
 /**
@@ -130,32 +124,50 @@ export async function loadShipmentDetail(
       method: PaymentMethod.SEPAY,
     },
     orderBy: { createdAt: 'desc' },
-    select: { paymentReference: true, amount: true, status: true },
+    select: {
+      paymentReference: true,
+      amount: true,
+      status: true,
+      expiresAt: true,
+      createdAt: true,
+    },
   });
 
   let payment: ShipmentQrPayment | null = null;
   if (qrPayment?.paymentReference) {
-    let qrUrl: string | null = null;
-    if (qrPayment.status === PaymentRecordStatus.PENDING) {
-      const banking = await prisma.tenant.findUniqueOrThrow({
-        where: { id: tenantId },
-        select: {
-          bankingBankName: true,
-          bankingAccountNumber: true,
-          bankingAccountName: true,
-        },
-      });
-      qrUrl = buildSepayQrUrl(
-        banking,
-        Number(qrPayment.amount),
-        qrPayment.paymentReference,
-      );
-    }
+    const now = new Date();
+    // Hiển thị PENDING đã quá hạn là EXPIRED, không chờ cron.
+    const status = effectiveQrStatus(qrPayment, now);
+    // Chỉ đọc tài khoản ngân hàng khi còn dựng được mã (khoản còn chờ và chưa hết hạn).
+    const banking =
+      status === PaymentRecordStatus.PENDING
+        ? await prisma.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: {
+              bankingBankName: true,
+              bankingAccountNumber: true,
+              bankingAccountName: true,
+            },
+          })
+        : null;
+    const view = sepayQrView(
+      banking,
+      {
+        amount: Number(qrPayment.amount),
+        reference: qrPayment.paymentReference,
+        expiresAt: qrPayment.expiresAt,
+        createdAt: qrPayment.createdAt,
+      },
+      'read',
+      now,
+    );
     payment = {
       reference: qrPayment.paymentReference,
       amount: Number(qrPayment.amount),
-      status: qrPayment.status,
-      qrUrl,
+      status: status as ShipmentQrPayment['status'],
+      qrUrl: view.qrUrl,
+      expiresAt: view.expiresAt.toISOString(),
+      expired: view.expired,
     };
   }
 

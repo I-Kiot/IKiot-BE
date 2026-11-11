@@ -4,10 +4,18 @@ import { SubscriptionBillingService } from './subscription-billing.service';
 describe('SePay subscription webhook', () => {
   const PLATFORM_ACCOUNT = '0123456789';
   const findInvoice = jest.fn().mockResolvedValue(null);
+  const ledger = jest.fn().mockResolvedValue({ count: 1 });
+  const tx = {
+    subscriptionInvoice: { findUnique: findInvoice },
+    platformSepayTransaction: { createMany: ledger },
+  };
+  const prisma = {
+    $transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
+  };
   const billing = new SubscriptionBillingService(
-    { subscriptionInvoice: { findFirst: findInvoice } } as never,
+    prisma as never,
     new SepaySubscriptionService(),
-    {} as never,
+    { notifySystem: jest.fn() } as never,
     {} as never,
   );
   const call = (accounts: { accountNumber?: string; subAccount?: string }) =>
@@ -20,6 +28,8 @@ describe('SePay subscription webhook', () => {
 
   beforeEach(() => {
     findInvoice.mockClear();
+    ledger.mockClear();
+    prisma.$transaction.mockClear();
     process.env.SEPAY_WEBHOOK_API_KEY = 'key';
     process.env.SEPAY_ACCOUNT_NUMBER = PLATFORM_ACCOUNT;
   });

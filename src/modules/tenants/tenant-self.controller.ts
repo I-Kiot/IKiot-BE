@@ -1,6 +1,15 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TenantSelfService } from './tenant-self.service';
+import { QueryBankingHistoryDto } from './dto/query-banking-history.dto';
 import {
   BankingDto,
   SetSepayKeyDto,
@@ -28,23 +37,38 @@ export class TenantSelfController {
   @Permissions('tenants', 'update')
   @Put('me')
   updateMine(@CurrentUser() user: AuthUser, @Body() dto: UpdateMyTenantDto) {
-    return this.service.updateMine(requireTenantId(user), dto);
+    return this.service.updateMine(requireTenantId(user), user.userId, dto);
   }
 
   /** Tài khoản SePay nhận tiền. Thiếu nó thì `POST /orders` từ chối đơn SEPAY. */
   @Permissions('tenants', 'update')
   @Put('banking')
   updateBanking(@CurrentUser() user: AuthUser, @Body() dto: BankingDto) {
-    return this.service.updateBanking(requireTenantId(user), dto);
+    return this.service.updateBanking(requireTenantId(user), user.userId, dto);
+  }
+
+  /** Lịch sử đổi tài khoản nhận tiền, key và liên kết SePay của shop. Cùng quyền với sửa thông tin nhận tiền (`tenants:update`). */
+  @Permissions('tenants', 'update')
+  @Get('banking/history')
+  bankingHistory(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryBankingHistoryDto,
+  ) {
+    return this.service.bankingHistory(requireTenantId(user), query);
   }
 
   /** Chỉ admin nền tảng. Xem `TenantSelfService.setSepayKey` vì sao guard này là sửa lỗi chứ không phải port. Tenant id nằm trên path vì operator đang thao tác trên shop của người khác. */
   @UseGuards(AdminOnlyGuard)
   @Put(':tenantId/sepay-key')
   setSepayKey(
+    @CurrentUser() user: AuthUser,
     @Param('tenantId') tenantId: string,
     @Body() dto: SetSepayKeyDto,
   ) {
-    return this.service.setSepayKey(tenantId, dto.sepayWebhookApiKey);
+    return this.service.setSepayKey(
+      tenantId,
+      user.userId,
+      dto.sepayWebhookApiKey,
+    );
   }
 }

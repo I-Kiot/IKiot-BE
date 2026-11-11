@@ -8,11 +8,15 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
-import { PAYMENT_METHODS } from '../../../common/constants/payment-method';
+import {
+  DEPOSIT_METHODS,
+  PAYMENT_METHODS,
+} from '../../../common/constants/payment-method';
 import {
   OFFLINE_PAYMENT_METHODS,
   ORDER_STATUSES,
@@ -134,6 +138,28 @@ export class UpdateOrderStatusDto {
     message: `status phải là ${SETTABLE_ORDER_STATUSES.join(', ')}`,
   })
   status: string;
+}
+
+/** Huỷ đơn quầy đang chờ QR (`POST /orders/pos/:id/cancel`). Không có lý do thì dùng câu mặc định. */
+export class CancelPosSaleDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+
+  /** Phần tiền đã trả (khách chuyển thiếu rồi không trả nốt) hoàn lại cho khách, 0 = shop giữ hết. Bắt buộc khi đơn đang giữ tiền; đơn chưa có đồng nào thì không gửi. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0, { message: 'Số tiền hoàn không được âm' })
+  refundAmount?: number;
+
+  /** Hình thức hoàn tiền. Bỏ trống = theo cách đã thu. */
+  @IsOptional()
+  @IsIn(DEPOSIT_METHODS, {
+    message: `refundMethod phải là ${DEPOSIT_METHODS.join(', ')}`,
+  })
+  refundMethod?: string;
 }
 
 /** Chốt đơn SePay mà khách đã trả bằng cách khác. */

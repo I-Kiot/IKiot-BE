@@ -253,6 +253,7 @@ describe('POST /orders – ManualOrderService.create', () => {
   });
 
   afterAll(async () => {
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({

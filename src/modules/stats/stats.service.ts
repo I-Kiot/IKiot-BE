@@ -14,11 +14,14 @@ import { LocationStatus } from '../../common/constants/location-status';
 import { locationScope, orderScope } from './stats-scope';
 import {
   averageOrderValue,
+  businessDatesOf,
   changePct,
   comparisonWindows,
   exceedsHourlyRange,
+  previousBusinessDates,
   previousPeriod,
   stockAgingLevel,
+  type BusinessDateRange,
   type DateRange,
 } from './stats-math';
 import {
@@ -43,6 +46,7 @@ import type {
   CashflowQueryDto,
   InventoryStatsQueryDto,
   OrderPipelineQueryDto,
+  RevenueByStaffQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
   SlowProductsQueryDto,
@@ -62,15 +66,17 @@ import {
 /** `COUNT(*)` là `bigint` trong Postgres; mọi số đếm dưới đây được ép `::int` ngay trong SQL. */
 interface SummaryRow {
   revenue: Prisma.Decimal;
-  shippingFee: Prisma.Decimal;
+  grossSales: Prisma.Decimal;
+  returns: Prisma.Decimal;
+  goodsRevenue: Prisma.Decimal;
+  shippingRevenue: Prisma.Decimal;
+  otherIncome: Prisma.Decimal;
+  costOfGoods: Prisma.Decimal;
+  shippingCost: Prisma.Decimal;
   channelFee: Prisma.Decimal;
   orderCount: number;
+  returnCount: number;
   customerCount: number;
-}
-
-interface CostRow {
-  costOfGoods: Prisma.Decimal;
-  linesMissingCost: number;
 }
 
 /** Một dòng tồn trong danh sách cảnh báo. `shelf` là tồn trên kệ (stock − locked_stock), con số bán được. */
@@ -91,6 +97,7 @@ interface StockAlertRow {
 interface BucketRow {
   bucket: string;
   revenue: Prisma.Decimal;
+  returns: Prisma.Decimal;
   orderCount: number;
 }
 
@@ -110,15 +117,34 @@ function fullName(
 export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** KPI chính kèm % thay đổi so với kỳ trước. Mọi khách vãng lai trỏ vào một dòng `KH_VANGLAI` nên `customerCount` tính cả nhóm đó là một khách - bản cũ cũng cộng đúng +1 nên số trên dashboard không đổi sau khi port. */
+  /**
+   * Điều kiện chung của mọi truy vấn trên sổ doanh thu: tenant, khoảng ngày địa phương (`business_date`) và chi nhánh. Doanh thu đọc từ sổ `sales_journal_entries`
+   * (xem `orders/sales-journal.ts`), không tính lại từ `orders`: đơn còn đổi sau khi hoàn thành (trả hàng, hoá đơn điều chỉnh) nên tính lại sẽ làm kỳ đã chốt đổi số.
+   */
+  private journalFilter(
+    tenantId: string | null,
+    branchId: string | undefined,
+    { from, to }: BusinessDateRange,
+    alias = 'e',
+  ) {
+    const a = Prisma.raw(alias);
+    return Prisma.sql`${a}.tenant_id = ${tenantId}
+      AND ${a}.business_date >= ${from}::date
+      AND ${a}.business_date <= ${to}::date
+      ${branchId ? Prisma.sql`AND ${a}.branch_id = ${branchId}` : Prisma.empty}`;
+  }
+
+  /** KPI chính kèm % thay đổi so với kỳ trước. Từ 2026-11-11 đọc từ sổ doanh thu (xem `journalFilter`); `customerCount` vẫn tính nhóm khách vãng lai là một khách. */
   async getOverview(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
     const previous = previousPeriod(range);
+    const dates = businessDatesOf(range);
 
-    const [current, before] = await Promise.all([
-      this.summarize(user, scope, range),
-      this.summarize(user, scope, previous),
+    const [current, before, gap] = await Promise.all([
+      this.summarize(user, scope, dates),
+      this.summarize(user, scope, previousBusinessDates(dates)),
+      this.journalGap(user, scope, dates),
     ]);
 
     return {
@@ -130,71 +156,105 @@ export class StatsService {
         aov: changePct(current.aov, before.aov),
         grossProfit: changePct(current.grossProfit, before.grossProfit),
       },
+      journalGap: gap,
       period: range,
       previousPeriod: previous,
+    };
+  }
+
+  /** Đơn COMPLETED trong kỳ mà sổ không có bút toán SALE (hoàn thành trước ngày chạy migration sổ, D9: không backfill). Báo cho người đọc biết số thiếu thay vì im lặng. */
+  private async journalGap(
+    user: AuthUser,
+    scope: { branchId?: string },
+    { from, to }: BusinessDateRange,
+  ) {
+    const rows = await this.prisma.$queryRaw<
+      { missing: number; firstJournalAt: Date | null }[]
+    >`
+      SELECT (SELECT COUNT(*)::int FROM orders o
+               WHERE o.tenant_id = ${user.tenantId}
+                 AND o.status = ${REVENUE_STATUS}
+                 AND (o.completed_at AT TIME ZONE ${TZ_NAME})::date >= ${from}::date
+                 AND (o.completed_at AT TIME ZONE ${TZ_NAME})::date <= ${to}::date
+                 ${scope.branchId ? Prisma.sql`AND o.branch_id = ${scope.branchId}` : Prisma.empty}
+                 AND NOT EXISTS (SELECT 1 FROM sales_journal_entries s
+                                  WHERE s.order_id = o.id AND s.entry_type = 'SALE')) AS "missing",
+             (SELECT MIN(posted_at) FROM sales_journal_entries
+               WHERE tenant_id = ${user.tenantId}) AS "firstJournalAt"
+    `;
+    return {
+      ordersWithoutJournal: rows[0]?.missing ?? 0,
+      firstJournalAt: rows[0]?.firstJournalAt ?? null,
     };
   }
 
   private async summarize(
     user: AuthUser,
     scope: { branchId?: string },
-    { fromDate, toDate }: DateRange,
+    dates: BusinessDateRange,
   ) {
-    const branchFilter = scope.branchId
-      ? Prisma.sql`AND o.branch_id = ${scope.branchId}`
-      : Prisma.empty;
+    const filter = this.journalFilter(user.tenantId, scope.branchId, dates);
 
-    const [rows, costRows] = await Promise.all([
+    const [rows, missing] = await Promise.all([
       this.prisma.$queryRaw<SummaryRow[]>`
-        SELECT COALESCE(SUM(o.grand_total), 0)  AS "revenue",
-               COALESCE(SUM(o.shipping_fee), 0) AS "shippingFee",
-               COALESCE(SUM(o.channel_fee), 0)  AS "channelFee",
-               COUNT(*)::int                    AS "orderCount",
-               COUNT(DISTINCT o.customer_id)::int AS "customerCount"
-        FROM orders o
-        WHERE o.tenant_id = ${user.tenantId}
-          AND o.status = ${REVENUE_STATUS}
-          AND o.created_at >= ${fromDate}
-          AND o.created_at <= ${toDate}
-          ${branchFilter}
+        SELECT COALESCE(SUM(e.total_amount), 0) AS "revenue",
+               COALESCE(SUM(e.total_amount) FILTER (WHERE e.entry_type = 'SALE'), 0) AS "grossSales",
+               COALESCE(SUM(e.total_amount) FILTER (WHERE e.entry_type = 'RETURN'), 0) AS "returns",
+               COALESCE(SUM(e.goods_amount), 0) AS "goodsRevenue",
+               COALESCE(SUM(e.shipping_amount), 0) AS "shippingRevenue",
+               COALESCE(SUM(e.other_income_amount), 0) AS "otherIncome",
+               COALESCE(SUM(e.cogs_amount), 0) AS "costOfGoods",
+               COALESCE(SUM(e.shipping_cost), 0) AS "shippingCost",
+               COALESCE(SUM(e.channel_fee), 0) AS "channelFee",
+               (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount",
+               (COUNT(*) FILTER (WHERE e.entry_type = 'RETURN'))::int AS "returnCount",
+               (COUNT(DISTINCT e.customer_id) FILTER (WHERE e.entry_type = 'SALE'))::int AS "customerCount"
+        FROM sales_journal_entries e
+        WHERE ${filter}
       `,
-      // Giá vốn chỉ nằm trên dòng giữ hàng (PRODUCT, món trong combo): dòng COMBO cha và SERVICE không trừ kho nên không có giá vốn, và không bị tính là "thiếu".
-      this.prisma.$queryRaw<CostRow[]>`
-        SELECT COALESCE(SUM(oi.unit_cost_price * oi.quantity), 0) AS "costOfGoods",
-               COUNT(*) FILTER (WHERE oi.unit_cost_price IS NULL)::int AS "linesMissingCost"
-        FROM order_items oi
-        JOIN orders o ON o.id = oi.order_id
-        WHERE o.tenant_id = ${user.tenantId}
-          AND o.status = ${REVENUE_STATUS}
-          AND o.created_at >= ${fromDate}
-          AND o.created_at <= ${toDate}
+      // Dòng giữ hàng (PRODUCT, món trong combo) mà sổ kho không có giá vốn: lợi nhuận đang bị thổi lên.
+      this.prisma.$queryRaw<{ linesMissingCost: number }[]>`
+        SELECT COUNT(*)::int AS "linesMissingCost"
+        FROM sales_journal_lines l
+        JOIN sales_journal_entries e ON e.id = l.entry_id
+        JOIN order_items oi ON oi.id = l.order_item_id
+        WHERE ${filter}
+          AND e.entry_type = 'SALE'
+          AND l.cogs = 0
           AND oi.line_type IN (${Prisma.join([...STOCKED_LINE_TYPES])})
-          ${branchFilter}
       `,
     ]);
     const row = rows[0];
     const revenue = Number(row?.revenue ?? 0);
     const orderCount = row?.orderCount ?? 0;
+    const costOfGoods = Number(row?.costOfGoods ?? 0);
+    const shippingCost = Number(row?.shippingCost ?? 0);
+    const channelFee = Number(row?.channelFee ?? 0);
     return {
+      // Doanh thu ròng của kỳ = bán (SALE) + hàng trả (RETURN, số âm) + thu nhập khác (OTHER_INCOME). Gồm phí vận chuyển khách trả.
       revenue,
+      grossSales: Number(row?.grossSales ?? 0),
+      returns: Number(row?.returns ?? 0),
+      goodsRevenue: Number(row?.goodsRevenue ?? 0),
+      shippingRevenue: Number(row?.shippingRevenue ?? 0),
+      otherIncome: Number(row?.otherIncome ?? 0),
+      costOfGoods,
+      shippingCost,
+      channelFee,
       orderCount,
+      returnCount: row?.returnCount ?? 0,
       customerCount: row?.customerCount ?? 0,
       aov: averageOrderValue(revenue, orderCount),
-      // Lợi nhuận gộp = doanh thu − phí ship thu hộ − phí sàn − giá vốn. Phí ship khách trả là tiền đi qua tay shop để trả đơn vị vận chuyển, không phải lãi; phí sàn là phần sàn giữ lại. Dòng chưa có giá vốn (`linesMissingCost`) được tính giá vốn 0, nên đây chỉ là ước tính - FE phải báo khi số này > 0.
-      grossProfit:
-        revenue -
-        Number(row?.shippingFee ?? 0) -
-        Number(row?.channelFee ?? 0) -
-        Number(costRows[0]?.costOfGoods ?? 0),
-      linesMissingCost: costRows[0]?.linesMissingCost ?? 0,
+      // Lợi nhuận gộp = doanh thu ròng − giá vốn thực (sổ kho lô, đã trừ phần hàng trả) − chi phí vận chuyển thực (Shipment.shippingCost) − phí sàn. Phí ship khách trả đã nằm trong doanh thu nên không trừ riêng như trước.
+      grossProfit: revenue - costOfGoods - shippingCost - channelFee,
+      linesMissingCost: missing[0]?.linesMissingCost ?? 0,
     };
   }
 
-  /** Doanh thu theo thời gian, gom theo ngày/tháng giờ địa phương: đơn lúc 23:30 thuộc doanh thu ngày đó, gom theo UTC sẽ sang ngày sau. */
+  /** Doanh thu theo thời gian từ sổ doanh thu: ngày/tháng là `business_date`, giờ là giờ ghi bút toán (`posted_at`, giờ địa phương). Hàng trả là số âm ở kỳ trả, kỳ bán không đổi. */
   async getRevenueSeries(user: AuthUser, query: RevenueSeriesQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
-    const { fromDate, toDate } = range;
     const groupBy = query.groupBy ?? GroupBy.DAY;
 
     if (groupBy === GroupBy.HOUR && exceedsHourlyRange(range)) {
@@ -204,16 +264,18 @@ export class StatsService {
       });
     }
 
+    const bucketExpr =
+      groupBy === GroupBy.HOUR
+        ? Prisma.sql`to_char(e.posted_at AT TIME ZONE ${TZ_NAME}, ${BUCKET_FORMAT[groupBy]})`
+        : Prisma.sql`to_char(e.business_date, ${BUCKET_FORMAT[groupBy]})`;
+
     const rows = await this.prisma.$queryRaw<BucketRow[]>`
-      SELECT to_char(created_at AT TIME ZONE ${TZ_NAME}, ${BUCKET_FORMAT[groupBy]}) AS "bucket",
-             COALESCE(SUM(grand_total), 0) AS "revenue",
-             COUNT(*)::int                 AS "orderCount"
-      FROM orders
-      WHERE tenant_id = ${user.tenantId}
-        AND status = ${REVENUE_STATUS}
-        AND created_at >= ${fromDate}
-        AND created_at <= ${toDate}
-        ${scope.branchId ? Prisma.sql`AND branch_id = ${scope.branchId}` : Prisma.empty}
+      SELECT ${bucketExpr} AS "bucket",
+             COALESCE(SUM(e.total_amount), 0) AS "revenue",
+             COALESCE(SUM(e.total_amount) FILTER (WHERE e.entry_type = 'RETURN'), 0) AS "returns",
+             (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
+      FROM sales_journal_entries e
+      WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(range))}
       GROUP BY 1
       ORDER BY 1
     `;
@@ -223,42 +285,101 @@ export class StatsService {
       series: rows.map((row) => ({
         bucket: row.bucket,
         revenue: Number(row.revenue),
+        returns: Number(row.returns),
         orderCount: row.orderCount,
       })),
     };
   }
 
+  /**
+   * Tiền thu theo phương thức, theo **tiền thực thu** (cơ sở tiền mặt) từ `cash_flows`, không theo `Order.paymentMethod` (một đơn trả nhiều lần, nhiều cách).
+   * `received` = ORDER_PAYMENT, `refunded` = ORDER_REFUND, `change` = SALE_CHANGE (tiền thối quầy); `revenue` = received − refunded − change.
+   * Không tính tiền chưa gắn đơn (UNALLOCATED_*) và trả nhà cung cấp. Theo thời điểm tiền chuyển tay, nên kỳ này khác doanh thu (sổ doanh thu) khi đơn thu cọc trước, giao sau.
+   */
   async getRevenueByPaymentMethod(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
+    const { fromDate, toDate } = query.range();
 
-    const rows = await this.prisma.order.groupBy({
-      by: ['paymentMethod'],
-      where: this.orderWhere(user, scope, query.range()),
-      _sum: { grandTotal: true },
-      _count: { _all: true },
-    });
+    const rows = await this.prisma.$queryRaw<
+      {
+        paymentMethod: string | null;
+        received: Prisma.Decimal;
+        refunded: Prisma.Decimal;
+        change: Prisma.Decimal;
+        orderCount: number;
+      }[]
+    >`
+      SELECT cf.payment_method AS "paymentMethod",
+             COALESCE(SUM(cf.amount) FILTER (WHERE cf.category = 'ORDER_PAYMENT'), 0) AS "received",
+             COALESCE(SUM(cf.amount) FILTER (WHERE cf.category = 'ORDER_REFUND'), 0) AS "refunded",
+             COALESCE(SUM(cf.amount) FILTER (WHERE cf.category = 'SALE_CHANGE'), 0) AS "change",
+             (COUNT(DISTINCT cf.order_id) FILTER (WHERE cf.category = 'ORDER_PAYMENT'))::int AS "orderCount"
+      FROM cash_flows cf
+      WHERE cf.tenant_id = ${user.tenantId}
+        AND cf.category IN ('ORDER_PAYMENT', 'ORDER_REFUND', 'SALE_CHANGE')
+        AND cf.created_at >= ${fromDate}
+        AND cf.created_at <= ${toDate}
+        ${scope.branchId ? Prisma.sql`AND cf.location_id = ${scope.branchId}` : Prisma.empty}
+      GROUP BY 1
+    `;
 
     return {
+      basis: 'CASH',
       breakdown: rows
-        .map((row) => ({
-          paymentMethod: row.paymentMethod,
-          revenue: Number(row._sum.grandTotal ?? 0),
-          orderCount: row._count._all,
-        }))
+        .map((row) => {
+          const received = Number(row.received);
+          const refunded = Number(row.refunded);
+          const change = Number(row.change);
+          return {
+            paymentMethod: row.paymentMethod ?? 'UNKNOWN',
+            revenue: received - refunded - change,
+            received,
+            refunded,
+            change,
+            orderCount: row.orderCount,
+          };
+        })
         .sort((a, b) => b.revenue - a.revenue),
     };
   }
 
-  /** Doanh thu gắn với người lên đơn. Dùng hai truy vấn thay vì `$lookup` cũ: join sẽ lặp lại dòng user theo từng đơn chỉ để lấy một cái tên. */
-  async getRevenueByStaff(user: AuthUser, query: StatsQueryDto) {
+  /**
+   * Doanh thu gắn với người. `groupBy=assignee` (mặc định): người phụ trách đơn lúc ghi sổ (đơn quầy không có thì lấy người lên đơn); `creator`: người lên đơn;
+   * cả hai đọc từ sổ doanh thu (doanh thu ròng, hàng trả trừ vào người của đơn gốc). `collector`: người thu tiền, theo tiền thực thu (ORDER_PAYMENT, theo `payments.collected_by`).
+   */
+  async getRevenueByStaff(user: AuthUser, query: RevenueByStaffQueryDto) {
     const scope = orderScope(user, query.branchId);
+    const range = query.range();
+    const groupBy = query.groupBy;
 
-    const rows = await this.prisma.order.groupBy({
-      by: ['userId'],
-      where: this.orderWhere(user, scope, query.range()),
-      _sum: { grandTotal: true },
-      _count: { _all: true },
-    });
+    type StaffRow = {
+      userId: string | null;
+      revenue: Prisma.Decimal;
+      orderCount: number;
+    };
+    const rows =
+      groupBy === 'collector'
+        ? await this.prisma.$queryRaw<StaffRow[]>`
+            SELECT p.collected_by AS "userId",
+                   COALESCE(SUM(cf.amount), 0) AS "revenue",
+                   COUNT(DISTINCT cf.order_id)::int AS "orderCount"
+            FROM cash_flows cf
+            JOIN payments p ON p.id = cf.payment_id
+            WHERE cf.tenant_id = ${user.tenantId}
+              AND cf.category = 'ORDER_PAYMENT'
+              AND cf.created_at >= ${range.fromDate}
+              AND cf.created_at <= ${range.toDate}
+              ${scope.branchId ? Prisma.sql`AND cf.location_id = ${scope.branchId}` : Prisma.empty}
+            GROUP BY 1
+          `
+        : await this.prisma.$queryRaw<StaffRow[]>`
+            SELECT ${groupBy === 'creator' ? Prisma.sql`e.creator_id` : Prisma.sql`COALESCE(e.assignee_id, e.creator_id)`} AS "userId",
+                   COALESCE(SUM(e.total_amount), 0) AS "revenue",
+                   (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
+            FROM sales_journal_entries e
+            WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(range))}
+            GROUP BY 1
+          `;
 
     const staff = await this.prisma.user.findMany({
       where: {
@@ -273,24 +394,24 @@ export class StatsService {
     const nameOf = new Map(staff.map((s) => [s.id, fullName(s)]));
 
     return {
+      groupBy,
       staff: rows
         .map((row) => {
-          const revenue = Number(row._sum.grandTotal ?? 0);
-          const orderCount = row._count._all;
+          const revenue = Number(row.revenue);
           return {
             userId: row.userId,
-            // Đơn đồng bộ từ kênh bán không có người tạo, nên doanh thu không gắn với ai.
+            // Không có người gắn (đơn đồng bộ từ kênh bán, hoặc khoản thu không ghi người thu) thì không có tên.
             staffName: row.userId ? (nameOf.get(row.userId) ?? null) : null,
             revenue,
-            orderCount,
-            aov: averageOrderValue(revenue, orderCount),
+            orderCount: row.orderCount,
+            aov: averageOrderValue(revenue, row.orderCount),
           };
         })
         .sort((a, b) => b.revenue - a.revenue),
     };
   }
 
-  /** Hàng bán chạy. Doanh thu dòng = `unitPrice × quantity − discountAmount`, nên giảm giá cấp đơn không phân bổ xuống dòng sẽ không hiện ở đây (giống bản cũ). */
+  /** Hàng bán chạy, từ các dòng của sổ doanh thu: `quantity` có dấu (hàng trả trừ đi), `revenue` là tiền hàng đã trừ giảm giá đơn (phân bổ xuống dòng). Món trong combo có dòng riêng với doanh thu 0 như trước. */
   async getTopProducts(user: AuthUser, query: TopProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const sortBy =
@@ -298,7 +419,6 @@ export class StatsService {
         ? TopProductsSort.REVENUE
         : TopProductsSort.QUANTITY;
 
-    const { fromDate, toDate } = query.range();
     // Không phải bind parameter vì Postgres không nhận tham số trong ORDER BY. An toàn vì luôn là một trong hai literal ở trên, không lấy từ query string.
     const orderColumn = Prisma.raw(`"${sortBy}"`);
 
@@ -310,18 +430,15 @@ export class StatsService {
         revenue: Prisma.Decimal;
       }[]
     >`
-      SELECT oi.product_item_id AS "productItemId",
+      SELECT l.product_item_id AS "productItemId",
              MIN(oi.product_name) AS "productName",
-             COALESCE(SUM(oi.quantity), 0) AS "quantity",
-             COALESCE(SUM(oi.unit_price * oi.quantity - oi.discount_amount), 0) AS "revenue"
-      FROM order_items oi
-      JOIN orders o ON o.id = oi.order_id
-      WHERE o.tenant_id = ${user.tenantId}
-        AND o.status = ${REVENUE_STATUS}
-        AND o.created_at >= ${fromDate}
-        AND o.created_at <= ${toDate}
-        ${scope.branchId ? Prisma.sql`AND o.branch_id = ${scope.branchId}` : Prisma.empty}
-      GROUP BY oi.product_item_id
+             COALESCE(SUM(l.quantity), 0) AS "quantity",
+             COALESCE(SUM(l.amount), 0) AS "revenue"
+      FROM sales_journal_lines l
+      JOIN sales_journal_entries e ON e.id = l.entry_id
+      JOIN order_items oi ON oi.id = l.order_item_id
+      WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(query.range()))}
+      GROUP BY l.product_item_id
       ORDER BY ${orderColumn} DESC
       LIMIT ${query.limit}
     `;
@@ -330,7 +447,6 @@ export class StatsService {
       sortBy,
       products: rows.map((row) => ({
         productItemId: row.productItemId,
-        // Bản cũ lấy `$first` (dòng trả về trước); MIN cùng ý nhưng xác định. Tên lưu trên từng dòng nên có thể khác nhau nếu sản phẩm đổi tên giữa kỳ.
         productName: row.productName,
         quantity: Number(row.quantity),
         revenue: Number(row.revenue),
@@ -338,19 +454,22 @@ export class StatsService {
     };
   }
 
-  /** Năm mốc lịch trong một lần trả về. Mỗi kỳ trước chỉ lấy cùng khoảng thời gian đã trôi qua, nên tháng đi được nửa tháng thì so với nửa tháng trước. */
+  /** Năm mốc lịch trong một lần trả về. Mỗi kỳ trước chỉ lấy cùng khoảng thời gian đã trôi qua, nên tháng đi được nửa tháng thì so với nửa tháng trước. Đọc từ sổ doanh thu theo ngày địa phương. */
   async getRevenueComparison(user: AuthUser, query: RevenueComparisonQueryDto) {
     const scope = orderScope(user, query.branchId);
     const windows = comparisonWindows(new Date());
 
     const sum = async (range: DateRange) => {
-      const agg = await this.prisma.order.aggregate({
-        where: this.orderWhere(user, scope, range),
-        _sum: { grandTotal: true },
-        _count: { _all: true },
-      });
-      const revenue = Number(agg._sum.grandTotal ?? 0);
-      const orderCount = agg._count._all;
+      const rows = await this.prisma.$queryRaw<
+        { revenue: Prisma.Decimal; orderCount: number }[]
+      >`
+        SELECT COALESCE(SUM(e.total_amount), 0) AS "revenue",
+               (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
+        FROM sales_journal_entries e
+        WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(range))}
+      `;
+      const revenue = Number(rows[0]?.revenue ?? 0);
+      const orderCount = rows[0]?.orderCount ?? 0;
       return {
         ...range,
         revenue,
@@ -468,11 +587,10 @@ export class StatsService {
   }
 
   /**
-   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết nên dừng nhập gì. Tồn tính ở chi nhánh người xem nếu được gắn vào một chi nhánh, còn chủ shop thì cả chuỗi; trừ kho hàng hỏng (`is_sellable = false`).
+   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết nên dừng nhập gì. Tồn tính ở chi nhánh người xem nếu được gắn vào một chi nhánh, còn chủ shop thì cả chuỗi; trừ kho hàng hỏng (`is_sellable = false`). Số bán đọc từ sổ doanh thu (hàng trả trừ đi).
    */
   async getSlowProducts(user: AuthUser, query: SlowProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    const { fromDate, toDate } = query.range();
 
     const rows = await this.prisma.$queryRaw<
       {
@@ -496,17 +614,13 @@ export class StatsService {
         HAVING SUM(i.stock - i.locked_stock) > 0
       ),
       sold AS (
-        SELECT oi.product_item_id,
-               SUM(oi.quantity) AS quantity,
-               SUM(oi.unit_price * oi.quantity - oi.discount_amount) AS revenue
-        FROM order_items oi
-        JOIN orders o ON o.id = oi.order_id
-        WHERE o.tenant_id = ${user.tenantId}
-          AND o.status = ${REVENUE_STATUS}
-          AND o.created_at >= ${fromDate}
-          AND o.created_at <= ${toDate}
-          ${scope.branchId ? Prisma.sql`AND o.branch_id = ${scope.branchId}` : Prisma.empty}
-        GROUP BY oi.product_item_id
+        SELECT jl.product_item_id,
+               SUM(jl.quantity) AS quantity,
+               SUM(jl.amount) AS revenue
+        FROM sales_journal_lines jl
+        JOIN sales_journal_entries e ON e.id = jl.entry_id
+        WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(query.range()))}
+        GROUP BY jl.product_item_id
       )
       SELECT s.product_item_id          AS "productItemId",
              pi.product_name            AS "productName",
@@ -533,15 +647,20 @@ export class StatsService {
     };
   }
 
+  /** Doanh thu ròng theo chi nhánh bán (`branch_id` của đơn gốc, kể cả hàng trả), từ sổ doanh thu. */
   async getRevenueByBranch(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
 
-    const rows = await this.prisma.order.groupBy({
-      by: ['branchId'],
-      where: this.orderWhere(user, scope, query.range()),
-      _sum: { grandTotal: true },
-      _count: { _all: true },
-    });
+    const rows = await this.prisma.$queryRaw<
+      { branchId: string; revenue: Prisma.Decimal; orderCount: number }[]
+    >`
+      SELECT e.branch_id AS "branchId",
+             COALESCE(SUM(e.total_amount), 0) AS "revenue",
+             (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
+      FROM sales_journal_entries e
+      WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(query.range()))}
+      GROUP BY 1
+    `;
     // Branch.id = Location.id nên tên nằm ở location.
     const locations = await this.prisma.location.findMany({
       where: { id: { in: rows.map((r) => r.branchId) } },
@@ -552,24 +671,22 @@ export class StatsService {
     return {
       branches: rows
         .map((row) => {
-          const revenue = Number(row._sum.grandTotal ?? 0);
-          const orderCount = row._count._all;
+          const revenue = Number(row.revenue);
           return {
             branchId: row.branchId,
             branchName: nameOf.get(row.branchId) ?? null,
             revenue,
-            orderCount,
-            aov: averageOrderValue(revenue, orderCount),
+            orderCount: row.orderCount,
+            aov: averageOrderValue(revenue, row.orderCount),
           };
         })
         .sort((a, b) => b.revenue - a.revenue),
     };
   }
 
-  /** Chỉ các cặp thứ/giờ có bán mới có ô; `weekday` 0 = Chủ nhật .. 6, `hour` 0-23, đều theo giờ địa phương của shop. */
+  /** Chỉ các cặp thứ/giờ có bán mới có ô; `weekday` 0 = Chủ nhật .. 6, `hour` 0-23, đều theo giờ địa phương của shop. Chỉ tính bút toán SALE (lúc đơn hoàn thành); hàng trả không làm ô nào âm. */
   async getSalesHeatmap(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
-    const { fromDate, toDate } = query.range();
 
     const rows = await this.prisma.$queryRaw<
       {
@@ -579,16 +696,13 @@ export class StatsService {
         orderCount: number;
       }[]
     >`
-      SELECT EXTRACT(DOW  FROM created_at AT TIME ZONE ${TZ_NAME})::int AS "weekday",
-             EXTRACT(HOUR FROM created_at AT TIME ZONE ${TZ_NAME})::int AS "hour",
-             COALESCE(SUM(grand_total), 0) AS "revenue",
-             COUNT(*)::int                 AS "orderCount"
-      FROM orders
-      WHERE tenant_id = ${user.tenantId}
-        AND status = ${REVENUE_STATUS}
-        AND created_at >= ${fromDate}
-        AND created_at <= ${toDate}
-        ${scope.branchId ? Prisma.sql`AND branch_id = ${scope.branchId}` : Prisma.empty}
+      SELECT EXTRACT(DOW  FROM e.posted_at AT TIME ZONE ${TZ_NAME})::int AS "weekday",
+             EXTRACT(HOUR FROM e.posted_at AT TIME ZONE ${TZ_NAME})::int AS "hour",
+             COALESCE(SUM(e.total_amount), 0) AS "revenue",
+             COUNT(*)::int                    AS "orderCount"
+      FROM sales_journal_entries e
+      WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(query.range()))}
+        AND e.entry_type = 'SALE'
       GROUP BY 1, 2
       ORDER BY 1, 2
     `;
@@ -603,54 +717,45 @@ export class StatsService {
     };
   }
 
-  /** Chỉ khách có tên: dòng `KH_VANGLAI` gom mọi đơn vãng lai và sẽ đứng đầu mọi danh sách. */
+  /** Chỉ khách có tên: dòng `KH_VANGLAI` gom mọi đơn vãng lai và sẽ đứng đầu mọi danh sách. Doanh thu ròng từ sổ doanh thu (hàng trả trừ vào khách của đơn gốc). */
   async getTopCustomers(user: AuthUser, query: TopCustomersQueryDto) {
     const scope = orderScope(user, query.branchId);
 
-    const rows = await this.prisma.order.groupBy({
-      by: ['customerId'],
-      where: {
-        ...this.orderWhere(user, scope, query.range()),
-        customer: { customerCode: { not: 'KH_VANGLAI' } },
-      },
-      _sum: { grandTotal: true },
-      _count: { _all: true },
-      orderBy: { _sum: { grandTotal: 'desc' } },
-      take: query.limit,
-    });
-    const customers = await this.prisma.customer.findMany({
-      where: { id: { in: rows.map((r) => r.customerId) } },
-      select: { id: true, name: true, phone: true },
-    });
-    const byId = new Map(customers.map((c) => [c.id, c]));
+    const rows = await this.prisma.$queryRaw<
+      {
+        customerId: string;
+        name: string | null;
+        phone: string | null;
+        revenue: Prisma.Decimal;
+        orderCount: number;
+      }[]
+    >`
+      SELECT e.customer_id AS "customerId",
+             MIN(c.name)   AS "name",
+             MIN(c.phone)  AS "phone",
+             COALESCE(SUM(e.total_amount), 0) AS "revenue",
+             (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
+      FROM sales_journal_entries e
+      JOIN customers c ON c.id = e.customer_id
+      WHERE ${this.journalFilter(user.tenantId, scope.branchId, businessDatesOf(query.range()))}
+        AND c.customer_code IS DISTINCT FROM 'KH_VANGLAI'
+      GROUP BY e.customer_id
+      ORDER BY "revenue" DESC
+      LIMIT ${query.limit}
+    `;
 
     return {
       customers: rows.map((row) => {
-        const revenue = Number(row._sum.grandTotal ?? 0);
-        const orderCount = row._count._all;
-        const c = byId.get(row.customerId);
+        const revenue = Number(row.revenue);
         return {
           customerId: row.customerId,
-          name: c?.name ?? null,
-          phone: c?.phone ?? null,
+          name: row.name ?? null,
+          phone: row.phone ?? null,
           revenue,
-          orderCount,
-          aov: averageOrderValue(revenue, orderCount),
+          orderCount: row.orderCount,
+          aov: averageOrderValue(revenue, row.orderCount),
         };
       }),
-    };
-  }
-
-  private orderWhere(
-    user: AuthUser,
-    scope: { branchId?: string },
-    { fromDate, toDate }: DateRange,
-  ): Prisma.OrderWhereInput {
-    return {
-      tenantId: user.tenantId ?? undefined,
-      status: REVENUE_STATUS,
-      ...(scope.branchId ? { branchId: scope.branchId } : {}),
-      createdAt: { gte: fromDate, lte: toDate },
     };
   }
 
@@ -661,6 +766,30 @@ export class StatsService {
       _sum: { amount: true },
       _count: { _all: true },
     });
+    // Cùng bộ lọc, chia thêm theo loại tiền và quỹ: báo cáo thu chi theo quỹ (DRAWER / OWNER / BANK) và loại.
+    const detail = await this.prisma.cashFlow.groupBy({
+      by: ['fund', 'category', 'flowType'],
+      where: this.cashflowWhere(user, query),
+      _sum: { amount: true },
+      _count: { _all: true },
+    });
+    const byFund = new Map<
+      string,
+      { fund: string; income: number; expense: number; count: number }
+    >();
+    for (const row of detail) {
+      const entry = byFund.get(row.fund) ?? {
+        fund: row.fund,
+        income: 0,
+        expense: 0,
+        count: 0,
+      };
+      const amount = Number(row._sum.amount ?? 0);
+      if (row.flowType === FlowType.INCOME) entry.income += amount;
+      else entry.expense += amount;
+      entry.count += row._count._all;
+      byFund.set(row.fund, entry);
+    }
 
     const totalOf = (flowType: string) =>
       Number(rows.find((row) => row.flowType === flowType)?._sum.amount ?? 0);
@@ -675,6 +804,19 @@ export class StatsService {
         flowType: row.flowType,
         total: Number(row._sum.amount ?? 0),
         count: row._count._all,
+      })),
+      byCategory: detail
+        .map((row) => ({
+          category: row.category,
+          fund: row.fund,
+          flowType: row.flowType,
+          total: Number(row._sum.amount ?? 0),
+          count: row._count._all,
+        }))
+        .sort((a, b) => b.total - a.total),
+      byFund: [...byFund.values()].map((f) => ({
+        ...f,
+        net: f.income - f.expense,
       })),
     };
   }
@@ -709,6 +851,9 @@ export class StatsService {
         paymentMethod: row.paymentMethod,
         description: row.description,
         paymentReference: row.paymentReference,
+        category: row.category,
+        fund: row.fund,
+        sepayLedgerId: row.sepayLedgerId,
         branchName: at.branch?.name ?? null,
         warehouseName: at.warehouse?.name ?? null,
         // Bảng chỉ có một cột "vị trí" nên gộp chi nhánh/kho vào đây; `locationType` giữ lại để vẫn truy ngược được loại.
@@ -737,6 +882,8 @@ export class StatsService {
       ...postingWhere(scope),
       createdAt: { gte: fromDate, lte: toDate },
       ...(query.flowType ? { flowType: query.flowType } : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.fund ? { fund: query.fund } : {}),
       ...(paymentMethod ? { paymentMethod } : {}),
       // `flow` lọc theo tiền tố mã chứng từ (ORD bán hàng, SUP trả NCC). `startsWith` không phân biệt hoa thường thay cho regex neo cũ, vẫn dùng được index.
       ...(query.flow
@@ -762,23 +909,28 @@ export class StatsService {
       ? Prisma.sql`AND i.location_id = ${locationId}`
       : Prisma.empty;
 
-    const [totalRows, lowStock] = await Promise.all([
+    const [totalRows, valueRows, lowStock] = await Promise.all([
       this.prisma.$queryRaw<
         {
-          stockValue: Prisma.Decimal;
           totalUnits: number;
           skuCount: number;
           outOfStock: number;
         }[]
       >`
-        SELECT COALESCE(SUM(i.stock * pi.cost_price), 0) AS "stockValue",
-               COALESCE(SUM(i.stock), 0)::int            AS "totalUnits",
+        SELECT COALESCE(SUM(i.stock), 0)::int            AS "totalUnits",
                COUNT(*)::int                             AS "skuCount",
                COUNT(*) FILTER (WHERE i.stock <= 0)::int AS "outOfStock"
         FROM inventories i
-        JOIN product_items pi ON pi.id = i.product_item_id
         WHERE i.tenant_id = ${tenantId}
           ${locationFilter}
+      `,
+      // Giá trị tồn từ các lô còn hàng (số còn lại x giá vốn của lô: giá nhập NCC / giá xưởng), không phải giá vốn trên danh mục. Gồm cả kho hàng hỏng: hàng vẫn nằm trong sổ kho.
+      this.prisma.$queryRaw<{ stockValue: Prisma.Decimal }[]>`
+        SELECT COALESCE(SUM(lot.remaining_quantity * lot.unit_cost), 0) AS "stockValue"
+        FROM inventory_lots lot
+        WHERE lot.tenant_id = ${tenantId}
+          AND lot.remaining_quantity > 0
+          ${locationId ? Prisma.sql`AND lot.location_id = ${locationId}` : Prisma.empty}
       `,
       this.prisma.inventory.findMany({
         where: { tenantId, ...postingWhere(scope), stock: { lte: threshold } },
@@ -795,7 +947,7 @@ export class StatsService {
 
     const totals = totalRows[0];
     return {
-      stockValue: Number(totals?.stockValue ?? 0),
+      stockValue: Number(valueRows[0]?.stockValue ?? 0),
       totalUnits: totals?.totalUnits ?? 0,
       skuCount: totals?.skuCount ?? 0,
       outOfStock: totals?.outOfStock ?? 0,

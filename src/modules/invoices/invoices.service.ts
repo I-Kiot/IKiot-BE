@@ -7,12 +7,8 @@ import {
   InvoiceType,
 } from '../../common/constants/invoice-status';
 import { ErrorCode } from '../../common/errors/error-codes';
-import {
-  nextInvoiceNumber,
-  returnedValue,
-  saleLines,
-  saleTotal,
-} from './invoice-math';
+import { nextInvoiceNumber, saleLines, saleTotal } from './invoice-math';
+import { sliceValue, toDong } from '../../common/utils/money';
 
 type Tx = Prisma.TransactionClient;
 
@@ -22,6 +18,9 @@ const ORDER_FOR_INVOICE = {
   subtotal: true,
   vatTotal: true,
   grandTotal: true,
+  shippingFee: true,
+  discountType: true,
+  discountValue: true,
   userId: true,
   customer: { select: { name: true, address: true } },
   items: {
@@ -29,6 +28,8 @@ const ORDER_FOR_INVOICE = {
     orderBy: { id: 'asc' },
     select: {
       id: true,
+      lineType: true,
+      productItemId: true,
       productName: true,
       sku: true,
       variantLabel: true,
@@ -79,28 +80,44 @@ export class InvoiceService {
       unitPrice: Number(item.unitPrice),
       lineTotal: Number(item.lineTotal),
     }));
-    const kept = saleLines(lines);
-    const total = saleTotal(Number(order.grandTotal), lines);
+    const kept = saleLines(order, lines);
+    const shippingFee = Math.max(0, toDong(order.shippingFee));
+    const total = saleTotal(kept, shippingFee);
     const number = await this.allocateNumber(
       tx,
       order.tenantId,
       InvoiceType.SALE,
     );
     const now = new Date();
-    const lineRows = kept.map(({ line, quantity, amount }, position) => ({
-      orderItemId: line.id,
-      description: [
-        line.productName ?? line.sku ?? 'Sản phẩm',
-        line.variantLabel,
-      ]
-        .filter(Boolean)
-        .join(' - '),
-      quantity,
-      unitPrice: line.unitPrice,
-      vatRate: line.vatRate ?? 0,
-      amount,
-      position,
-    }));
+    const lineRows: Prisma.InvoiceLineUncheckedCreateWithoutInvoiceInput[] =
+      kept.map(({ line, quantity, amount, discount }, position) => ({
+        orderItemId: line.id,
+        description: [
+          line.productName ?? line.sku ?? 'Sản phẩm',
+          line.variantLabel,
+        ]
+          .filter(Boolean)
+          .join(' - '),
+        quantity,
+        unitPrice: line.unitPrice,
+        vatRate: line.vatRate ?? 0,
+        amount,
+        discountAmount: discount,
+        position,
+      }));
+    // Phí vận chuyển thu của khách là một dòng của hoá đơn (không gắn dòng đơn), để Σ dòng = tổng hoá đơn.
+    if (shippingFee > 0) {
+      lineRows.push({
+        orderItemId: null,
+        description: 'Phí vận chuyển',
+        quantity: 1,
+        unitPrice: shippingFee,
+        vatRate: 0,
+        amount: shippingFee,
+        discountAmount: 0,
+        position: lineRows.length,
+      });
+    }
 
     if (existing) {
       // Khoá bằng điều kiện status PENDING: hai route cùng hoàn thành một đơn không thể cùng đánh số.
@@ -177,17 +194,41 @@ export class InvoiceService {
       orderBy: { position: 'asc' },
     });
     const wanted = new Map(items?.map((i) => [i.orderItemId, i.quantity]));
+    // Số đã điều chỉnh ở các hoá đơn điều chỉnh trước, để các lát trả cộng lại đúng bằng giá trị dòng (không trôi từng lần làm tròn).
+    const earlier = await tx.invoiceLine.findMany({
+      where: {
+        invoice: {
+          originalInvoiceId: sale.id,
+          type: InvoiceType.ADJUSTMENT,
+          status: InvoiceStatus.ISSUED,
+        },
+        orderItemId: { not: null },
+      },
+      select: { orderItemId: true, quantity: true },
+    });
+    const already = new Map<string, number>();
+    for (const row of earlier) {
+      already.set(
+        row.orderItemId!,
+        (already.get(row.orderItemId!) ?? 0) + row.quantity,
+      );
+    }
     const picked = saleLinesRows.flatMap((line) => {
-      const quantity = items
-        ? (wanted.get(line.orderItemId ?? '') ?? 0)
+      // Dòng phí vận chuyển (không gắn dòng đơn) không hoàn khi trả hàng.
+      if (!line.orderItemId) return [];
+      const requested = items
+        ? (wanted.get(line.orderItemId) ?? 0)
         : line.quantity;
+      const before = already.get(line.orderItemId) ?? 0;
+      const quantity = Math.min(requested, line.quantity - before);
       if (quantity <= 0) return [];
-      const value = returnedValue({
-        quantity: line.quantity,
-        lineTotal: Number(line.amount),
-        returned: Math.min(quantity, line.quantity),
-      });
-      return [{ line, quantity: Math.min(quantity, line.quantity), value }];
+      const value = sliceValue(
+        toDong(line.amount),
+        line.quantity,
+        before,
+        quantity,
+      );
+      return [{ line, quantity, value }];
     });
     if (picked.length === 0) return null;
 
@@ -221,6 +262,7 @@ export class InvoiceService {
             unitPrice: p.line.unitPrice,
             vatRate: p.line.vatRate,
             amount: -p.value,
+            discountAmount: 0,
             position,
           })),
         },

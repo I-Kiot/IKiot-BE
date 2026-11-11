@@ -36,6 +36,11 @@ import {
 import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
+import { assertMoneyInvariants } from './helpers/money-invariants';
+import {
+  derivePaymentStatus,
+  paymentRowsOf,
+} from './../src/modules/orders/payment-status';
 
 /**
  * Lấy hàng & giao hàng (C-2, C-8) trên Postgres thật: “ĐVVC đã lấy hàng” (POST /shipments), đổi shipper, chuyển sang Đang vận chuyển (bước trừ tồn kho). Ai được làm theo luật chốt 2026-10-06: chủ shop, người phụ trách đơn, hoặc người có quyền tại đúng kho. Tự tạo tenant riêng và dọn sạch.
@@ -148,6 +153,11 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         status: OrderStatus.CONFIRMED,
         grandTotal: 1000 * quantity,
         depositAmount: deposit,
+        // Cọc ghi thẳng ở cột `deposit_amount` (đơn lập trước khi cọc có Payment, `paymentRowsOf` vẫn tính là đã thu), nên trạng thái thanh toán đặt đúng theo quy tắc suy ra.
+        paymentStatus: derivePaymentStatus(
+          1000 * quantity,
+          paymentRowsOf({ depositAmount: deposit, payments: [] }),
+        ).status,
         recipientName: 'Anh Nam',
         recipientPhone: '0912345678',
         deliveryAddress: '1 Cầu Giấy, Hà Nội',
@@ -310,6 +320,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
@@ -323,6 +334,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.user.deleteMany({ where: { tenantId } });
     await prisma.role.deleteMany({ where: { tenantId } }); // role_permissions: onDelete Cascade
     await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.sepayTransaction.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -343,6 +355,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
           assigneeId,
           status: OrderStatus.CONFIRMED,
           grandTotal: 0,
+          paymentStatus: OrderPaymentStatus.PAID, // không còn gì để trả: net 0 ≥ tổng 0
         },
       });
       await expect(
@@ -498,6 +511,12 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         ErrorCode.ORDER_STATUS_CONFLICT,
       ]).toContain(loser?.reason?.response?.code);
       expect(await prisma.shipment.count({ where: { orderId } })).toBe(1);
+      // Người thua rollback cả transaction nên chỉ có một SHIPMENT_CREATED.
+      expect(
+        await prisma.orderEvent.count({
+          where: { orderId, type: 'SHIPMENT_CREATED' },
+        }),
+      ).toBe(1);
     });
 
     it('lets the person in charge hand over their own order with no permission, naming themselves as driver', async () => {
@@ -680,6 +699,11 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         where: { shipmentId: created.id, status: ShipmentStatus.PICKED_UP },
       });
       expect(events).toBe(1);
+      expect(
+        await prisma.orderEvent.count({
+          where: { orderId, type: 'PICKED_UP' },
+        }),
+      ).toBe(1);
     });
   });
 
@@ -703,6 +727,33 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       expect(notify).toHaveBeenCalledWith(
         expect.objectContaining({ recipientIds: [driverId] }),
       );
+
+      const [assigned, swapped] = await prisma.orderEvent.findMany({
+        where: {
+          orderId,
+          type: { in: ['SHIPMENT_CREATED', 'DRIVER_CHANGED'] },
+        },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+      expect(assigned).toMatchObject({
+        type: 'SHIPMENT_CREATED',
+        fromStatus: null,
+        toStatus: null,
+      });
+      expect(swapped).toMatchObject({
+        type: 'DRIVER_CHANGED',
+        actorId: storekeeperId,
+        metadata: {
+          refType: 'SHIPMENT',
+          refId: created.id,
+          fromId: ownerId,
+          toId: driverId,
+        },
+      });
+      // Tên người, không phải id, trong changes.
+      expect(swapped.changes).toEqual({
+        driver: { from: expect.any(String), to: expect.any(String) },
+      });
     });
 
     it('refuses an ineligible driver, a carrier shipment and a finished one', async () => {
@@ -867,6 +918,14 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         stock: before.stock - 2,
         lockedStock: before.lockedStock - 2,
       });
+      const shipped = await prisma.orderEvent.findMany({
+        where: { orderId, type: 'SHIPPED' },
+      });
+      expect(shipped).toHaveLength(1);
+      expect(shipped[0]).toMatchObject({
+        fromStatus: OrderStatus.PICKED_UP,
+        toStatus: OrderStatus.SHIPPING,
+      });
     });
 
     it('refuses the person in charge without orders:ship - the step deducts stock (ASSIGNEE_MAY_SHIP off)', async () => {
@@ -985,6 +1044,15 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         createdBy: { id: driverId },
       });
       expect(await statusOf(orderId)).toBe(OrderStatus.SHIPPING);
+      const logged = await prisma.orderEvent.findFirstOrThrow({
+        where: { orderId, type: 'OUT_FOR_DELIVERY' },
+      });
+      expect(logged).toMatchObject({
+        fromStatus: null,
+        toStatus: null,
+        actorId: driverId,
+        metadata: { refType: 'SHIPMENT', refId: shipmentId, note: 'đang tới' },
+      });
     });
 
     it('refuses a shipment that is not on the road yet', async () => {
@@ -1084,6 +1152,14 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         where: { shipmentId, status: ShipmentStatus.FAILED },
       });
       expect(failedEvents).toBe(1);
+      expect(
+        await prisma.orderEvent.count({
+          where: {
+            type: 'DELIVERY_FAILED',
+            metadata: { path: ['refId'], equals: shipmentId },
+          },
+        }),
+      ).toBe(1);
     });
   });
 
@@ -1282,7 +1358,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       expect(notify).toHaveBeenCalledTimes(1);
     });
 
-    it('QR transfer short: left waiting, nothing changes (short transfers are not handled yet)', async () => {
+    it('QR transfer short: the money is booked as a partial payment, the order stays RECEIVED and PARTIALLY_PAID', async () => {
       const { orderId, shipmentId } = await shippedShipment();
       const shipment = await delivery.deliver(
         driver,
@@ -1296,9 +1372,13 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         'TX-SHORT',
         500,
       );
-      expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
+      const order = await orderOf(orderId);
+      expect(order.status).toBe(OrderStatus.RECEIVED);
+      expect(order.paymentStatus).toBe(OrderPaymentStatus.PARTIALLY_PAID);
       const [qr] = await paymentsOf(orderId);
-      expect(qr.status).toBe(PaymentRecordStatus.PENDING);
+      expect(qr.status).toBe(PaymentRecordStatus.PAID);
+      expect(Number(qr.amount)).toBe(500); // tiền thực về
+      expect(Number(qr.requestedAmount)).toBe(700); // số mã QR đã yêu cầu
     });
 
     it('says a reference is not ours when no delivery payment carries it', async () => {
@@ -1465,11 +1545,11 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       );
       expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
 
-      // Không còn khoản QR nào chờ.
+      // Đã thu đủ (tiền mặt đang ở tay shipper): không còn gì để thu thêm.
       await expect(
         delivery.payCash(driver, tenantId, shipmentId, {}),
       ).rejects.toMatchObject({
-        response: { code: ErrorCode.ORDER_QR_PAYMENT_NOT_PENDING },
+        response: { code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH },
       });
     });
 
@@ -1507,5 +1587,10 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         expect((await orderOf(orderId)).status).toBe(OrderStatus.RECEIVED);
       }
     });
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

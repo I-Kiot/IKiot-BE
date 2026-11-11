@@ -44,6 +44,7 @@ import {
   InventoryStatsQueryDto,
   RevenueSeriesQueryDto,
   StatsQueryDto,
+  RevenueByStaffQueryDto,
   TopProductsQueryDto,
 } from '../stats/dto/stats-query.dto';
 
@@ -293,7 +294,7 @@ export class AiToolsService {
       case 'getRevenueByStaff':
         return this.stats.getRevenueByStaff(
           user,
-          await this.dto(StatsQueryDto, this.withMonthToDate(args)),
+          await this.dto(RevenueByStaffQueryDto, this.withMonthToDate(args)),
         );
 
       case 'getTopProducts':

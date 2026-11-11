@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { InvoiceService } from './../src/modules/invoices/invoices.service';
 import { randomUUID } from 'crypto';
+import { assertMoneyInvariants } from './helpers/money-invariants';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
 import { PrismaService } from './../src/prisma/prisma.service';
@@ -208,6 +209,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
       where: { fulfillment: { tenantId } },
     });
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({
       where: { tenantId, refundOfPaymentId: { not: null } },
     });
@@ -259,6 +261,18 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     });
     expect(invoice.status).toBe('CANCELLED');
     expect(invoice.invoiceNumber).toBeNull();
+
+    const cancelled = await prisma.orderEvent.findMany({
+      where: { orderId: id, type: 'CANCELLED' },
+    });
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({
+      fromStatus: OrderStatus.CONFIRMED,
+      toStatus: OrderStatus.CANCELLED,
+      source: 'USER',
+      actorId: ownerId,
+      metadata: { reason: 'Khách đổi ý', refundAmount: 0 },
+    });
   });
 
   it('gives a packed order its locked goods back and cancels the fulfillment and the open shipment', async () => {
@@ -330,6 +344,22 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
       refundOfPaymentId: deposit.id,
     });
     expect(Number(refund.amount)).toBe(1_000_000);
+
+    const event = await prisma.orderEvent.findFirstOrThrow({
+      where: { orderId: id, type: 'CANCELLED' },
+    });
+    expect(event.metadata).toMatchObject({
+      refundAmount: 1_000_000,
+      refundMethod: 'BANK_TRANSFER',
+      paymentId: refund.id,
+    });
+    // Phần shop giữ (cọc trừ hoàn) là thu nhập khác, ghi một lần vào ngày huỷ; không có SALE.
+    const journal = await prisma.salesJournalEntry.findMany({
+      where: { orderId: id },
+    });
+    expect(journal.map((e) => e.entryType)).toEqual(['OTHER_INCOME']);
+    expect(Number(journal[0].otherIncomeAmount)).toBe(2_000_000);
+    expect(Number(journal[0].totalAmount)).toBe(2_000_000);
   });
 
   it('keeps the whole deposit when the refund is 0, writing no refund', async () => {
@@ -343,6 +373,11 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     });
     expect(row.status).toBe(OrderStatus.CANCELLED);
     expect(row.payments.map((p) => p.kind)).toEqual([PaymentKind.DEPOSIT]);
+    const journal = await prisma.salesJournalEntry.findMany({
+      where: { orderId: id },
+    });
+    expect(journal.map((e) => e.entryType)).toEqual(['OTHER_INCOME']);
+    expect(Number(journal[0].totalAmount)).toBe(Number(row.payments[0].amount));
   });
 
   it.each([
@@ -367,7 +402,15 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
     'refuses to cancel an order in %s',
     async (status) => {
       const id = await createOrder();
-      await prisma.order.update({ where: { id }, data: { status } });
+      await prisma.order.update({
+        where: { id },
+        data: {
+          status,
+          ...(status === OrderStatus.COMPLETED
+            ? { completedAt: new Date() }
+            : {}),
+        },
+      });
       await expect(cancel(id)).rejects.toMatchObject({
         response: { code: ErrorCode.ORDER_CANCEL_NOT_ALLOWED },
       });
@@ -422,5 +465,13 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
         })
       ).status,
     ).toBe('SENT');
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    // Một ca dựng đơn COMPLETED thẳng vào bảng (để thử huỷ đơn đã hoàn thành) nên không có bút toán SALE: bỏ kiểm nhật ký doanh thu ở suite này.
+    await assertMoneyInvariants(prisma, tenantId, {
+      skip: ['SALES_JOURNAL'],
+    });
   });
 });

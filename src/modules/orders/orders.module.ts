@@ -9,10 +9,13 @@ import { SepayOrderService } from './sepay-order.service';
 import { OrderPricingService } from './order-pricing.service';
 import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
+import { OrderExcessRefundService } from './order-excess-refund.service';
+import { OrderHeldSettleService } from './order-held-settle.service';
 import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderRemittanceService } from './order-remittance.service';
 import { OrderPickupService } from './order-pickup.service';
+import { SepayQrExpiryCron } from './sepay-qr-expiry.cron';
 import { CustomerModule } from '../customers/customers.module';
 import { ProductionRequestModule } from '../production-requests/production-requests.module';
 import { OrderShortageAlerts } from './order-shortage-alerts';
@@ -45,12 +48,15 @@ import { InvoiceModule } from '../invoices/invoices.module';
     OrderPricingService,
     ManualOrderService,
     OrderCancelService,
+    OrderExcessRefundService,
+    OrderHeldSettleService,
     OrderReadService,
     OrderEditService,
     OrderCustomizationService,
     OrderRemittanceService,
     OrderPickupService,
     OrderShortageAlerts,
+    SepayQrExpiryCron,
   ],
   exports: [OrderService],
 })

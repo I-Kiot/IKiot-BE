@@ -16,7 +16,7 @@ import {
   assertPickupReady,
   assertStorePickup,
   isPickupOverdue,
-  pendingCounterQr,
+  openCounterQr,
   pickupAmountDue,
 } from './order-pickup.rules';
 
@@ -42,21 +42,23 @@ describe('assertNoCounterPayment', () => {
   });
 });
 
-describe('pendingCounterQr', () => {
-  it('finds only a SePay balance still waiting', () => {
+describe('openCounterQr', () => {
+  it('finds only a SePay balance still open (waiting or expired)', () => {
     const waiting = {
       kind: PaymentKind.BALANCE,
       method: PaymentMethod.SEPAY,
       status: PaymentRecordStatus.PENDING,
     };
     expect(
-      pendingCounterQr([
+      openCounterQr([
         waiting,
+        { ...waiting, status: PaymentRecordStatus.EXPIRED },
         { ...waiting, status: PaymentRecordStatus.PAID },
+        { ...waiting, status: PaymentRecordStatus.CANCELLED },
         { ...waiting, method: PaymentMethod.CASH },
         { ...waiting, kind: PaymentKind.DEPOSIT },
       ]),
-    ).toEqual([waiting]);
+    ).toEqual([waiting, { ...waiting, status: PaymentRecordStatus.EXPIRED }]);
   });
 });
 
@@ -155,13 +157,13 @@ describe('pickupAmountDue', () => {
     ).toBe(700_000);
   });
 
-  it('adds back a refunded amount and never goes below zero', () => {
+  it('owes nothing once a refund exists, and never goes below zero', () => {
     expect(
       pickupAmountDue(1_000_000, [
         paid(PaymentKind.DEPOSIT, 400_000),
         paid(PaymentKind.REFUND, 100_000),
       ]),
-    ).toBe(700_000);
+    ).toBe(0);
     expect(
       pickupAmountDue(1_000_000, [paid(PaymentKind.FULL, 1_200_000)]),
     ).toBe(0);

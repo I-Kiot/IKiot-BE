@@ -4,6 +4,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import {
   assertTransition,
   canTransition,
+  completedData,
+  nextStatusAfterPayment,
   ORDER_JOURNEY_TRANSITIONS,
 } from './order-status';
 
@@ -103,6 +105,54 @@ describe('assertTransition', () => {
   it('rejects staying put - a no-op is not a transition', () => {
     for (const status of ALL) {
       expect(() => assertTransition(status, status)).toThrow(ConflictException);
+    }
+  });
+});
+
+describe('completedData', () => {
+  it('writes status and completedAt together, from one clock reading', () => {
+    const now = new Date('2026-11-11T03:00:00.000Z');
+    expect(completedData(now)).toEqual({
+      status: S.COMPLETED,
+      completedAt: now,
+    });
+  });
+});
+
+describe('nextStatusAfterPayment', () => {
+  const PAID = { status: 'PAID' };
+  const till = { status: S.PENDING, fulfillmentType: 'TAKEAWAY' };
+  const home = { status: S.RECEIVED, fulfillmentType: 'HOME_DELIVERY' };
+  const pickup = { status: S.PACKED, fulfillmentType: 'STORE_PICKUP' };
+
+  it('completes a counter sale waiting for its transfer once it is fully paid', () => {
+    expect(nextStatusAfterPayment(till, PAID, false)).toBe(S.COMPLETED);
+  });
+
+  it('completes a delivered order once paid and no shipper cash is still held', () => {
+    expect(nextStatusAfterPayment(home, PAID, false)).toBe(S.COMPLETED);
+    expect(nextStatusAfterPayment(home, PAID, true)).toBeNull();
+  });
+
+  it('never moves a pickup order: the clerk hands the goods over', () => {
+    expect(nextStatusAfterPayment(pickup, PAID, false)).toBeNull();
+  });
+
+  it('does not move an order that is not fully paid', () => {
+    for (const status of ['PARTIALLY_PAID', 'UNPAID', 'PARTIALLY_REFUNDED']) {
+      expect(nextStatusAfterPayment(till, { status }, false)).toBeNull();
+      expect(nextStatusAfterPayment(home, { status }, false)).toBeNull();
+    }
+  });
+
+  it('does not move an order that is not at the waiting step (cancelled, returned, completed)', () => {
+    for (const status of [S.CANCELLED, S.RETURNED, S.COMPLETED]) {
+      expect(
+        nextStatusAfterPayment({ ...till, status }, PAID, false),
+      ).toBeNull();
+      expect(
+        nextStatusAfterPayment({ ...home, status }, PAID, false),
+      ).toBeNull();
     }
   });
 });

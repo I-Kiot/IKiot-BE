@@ -1,9 +1,17 @@
+import { heldUndecidedOf } from './held-undecided';
+import { SalesJournalEntryType } from '../../common/constants/sales-journal';
 import { namedBranch } from '../../common/dto/location-ref.dto';
 import {
   OrderStatus,
   RemittanceStatus,
 } from '../../common/constants/order-status';
-import { PaymentMethod } from '../../common/constants/payment-method';
+import {
+  PaymentKind,
+  PaymentMethod,
+  PaymentRecordStatus,
+} from '../../common/constants/payment-method';
+import { sumDong, toDong } from '../../common/utils/money';
+import { derivePaymentStatus, paymentRowsOf } from './payment-status';
 import type { OrderDetailRow, OrderListRow } from './order-read';
 import { isPickupOverdue } from './order-pickup.rules';
 import { summarizeStock, type StockCheck } from './stock-check';
@@ -268,13 +276,79 @@ export function toOrderListItem(
   };
 }
 
+/** Một khoản tiền của đơn như `paymentSummaryOf` cần. */
+export interface SummaryPaymentRow {
+  kind: string;
+  status: string;
+  amount: Decimalish;
+  method: string;
+  remittanceStatus: string;
+}
+
+/**
+ * `paymentSummary` của chi tiết đơn: mọi số từ MỘT quy tắc (`derivePaymentStatus`), nên khớp `orders.payment_status` và các route thu / hoàn.
+ * `received` / `refunded` / `net` / `due` / `overpaidBy` là số nguyên đồng; `pendingRemittance` là tiền mặt shipper đã thu mà chủ chưa xác nhận nhận (đang ở tay shipper, chưa vào sổ thu chi).
+ */
+export function paymentSummaryOf(
+  order: {
+    status: string;
+    grandTotal: Decimalish;
+    depositAmount: Decimalish | null;
+  },
+  payments: readonly SummaryPaymentRow[],
+  /** `entry_type` các bút toán doanh thu của đơn (quyết định "treo" của tiền giữ). */
+  journalTypes: readonly string[],
+) {
+  const rows = payments.map((p) => ({
+    kind: p.kind,
+    status: p.status,
+    amount: toDong(Number(p.amount)),
+  }));
+  const derived = derivePaymentStatus(
+    toDong(Number(order.grandTotal)),
+    paymentRowsOf({
+      depositAmount: toDong(Number(order.depositAmount ?? 0)),
+      payments: rows,
+    }),
+  );
+  const pendingRemittance = sumDong(
+    payments
+      .filter(
+        (p) =>
+          p.kind === PaymentKind.BALANCE &&
+          p.status === PaymentRecordStatus.PAID &&
+          p.method === PaymentMethod.CASH &&
+          p.remittanceStatus === RemittanceStatus.PENDING,
+      )
+      .map((p) => Number(p.amount)),
+  );
+  return {
+    received: derived.received,
+    refunded: derived.refunded,
+    net: derived.net,
+    due: derived.due,
+    overpaidBy: derived.overpaidBy,
+    pendingRemittance,
+    /** Tiền shop đang giữ của đơn đã kết thúc mà chưa hoàn, chưa ghi thu nhập khác (`held-undecided.ts`). Quyết định bằng `POST /orders/:id/settle-held`. */
+    heldUndecided: heldUndecidedOf({
+      status: order.status,
+      hasSale: journalTypes.includes(SalesJournalEntryType.SALE),
+      hasOtherIncome: journalTypes.includes(SalesJournalEntryType.OTHER_INCOME),
+      net: derived.net,
+    }),
+  };
+}
+
 export function toOrderDetail(
   row: OrderDetailRow,
   stockChecks: Map<string, StockCheck>,
+  payments: readonly SummaryPaymentRow[],
+  journalTypes: readonly string[] = [],
 ) {
   const { shipments, returns } = row;
   return {
     ...toOrderBase(row),
+    paymentSummary: paymentSummaryOf(row, payments, journalTypes),
     items: row.items.map((item) => toDetailLine(item, stockChecks)),
     shipments: shipments.map(({ driver, ...shipment }) => ({
       ...shipment,

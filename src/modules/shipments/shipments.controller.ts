@@ -28,7 +28,7 @@ import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 /**
- * Lấy hàng & giao hàng (contract §4). Route dưới đây **cố ý không có `@Permissions`**: guard chạy trước khi biết đơn / shipment của ai, nên quyền kiểm trong service: `assertOrderStepAccess` (bước của đơn), `visibleWhere` (xem), `deliveryActorAccess` (lấy hàng / giao xong / thu tiền).
+ * Lấy hàng & giao hàng (contract §4). Route dưới đây **cố ý không có `@Permissions`**: guard chạy trước khi biết đơn / shipment của ai, nên quyền kiểm trong service: `assertOrderStepAccess` (bước của đơn), `visibleWhere` (xem), `deliveryActorAccess` (lấy hàng / giao xong / thu tiền / tạo lại mã QR).
  */
 @ApiTags('shipments')
 @ApiBearerAuth('bearer')
@@ -103,6 +103,16 @@ export class ShipmentController {
     @Body() dto: PayCashDto,
   ) {
     return this.delivery.payCash(user, requireTenantId(user), id, dto);
+  }
+
+  /** Mã QR đã hết hạn mà khách vẫn muốn chuyển khoản: tạo lại khoản QR mới (mã mới, hạn mới). Còn hạn thì trả nguyên chi tiết. Cùng nhóm người như `deliver`. */
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/reissue-qr')
+  reissueQr(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.delivery.reissueQr(user, requireTenantId(user), id);
   }
 
   /** C-3: chi tiết kèm nhật trình; ngoài phạm vi xem thì 404. */

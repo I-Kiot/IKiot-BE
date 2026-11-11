@@ -35,6 +35,10 @@ import { CarrierType } from './../src/common/constants/shipment-status';
 import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
+import { assertMoneyInvariants } from './helpers/money-invariants';
+import { writePaymentCashFlow } from './../src/modules/orders/order-cash-flow';
+import { syncOrderPaymentStatus } from './../src/modules/orders/payment-status';
+import { CashFlowCategory } from './../src/common/constants/cash-flow-category';
 
 /**
  * Đơn khách tới lấy (STORE_PICKUP) trên Postgres thật: đóng gói xong thì chờ khách ở PACKED, thu số còn lại tại quầy
@@ -134,6 +138,26 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
             : undefined,
       },
     });
+    if (deposit > 0) {
+      // Cọc là một khoản thật: có dòng sổ thu chi và trạng thái thanh toán suy ra, như khi tạo đơn bằng route.
+      const depositPayment = await prisma.payment.findFirstOrThrow({
+        where: { orderId: id, kind: PaymentKind.DEPOSIT },
+        select: { id: true, amount: true, method: true },
+      });
+      await prisma.$transaction(async (tx) => {
+        await writePaymentCashFlow(tx, {
+          tenantId,
+          payment: depositPayment,
+          category: CashFlowCategory.ORDER_PAYMENT,
+          orderId: id,
+          orderCode: `PICK-${id}`,
+          locationId: branchId,
+          createdById: ownerId,
+          description: 'Cọc (fixture)',
+        });
+        await syncOrderPaymentStatus(tx, id);
+      });
+    }
     if (options.pack !== false) await fulfillments.packOrder(owner, id, {});
     return id;
   }
@@ -259,6 +283,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
@@ -271,6 +296,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
     await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.sepayTransaction.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
     await prisma.$disconnect();
   });
@@ -385,6 +411,28 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       ).toBe(FulfillmentStatus.HANDED_OVER);
       expect(await prisma.invoice.count({ where: { orderId: id } })).toBe(1);
       expect(await prisma.shipment.count({ where: { orderId: id } })).toBe(0);
+
+      const events = await prisma.orderEvent.findMany({
+        where: {
+          orderId: id,
+          type: { in: ['PICKUP_COLLECTED', 'PICKUP_HANDED_OVER'] },
+        },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+      expect(events.map((e) => e.type)).toEqual([
+        'PICKUP_COLLECTED',
+        'PICKUP_HANDED_OVER',
+      ]);
+      expect(events[0].metadata).toMatchObject({
+        amount: 700,
+        method: PaymentMethod.CASH,
+        paymentId: payment.id,
+      });
+      expect(events[1]).toMatchObject({
+        fromStatus: OrderStatus.PACKED,
+        toStatus: OrderStatus.COMPLETED,
+        metadata: { receiverName: 'Chị Lan', note: 'Nhận đủ 1 bàn' },
+      });
     });
 
     it('hands over a fully deposited order with nothing to collect', async () => {
@@ -494,6 +542,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       });
       expect(flows.map((flow) => [flow.flowType, Number(flow.amount)])).toEqual(
         [
+          ['INCOME', 300], // cọc (fixture ghi dòng sổ như khi tạo đơn bằng route)
           ['INCOME', 700],
           ['EXPENSE', 1000],
         ],
@@ -512,7 +561,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
         (await prisma.cashFlow.findMany({ where: { orderId: id } })).map(
           (flow) => flow.flowType,
         ),
-      ).toEqual(['INCOME']);
+      ).toEqual(['INCOME', 'INCOME']); // cọc + số thu tại quầy; giữ tiền không ghi thêm dòng nào
     });
 
     it('books a QR transfer once, when the money lands', async () => {
@@ -520,7 +569,8 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       const { payment } = await pickups.collect(owner, tenantId, id, {
         method: DeliveryCollectionMethod.BANK_TRANSFER_QR,
       });
-      expect(await prisma.cashFlow.count({ where: { orderId: id } })).toBe(0);
+      // Chỉ còn dòng cọc: mã QR chờ chưa phải tiền về.
+      expect(await prisma.cashFlow.count({ where: { orderId: id } })).toBe(1);
 
       for (let call = 0; call < 2; call += 1) {
         await delivery.settleSepayBalance(
@@ -530,12 +580,39 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
           700,
         );
       }
-      const flows = await prisma.cashFlow.findMany({ where: { orderId: id } });
+      const flows = await prisma.cashFlow.findMany({
+        where: { orderId: id, paymentMethod: PaymentMethod.SEPAY },
+      });
       expect(flows).toHaveLength(1);
       expect(flows[0]).toMatchObject({
         flowType: 'INCOME',
         paymentMethod: PaymentMethod.SEPAY,
         paymentReference: payment!.reference,
+      });
+
+      // Hiện QR không ghi gì; chỉ lúc tiền về mới có QR_PAID, một lần, do webhook (không có người dùng).
+      const events = await prisma.orderEvent.findMany({
+        where: {
+          orderId: id,
+          type: { in: ['PICKUP_COLLECTED', 'QR_PAID'] },
+        },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'QR_PAID',
+        source: 'WEBHOOK',
+        actorId: null,
+        actorName: null,
+        actorRole: null,
+        // Đơn khách tới lấy vẫn ở quầy chờ giao nên không có chuyển trạng thái.
+        fromStatus: null,
+        toStatus: null,
+        metadata: {
+          amount: 700,
+          method: PaymentMethod.SEPAY,
+          paymentReference: payment!.reference,
+          orderSettled: false,
+        },
       });
     });
 
@@ -568,5 +645,102 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
         ).status,
       ).toBe(PaymentRecordStatus.CANCELLED);
     });
+  });
+
+  describe('money races and ledger rules', () => {
+    it('collects cash once when two requests race: one wins, one Payment, one CashFlow', async () => {
+      const id = await packedPickup();
+      const attempts = await Promise.allSettled([
+        pickups.collect(owner, tenantId, id, {
+          method: DeliveryCollectionMethod.CASH,
+        }),
+        pickups.collect(owner, tenantId, id, {
+          method: DeliveryCollectionMethod.CASH,
+        }),
+      ]);
+      expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+      const loser = attempts.find((a) => a.status === 'rejected');
+      expect([
+        ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
+        ErrorCode.ORDER_STATUS_CONFLICT,
+      ]).toContain(
+        (loser as PromiseRejectedResult).reason?.response?.code as ErrorCode,
+      );
+      const balances = await prisma.payment.findMany({
+        where: { orderId: id, kind: PaymentKind.BALANCE },
+      });
+      expect(balances).toHaveLength(1);
+      expect(
+        await prisma.cashFlow.count({
+          where: { orderId: id, payment: { kind: PaymentKind.BALANCE } },
+        }),
+      ).toBe(1);
+      expect((await orderOf(id)).paymentStatus).toBe(OrderPaymentStatus.PAID);
+    });
+
+    it('books counter cash to the drawer fund at the packing location, with the category', async () => {
+      const id = await packedPickup();
+      await pickups.collect(owner, tenantId, id, {
+        method: DeliveryCollectionMethod.CASH,
+      });
+      const payment = await prisma.payment.findFirstOrThrow({
+        where: { orderId: id, kind: PaymentKind.BALANCE },
+      });
+      // Nơi thu = kho đóng gói (fulfillment), không phải chi nhánh bán.
+      expect(payment.locationId).toBe(warehouseId);
+      const flow = await prisma.cashFlow.findFirstOrThrow({
+        where: { paymentId: payment.id },
+      });
+      expect(flow).toMatchObject({
+        category: 'ORDER_PAYMENT',
+        fund: 'DRAWER',
+        flowType: 'INCOME',
+        locationId: warehouseId,
+      });
+      expect(Number(flow.amount)).toBe(Number(payment.amount));
+    });
+
+    it('cancelling while a collect races: the refund covers the money taken, or the cancel loses with a 409', async () => {
+      const id = await packedPickup();
+      const [collected, cancelled] = await Promise.allSettled([
+        pickups.collect(owner, tenantId, id, {
+          method: DeliveryCollectionMethod.CASH,
+        }),
+        cancels.cancel(owner, tenantId, id, { refundAmount: 300 }),
+      ]);
+      const payments = await prisma.payment.findMany({
+        where: { orderId: id },
+        select: { kind: true, status: true, amount: true },
+      });
+      const paid = (kind: string) =>
+        payments
+          .filter(
+            (p) => p.kind === kind && p.status === PaymentRecordStatus.PAID,
+          )
+          .reduce((sum, p) => sum + Number(p.amount), 0);
+      const order = await orderOf(id);
+      if (order.status === OrderStatus.CANCELLED) {
+        // Huỷ thắng: hoàn đúng số tiền đang giữ lúc đó; thu tiền (nếu có) đã bị loại hoặc nằm trước.
+        expect(cancelled.status).toBe('fulfilled');
+        expect(paid(PaymentKind.REFUND)).toBe(300);
+        if (collected.status === 'fulfilled') {
+          // Thu trước huỷ: số hoàn 300 không đủ trả hết, phần còn lại shop giữ lại có chủ đích (người huỷ chọn số hoàn).
+          expect(paid(PaymentKind.BALANCE)).toBe(700);
+        }
+      } else {
+        // Thu thắng và huỷ thua: 409, không có hoàn tiền nào.
+        expect(order.status).toBe(OrderStatus.PACKED);
+        expect(cancelled.status).toBe('rejected');
+        expect(
+          (cancelled as PromiseRejectedResult).reason?.response?.code,
+        ).toBe(ErrorCode.ORDER_STATUS_CONFLICT);
+        expect(paid(PaymentKind.REFUND)).toBe(0);
+      }
+    });
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
   });
 });

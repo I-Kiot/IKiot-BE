@@ -259,6 +259,7 @@ describe('PATCH /orders/:id – OrderEditService', () => {
       where: { fulfillment: { tenantId } },
     });
     await prisma.fulfillment.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
     await prisma.inventoryLot.deleteMany({ where: { tenantId } });
@@ -488,6 +489,50 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     expect(after.assigneeId).toBe(staffId);
     expect(after.priority).toBe(OrderPriority.HIGH);
     expect(after.items[0].quantity).toBe(2);
+  });
+
+  describe('after money was taken at the counter (2026-11-11)', () => {
+    /** Khách tới lấy đã trả số còn lại tại quầy: một khoản BALANCE PAID trên đơn đã đóng gói. */
+    async function paidAtCounter() {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      const order = await orderRow(id);
+      await prisma.payment.create({
+        data: {
+          tenantId,
+          orderId: id,
+          kind: 'BALANCE',
+          method: 'CASH',
+          amount: Number(order.grandTotal),
+          status: 'PAID',
+          paidAt: new Date(),
+        },
+      });
+      return { id, grandTotal: Number(order.grandTotal) };
+    }
+
+    it('refuses to change the shipping fee or the total, and says why', async () => {
+      const { id } = await paidAtCounter();
+      expect(await codeOf(edit(id, { shippingFee: 300_000 }))).toBe(
+        ErrorCode.ORDER_EDIT_LOCKED_BY_PAYMENT,
+      );
+      expect(Number((await orderRow(id)).shippingFee)).toBe(0);
+    });
+
+    it('refuses a total below what was paid with the amounts, and still allows a note', async () => {
+      const { id, grandTotal } = await paidAtCounter();
+      await expect(
+        edit(id, { discountType: 'ORDER', discountValue: 1_000_000 }),
+      ).rejects.toMatchObject({
+        response: {
+          code: ErrorCode.ORDER_TOTAL_BELOW_PAID,
+          paid: grandTotal,
+          grandTotal: grandTotal - 1_000_000,
+        },
+      });
+      await edit(id, { note: 'khách tự lấy lúc 5 giờ' });
+      expect((await orderRow(id)).note).toBe('khách tự lấy lúc 5 giờ');
+    });
   });
 
   it('refuses any edit once the order is shipping, and a till sale', async () => {
@@ -872,5 +917,116 @@ describe('PATCH /orders/:id – OrderEditService', () => {
     const filtered = await ids({ excludePos: true });
     expect(filtered).toContain(journey);
     expect(filtered).not.toContain(till);
+  });
+
+  describe('action trail', () => {
+    const trail = (id: string) =>
+      prisma.orderEvent.findMany({
+        where: { orderId: id },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+    const types = async (id: string) => (await trail(id)).map((e) => e.type);
+
+    it('records EDITED with the fields that changed and the lines that were added, removed or repriced', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1, unitPrice: 9_000_000 },
+          { productItemId: tableId, quantity: 1 },
+        ],
+      });
+      const sofaLine = await lineOf(id, sofaId);
+      await edit(id, {
+        recipientName: 'Chị Hoa',
+        note: 'giao buổi sáng',
+        shippingFee: 100_000,
+        items: [
+          { id: sofaLine.id, productItemId: sofaId, quantity: 2 },
+          { productItemId: chairId, quantity: 3 },
+        ],
+      });
+
+      const events = await trail(id);
+      expect(events.map((e) => e.type)).toEqual(['CREATED', 'EDITED']);
+      const edited = events[1];
+      expect(edited).toMatchObject({
+        source: 'USER',
+        actorId: ownerId,
+        actorRole: 'TENANT_OWNER',
+        fromStatus: null,
+        toStatus: null,
+      });
+      expect(edited.changes).toMatchObject({
+        recipientName: { from: 'Khách e2e', to: 'Chị Hoa' },
+        note: { from: null, to: 'giao buổi sáng' },
+        shippingFee: { from: 0, to: 100_000 },
+        grandTotal: { from: 11_000_000, to: 19_600_000 },
+      });
+      // Trường không gửi hoặc không đổi không có mặt.
+      expect(edited.changes).not.toHaveProperty('recipientPhone');
+      expect(edited.changes).not.toHaveProperty('deliveryAddress');
+      expect(edited.metadata).toMatchObject({
+        lines: {
+          added: [{ name: 'Ghế ăn', sku: expect.any(String), quantity: 3 }],
+          removed: [{ name: 'Bàn ăn', sku: expect.any(String), quantity: 1 }],
+          changed: [
+            {
+              name: 'Sofa',
+              sku: expect.any(String),
+              quantity: { from: 1, to: 2 },
+            },
+          ],
+        },
+      });
+    });
+
+    it('records the person in charge by name through both routes, and the priority', async () => {
+      const id = await createOrder();
+      await edits.setAssignee(owner, tenantId, id, { assigneeId: staffId });
+      await edit(id, { assigneeId: ownerId, priority: OrderPriority.HIGH });
+      await edits.setPriority(owner, tenantId, id, {
+        priority: OrderPriority.URGENT,
+      });
+
+      const events = await trail(id);
+      expect(events.map((e) => e.type)).toEqual([
+        'CREATED',
+        'ASSIGNEE_CHANGED',
+        'ASSIGNEE_CHANGED',
+        'PRIORITY_CHANGED',
+        'PRIORITY_CHANGED',
+      ]);
+      const [, first, second, high, urgent] = events;
+      // Nhân viên chưa có tên nên hiện số điện thoại; tên, không phải id, nằm trong changes.
+      expect(first.changes).toEqual({
+        assignee: { from: `edit-${ownerId}`, to: `edit-${staffId}` },
+      });
+      expect(first.metadata).toMatchObject({ fromId: ownerId, toId: staffId });
+      expect(second.changes).toEqual({
+        assignee: { from: `edit-${staffId}`, to: `edit-${ownerId}` },
+      });
+      expect(high.changes).toEqual({
+        priority: { from: 'NORMAL', to: 'HIGH' },
+      });
+      expect(urgent.changes).toEqual({
+        priority: { from: 'HIGH', to: 'URGENT' },
+      });
+    });
+
+    it('writes nothing for an edit that changes nothing', async () => {
+      const id = await createOrder({ recipientName: 'A' });
+      await edit(id, { recipientName: 'A', note: '' });
+      await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+      await edits.setPriority(owner, tenantId, id, {
+        priority: OrderPriority.NORMAL,
+      });
+      expect(await types(id)).toEqual(['CREATED']);
+    });
+
+    it('leaves no event behind when the edit is refused', async () => {
+      const id = await createOrder();
+      await codeOf(edit(id, { assigneeId: randomUUID() }));
+      await codeOf(edit(id, { deliveryAddress: '' }));
+      expect(await types(id)).toEqual(['CREATED']);
+    });
   });
 });

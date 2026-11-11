@@ -1,5 +1,8 @@
 import {
   averageOrderValue,
+  businessDatesOf,
+  previousBusinessDates,
+  vietnamDateOf,
   changePct,
   comparisonWindows,
   countByKey,
@@ -208,5 +211,30 @@ describe('exceedsHourlyRange', () => {
   it('từ chối khoảng dài hơn 31 ngày', () => {
     const to = new Date(from.getTime() + 31 * MS_PER_DAY + 1);
     expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(true);
+  });
+});
+
+describe('business dates (sổ doanh thu)', () => {
+  it('maps instants to the Vietnam calendar day', () => {
+    // 23:30 giờ VN ngày 10/11 = 16:30 UTC cùng ngày; 00:30 giờ VN ngày 11/11 = 17:30 UTC ngày 10/11.
+    expect(vietnamDateOf(new Date('2026-11-10T16:30:00Z'))).toBe('2026-11-10');
+    expect(vietnamDateOf(new Date('2026-11-10T17:30:00Z'))).toBe('2026-11-11');
+  });
+
+  it('a plain-date range covers whole local days', () => {
+    const range = resolveRange('2026-11-01', '2026-11-30');
+    expect(businessDatesOf(range)).toEqual({
+      from: '2026-11-01',
+      to: '2026-11-30',
+    });
+  });
+
+  it('the previous range is the same number of days, directly before, no overlap', () => {
+    expect(
+      previousBusinessDates({ from: '2026-11-01', to: '2026-11-30' }),
+    ).toEqual({ from: '2026-10-02', to: '2026-10-31' });
+    expect(
+      previousBusinessDates({ from: '2026-11-11', to: '2026-11-11' }),
+    ).toEqual({ from: '2026-11-10', to: '2026-11-10' });
   });
 });

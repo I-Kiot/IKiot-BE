@@ -1,4 +1,7 @@
-import { resolveEditedDeposit } from './order-edit.service';
+import {
+  assertEditAllowedByPayments,
+  resolveEditedDeposit,
+} from './order-edit.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 
 const codeOf = (fn: () => unknown): unknown => {
@@ -88,5 +91,72 @@ describe('resolveEditedDeposit', () => {
         }),
       ),
     ).toBe(ErrorCode.ORDER_DEPOSIT_EXCEEDS_TOTAL);
+  });
+});
+
+describe('assertEditAllowedByPayments', () => {
+  const paid = (kind: string, amount: number) => ({
+    kind,
+    status: 'PAID',
+    amount,
+  });
+
+  it('lets a deposit-only order through: the deposit rules decide', () => {
+    expect(() =>
+      assertEditAllowedByPayments([paid('DEPOSIT', 500)], {
+        grandTotal: 100,
+        moneyChanged: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('locks the money once the balance was collected', () => {
+    expect(
+      codeOf(() =>
+        assertEditAllowedByPayments(
+          [paid('DEPOSIT', 300), paid('BALANCE', 700)],
+          {
+            grandTotal: 1500,
+            moneyChanged: true,
+          },
+        ),
+      ),
+    ).toBe(ErrorCode.ORDER_EDIT_LOCKED_BY_PAYMENT);
+  });
+
+  it('names a total below what was paid, with both numbers', () => {
+    try {
+      assertEditAllowedByPayments([paid('FULL', 1000)], {
+        grandTotal: 900,
+        moneyChanged: true,
+      });
+      throw new Error('should have thrown');
+    } catch (error) {
+      expect((error as { getResponse(): unknown }).getResponse()).toMatchObject(
+        {
+          code: ErrorCode.ORDER_TOTAL_BELOW_PAID,
+          paid: 1000,
+          grandTotal: 900,
+        },
+      );
+    }
+  });
+
+  it('still allows an edit that touches no money', () => {
+    expect(() =>
+      assertEditAllowedByPayments([paid('FULL', 1000)], {
+        grandTotal: 1000,
+        moneyChanged: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it('ignores a collection that is still waiting for its transfer', () => {
+    expect(() =>
+      assertEditAllowedByPayments(
+        [{ kind: 'BALANCE', status: 'PENDING', amount: 700 }],
+        { grandTotal: 1500, moneyChanged: true },
+      ),
+    ).not.toThrow();
   });
 });

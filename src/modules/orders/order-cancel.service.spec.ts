@@ -37,7 +37,6 @@ describe('resolveRefund', () => {
         held: 10_000_000,
         amount: 10_000_000,
         refundOfPaymentId: balance.id,
-        paymentStatus: 'REFUNDED',
       });
     });
 
@@ -88,7 +87,6 @@ describe('resolveRefund', () => {
       amount: 3_000_000,
       method: 'CASH',
       refundOfPaymentId: deposit.id,
-      paymentStatus: 'REFUNDED',
     });
   });
 
@@ -96,14 +94,12 @@ describe('resolveRefund', () => {
     expect(resolveRefund([deposit], 1_000_000, 'BANK_TRANSFER')).toMatchObject({
       amount: 1_000_000,
       method: 'BANK_TRANSFER',
-      paymentStatus: 'PARTIALLY_REFUNDED',
     });
   });
 
   it('keeps it all when the refund is 0', () => {
     expect(resolveRefund([deposit], 0, undefined)).toMatchObject({
       amount: 0,
-      paymentStatus: null,
     });
   });
 
@@ -118,7 +114,6 @@ describe('resolveRefund', () => {
     );
     expect(resolveRefund(rows, 2_500_000, undefined)).toMatchObject({
       held: 2_500_000,
-      paymentStatus: 'REFUNDED',
     });
   });
 

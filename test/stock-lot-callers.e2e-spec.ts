@@ -152,6 +152,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     if (!prisma) return;
     const where = { tenantId };
     await prisma.cashFlow.deleteMany({ where });
+    await prisma.payment.deleteMany({ where });
     await prisma.inventoryTransaction.deleteMany({ where });
     await prisma.inventoryLot.deleteMany({
       where: { tenantId, parentLotId: { not: null } },

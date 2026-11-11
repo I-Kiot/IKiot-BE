@@ -345,6 +345,16 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     ]).toContain(loser?.reason?.response?.code);
     expect(await prisma.fulfillment.count({ where: { orderId } })).toBe(1);
     expect(await wardrobeStock()).toMatchObject({ stock: 5, lockedStock: 3 });
+    // Người thua không để lại gì trong nhật ký: chỉ một PACKED.
+    const trail = await prisma.orderEvent.findMany({
+      where: { orderId, type: 'PACKED' },
+    });
+    expect(trail).toHaveLength(1);
+    expect(trail[0]).toMatchObject({
+      fromStatus: 'CONFIRMED',
+      toStatus: 'PACKED',
+      source: 'USER',
+    });
   });
 
   it('warns when packing takes the shelf down to the threshold', () => {
@@ -373,6 +383,12 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     expect(
       await prisma.fulfillment.count({
         where: { orderId: { in: [first, second] } },
+      }),
+    ).toBe(1);
+    // Chỉ đơn thắng có PACKED; đơn thua (rollback cả transaction) không có PACKED.
+    expect(
+      await prisma.orderEvent.count({
+        where: { orderId: { in: [first, second] }, type: 'PACKED' },
       }),
     ).toBe(1);
     // Trên kệ đã ở dưới ngưỡng từ trước: không cảnh báo lại (edge-triggered).

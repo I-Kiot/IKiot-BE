@@ -15,8 +15,14 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
+import { sepayTransferFromPayload } from './sepay-qr';
+import { SepayRejectReason } from '../../common/constants/payment-method';
 import { ManualOrderService } from './manual-order.service';
 import { OrderCancelService } from './order-cancel.service';
+import { OrderExcessRefundService } from './order-excess-refund.service';
+import { RefundExcessDto } from './dto/refund-excess.dto';
+import { OrderHeldSettleService } from './order-held-settle.service';
+import { SettleHeldDto } from './dto/settle-held.dto';
 import { OrderEditService } from './order-edit.service';
 import { OrderCustomizationService } from './order-customization.service';
 import { OrderRemittanceService } from './order-remittance.service';
@@ -30,6 +36,7 @@ import {
   UpdateOrderDto,
 } from './dto/update-order.dto';
 import {
+  CancelPosSaleDto,
   CreatePosOrderDto,
   PayOfflineOrderDto,
   UpdateOrderStatusDto,
@@ -62,6 +69,8 @@ export class OrderController {
     private readonly shipments: ShipmentService,
     private readonly manualOrders: ManualOrderService,
     private readonly cancels: OrderCancelService,
+    private readonly excessRefunds: OrderExcessRefundService,
+    private readonly heldSettle: OrderHeldSettleService,
     private readonly reads: OrderReadService,
     private readonly edits: OrderEditService,
     private readonly customizations: OrderCustomizationService,
@@ -81,6 +90,34 @@ export class OrderController {
   @Post('pos')
   createPosSale(@CurrentUser() user: AuthUser, @Body() dto: CreatePosOrderDto) {
     return this.service.createPosSale(user, requireTenantId(user), dto);
+  }
+
+  /**
+   * "Hủy đơn này" trên màn QR của quầy: huỷ đơn quầy đang chờ QR, trả hàng về kho. `orders:create` hoặc `orders:update` là qua cửa; người chỉ có `create` chỉ huỷ được đơn do chính mình lên (service kiểm).
+   * Khai báo trên `:id` để "pos" không bị đọc thành mã đơn.
+   */
+  @Permissions('orders', 'create', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('pos/:id/cancel')
+  cancelPosSale(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelPosSaleDto,
+  ) {
+    return this.service.cancelPosSale(user, requireTenantId(user), id, dto);
+  }
+
+  /**
+   * Phát mã QR cho phần còn lại của đơn quầy chờ SePay (khách chuyển thiếu, hay mã cũ hết hạn mà đơn chưa bị huỷ). Quyền như "Hủy đơn này": `orders:create` (chỉ đơn của mình) hoặc `orders:update`. Trả `{ order, qrUrl, qrExpiresAt, amount }`.
+   */
+  @Permissions('orders', 'create', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('pos/:id/qr')
+  createPosQr(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.createPosQr(user, requireTenantId(user), id);
   }
 
   /** Danh sách hành trình (A-9), là tập cha của những gì POS đang đọc từ route này. */
@@ -114,6 +151,16 @@ export class OrderController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.reads.findOne(user, requireTenantId(user), id);
+  }
+
+  /** Nhật ký thao tác trên đơn (cũ nhất trước, không phân trang). Cùng quyền và phạm vi chi nhánh với `GET /orders/:id`. */
+  @Permissions('orders', 'read')
+  @Get(':id/events')
+  events(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.reads.events(user, requireTenantId(user), id);
   }
 
   /** Sửa đơn hành trình trước khi giao (A-8). Chỉ sửa dòng khi còn CONFIRMED; đã đóng gói thì hàng bị khóa trên kệ (contract §2). */
@@ -270,6 +317,35 @@ export class OrderController {
     return this.cancels.cancel(user, requireTenantId(user), id, dto);
   }
 
+  /** Quyết định tiền treo của đơn đã kết thúc (hoàn hoặc giữ làm thu nhập khác). Quyền `returns:inspect` như `refund-excess`. */
+  @Permissions('returns', 'inspect')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/settle-held')
+  settleHeld(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SettleHeldDto,
+  ) {
+    return this.heldSettle.settle(user, requireTenantId(user), id, dto);
+  }
+
+  /** Hoàn phần khách chuyển dư của đơn đã chốt (Phase 6). Dùng quyền kiểm hàng trả `returns:inspect` (không có quyền hoàn tiền riêng, quyết định D1). */
+  @Permissions('returns', 'inspect')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/refund-excess')
+  refundExcess(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RefundExcessDto,
+  ) {
+    return this.excessRefunds.refundExcess(
+      user,
+      requireTenantId(user),
+      id,
+      dto,
+    );
+  }
+
   /** Chốt đơn SePay đã trả bằng cách khác. Có một trong hai quyền là đủ, khớp với authorize orders update / pay_offline cũ, để role chỉ có `orders:update` không mất quyền khi port sang. */
   @Permissions('orders', 'update', 'pay_offline')
   @HttpCode(HttpStatus.OK)
@@ -312,47 +388,69 @@ export class SepayOrderWebhookController {
 
       // SePay gửi "Apikey <key>", không phải "Bearer <key>".
       const apiKey = authHeader?.replace(/^Apikey\s+/i, '').trim() ?? '';
+      // Giao dịch chuẩn hoá một lần, kèm khoá chống lặp: không có mã giao dịch thì dùng mã ngân hàng hoặc băm các trường (`sepayDedupeKey`).
+      const transfer = sepayTransferFromPayload(payload);
+      const content =
+        typeof payload.content === 'string' ? payload.content : '';
+      const reference = this.sepay.extractOrderReference(content);
+
       const tenant = await this.sepay.resolveTenant(apiKey, payload);
       if (!tenant) {
+        // Chỉ khi webhook dùng key dùng chung (SePay thật, chưa biết tài khoản của shop nào) mới ghi sổ "tài khoản không thuộc shop nào" và báo operator; key sai / thiếu thì không ghi gì, để kẻ lạ không làm đầy sổ.
+        if (this.sepay.isSharedKey(apiKey) && transfer.amount > 0) {
+          const recorded = await this.sepay.recordUnmatched(
+            null,
+            transfer,
+            reference,
+            SepayRejectReason.UNKNOWN_TENANT,
+          );
+          return { success: true, message: recorded.message };
+        }
         return { success: false, message: 'Unknown API key or account' };
       }
+      // Không có tiền (số 0 / không phải số) thì không có gì để ghi sổ.
+      if (!(transfer.amount > 0)) {
+        return { success: true, message: 'No amount to record' };
+      }
 
-      const reference = this.sepay.extractOrderReference(
-        typeof payload.content === 'string' ? payload.content : '',
-      );
       if (!reference) {
-        return { success: false, message: 'No order reference found' };
+        const recorded = await this.sepay.recordUnmatched(
+          tenant.id,
+          transfer,
+          null,
+          SepayRejectReason.NO_REFERENCE,
+        );
+        return { success: true, message: recorded.message };
       }
 
-      // SePay gửi mã giao dịch dạng số; request sai thì trả `null` chứ không phải `''`, vì chuỗi rỗng sẽ bị người đối soát hiểu là "đã có mã".
-      const transactionId =
-        typeof payload.id === 'string' || typeof payload.id === 'number'
-          ? String(payload.id)
-          : null;
-
-      const transferAmount = Number(payload.transferAmount ?? 0);
-
-      // 1. Bán tại quầy: mã nằm trên đơn (`Order.paymentReference`).
-      const order = await this.service.completeSepayOrder(
+      // 1. Bán tại quầy: mã nằm trên khoản thanh toán của đơn quầy.
+      const order = await this.service.completeSepayTransfer(
         tenant.id,
         reference,
-        transactionId,
-        transferAmount,
+        transfer,
       );
+      // Trùng giao dịch, tiền về muộn bị từ chối, chuyển thiếu: đều đã ghi sổ (+ báo chủ shop / người thu) nên trả success: true để SePay thôi gọi lại.
       if (order) {
-        return { success: true, message: 'Order payment confirmed' };
+        return { success: true, message: order.message };
       }
 
-      // 2. Thu tiền QR lúc giao (C-5): mã nằm trên khoản thanh toán (`Payment.paymentReference`).
-      const handled = await this.delivery.settleSepayBalance(
+      // 2. Thu tiền QR lúc giao / tại quầy (C-5): mã nằm trên khoản thanh toán của đơn có giao / khách tới lấy.
+      const handled = await this.delivery.settleSepayTransfer(
         tenant.id,
         reference,
-        transactionId,
-        transferAmount,
+        transfer,
       );
-      return handled
-        ? { success: true, message: 'Delivery payment processed' }
-        : { success: false, message: 'Order not found or already processed' };
+      if (handled)
+        return { success: true, message: 'Delivery payment processed' };
+
+      // 3. Có mã ORD nhưng không khoản nào của shop mang mã đó: vẫn là tiền thật đã về, ghi sổ để đối soát.
+      const recorded = await this.sepay.recordUnmatched(
+        tenant.id,
+        transfer,
+        reference,
+        SepayRejectReason.UNKNOWN_REFERENCE,
+      );
+      return { success: true, message: recorded.message };
     } catch (error) {
       return {
         success: false,

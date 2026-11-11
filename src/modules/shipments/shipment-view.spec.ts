@@ -33,12 +33,12 @@ describe('amountStillDueOf', () => {
     expect(amountStillDueOf(order(430000, 100000))).toBe(330000);
   });
 
-  it('adds back a refund and never goes below zero', () => {
+  it('owes nothing once a refund exists, and never goes below zero', () => {
     const refunded = [
       { kind: 'FULL', status: 'PAID', amount: 430000 },
       { kind: 'REFUND', status: 'PAID', amount: 100000 },
     ];
-    expect(amountStillDueOf(order(430000, null, refunded))).toBe(100000);
+    expect(amountStillDueOf(order(430000, null, refunded))).toBe(0);
     const over = [{ kind: 'FULL', status: 'PAID', amount: 500000 }];
     expect(amountStillDueOf(order(430000, null, over))).toBe(0);
   });

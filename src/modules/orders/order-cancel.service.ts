@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -14,17 +13,14 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import {
   FulfillmentType,
   OrderItemStatus,
-  OrderPaymentStatus,
   OrderStatus,
 } from '../../common/constants/order-status';
-import {
-  PaymentKind,
-  PaymentMethod,
-  PaymentRecordStatus,
-} from '../../common/constants/payment-method';
-import { FlowType } from '../stats/stats.constants';
-import { writePaymentCashFlow } from './order-cash-flow';
-import { pendingCounterQr } from './order-pickup.rules';
+import { recordRefundPayment, resolveRefund } from './order-refund';
+import { lockOrder } from './order-lock';
+import { postOtherIncome } from './sales-journal';
+import { SalesJournalSource } from '../../common/constants/sales-journal';
+import { syncOrderPaymentStatus } from './payment-status';
+import { openCounterQr } from './order-pickup.rules';
 import { cancelCounterQr } from './order-pickup.service';
 import { FulfillmentStatus } from '../../common/constants/fulfillment-status';
 import {
@@ -34,113 +30,21 @@ import {
 import { OPEN_PRODUCTION_REQUEST_STATUSES } from '../../common/constants/production-request-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import { recordOrderEvent, userActor } from './order-events';
 
 const LOCKING_FULFILLMENT_STATUSES: readonly string[] = [
   FulfillmentStatus.PACKED,
   FulfillmentStatus.HANDED_OVER,
 ];
 
-export interface DepositPaymentRow {
-  id: string;
-  kind: string;
-  status: string;
-  method: string;
-  amount: number;
-  createdAt: Date;
-}
-
-export interface ResolvedRefund {
-  held: number;
-  amount: number;
-  method: string;
-  refundOfPaymentId: string;
-  /** Null: giữ nguyên trạng thái thanh toán của đơn. */
-  paymentStatus: string | null;
-}
-
-/** Cọc shop còn giữ: tổng cọc PAID trừ tổng hoàn PAID. Dùng để kiểm tra khi sửa đơn (A-8); hoàn khi huỷ còn tính cả khoản thu tại quầy (`resolveRefund`). */
-export function depositHeld(
-  payments: readonly Pick<DepositPaymentRow, 'kind' | 'status' | 'amount'>[],
-): number {
-  const paid = payments.filter((p) => p.status === PaymentRecordStatus.PAID);
-  const sum = (kind: string) =>
-    paid
-      .filter((p) => p.kind === kind)
-      .reduce((total, p) => total + p.amount, 0);
-  return sum(PaymentKind.DEPOSIT) - sum(PaymentKind.REFUND);
-}
-
-/** Khoản shop đã thu của đơn còn huỷ được: cọc, và số còn lại nếu là đơn khách tới lấy đã thu tại quầy. Đơn giao tận nơi chỉ có BALANCE sau khi giao, lúc đó đã không huỷ được nữa. */
-const REFUNDABLE_KINDS: readonly string[] = [
-  PaymentKind.DEPOSIT,
-  PaymentKind.BALANCE,
-];
-
-/**
- * Hoàn tiền khi huỷ (A-5): người huỷ tự chọn số tiền hoàn, từ 0 (shop giữ lại) tới toàn bộ số đang giữ. Không có mặc định vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. Null khi không có gì để hoàn và không giữ gì.
- */
-export function resolveRefund(
-  payments: readonly DepositPaymentRow[],
-  refundAmount: number | undefined,
-  refundMethod: string | undefined,
-): ResolvedRefund | null {
-  const received = payments
-    .filter(
-      (p) =>
-        p.status === PaymentRecordStatus.PAID &&
-        REFUNDABLE_KINDS.includes(p.kind),
-    )
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  const refunded = payments
-    .filter(
-      (p) =>
-        p.status === PaymentRecordStatus.PAID && p.kind === PaymentKind.REFUND,
-    )
-    .reduce((total, p) => total + p.amount, 0);
-  const held = received.reduce((total, p) => total + p.amount, 0) - refunded;
-
-  if (held <= 0) {
-    if (refundAmount) {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_REFUND_EXCEEDS_DEPOSIT,
-        message: 'This order holds no money to refund',
-      });
-    }
-    return null;
-  }
-  if (refundAmount === undefined) {
-    throw new BadRequestException({
-      code: ErrorCode.ORDER_REFUND_AMOUNT_REQUIRED,
-      message: `The order holds ${held}; say how much of it is refunded (0 keeps it)`,
-    });
-  }
-  const amount = Math.round(refundAmount);
-  if (amount > held) {
-    throw new BadRequestException({
-      code: ErrorCode.ORDER_REFUND_EXCEEDS_DEPOSIT,
-      message: `A refund of ${amount} exceeds the money held (${held})`,
-    });
-  }
-  const [latest] = received;
-  return {
-    held,
-    amount,
-    // SePay chỉ báo tiền vào, không chuyển tiền ra: khoản thu qua QR được hoàn bằng chuyển khoản.
-    method:
-      refundMethod ??
-      (latest.method === PaymentMethod.SEPAY
-        ? PaymentMethod.BANK_TRANSFER
-        : latest.method),
-    refundOfPaymentId: latest.id,
-    // Không hoàn gì thì khoản đã thu không đổi, nên giữ nguyên trạng thái thanh toán của đơn.
-    paymentStatus:
-      amount === 0
-        ? null
-        : amount === held
-          ? OrderPaymentStatus.REFUNDED
-          : OrderPaymentStatus.PARTIALLY_REFUNDED,
-  };
-}
+// `resolveRefund` & co. nằm trong `order-refund.ts` (đơn quầy cũng dùng, mà `orders.service.ts` không import được file này vì vòng phụ thuộc); xuất lại ở đây cho các nơi đã import từ đây.
+export {
+  depositHeld,
+  resolveRefund,
+  type DepositPaymentRow,
+  type ResolvedRefund,
+} from './order-refund';
 
 /**
  * `POST /orders/:id/cancel` (A-5): hủy đơn hành trình khi hàng chưa rời kho, tức CONFIRMED, PACKED hoặc PICKED_UP.
@@ -209,11 +113,6 @@ export class OrderCancelService {
       });
     }
 
-    const refund = resolveRefund(
-      order.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
-      dto.refundAmount,
-      dto.refundMethod,
-    );
     const labels = new Map(
       order.items.map((item) => [
         item.id,
@@ -225,18 +124,34 @@ export class OrderCancelService {
     );
     const now = new Date();
 
-    await this.prisma.$transaction(async (tx) => {
-      // Chiếm đơn theo status vừa đọc: đóng gói hoặc bàn giao chạy đua với hủy thì một bên thắng trọn, bên kia bị từ chối.
+    const refund = await this.prisma.$transaction(async (tx) => {
+      let refundPaymentId: string | undefined;
+      // Khoá đơn trước rồi đọc lại các khoản và tính hoàn tiền TRONG transaction: một lần thu tại quầy chạy đua với huỷ thì hoặc xếp hàng và được hoàn theo, hoặc lệnh chiếm bên dưới thua (409). Trước đây số hoàn tính từ lúc đọc, ngoài transaction.
+      if (!(await lockOrder(tx, tenantId, id))) {
+        throw new NotFoundException({
+          code: ErrorCode.ORDER_NOT_FOUND,
+          message: 'Order not found',
+        });
+      }
+      const payments = await tx.payment.findMany({ where: { orderId: id } });
+      const refund = resolveRefund(
+        payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+        dto.refundAmount,
+        dto.refundMethod,
+      );
+      // Chiếm đơn theo status và bản ghi vừa đọc: đóng gói, bàn giao, thu tiền hay sửa đơn chạy đua với hủy thì một bên thắng trọn, bên kia bị từ chối.
       const claimed = await tx.order.updateMany({
-        where: { id, tenantId, status: order.status },
+        where: {
+          id,
+          tenantId,
+          status: order.status,
+          updatedAt: order.updatedAt,
+        },
         data: {
           status: OrderStatus.CANCELLED,
           cancelledById: user.userId,
           cancelledAt: now,
           cancelReason: dto.reason || null,
-          ...(refund?.paymentStatus
-            ? { paymentStatus: refund.paymentStatus }
-            : {}),
         },
       });
       if (claimed.count !== 1) {
@@ -247,7 +162,7 @@ export class OrderCancelService {
       }
 
       // Mã QR thu tại quầy hết hiệu lực; tiền vừa về đúng lúc này thì dừng để người huỷ thấy và hoàn cả khoản đó.
-      await cancelCounterQr(tx, pendingCounterQr(order.payments));
+      await cancelCounterQr(tx, openCounterQr(payments), user.userId, now);
 
       // Đơn hủy được chưa bao giờ COMPLETED nên hóa đơn chưa phát hành: chỉ cần thu hồi.
       await this.invoices.voidPending(tx, id);
@@ -284,35 +199,43 @@ export class OrderCancelService {
 
       if (refund && refund.amount > 0) {
         // Tiền hoàn là dòng REFUND gắn với khoản thu gần nhất, và là một dòng chi trong sổ. Phần shop giữ lại không ghi thêm: dòng thu lúc nhận tiền vẫn còn.
-        const payment = await tx.payment.create({
-          data: {
-            tenantId,
-            orderId: id,
-            kind: PaymentKind.REFUND,
-            method: refund.method,
-            amount: refund.amount,
-            status: PaymentRecordStatus.PAID,
-            paidAt: now,
-            refundOfPaymentId: refund.refundOfPaymentId,
-            locationId: order.branchId,
-            createdById: user.userId,
-            note: dto.reason || null,
-          },
-          select: { id: true },
-        });
-        await writePaymentCashFlow(tx, {
-          tenantId,
-          paymentId: payment.id,
-          orderId: id,
-          orderCode: order.code,
-          flowType: FlowType.EXPENSE,
+        const payment = await recordRefundPayment(tx, {
+          order,
           amount: refund.amount,
           method: refund.method,
-          locationId: order.branchId,
-          createdById: user.userId,
+          refundOfPaymentId: refund.refundOfPaymentId,
+          actorId: user.userId,
+          note: dto.reason || null,
           description: `Hoàn tiền huỷ đơn ${order.code}`,
+          now,
         });
+        refundPaymentId = payment.id;
       }
+      // Trạng thái thanh toán suy ra từ các khoản (hoàn hết → REFUNDED, hoàn một phần → PARTIALLY_REFUNDED, giữ cọc → vẫn PARTIALLY_PAID).
+      const afterCancel = await syncOrderPaymentStatus(tx, id);
+      // Tiền shop giữ lại sau khi hoàn (cọc không hoàn) là thu nhập khác, ghi vào ngày huỷ (quyết định D3 / Phase 7).
+      await postOtherIncome(tx, {
+        orderId: id,
+        kept: afterCancel.net,
+        actor: { id: user.userId },
+        now,
+        source: SalesJournalSource.ORDER_CANCEL,
+      });
+      // Ghi cuối transaction để mang theo khoản hoàn vừa tạo; vẫn chỉ tới được đây khi lệnh chiếm đã thành công.
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: id,
+        type: OrderEventType.CANCELLED,
+        fromStatus: order.status,
+        toStatus: OrderStatus.CANCELLED,
+        metadata: {
+          reason: dto.reason || null,
+          refundAmount: refund?.amount ?? 0,
+          refundMethod: refund && refund.amount > 0 ? refund.method : null,
+          paymentId: refundPaymentId,
+        },
+      });
+      return refund;
     });
 
     const openProductionRequests =

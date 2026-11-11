@@ -473,6 +473,30 @@ export const ErrorCode = {
   ORDER_PICKUP_ALREADY_COLLECTED: 'ORDER_PICKUP_ALREADY_COLLECTED',
   /** Tạo nhân viên không chọn chi nhánh, kho hay xưởng nào. */
   STAFF_WORKPLACE_REQUIRED: 'STAFF_WORKPLACE_REQUIRED',
+  /** Mã QR SePay đã hết hạn (15 phút từ lúc phát): không phát lại mã cũ. Chỉ `sepayQrView(..., 'issue')` / `assertQrPayable` ném; `errors.expiresAt` là hạn đã qua. Thu tiền mặt hoặc tạo mã mới. */
+  QR_PAYMENT_EXPIRED: 'QR_PAYMENT_EXPIRED',
+  /** Đơn quầy đang chờ SePay không chuyển COMPLETED bằng PATCH status (đó là chốt đơn không có tiền): dùng `POST /orders/:id/pay-offline`. */
+  ORDER_USE_PAY_OFFLINE: 'ORDER_USE_PAY_OFFLINE',
+  /** Đơn đã có khoản thu (FULL / BALANCE) nên tổng tiền, phí giao, cọc và các dòng không sửa được nữa: huỷ rồi tạo lại, hay trả hàng. */
+  ORDER_EDIT_LOCKED_BY_PAYMENT: 'ORDER_EDIT_LOCKED_BY_PAYMENT',
+  /** Tổng đơn mới thấp hơn số tiền shop đang giữ của đơn. Kèm `paid` và `grandTotal` ở thân lỗi. */
+  ORDER_TOTAL_BELOW_PAID: 'ORDER_TOTAL_BELOW_PAID',
+  /** Phiếu kho vừa bị người khác đổi trạng thái (mở, chốt, xuất, nhận, duyệt, huỷ) giữa lúc đọc và ghi: tải lại. */
+  STOCK_MOVEMENT_CONFLICT: 'STOCK_MOVEMENT_CONFLICT',
+
+  /** Không có giao dịch SePay đó trong shop (hoặc là của shop khác). */
+  SEPAY_TRANSACTION_NOT_FOUND: 'SEPAY_TRANSACTION_NOT_FOUND',
+  /** Giao dịch SePay đã được xử lý (`resolved_at` đã có): mỗi giao dịch chỉ xử lý một lần. */
+  SEPAY_TRANSACTION_ALREADY_RESOLVED: 'SEPAY_TRANSACTION_ALREADY_RESOLVED',
+  /** `REFUNDED_MANUALLY` chỉ cho giao dịch đã ghi sổ thu chi `UNALLOCATED_RECEIPT` (tiền về không gắn được đơn): phần trả dư của đơn đã chốt hoàn bằng route hoàn tiền của đơn. */
+  SEPAY_TRANSACTION_NOT_REFUNDABLE: 'SEPAY_TRANSACTION_NOT_REFUNDABLE',
+
+  /** Số hoàn vượt số tiền shop đang giữ của đơn (đã thu trừ hoàn trừ thối), hoặc vượt phần khách trả dư ở `refund-excess`. Thân lỗi có `held` / `max`. */
+  ORDER_REFUND_EXCEEDS_PAID: 'ORDER_REFUND_EXCEEDS_PAID',
+  /** Kiểm hàng trả của đơn đang giữ tiền phải nói rõ số hoàn (0 = shop giữ lại), vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. */
+  ORDER_RETURN_REFUND_REQUIRED: 'ORDER_RETURN_REFUND_REQUIRED',
+  /** `POST /orders/:id/settle-held`: đơn không có tiền treo chưa quyết định (đơn chưa kết thúc, đã ghi thu nhập khác, hoặc đã hoàn / giữ hết). Cũng là kết quả của bấm lần hai. */
+  ORDER_NO_HELD_MONEY: 'ORDER_NO_HELD_MONEY',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -10,7 +10,8 @@ export {
 export const VALID_ORDER_TRANSITIONS: Readonly<
   Record<string, readonly string[]>
 > = {
-  [OrderStatus.PENDING]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
+  // Đơn quầy chờ SePay chỉ huỷ được bằng PATCH status; chốt COMPLETED là `pay-offline` hoặc webhook (PATCH → COMPLETED trước đây ghi tiền không có thật).
+  [OrderStatus.PENDING]: [OrderStatus.CANCELLED],
   [OrderStatus.COMPLETED]: [OrderStatus.RETURNED],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.RETURNED]: [],

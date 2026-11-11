@@ -301,10 +301,26 @@ async function receiveGoods(
     })),
     skipDuplicates: true,
   });
-  await tx.supplier.update({
+  const supplier = await tx.supplier.update({
     where: { id: args.supplierId },
     data: { outstandingDebt: { increment: total } },
+    select: { outstandingDebt: true },
   });
+  // Mỗi lần nợ đổi có một dòng sổ (bất biến: outstanding_debt = Σ sổ).
+  if (total > 0) {
+    await tx.supplierDebtEntry.create({
+      data: {
+        tenantId: args.tenantId,
+        supplierId: args.supplierId,
+        entryType: 'CHARGE',
+        amount: total,
+        balanceAfter: supplier.outstandingDebt,
+        referenceType: 'STOCK_MOVEMENT',
+        referenceId: movement.id,
+        createdById: args.actorId,
+      },
+    });
+  }
 }
 
 async function main() {

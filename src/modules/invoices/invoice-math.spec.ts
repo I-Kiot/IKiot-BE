@@ -1,29 +1,44 @@
-import {
-  nextInvoiceNumber,
-  returnedValue,
-  saleLines,
-  saleTotal,
-} from './invoice-math';
+import { nextInvoiceNumber, saleLines, saleTotal } from './invoice-math';
+
+const item = (
+  id: string,
+  quantity: number,
+  returnedQuantity: number,
+  lineTotal: number,
+) => ({
+  id,
+  lineType: 'PRODUCT',
+  productItemId: `p-${id}`,
+  quantity,
+  returnedQuantity,
+  lineTotal,
+});
 
 describe('invoice-math', () => {
-  it('prorates a line discount onto the returned goods', () => {
-    expect(returnedValue({ quantity: 4, lineTotal: 360, returned: 1 })).toBe(
-      90,
-    );
-    expect(returnedValue({ quantity: 4, lineTotal: 360, returned: 0 })).toBe(0);
-  });
-
-  it('nets goods returned before issue out of the lines and the total', () => {
-    const lines = [
-      { quantity: 4, returnedQuantity: 1, lineTotal: 360, unitPrice: 100 },
-      { quantity: 1, returnedQuantity: 1, lineTotal: 50, unitPrice: 50 },
-    ];
-    const kept = saleLines(lines);
+  it('nets goods returned before issue out of the lines and the total, keeping the shipping fee', () => {
+    const lines = [item('a', 4, 1, 360), item('b', 1, 1, 50)];
+    const kept = saleLines({ discountType: null, discountValue: 0 }, lines);
     expect(kept).toHaveLength(1);
     expect(kept[0].quantity).toBe(3);
     expect(kept[0].amount).toBe(270);
-    // Phí ship (30) không được hoàn khi trả hàng: 440 trừ 90 và 50 hàng trả lại.
-    expect(saleTotal(440, lines)).toBe(300);
+    // 360 - 90 hàng trả = 270 cộng phí ship 30 (phí ship không hoàn khi trả hàng).
+    expect(saleTotal(kept, 30)).toBe(300);
+  });
+
+  it('spreads an ORDER discount over the lines so the lines plus shipping add up to the order total', () => {
+    const lines = [
+      item('a', 1, 0, 1000),
+      item('b', 1, 0, 1000),
+      item('c', 1, 0, 1000),
+    ];
+    const kept = saleLines(
+      { discountType: 'ORDER', discountValue: 100 },
+      lines,
+    );
+    expect(kept.reduce((s, l) => s + l.amount, 0)).toBe(2900);
+    expect(kept.reduce((s, l) => s + l.discount, 0)).toBe(100);
+    // grandTotal = 3000 - 100 + 50 ship.
+    expect(saleTotal(kept, 50)).toBe(2950);
   });
 
   it('numbers from the highest existing number', () => {

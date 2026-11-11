@@ -172,6 +172,13 @@ export class OrderPricingService {
     );
   }
 
+  /** Tổng thành tiền các dòng (sau giảm từng dòng, trước giảm tay cả đơn và phí giao): cột `orders.subtotal`. Một nơi cho đơn tay, đơn quầy và sửa đơn: trước đây đơn quầy không đặt cột này nên hoá đơn của nó có subtotal 0. */
+  subtotalOf(
+    lines: { quantity: number; unitPrice: number; discountAmount: number }[],
+  ): number {
+    return lines.reduce((sum, line) => sum + this.lineTotalOf(line), 0);
+  }
+
   /** Số khách thực phải trả cho hàng: thành tiền các dòng trừ giảm từng dòng, rồi trừ giảm tay cả đơn. Khuyến mãi không trừ lại vì `priceOrder` đã phân bổ vào các dòng. Không âm. Phí giao do bên gọi cộng thêm. */
   grandTotalOf(
     lines: { quantity: number; unitPrice: number; discountAmount: number }[],

@@ -4,6 +4,10 @@ export const SystemNotificationType = {
   TENANT_CREATED: 'SYSTEM_TENANT_CREATED',
   TICKET_CREATED: 'SYSTEM_TICKET_CREATED',
   TENANT_BANK_UPDATED: 'SYSTEM_TENANT_BANK_UPDATED',
+  /** Tiền SePay về tài khoản không thuộc shop nào (sổ `sepay_transactions` không có tenant). */
+  SEPAY_UNMATCHED: 'SYSTEM_SEPAY_UNMATCHED',
+  /** Tiền về tài khoản iKiot (tenant trả tiền gói) nhưng không kích hoạt được gói: chuyển thiếu, hoá đơn không còn chờ, không có mã / mã lạ (sổ `platform_sepay_transactions`). */
+  PLATFORM_TRANSFER_NEEDS_ACTION: 'SYSTEM_PLATFORM_TRANSFER_NEEDS_ACTION',
 } as const;
 
 export const SYSTEM_NOTIFICATION_TYPES: string[] = Object.values(

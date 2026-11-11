@@ -9,8 +9,10 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
+import { REFUND_METHODS } from '../../../common/constants/payment-method';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import {
   ORDER_RETURN_REASONS,
@@ -81,12 +83,37 @@ export class InspectOrderReturnItemDto {
   note?: string;
 }
 
+/** Hoàn tiền cho khách lúc kiểm hàng trả. `amount: 0` là shop giữ lại toàn bộ (không ghi tiền). */
+export class ReturnRefundDto {
+  @IsInt()
+  @Min(0, { message: 'Số tiền hoàn không được âm' })
+  amount: number;
+
+  /** Bắt buộc khi `amount > 0`. Tiền mặt ra khỏi quỹ của chi nhánh bán đơn; chuyển khoản là tiền ra ngân hàng. */
+  @ValidateIf((o: ReturnRefundDto) => o.amount > 0)
+  @IsIn(REFUND_METHODS, {
+    message: `method phải là ${REFUND_METHODS.join(', ')}`,
+  })
+  method?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class InspectOrderReturnDto {
   @IsArray()
   @ArrayNotEmpty()
   @ValidateNested({ each: true })
   @Type(() => InspectOrderReturnItemDto)
   items: InspectOrderReturnItemDto[];
+
+  /** Bắt buộc khi đơn đang giữ tiền (ORDER_RETURN_REFUND_REQUIRED); không giữ gì thì bỏ qua. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ReturnRefundDto)
+  refund?: ReturnRefundDto;
 }
 
 /** Hàng của lần giao thất bại đã về shop (confirm-failed-delivery). */
@@ -105,6 +132,12 @@ export class ConfirmFailedDeliveryDto {
   @ValidateNested({ each: true })
   @Type(() => InspectOrderReturnItemDto)
   items?: InspectOrderReturnItemDto[];
+
+  /** Không bắt buộc ở đây (hàng chưa tới tay khách): bỏ qua nghĩa là tiền cọc vẫn do shop giữ. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ReturnRefundDto)
+  refund?: ReturnRefundDto;
 }
 
 export class QueryOrderReturnDto extends PaginationQueryDto {

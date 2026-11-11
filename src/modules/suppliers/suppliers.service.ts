@@ -9,6 +9,10 @@ import { NotificationService } from '../notifications/notifications.service';
 import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
 import { PaymentMethod } from '../../common/constants/payment-method';
 import {
+  CashFlowCategory,
+  fundOf,
+} from '../../common/constants/cash-flow-category';
+import {
   IMPORT_SOURCE_FOR_SUPPLIER_TYPE,
   ImportSource,
   SupplierType,
@@ -16,9 +20,19 @@ import {
 import type { NotificationContent } from '../notifications/notification-content.type';
 import { crossedCreditWarning } from './credit-warning';
 import {
+  SupplierDebtEntryType,
+  SupplierDebtRefType,
+  type SupplierDebtRef,
+} from '../../common/constants/supplier-debt';
+import { toDong } from '../../common/utils/money';
+import { canActAt } from '../../common/utils/location-access';
+import type { AuthUser } from '../../common/types/auth-user.type';
+import { QuerySupplierDebtEntryDto } from './dto/query-supplier-debt-entry.dto';
+import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
+import { withNestedProfile } from '../../common/utils/user-profile';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
@@ -146,14 +160,24 @@ export class SupplierService {
     return this.prisma.supplier.delete({ where: { id } });
   }
 
-  /** Ghi một khoản trả nợ NCC: giảm nợ và ghi phiếu chi (EXPENSE) trong một transaction, rồi báo chủ shop. Ghi ở cấp tenant vì trả NCC không phải quỹ của chi nhánh nào. */
+  /** Ghi một khoản trả nợ NCC: giảm nợ, ghi một dòng sổ công nợ (PAYMENT) và phiếu chi (EXPENSE) trong một transaction, rồi báo chủ shop. Mặc định tiền mặt là tiền của chủ (quỹ OWNER, không qua két nào); gửi `locationId` thì tiền mặt đi ra từ két của chi nhánh đó (quỹ DRAWER, vào đối soát két) - chỉ được chọn nơi mình được làm việc. Số tiền là số nguyên đồng (`toDong`). */
   async payDebt(
     tenantId: string,
-    actorId: string,
+    user: AuthUser,
     supplierId: string,
     dto: PaySupplierDebtDto,
   ) {
-    const amount = new Prisma.Decimal(dto.amount);
+    const actorId = user.userId;
+    const amount = new Prisma.Decimal(toDong(dto.amount));
+    if (amount.lte(0)) {
+      throw new BadRequestException({
+        code: ErrorCode.SUPPLIER_PAYMENT_EXCEEDS_DEBT,
+        message: 'The payment must be at least 1 dong',
+      });
+    }
+    const drawer = dto.locationId
+      ? await this.requireDrawerLocation(tenantId, user, dto.locationId)
+      : null;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const supplier = await tx.supplier.findFirst({
@@ -185,6 +209,12 @@ export class SupplierService {
         data: {
           tenantId,
           flowType: 'EXPENSE',
+          category: CashFlowCategory.SUPPLIER_PAYMENT,
+          // Tiền mặt trả nhà cung cấp là tiền của chủ, không qua két chi nhánh nào (dòng chưa có nơi nên cũng không vào đối soát két).
+          fund: fundOf(dto.paymentMethod ?? PaymentMethod.CASH, {
+            toOwner: !drawer,
+          }),
+          locationId: drawer?.id ?? null,
           amount,
           paymentMethod: dto.paymentMethod ?? PaymentMethod.CASH,
           createdById: actorId,
@@ -193,6 +223,21 @@ export class SupplierService {
           description:
             dto.note ??
             `Thanh toán công nợ cho nhà cung cấp ${supplier.supplierName}`,
+        },
+      });
+
+      await tx.supplierDebtEntry.create({
+        data: {
+          tenantId,
+          supplierId,
+          entryType: SupplierDebtEntryType.PAYMENT,
+          amount: amount.negated(),
+          balanceAfter: updated.outstandingDebt,
+          referenceType: SupplierDebtRefType.CASH_FLOW,
+          referenceId: cashFlow.id,
+          referenceCode: cashFlow.paymentReference,
+          cashFlowId: cashFlow.id,
+          createdById: actorId,
         },
       });
 
@@ -209,7 +254,7 @@ export class SupplierService {
         recipientIds: owners,
         ...SupplierNotificationTemplates.debtPaid(
           result.supplier.supplierName,
-          dto.amount,
+          amount.toNumber(),
           result.supplier.outstandingDebt.toNumber(),
         ),
         referenceId: result.paymentTransaction.id,
@@ -289,9 +334,11 @@ export class SupplierService {
     tx: Prisma.TransactionClient,
     tenantId: string,
     supplierId: string,
-    amount: number,
+    amountRaw: number,
     receivedItemIds: string[],
+    ref: SupplierDebtRef,
   ): Promise<NotificationContent | null> {
+    const amount = toDong(amountRaw);
     if (receivedItemIds.length > 0) {
       // Idempotent: nhận hai lần từ cùng NCC không được lỗi ở dòng nối.
       await tx.productItemSupplier.createMany({
@@ -321,6 +368,21 @@ export class SupplierService {
       });
     }
 
+    // Một dòng sổ cho mỗi lần nợ tăng, cùng transaction với `update` ở trên: dư nợ sau lần đổi lấy từ chính kết quả `update`, không đọc lại.
+    await tx.supplierDebtEntry.create({
+      data: {
+        tenantId,
+        supplierId,
+        entryType: SupplierDebtEntryType.CHARGE,
+        amount,
+        balanceAfter: supplier.outstandingDebt,
+        referenceType: ref.type,
+        referenceId: ref.id,
+        referenceCode: ref.code ?? null,
+        createdById: ref.actorId,
+      },
+    });
+
     const limit = Number(supplier.creditLimit);
     if (limit <= 0) return null;
 
@@ -339,6 +401,76 @@ export class SupplierService {
           limit,
         )
       : null;
+  }
+
+  /** Nơi tiền mặt đi ra khi trả NCC: phải là địa điểm của tenant và là nơi người trả được làm việc (chủ shop: mọi nơi). */
+  private async requireDrawerLocation(
+    tenantId: string,
+    user: AuthUser,
+    locationId: string,
+  ) {
+    const location = await this.prisma.location.findFirst({
+      where: { id: locationId, tenantId },
+      select: { id: true, type: true },
+    });
+    if (!location) {
+      throw new NotFoundException({
+        code: ErrorCode.LOCATION_NOT_FOUND,
+        message: 'Location not found',
+      });
+    }
+    if (!canActAt(user, location)) {
+      throw new NotFoundException({
+        code: ErrorCode.LOCATION_NOT_FOUND,
+        message: 'Location not found',
+      });
+    }
+    return location;
+  }
+
+  /** Sổ công nợ của một NCC, mới nhất trước (`GET /suppliers/:id/debt-entries`). */
+  async debtEntries(
+    tenantId: string,
+    supplierId: string,
+    query: QuerySupplierDebtEntryDto,
+  ) {
+    const supplier = await this.findOne(tenantId, supplierId);
+    const where: Prisma.SupplierDebtEntryWhereInput = {
+      tenantId,
+      supplierId,
+      ...(query.entryType ? { entryType: query.entryType } : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.supplierDebtEntry.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              phoneNumber: true,
+              profileFirstName: true,
+              profileLastName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.supplierDebtEntry.count({ where }),
+    ]);
+    const data = rows.map(({ createdBy, ...row }) => ({
+      ...row,
+      createdBy: createdBy ? withNestedProfile(createdBy) : null,
+    }));
+    return {
+      ...paginate(data, total, query.page, query.limit),
+      supplier: {
+        id: supplier.id,
+        supplierName: supplier.supplierName,
+        outstandingDebt: supplier.outstandingDebt,
+      },
+    };
   }
 
   /** Sau commit: cảnh báo `charge` trả về gửi cho chủ shop, không gửi cho người nhận hàng. Không bao giờ ném lỗi (`notify()` cũng vậy). */

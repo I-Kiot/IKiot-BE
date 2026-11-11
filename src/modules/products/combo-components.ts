@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
+import { recordPriceChange } from './product-price-history';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
   ProductItemType,
@@ -118,6 +119,7 @@ export async function writeComboComponents(
   tenantId: string,
   comboId: string,
   components: ComboComponentInput[],
+  actorId: string | null = null,
 ): Promise<void> {
   await lockComboGraph(tx, tenantId);
 
@@ -203,18 +205,28 @@ export async function writeComboComponents(
   const costOf = new Map(
     items.map((item) => [item.id, Number(item.costPrice)]),
   );
+  const comboBefore = await tx.productItem.findUniqueOrThrow({
+    where: { id: comboId },
+    select: { costPrice: true },
+  });
+  const derivedCost = comboCostOf(
+    components.map((component) => ({
+      quantity: component.quantity,
+      costPrice: costOf.get(component.componentItemId)!,
+    })),
+  );
+  await recordPriceChange(tx, {
+    tenantId,
+    productItemId: comboId,
+    before: comboBefore,
+    after: { costPrice: derivedCost },
+    actorId,
+  });
   await tx.productItem.update({
     where: { id: comboId },
-    data: {
-      costPrice: comboCostOf(
-        components.map((component) => ({
-          quantity: component.quantity,
-          costPrice: costOf.get(component.componentItemId)!,
-        })),
-      ),
-    },
+    data: { costPrice: derivedCost },
   });
-  await recomputeComboCosts(tx, tenantId, [comboId]);
+  await recomputeComboCosts(tx, tenantId, [comboId], actorId);
 }
 
 /**
@@ -225,6 +237,7 @@ export async function recomputeComboCosts(
   tx: Prisma.TransactionClient,
   tenantId: string,
   changedIds: readonly string[],
+  actorId: string | null = null,
 ): Promise<void> {
   const rows = await tx.comboComponent.findMany({
     where: { comboItem: { tenantId } },
@@ -279,6 +292,9 @@ export async function recomputeComboCosts(
     ).map((item) => [item.id, Number(item.costPrice)]),
   );
 
+  // Giá vốn lưu sẵn trước khi tính lại, cho lịch sử giá.
+  const storedCosts = new Map(costs);
+
   // Bước 4 - giá mới của `id`: không bị ảnh hưởng thì lấy giá đã lưu. Bị ảnh hưởng thì tính từ món con
   // (đệ quy để combo con tính trước), ghi vào `costs` và bỏ khỏi `affected` để mỗi combo chỉ tính một lần.
   const resolve = (id: string): number => {
@@ -297,6 +313,13 @@ export async function recomputeComboCosts(
   const toWrite = [...affected];
   for (const id of toWrite) {
     const cost = resolve(id);
+    await recordPriceChange(tx, {
+      tenantId,
+      productItemId: id,
+      before: { costPrice: storedCosts.get(id) ?? 0 },
+      after: { costPrice: cost },
+      actorId,
+    });
     await tx.productItem.update({ where: { id }, data: { costPrice: cost } });
   }
 }

@@ -372,6 +372,7 @@ export class ProductImportService {
   async import(
     tenantId: string,
     file: Express.Multer.File | undefined,
+    actorId: string | null = null,
   ): Promise<ImportResult> {
     const rows = await this.readFile(file);
 
@@ -394,6 +395,7 @@ export class ProductImportService {
     const productIds = await this.products.createMany(
       tenantId,
       products.map((product) => product.dto),
+      actorId,
     );
     const itemCount = products.reduce((n, p) => n + p.dto.items.length, 0);
     return {

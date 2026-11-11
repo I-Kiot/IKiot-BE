@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TenantBankingChangeSource } from '../../common/constants/tenant-banking-change';
+import { recordBankingChange } from './tenant-banking-history';
 import { NotificationService } from '../notifications/notifications.service';
 import { TenantNotificationTemplates } from '../notifications/templates/tenant.templates';
 import { ErrorCode } from '../../common/errors/error-codes';
@@ -56,16 +58,49 @@ export class SepayAccountSyncService {
     const { link, unlink } = planSepayLinks(tenants, accounts);
 
     if (link.length > 0 || unlink.length > 0) {
-      await this.prisma.$transaction([
-        this.prisma.tenant.updateMany({
-          where: { id: { in: link }, bankingSepayLinkedAt: null },
-          data: { bankingSepayLinkedAt: new Date() },
-        }),
-        this.prisma.tenant.updateMany({
-          where: { id: { in: unlink } },
-          data: { bankingSepayLinkedAt: null },
-        }),
-      ]);
+      // Mỗi shop đổi liên kết có một dòng lịch sử (người làm: hệ thống) trong cùng transaction. Chỉ ghi khi lệnh có điều kiện thật sự đổi dòng, để hai lần đồng bộ chạy đua không ghi hai lần.
+      const now = new Date();
+      const linkedBefore = new Map(
+        tenants.map((tenant) => [tenant.id, tenant.bankingSepayLinkedAt]),
+      );
+      await this.prisma.$transaction(async (tx) => {
+        for (const tenantId of link) {
+          const changed = await tx.tenant.updateMany({
+            where: { id: tenantId, bankingSepayLinkedAt: null },
+            data: { bankingSepayLinkedAt: now },
+          });
+          if (changed.count === 1) {
+            await recordBankingChange(tx, {
+              tenantId,
+              actorId: null,
+              source: TenantBankingChangeSource.SEPAY_SYNC,
+              changes: {
+                bankingSepayLinkedAt: { from: null, to: now.toISOString() },
+              },
+            });
+          }
+        }
+        for (const tenantId of unlink) {
+          const was = linkedBefore.get(tenantId) ?? null;
+          const changed = await tx.tenant.updateMany({
+            where: { id: tenantId, bankingSepayLinkedAt: { not: null } },
+            data: { bankingSepayLinkedAt: null },
+          });
+          if (changed.count === 1) {
+            await recordBankingChange(tx, {
+              tenantId,
+              actorId: null,
+              source: TenantBankingChangeSource.SEPAY_SYNC,
+              changes: {
+                bankingSepayLinkedAt: {
+                  from: was?.toISOString() ?? null,
+                  to: null,
+                },
+              },
+            });
+          }
+        }
+      });
     }
     if (unlink.length > 0) {
       this.logger.warn(

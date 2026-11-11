@@ -6,6 +6,17 @@ export const BILLING_DAYS: Record<string, number> = {
   YEARLY: 365,
 };
 export const QR_EXPIRY_MS = 15 * 60 * 1000;
+
+/** Kết cục của một giao dịch trong sổ `platform_sepay_transactions` (SQL CHECK cùng danh sách). */
+export const PlatformTransferOutcome = {
+  ACTIVATED: 'ACTIVATED',
+  UNDERPAID: 'UNDERPAID',
+  INVOICE_NOT_PENDING: 'INVOICE_NOT_PENDING',
+  UNMATCHED: 'UNMATCHED',
+  NO_REFERENCE: 'NO_REFERENCE',
+} as const;
+export type PlatformTransferOutcome =
+  (typeof PlatformTransferOutcome)[keyof typeof PlatformTransferOutcome];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function addDays(date: Date, days: number): Date {

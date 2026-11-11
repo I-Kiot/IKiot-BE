@@ -31,6 +31,8 @@ import {
   recomputeComboCosts,
   writeComboComponents,
 } from './combo-components';
+import { withNestedProfile } from '../../common/utils/user-profile';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -43,6 +45,7 @@ import {
 } from './dto/query-product.dto';
 import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movement.constants';
 import type { Prisma } from '../../../generated/prisma/client';
+import { recordPriceChange } from './product-price-history';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { LocationType } from '../../common/constants/location-type';
 import {
@@ -181,8 +184,12 @@ export class ProductService {
     private readonly subscriptions: SubscriptionService,
   ) {}
 
-  async create(tenantId: string, dto: CreateProductDto) {
-    const [productId] = await this.createMany(tenantId, [dto]);
+  async create(
+    tenantId: string,
+    dto: CreateProductDto,
+    actorId: string | null = null,
+  ) {
+    const [productId] = await this.createMany(tenantId, [dto], actorId);
     return this.findOne(tenantId, productId, {});
   }
 
@@ -195,6 +202,7 @@ export class ProductService {
   async createMany(
     tenantId: string,
     dtos: CreateProductDto[],
+    actorId: string | null = null,
   ): Promise<string[]> {
     await this.subscriptions.assertQuota(
       tenantId,
@@ -278,7 +286,14 @@ export class ProductService {
             );
           }
           for (const item of items) {
-            await this.insertItem(tx, tenantId, product.id, productType, item);
+            await this.insertItem(
+              tx,
+              tenantId,
+              product.id,
+              productType,
+              item,
+              actorId,
+            );
           }
           ids.push(product.id);
         }
@@ -749,6 +764,7 @@ export class ProductService {
     tenantId: string,
     productId: string,
     dto: CreateProductItemDto,
+    actorId: string | null = null,
   ) {
     // Bản cũ đặt sau requireActiveSubscription: thêm phiên bản không tốn hạn mức sản phẩm, nhưng vẫn là ghi vào danh mục.
     await this.subscriptions.requireActiveSubscription(tenantId);
@@ -776,20 +792,80 @@ export class ProductService {
         productId,
         product.productType as ProductType,
         item,
+        actorId,
       ),
     );
 
     return this.findItem(tenantId, itemId);
   }
 
+  /** Lịch sử giá bán lẻ / giá vốn của một mặt hàng, mới nhất trước (`GET /products/items/:itemId/price-history`). `fromValue` null = giá lúc tạo; `changedBy` null = hệ thống (giá vốn combo tự tính lại). */
+  async priceHistory(
+    tenantId: string,
+    itemId: string,
+    query: QueryPriceHistoryDto,
+  ) {
+    const item = await this.prisma.productItem.findFirst({
+      where: { id: itemId, tenantId },
+      select: {
+        id: true,
+        productName: true,
+        sku: true,
+        retailPrice: true,
+        costPrice: true,
+      },
+    });
+    if (!item)
+      throw new NotFoundException({
+        code: ErrorCode.PRODUCT_ITEM_NOT_FOUND,
+        message: 'Product item not found',
+      });
+    const where: Prisma.ProductItemPriceChangeWhereInput = {
+      tenantId,
+      productItemId: itemId,
+      ...(query.field ? { field: query.field } : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.productItemPriceChange.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: {
+          changedBy: {
+            select: {
+              id: true,
+              phoneNumber: true,
+              profileFirstName: true,
+              profileLastName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.productItemPriceChange.count({ where }),
+    ]);
+    const data = rows.map(({ changedBy, changedById: _by, ...row }) => ({
+      ...row,
+      changedBy: changedBy ? withNestedProfile(changedBy) : null,
+    }));
+    return { ...paginate(data, total, query.page, query.limit), item };
+  }
+
   async updateItem(
     tenantId: string,
     itemId: string,
     dto: UpdateProductItemDto,
+    actorId: string | null = null,
   ) {
     const existing = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
-      select: { id: true, productId: true, itemType: true },
+      select: {
+        id: true,
+        productId: true,
+        itemType: true,
+        retailPrice: true,
+        costPrice: true,
+      },
     });
     if (!existing)
       throw new NotFoundException({
@@ -835,12 +911,26 @@ export class ProductService {
           vat: dto.vat,
         },
       });
+      // Lịch sử giá: một dòng cho mỗi giá thật sự đổi (so theo đồng), cùng transaction với lần sửa.
+      await recordPriceChange(tx, {
+        tenantId,
+        productItemId: itemId,
+        before: existing,
+        after: {
+          retailPrice: dto.retailPrice,
+          costPrice:
+            existing.itemType === ProductItemType.COMBO
+              ? undefined
+              : dto.costPrice,
+        },
+        actorId,
+      });
       // Combo phía trên phiên bản này mang giá vốn suy ra từ nó, nên phải tính lại.
       if (
         existing.itemType !== ProductItemType.COMBO &&
         dto.costPrice !== undefined
       ) {
-        await recomputeComboCosts(tx, tenantId, [itemId]);
+        await recomputeComboCosts(tx, tenantId, [itemId], actorId);
       }
 
       // Hai danh sách được thay toàn bộ khi có gửi, như API cũ: client gửi danh sách cuối cùng, không gửi phần vá.
@@ -866,7 +956,13 @@ export class ProductService {
       }
       // Đơn đã bán giữ các dòng con đã bung lúc bán; sửa thành phần chỉ áp cho đơn sau.
       if (writeComponents) {
-        await writeComboComponents(tx, tenantId, itemId, writeComponents);
+        await writeComboComponents(
+          tx,
+          tenantId,
+          itemId,
+          writeComponents,
+          actorId,
+        );
       }
     });
 
@@ -1028,6 +1124,7 @@ export class ProductService {
     productId: string,
     productType: ProductType,
     dto: ItemWithCodes,
+    actorId: string | null = null,
   ): Promise<string> {
     const itemType = itemTypeFor(productType);
     if (dto.itemType !== undefined && dto.itemType !== itemType) {
@@ -1066,8 +1163,24 @@ export class ProductService {
       },
       select: { id: true },
     });
+    await recordPriceChange(tx, {
+      tenantId,
+      productItemId: item.id,
+      before: null,
+      after: {
+        retailPrice: dto.retailPrice,
+        costPrice: itemType === ProductItemType.COMBO ? 0 : dto.costPrice,
+      },
+      actorId,
+    });
     if (itemType === ProductItemType.COMBO && dto.comboComponents) {
-      await writeComboComponents(tx, tenantId, item.id, dto.comboComponents);
+      await writeComboComponents(
+        tx,
+        tenantId,
+        item.id,
+        dto.comboComponents,
+        actorId,
+      );
     }
     await writeItemDetails(
       tx,
