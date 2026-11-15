@@ -1,0 +1,13 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "../..",
+  "testEnvironment": "node",
+  "testRegex": "prisma/demo/demo-shops[.]seed[.]ts$",
+  "transform": {
+    "^.+[.](t|j)s$": "ts-jest"
+  },
+  "moduleNameMapper": {
+    "^jose$": "<rootDir>/test/jose.stub.js",
+    "^([.]{1,2}/.*)[.]js$": "$1"
+  }
+}
