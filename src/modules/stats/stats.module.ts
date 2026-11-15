@@ -4,11 +4,17 @@ import { AdminStatsController } from './admin-stats.controller';
 import { StatsService } from './stats.service';
 import { StatsReportsService } from './stats-reports.service';
 import { AdminStatsService } from './admin-stats.service';
+import { StatsExportService } from './export/stats-export.service';
 
 // Không import gì: dashboard chỉ đọc nên chỉ cần PrismaService (global).
 @Module({
   controllers: [StatsController, AdminStatsController],
-  providers: [StatsService, StatsReportsService, AdminStatsService],
+  providers: [
+    StatsService,
+    StatsReportsService,
+    AdminStatsService,
+    StatsExportService,
+  ],
   // Export cho công cụ báo cáo của trợ lý AI: phải trả cùng số với dashboard, không có bản tính riêng.
   exports: [StatsService],
 })
