@@ -1,10 +1,8 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '../../../generated/prisma/client';
 import { STAFF_BASE_PERMISSIONS } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -60,47 +58,70 @@ export class RolesService {
       .map((p) => ({ resource: p.resource, action: p.action }));
   }
 
-  async create(tenantId: string, dto: CreateRoleDto) {
-    try {
-      return await this.prisma.role.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          description: dto.description,
-          permissions: { create: this.grantable(dto.permissions) },
-        },
-        include: { permissions: { select: { resource: true, action: true } } },
+  /**
+   * Từ chối tên vai trò đã có trong shop (ROLE_NAME_TAKEN), để client hiện được câu riêng thay vì lỗi chung.
+   * So khớp chính xác như `@@unique([tenantId, name])`. Chỉ là kiểm tra sớm: hai request trùng tên cùng lúc vẫn có thể
+   * cùng qua, khi đó ràng buộc DB chặn người ghi sau và `AllExceptionsFilter` trả 409 UNIQUE_VIOLATION.
+   * `exceptId`: vai trò đang sửa, không tính là trùng với chính nó.
+   */
+  private async assertNameAvailable(
+    tenantId: string,
+    name: string,
+    exceptId?: string,
+  ) {
+    const taken = await this.prisma.role.findFirst({
+      where: {
+        tenantId,
+        name,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.ROLE_NAME_TAKEN,
+        message: 'A role with this name already exists',
       });
-    } catch (error) {
-      throw this.translatePrismaError(error);
     }
+  }
+
+  async create(tenantId: string, dto: CreateRoleDto) {
+    await this.assertNameAvailable(tenantId, dto.name);
+    return this.prisma.role.create({
+      data: {
+        tenantId,
+        name: dto.name,
+        description: dto.description,
+        permissions: { create: this.grantable(dto.permissions) },
+      },
+      include: { permissions: { select: { resource: true, action: true } } },
+    });
   }
 
   async update(tenantId: string, id: string, dto: UpdateRoleDto) {
     await this.findOne(tenantId, id);
-
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        if (dto.permissions) {
-          await tx.rolePermission.deleteMany({ where: { roleId: id } });
-          await tx.rolePermission.createMany({
-            data: this.grantable(dto.permissions).map((p) => ({
-              roleId: id,
-              ...p,
-            })),
-          });
-        }
-        return tx.role.update({
-          where: { id },
-          data: { name: dto.name, description: dto.description },
-          include: {
-            permissions: { select: { resource: true, action: true } },
-          },
-        });
-      });
-    } catch (error) {
-      throw this.translatePrismaError(error);
+    if (dto.name !== undefined) {
+      await this.assertNameAvailable(tenantId, dto.name, id);
     }
+
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.permissions) {
+        await tx.rolePermission.deleteMany({ where: { roleId: id } });
+        await tx.rolePermission.createMany({
+          data: this.grantable(dto.permissions).map((p) => ({
+            roleId: id,
+            ...p,
+          })),
+        });
+      }
+      return tx.role.update({
+        where: { id },
+        data: { name: dto.name, description: dto.description },
+        include: {
+          permissions: { select: { resource: true, action: true } },
+        },
+      });
+    });
   }
 
   async remove(tenantId: string, id: string) {
@@ -123,17 +144,5 @@ export class RolesService {
       this.prisma.role.delete({ where: { id } }),
     ]);
     return { success: true };
-  }
-
-  private translatePrismaError(error: unknown) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === 'P2003')
-        return new BadRequestException(
-          'One of the given (resource, action) pairs is not a recognized permission',
-        );
-      if (error.code === 'P2002')
-        return new ConflictException('A role with this name already exists');
-    }
-    return error;
   }
 }
