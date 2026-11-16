@@ -16,12 +16,19 @@ import { ErrorCode } from '../../common/errors/error-codes';
 
 export type RuleViolation = { code: ErrorCode; message: string };
 
-/** Trạng thái do người dùng đặt tay. Trả lý do bị từ chối hoặc null. Yêu cầu đã giao hàng không được huỷ: tồn đã nhập theo nó, huỷ sẽ mất dấu nguồn hàng; thay vào đó đóng thiếu, giữ các phiếu nhận và bỏ phần chưa về. */
+/**
+ * Trạng thái do người dùng đặt tay. Trả lý do bị từ chối hoặc null. Yêu cầu đã giao hàng không được huỷ: tồn đã nhập theo nó, huỷ sẽ mất dấu nguồn hàng; thay vào đó đóng thiếu, giữ các phiếu nhận và bỏ phần chưa về.
+ * Xưởng đã xác nhận đang làm (2026-11-16) thì shop không huỷ được nữa: xưởng đang bỏ công, chỉ xưởng huỷ được (`cancelledByWorkshop`).
+ */
 export function manualTransitionViolation(
   from: string,
   to: string,
   receivedAny: boolean,
   reason?: string | null,
+  workshop: { acceptedByWorkshop: boolean; cancelledByWorkshop: boolean } = {
+    acceptedByWorkshop: false,
+    cancelledByWorkshop: false,
+  },
 ): RuleViolation | null {
   if (FINAL_PRODUCTION_REQUEST_STATUSES.includes(from)) {
     return {
@@ -38,6 +45,16 @@ export function manualTransitionViolation(
         };
   }
   if (to === ProductionRequestStatus.CANCELLED) {
+    // Đã nhận hàng thì báo lý do đó trước: ai huỷ cũng không gỡ được.
+    const shopBlocked =
+      workshop.acceptedByWorkshop && !workshop.cancelledByWorkshop;
+    if (!receivedAny && shopBlocked) {
+      return {
+        code: ErrorCode.PRODUCTION_REQUEST_IN_PRODUCTION,
+        message:
+          'The workshop has confirmed it is making this request; only the workshop can cancel it now',
+      };
+    }
     return receivedAny
       ? {
           code: ErrorCode.PRODUCTION_REQUEST_HAS_RECEIPTS,

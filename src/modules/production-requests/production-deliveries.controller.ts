@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Post,
@@ -17,6 +18,7 @@ import {
   QueryProductionDeliveryDto,
   QueryWorkshopProductionRequestDto,
   ReceiveProductionDto,
+  CancelProductionRequestByWorkshopDto,
 } from './dto/production-request.dto';
 import { ProductionDeliveryService } from './production-deliveries.service';
 
@@ -43,6 +45,29 @@ export class WorkshopController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.service.findOneForWorkshop(user, id);
+  }
+
+  /** Xưởng xác nhận đang làm: từ đây shop không huỷ được YCSX. */
+  @Permissions('production', 'deliver')
+  @Post('production-requests/:id/accept')
+  @HttpCode(200)
+  accept(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.accept(user, id);
+  }
+
+  /** Xưởng huỷ YCSX (kèm lý do). Xưởng đã xác nhận đang làm thì chỉ xưởng huỷ được. */
+  @Permissions('production', 'deliver')
+  @Post('production-requests/:id/cancel')
+  @HttpCode(200)
+  cancelRequest(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelProductionRequestByWorkshopDto,
+  ) {
+    return this.service.cancelRequest(user, id, dto);
   }
 
   @Permissions('production', 'deliver')

@@ -31,6 +31,8 @@ export const OrderEventType = {
   RETURN_CANCELLED: 'RETURN_CANCELLED',
   REPLACEMENT_LINKED: 'REPLACEMENT_LINKED',
   PRODUCTION_REQUESTED: 'PRODUCTION_REQUESTED',
+  /** Xưởng xác nhận đang làm YCSX có dòng của đơn (từ đó chỉ xưởng huỷ được YCSX). */
+  PRODUCTION_STARTED: 'PRODUCTION_STARTED',
   PRODUCTION_RECEIVED: 'PRODUCTION_RECEIVED',
   /** Tiền trả lại khách ngoài huỷ đơn: khi kiểm hàng trả, trả hàng đơn quầy, hoàn phần khách chuyển dư. Huỷ đơn mang số hoàn trong sự kiện CANCELLED. */
   REFUNDED: 'REFUNDED',

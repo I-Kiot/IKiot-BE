@@ -103,6 +103,7 @@ export const DETAIL_INCLUDE = {
   location: LOCATION_SELECT,
   createdBy: PERSON_SELECT,
   statusUpdatedBy: PERSON_SELECT,
+  acceptedBy: PERSON_SELECT,
   items: {
     orderBy: { id: 'asc' },
     select: {
@@ -214,7 +215,7 @@ interface PreparedLine {
 }
 
 /** Các đơn có dòng nằm trong yêu cầu, mỗi đơn một lần; dòng không gắn đơn (hàng làm để bán chung) bị bỏ qua. */
-function orderIdsOf(
+export function orderIdsOf(
   items: readonly { orderItem: { orderId: string } | null }[],
 ): string[] {
   return [
@@ -225,7 +226,7 @@ function orderIdsOf(
 }
 
 /** Liên kết tới yêu cầu sản xuất (trang danh sách tìm theo mã). */
-function productionRef(request: { id: string; code: string }) {
+export function productionRef(request: { id: string; code: string }) {
   return {
     refType: OrderEventRefType.PRODUCTION_REQUEST,
     refId: request.id,
@@ -460,11 +461,26 @@ export class ProductionRequestService {
     id: string,
     dto: UpdateProductionRequestStatusDto,
   ) {
-    const tenantId = requireTenantId(user);
-    const request = await this.findRow(tenantId, id);
+    const request = await this.findRow(requireTenantId(user), id);
     this.assertCanWrite(user, request);
+    return this.changeStatus(user, request, dto, { byWorkshop: false });
+  }
+
+  /**
+   * Lõi đổi trạng thái tay, dùng chung cho shop (`updateStatus`) và xưởng huỷ yêu cầu (`ProductionDeliveryService.cancelRequest`, 2026-11-16).
+   * Quyền tới yêu cầu là việc của người gọi; `byWorkshop` chỉ quyết luật huỷ: YCSX xưởng đã xác nhận đang làm thì chỉ xưởng huỷ được.
+   */
+  async changeStatus(
+    user: AuthUser,
+    request: RequestRow,
+    dto: UpdateProductionRequestStatusDto,
+    actor: { byWorkshop: boolean },
+  ) {
+    const tenantId = request.tenantId;
+    const id = request.id;
 
     // Phiếu giao còn chờ nghĩa là hàng có thể đang đứng ở cửa: huỷ hoặc đóng thiếu lúc này sẽ khiến phiếu không nhận được.
+    // Kiểm sớm để báo ngay; trong transaction còn kiểm lại sau khi khoá dòng.
     if (
       (dto.status === ProductionRequestStatus.CANCELLED ||
         dto.status === ProductionRequestStatus.COMPLETED) &&
@@ -485,6 +501,10 @@ export class ProductionRequestService {
       dto.status,
       receivedAny,
       dto.note,
+      {
+        acceptedByWorkshop: request.acceptedAt !== null,
+        cancelledByWorkshop: actor.byWorkshop,
+      },
     );
     if (violation) throw this.violation(violation);
     if (
@@ -514,17 +534,41 @@ export class ProductionRequestService {
     const reason = dto.note?.trim();
     const now = new Date();
     // Có điều kiện theo trạng thái đã xét, để hai lần bấm (hoặc một lần nhận chen giữa) không cùng qua được.
+    // Shop huỷ còn cần "xưởng chưa nhận làm": xưởng xác nhận (hay lập phiếu giao) chen vào giữa lúc đọc và lúc ghi thì huỷ không ghi được gì.
+    const shopCancelling =
+      dto.status === ProductionRequestStatus.CANCELLED && !actor.byWorkshop;
     const moved = await this.prisma.$transaction(async (tx) => {
+      if (releases) {
+        // Khoá dòng như lúc xưởng lập phiếu giao, rồi đếm lại phiếu chờ: một phiếu không chen được vào giữa lúc kiểm và lúc ghi.
+        await tx.$queryRaw`SELECT id FROM production_requests WHERE id = ${id} FOR UPDATE`;
+        const pendingDeliveries = await tx.productionDelivery.count({
+          where: {
+            productionRequestId: id,
+            status: ProductionDeliveryStatus.PENDING,
+          },
+        });
+        if (pendingDeliveries > 0) {
+          throw new ConflictException({
+            code: ErrorCode.PRODUCTION_DELIVERY_STATUS_INVALID,
+            message:
+              'A workshop delivery note is still waiting to be received; receive or cancel it first',
+          });
+        }
+      }
       const claimed = await tx.productionRequest.updateMany({
-        where: { id, status: request.status },
+        where: {
+          id,
+          status: request.status,
+          ...(shopCancelling ? { acceptedAt: null } : {}),
+        },
         data: {
           status: dto.status,
           sentAt: dto.status === ProductionRequestStatus.SENT ? now : undefined,
           statusUpdatedById: user.userId,
           statusUpdatedAt: now,
-          // Lý do đóng thiếu được ghi vào ghi chú có nhãn, vì đó là dấu vết duy nhất về lý do hàng đã đặt không về.
+          // Lý do đóng thiếu / xưởng huỷ được ghi vào ghi chú có nhãn, vì đó là dấu vết duy nhất về lý do hàng đã đặt không về.
           note: reason
-            ? [request.note, closingShort ? `Đóng thiếu: ${reason}` : reason]
+            ? [request.note, this.labelledReason(reason, closingShort, actor)]
                 .filter(Boolean)
                 .join('\n')
             : undefined,
@@ -560,6 +604,17 @@ export class ProductionRequestService {
       );
     }
     return this.toResponse(await this.findRow(tenantId, id));
+  }
+
+  /** Lý do ghi vào ghi chú YCSX, có nhãn để đọc lại biết ai dừng và vì sao. */
+  private labelledReason(
+    reason: string,
+    closingShort: boolean,
+    actor: { byWorkshop: boolean },
+  ): string {
+    if (closingShort) return `Đóng thiếu: ${reason}`;
+    if (actor.byWorkshop) return `Xưởng huỷ: ${reason}`;
+    return reason;
   }
 
   /** Chỉ DRAFT – đã gửi thì xưởng đã được báo, nên giữ dấu vết (huỷ thay vì xoá). */
@@ -1270,9 +1325,11 @@ export class ProductionRequestService {
       locationId,
       createdById,
       statusUpdatedById,
+      acceptedById,
       tenantId,
       createdBy,
       statusUpdatedBy,
+      acceptedBy,
       items,
       deliveries,
       ...rest
@@ -1321,6 +1378,8 @@ export class ProductionRequestService {
       statusUpdatedBy: statusUpdatedBy
         ? withNestedProfile(statusUpdatedBy)
         : null,
+      // `acceptedAt` đi theo `...rest`; người nhận làm lồng profile như mọi người khác.
+      acceptedBy: acceptedBy ? withNestedProfile(acceptedBy) : null,
       items: items.map((line) => ({
         id: line.id,
         productItemId: line.productItemId,

@@ -281,6 +281,10 @@ export const ErrorCode = {
   /** Đóng yêu cầu đã giao thiếu cần lý do - đó là bằng chứng vì sao phần hàng còn lại sẽ không về. */
   PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED:
     'PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED',
+  /** Xưởng đã xác nhận đang làm: shop không huỷ được, chỉ xưởng huỷ được. */
+  PRODUCTION_REQUEST_IN_PRODUCTION: 'PRODUCTION_REQUEST_IN_PRODUCTION',
+  /** Xưởng chỉ xác nhận được YCSX đã gửi (SENT) mà chưa ai nhận làm. */
+  PRODUCTION_REQUEST_NOT_ACCEPTABLE: 'PRODUCTION_REQUEST_NOT_ACCEPTABLE',
 
   /** Các route xưởng cần tài khoản gắn với một xưởng (`users.workshop_id`). */
   WORKSHOP_STAFF_NOT_LINKED: 'WORKSHOP_STAFF_NOT_LINKED',
