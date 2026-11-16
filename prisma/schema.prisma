@@ -184,6 +184,7 @@ model User {
   ordersConfirmed               Order[]                  @relation("OrderConfirmedBy")
   productionRequestsCreated     ProductionRequest[]      @relation("ProductionRequestCreatedBy")
   productionRequestsUpdated     ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
+  productionRequestsAccepted    ProductionRequest[]      @relation("ProductionRequestAcceptedBy")
   orderReturnsCreated           OrderReturn[]            @relation("OrderReturnCreatedBy")
   orderReturnsInspected         OrderReturn[]            @relation("OrderReturnInspectedBy")
   cashDrawerSessionsOpened      CashDrawerSession[]      @relation("CashDrawerOpenedBy")
@@ -1389,6 +1390,11 @@ model ProductionRequest {
   statusUpdatedById String?   @map("status_updated_by")
   statusUpdatedBy   User?     @relation("ProductionRequestStatusUpdatedBy", fields: [statusUpdatedById], references: [id])
   statusUpdatedAt   DateTime? @map("status_updated_at") @db.Timestamptz(6)
+
+  // Xưởng xác nhận đang làm (2026-11-16): có giá trị thì shop không huỷ được YCSX; xưởng "huỷ nhận làm" để đưa về null.
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz(6)
+  acceptedById String?   @map("accepted_by")
+  acceptedBy   User?     @relation("ProductionRequestAcceptedBy", fields: [acceptedById], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

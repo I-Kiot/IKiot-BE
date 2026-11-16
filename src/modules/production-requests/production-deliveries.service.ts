@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { ProductionRequestNotificationTemplates } from '../notifications/templates/production-request.templates';
+import type { NotificationContent } from '../notifications/notification-content.type';
 import {
   ProductionDeliveryStatus,
   ProductionRequestStatus,
@@ -27,13 +28,18 @@ import {
   QueryProductionDeliveryDto,
   QueryWorkshopProductionRequestDto,
   ReceiveProductionDto,
+  CancelProductionRequestByWorkshopDto,
 } from './dto/production-request.dto';
 import { ProductionListService } from './production-list.service';
 import {
   DETAIL_INCLUDE,
+  orderIdsOf,
   ProductionRequestService,
+  productionRef,
   type RequestRow,
 } from './production-requests.service';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import { recordOrderEvents, userActor } from '../orders/order-events';
 
 const PERSON_SELECT = {
   select: {
@@ -180,6 +186,81 @@ export class ProductionDeliveryService {
     return this.requests.toResponse(request);
   }
 
+  /**
+   * Xưởng xác nhận đang làm YCSX (2026-11-16). Từ lúc này shop không huỷ được (`manualTransitionViolation`).
+   * Chỉ YCSX đã gửi (SENT) mà chưa ai nhận; ghi có điều kiện nên hai người cùng bấm, hay shop huỷ chen giữa, chỉ một bên thắng.
+   */
+  async accept(user: AuthUser, id: string) {
+    const tenantId = requireTenantId(user);
+    const request = await this.workshopRequest(user, id);
+    if (
+      request.status !== ProductionRequestStatus.SENT ||
+      request.acceptedAt !== null
+    ) {
+      throw this.notAcceptable();
+    }
+
+    const now = new Date();
+    const accepted = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.productionRequest.updateMany({
+        where: {
+          id,
+          supplierId: request.supplierId,
+          status: ProductionRequestStatus.SENT,
+          acceptedAt: null,
+        },
+        data: { acceptedAt: now, acceptedById: user.userId },
+      });
+      if (claimed.count === 0) return false;
+      await this.recordWorkshopEvent(
+        tx,
+        user,
+        request,
+        OrderEventType.PRODUCTION_STARTED,
+      );
+      return true;
+    });
+    if (!accepted) throw this.notAcceptable();
+
+    await this.notifyShop(
+      user,
+      request,
+      ProductionRequestNotificationTemplates.workshopAccepted({
+        requestCode: request.code,
+        workshopName: request.supplier.supplierName,
+      }),
+    );
+    return this.requests.toResponse(await this.requests.findRow(tenantId, id));
+  }
+
+  /**
+   * Xưởng huỷ yêu cầu (2026-11-16). Từ lúc xưởng xác nhận đang làm, chỉ xưởng huỷ được; trước đó xưởng cũng được từ chối.
+   * Đi qua cùng lõi đổi trạng thái với shop (`changeStatus`): luật huỷ, khoá dòng và đếm phiếu chờ nhận, báo lại danh sách cần sản xuất.
+   */
+  async cancelRequest(
+    user: AuthUser,
+    id: string,
+    dto: CancelProductionRequestByWorkshopDto,
+  ) {
+    const request = await this.workshopRequest(user, id);
+    const cancelled = await this.requests.changeStatus(
+      user,
+      request,
+      { status: ProductionRequestStatus.CANCELLED, note: dto.reason },
+      { byWorkshop: true },
+    );
+    await this.notifyShop(
+      user,
+      request,
+      ProductionRequestNotificationTemplates.workshopCancelled({
+        requestCode: request.code,
+        workshopName: request.supplier.supplierName,
+        reason: dto.reason,
+      }),
+    );
+    return cancelled;
+  }
+
   async create(
     user: AuthUser,
     requestId: string,
@@ -208,6 +289,8 @@ export class ProductionDeliveryService {
     }
 
     let deliveryCode: string | null = null;
+    // Phiếu giao đầu tiên cũng là "đã nhận làm" nếu xưởng chưa bấm xác nhận; gán lại ở mỗi lần thử vì lần thử hỏng đã rollback.
+    let newlyAccepted = false;
     for (
       let attempt = 1;
       attempt <= CODE_ATTEMPTS && !deliveryCode;
@@ -227,6 +310,21 @@ export class ProductionDeliveryService {
             },
           });
           this.assertReceivable(fresh.status);
+
+          // Lập phiếu là xưởng đang làm: shop không được huỷ YCSX có hàng đang đi đường.
+          const autoAccepted = await tx.productionRequest.updateMany({
+            where: { id: requestId, acceptedAt: null },
+            data: { acceptedAt: new Date(), acceptedById: user.userId },
+          });
+          newlyAccepted = autoAccepted.count === 1;
+          if (newlyAccepted) {
+            await this.recordWorkshopEvent(
+              tx,
+              user,
+              request,
+              OrderEventType.PRODUCTION_STARTED,
+            );
+          }
 
           const pendingRows = await tx.productionDeliveryItem.groupBy({
             by: ['productionRequestItemId'],
@@ -313,6 +411,16 @@ export class ProductionDeliveryService {
         totalQuantity: dto.items.reduce((sum, e) => sum + e.quantity, 0),
       }),
     });
+    if (newlyAccepted) {
+      await this.notifyShop(
+        user,
+        request,
+        ProductionRequestNotificationTemplates.workshopAccepted({
+          requestCode: request.code,
+          workshopName: request.supplier.supplierName,
+        }),
+      );
+    }
 
     return this.requests.toResponse(
       await this.requests.findRow(tenantId, requestId),
@@ -478,6 +586,51 @@ export class ProductionDeliveryService {
       }),
     });
     return this.toResponse(await this.findDelivery(tenantId, delivery.id));
+  }
+
+  /** Ghi sự kiện "xưởng nhận làm" lên mỗi đơn có dòng trong YCSX, trong cùng transaction. */
+  private async recordWorkshopEvent(
+    tx: Prisma.TransactionClient,
+    user: AuthUser,
+    request: RequestRow,
+    type: typeof OrderEventType.PRODUCTION_STARTED,
+  ): Promise<void> {
+    await recordOrderEvents(
+      tx,
+      userActor(user),
+      orderIdsOf(request.items).map((orderId) => ({
+        tenantId: request.tenantId,
+        orderId,
+        type,
+        metadata: productionRef(request),
+      })),
+    );
+  }
+
+  /** Báo shop việc xưởng nhận làm / huỷ yêu cầu: người tạo YCSX và chủ shop. Gọi sau commit; `notify` không bao giờ ném lỗi. */
+  private async notifyShop(
+    user: AuthUser,
+    request: RequestRow,
+    content: NotificationContent,
+  ): Promise<void> {
+    const owners = await this.notifications.tenantOwners(request.tenantId);
+    const recipients = [request.createdBy?.id, ...owners].filter(
+      (rid): rid is string => !!rid && rid !== user.userId,
+    );
+    await this.notifications.notify({
+      tenantId: request.tenantId,
+      recipientIds: recipients,
+      referenceId: request.id,
+      ...content,
+    });
+  }
+
+  private notAcceptable() {
+    return new ConflictException({
+      code: ErrorCode.PRODUCTION_REQUEST_NOT_ACCEPTABLE,
+      message:
+        'Only a SENT production request that nobody has accepted yet can be accepted',
+    });
   }
 
   private requireWorkshop(user: AuthUser): string {

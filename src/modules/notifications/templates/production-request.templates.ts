@@ -78,4 +78,27 @@ export const ProductionRequestNotificationTemplates = {
     description: `Phiếu ${args.deliveryCode} (${args.requestCode}) đã bị ${args.byWorkshop ? 'xưởng rút lại' : 'nơi nhận từ chối'}${args.reason ? `: ${args.reason}` : '.'}`,
     link: args.byWorkshop ? `/exchange/production-deliveries` : `/workshop`,
   }),
+
+  /** Xưởng xác nhận đang làm YCSX; gửi người tạo YCSX và chủ shop. Từ lúc này shop không huỷ được YCSX. */
+  workshopAccepted: (args: {
+    requestCode: string;
+    workshopName: string;
+  }): NotificationContent => ({
+    type: 'PRODUCTION_WORKSHOP_ACCEPTED',
+    title: 'Xưởng đã nhận làm',
+    description: `${args.workshopName} xác nhận đang làm ${args.requestCode}. Từ giờ chỉ xưởng huỷ được yêu cầu này.`,
+    link: `/exchange/imports?source=WORKSHOP`,
+  }),
+
+  /** Xưởng huỷ YCSX; gửi người tạo YCSX và chủ shop. Phần hàng còn đặt thôi được tính, danh sách cần sản xuất hiện lại chỗ thiếu. */
+  workshopCancelled: (args: {
+    requestCode: string;
+    workshopName: string;
+    reason: string;
+  }): NotificationContent => ({
+    type: 'PRODUCTION_WORKSHOP_CANCELLED',
+    title: 'Xưởng đã huỷ yêu cầu sản xuất',
+    description: `${args.workshopName} huỷ ${args.requestCode}: ${args.reason}`,
+    link: `/exchange/imports?source=WORKSHOP`,
+  }),
 };

@@ -247,6 +247,14 @@ export class CancelProductionDeliveryDto {
   reason: string;
 }
 
+/** Xưởng huỷ một YCSX: bắt buộc lý do - ghi vào ghi chú YCSX và báo cho shop, là dấu vết duy nhất vì sao hàng không về. */
+export class CancelProductionRequestByWorkshopDto {
+  @IsString()
+  @Transform(trim)
+  @Matches(/\S/, { message: 'Phải nhập lý do huỷ yêu cầu sản xuất' })
+  reason: string;
+}
+
 /** Góc nhìn của xưởng về các yêu cầu gửi tới mình, ở mọi địa điểm. */
 export class QueryWorkshopProductionRequestDto extends PaginationQueryDto {
   /** Khớp một phần mã YCSX. */
