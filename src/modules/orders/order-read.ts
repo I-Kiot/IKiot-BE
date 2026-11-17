@@ -60,7 +60,15 @@ export const ORDER_DETAIL_INCLUDE = {
   ...ORDER_LIST_INCLUDE,
   items: {
     include: {
-      productItem: { select: { id: true, sku: true, productName: true } },
+      // `isManufacturable` của sản phẩm: nút "Tạo YCSX" trên đơn chỉ điền sẵn dòng thiếu mà xưởng làm được (BE từ chối cả YCSX nếu có dòng không làm được).
+      productItem: {
+        select: {
+          id: true,
+          sku: true,
+          productName: true,
+          product: { select: { isManufacturable: true } },
+        },
+      },
       sourceLocation: LOCATION_SELECT,
       customization: {
         include: { specs: { orderBy: { position: 'asc' } } },
