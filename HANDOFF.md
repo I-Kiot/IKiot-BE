@@ -538,3 +538,29 @@ Cùng nhánh `feat/hungld-report-export`.
 
 **Đã kiểm chứng:** DB local reset (bản sao lưu `db-backups/ikiot_db_before-demo-seed_2026-11-15.dump` ở thư mục workspace), seed chạy hết; SQL: Σ lô = tồn ở mọi dòng tồn, mọi đơn COMPLETED có đúng bút toán SALE cùng ngày hoàn tất, không có dòng nào ở tương lai, 4 trigger đã bật lại. BE `tsc`, eslint `stats` + `prisma/demo`, unit `stats` 40/40; FE `tsc`, eslint `reports`.
 **Đã kiểm chứng thêm (15/11):** mở `/reports` bằng tài khoản chủ IGM, bấm đủ 10 tab, console không lỗi, hàng tab không còn nhảy; "Báo cáo đang xem" ở tab Theo hàng hóa ra `doanh-thu-theo-hang-hoa_<từ>_<đến>.xlsx`, "Tất cả báo cáo" ra `bao-cao-ban-hang_<từ>_<đến>.xlsx`; doanh thu thuần khớp giữa tab Kết quả bán hàng và Sổ doanh thu (tiền hàng + phí vận chuyển thu khách). **Chưa kiểm chứng:** Hôm nay chưa có đơn nào hoàn tất (seed chạy lúc 08:40 sáng, chỉ tạo đơn hôm nay khi đã quá 11h). Biến thể một số mặt hàng 360 là đoán (đánh dấu trong file ảnh); giá vốn là ước tính.
+## 2026-11-16 – Logo cửa hàng
+
+- **BE**: cột mới `tenants.logo_url` (`Tenant.logoUrl`, migration `20261116100000_tenant_logo_url`, chỉ `ADD COLUMN`, nullable). `PUT /tenant/me` nhận `logoUrl` (URL http/https, tối đa 2048 ký tự); bỏ trường thì giữ nguyên, chuỗi rỗng hoặc `null` là gỡ logo. `TENANT_SELECT` thêm `logoUrl`, nên `GET /tenant/me` và các route admin `/tenants` đều trả về. Quyền không đổi: vẫn `tenants:update`.
+- **FE**: ô logo ở Cài đặt hệ thống › Thông tin cửa hàng là component `settings/components/store-logo-field.tsx`: chọn ảnh → `POST /uploads` → `PUT /tenant/me { logoUrl }` **lưu ngay**, không chờ nút "Lưu thay đổi" (ảnh đã lên Cloudinary từ lúc tải, để chờ một lần bấm lưu dễ bị quên). Có nút "Gỡ logo". Không có quyền thì chỉ xem.
+- **Có dialog cắt ảnh như avatar**: chọn ảnh mở dialog kéo/phóng to/xoay (khung vuông, nền trong suốt); chỉ khi bấm "Xác nhận" ảnh mới được cắt (PNG 512×512), tải lên và lưu, huỷ thì không đổi gì. Phần cắt ảnh tách thành `components/image-crop/` (`useImageCrop` + `ImageCropDialog`), màn Tài khoản dùng chung bản này; `settings/account/components/avatar-crop-dialog.tsx` đã xoá. Avatar vẫn chờ nút "Lưu thay đổi" như trước.
+- **Logo ở sidebar và hoá đơn (FE)**: store mới `store/shop-profile-store.ts` tải `GET /tenant/me` một lần cho mỗi tenant (AppSidebar gọi, ADMIN bỏ qua) và giữ tên, logo, địa chỉ, SĐT shop. Khung chọn chi nhánh (`branch-switcher.tsx`) thay ô icon bằng logo khi đã đặt; bản in hoá đơn (`sales/invoices/.../invoice-print.ts`) và hoá đơn ở quầy (`check-out/.../receipt-dialog.tsx`) có phần đầu logo + tên + địa chỉ + SĐT shop. Đổi/gỡ logo ở màn cài đặt cập nhật store nên sidebar đổi ngay.
+
+**Đã kiểm chứng:** migration áp lên `ikiot_e2e`, `prisma migrate diff` không còn khác biệt về `logo_url`; BE `tsc`, lint, unit test `tenant` sạch; FE `tsc` sạch.
+**Chưa kiểm chứng:** chưa áp migration lên `ikiot_db` local; chưa tải logo thử trên dashboard.
+
+## 2026-11-16 – Lưu thông tin cửa hàng khi chưa có tài khoản ngân hàng
+
+- **Lỗi**: màn Cài đặt hệ thống › Thông tin cửa hàng luôn gửi `banking` với ba chuỗi rỗng, nên shop chưa có tài khoản nhận tiền không lưu được gì (400 `VALIDATION_FAILED`).
+- **BE**: `PUT /tenant/me` nhận `banking` dạng `OptionalBankingDto` (ba trường đều tuỳ chọn). `classifyBankingInput` (`tenants/banking-input.ts`, có unit test) quyết định: cả ba trống → không đụng tới phần ngân hàng; điền một phần → 400 `TENANT_BANKING_INCOMPLETE` kèm `errors.missing`; đủ cả ba → ghi như trước. `PUT /tenant/banking` vẫn bắt buộc đủ ba trường (`BankingDto`).
+- **FE**: báo thiếu trường nào trước khi gửi; cả ba trống thì không gửi `banking`. Lỗi lưu hiện câu theo `code`.
+- Cả ba trống **không xoá** tài khoản đã có: chưa có luồng gỡ tài khoản nhận tiền (gỡ giữa chừng phải tính tới đơn SePay đang chờ), nên xoá trắng ba ô rồi lưu thì tài khoản cũ vẫn giữ.
+
+**Đã kiểm chứng:** BE `tsc`, lint, unit test `tenant`/`banking-input` (19/19); FE `tsc`. **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+
+
+## 2026-11-18 – Màn Cấu hình hệ thống: khung nội dung cao hết màn hình, lịch sử tài khoản nhận tiền
+
+- **FE**: khung nội dung các tab ở Cài đặt › Cấu hình hệ thống cao hết phần màn hình còn lại (từ md trở lên), bỏ giới hạn `max-h-[750px]`; nội dung dài cuộn bên trong khung.
+- **FE**: thẻ lịch sử đổi tên thành "Lịch sử thay đổi tài khoản nhận tiền" — nó chỉ ghi số tài khoản, ngân hàng, chủ tài khoản và liên kết/khoá SePay (`tenant_banking_changes`), không ghi tên/SĐT/địa chỉ/MST. Thẻ tải lại sau khi lưu thành công có gửi `banking` (trước đây chỉ tải một lần khi mở trang nên phải F5 mới thấy dòng mới).
+
+**Đã kiểm chứng:** FE/BE `tsc` sạch. **Chưa kiểm chứng:** chưa bấm thử trên dashboard.

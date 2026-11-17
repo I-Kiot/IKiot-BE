@@ -170,14 +170,17 @@ function toCustomization(customization: DetailLineRow['customization']) {
   };
 }
 
-/** Một dòng trong chi tiết: như dòng danh sách, thêm kho xuất và thông số may đo. */
+/** Một dòng trong chi tiết: như dòng danh sách, thêm kho xuất, thông số may đo và sản phẩm có đặt xưởng được không. */
 function toDetailLine(
   item: DetailLineRow,
   stockChecks: Map<string, StockCheck>,
 ) {
-  const { sourceLocation, customization, ...rest } = item;
+  const { sourceLocation, customization, productItem, ...rest } = item;
+  // `product` chỉ để đọc cờ; `productItem` trả ra giữ đúng dạng của dòng danh sách.
+  const { product, ...productItemRef } = productItem;
   return {
-    ...toLine(rest, stockChecks),
+    ...toLine({ ...rest, productItem: productItemRef }, stockChecks),
+    isManufacturable: product.isManufacturable,
     sourceLocation: sourceLocation
       ? { id: sourceLocation.id, name: sourceLocation.name }
       : null,

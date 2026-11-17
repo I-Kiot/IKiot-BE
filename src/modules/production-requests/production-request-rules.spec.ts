@@ -16,6 +16,45 @@ describe('manualTransitionViolation', () => {
     expect(manualTransitionViolation(S.SENT, S.CANCELLED, false)).toBeNull();
   });
 
+  const accepted = { acceptedByWorkshop: true, cancelledByWorkshop: false };
+  const acceptedWorkshopCancels = {
+    acceptedByWorkshop: true,
+    cancelledByWorkshop: true,
+  };
+
+  it('refuses the shop cancelling a SENT request the workshop has accepted', () => {
+    expect(
+      manualTransitionViolation(S.SENT, S.CANCELLED, false, null, accepted)
+        ?.code,
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_IN_PRODUCTION);
+  });
+
+  it('lets the workshop itself cancel a request it accepted', () => {
+    expect(
+      manualTransitionViolation(
+        S.SENT,
+        S.CANCELLED,
+        false,
+        'Hết gỗ',
+        acceptedWorkshopCancels,
+      ),
+    ).toBeNull();
+  });
+
+  it('reports received goods first, whoever cancels', () => {
+    for (const workshop of [accepted, acceptedWorkshopCancels]) {
+      expect(
+        manualTransitionViolation(
+          S.PARTIALLY_RECEIVED,
+          S.CANCELLED,
+          true,
+          null,
+          workshop,
+        )?.code,
+      ).toBe(ErrorCode.PRODUCTION_REQUEST_HAS_RECEIPTS);
+    }
+  });
+
   it('refuses to cancel once goods have been received', () => {
     expect(
       manualTransitionViolation(S.PARTIALLY_RECEIVED, S.CANCELLED, true)?.code,
