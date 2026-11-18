@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -13,6 +14,7 @@ import {
 } from './tenant-select';
 import { BankingDto, UpdateMyTenantDto } from './dto/tenant-self.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { classifyBankingInput } from './banking-input';
 import { normalizeAccountNumber } from '../../common/utils/bank-account';
 import { OrderStatus } from '../../common/constants/order-status';
 import {
@@ -94,10 +96,20 @@ export class TenantSelfService {
 
   /** `PUT /tenant/me`. Báo cho operator khi tài khoản ngân hàng đổi. */
   async updateMine(tenantId: string, actorId: string, dto: UpdateMyTenantDto) {
+    const input = classifyBankingInput(dto.banking);
+    if (input.kind === 'INCOMPLETE') {
+      throw new BadRequestException({
+        code: ErrorCode.TENANT_BANKING_INCOMPLETE,
+        message:
+          'Account number, bank name and account holder must be filled in together',
+        errors: { missing: input.missing },
+      });
+    }
     const before = await this.bankingOf(tenantId);
-    const banking = dto.banking
-      ? await this.bankingWrite(tenantId, before, dto.banking)
-      : {};
+    const banking =
+      input.kind === 'COMPLETE'
+        ? await this.bankingWrite(tenantId, before, input.banking)
+        : {};
 
     const tenant = await this.updateWithHistory(
       tenantId,
@@ -108,11 +120,13 @@ export class TenantSelfService {
         phoneNumber: dto.phoneNumber,
         mainAddress: dto.mainAddress,
         taxNumber: dto.taxNumber,
+        // `undefined` giữ nguyên; rỗng hoặc null là gỡ logo.
+        logoUrl: dto.logoUrl === undefined ? undefined : dto.logoUrl || null,
         ...banking,
       },
     );
 
-    if (dto.banking) await this.afterBankChange(before, tenant);
+    if (input.kind === 'COMPLETE') await this.afterBankChange(before, tenant);
     return withNestedBanking(tenant);
   }
 
