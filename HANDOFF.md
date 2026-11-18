@@ -564,3 +564,18 @@ Cùng nhánh `feat/hungld-report-export`.
 - **FE**: thẻ lịch sử đổi tên thành "Lịch sử thay đổi tài khoản nhận tiền" — nó chỉ ghi số tài khoản, ngân hàng, chủ tài khoản và liên kết/khoá SePay (`tenant_banking_changes`), không ghi tên/SĐT/địa chỉ/MST. Thẻ tải lại sau khi lưu thành công có gửi `banking` (trước đây chỉ tải một lần khi mở trang nên phải F5 mới thấy dòng mới).
 
 **Đã kiểm chứng:** FE/BE `tsc` sạch. **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+
+## 2026-11-18 – Nhật ký hoạt động: bỏ thao tác đọc/xoá thông báo hệ thống của admin
+
+- **BE**: decorator mới `@SkipAudit()` (`common/decorators/skip-audit.decorator.ts`); `AuditInterceptor` đọc nó qua `Reflector` và bỏ qua route đó. Gắn lên 4 route `/admin/system-notifications` (đánh dấu đã đọc một/tất cả, xoá một/tất cả) — các dòng "Cập nhật/Xóa System-notifications" làm loãng nhật ký admin. Không thêm điều kiện đường dẫn vào interceptor.
+- **FE**: sidebar của ADMIN đổi tên "iKiot Dashboard" → "iKiot Admin".
+
+**Đã kiểm chứng:** BE `tsc`, eslint 3 file, `test:e2e di-check` (2/2). **Chưa kiểm chứng:** chưa gọi thử route để xem nhật ký không còn dòng mới; dòng cũ chỉ đã xoá trên `ikiot_db` local (`DELETE FROM audit_logs WHERE resource = 'System-notifications'`), DB server cần chạy câu này nếu muốn dọn.
+
+## 2026-11-18 – Thông báo hệ thống của admin chuyển thành nút chuông
+
+- **FE**: bỏ màn `/admin/system-notifications` và mục sidebar của nó; ADMIN có nút chuông trên header (`components/admin-notification-bell.tsx`) giống chuông của shop: đếm chưa đọc, đánh dấu đã đọc / xoá từng dòng hoặc tất cả, bấm vào thì đi tới ticket / shop / giao dịch / SePay như màn cũ.
+- **FE**: danh sách thông báo hệ thống nằm trong `notification-store` (`items`, số chưa đọc tính từ danh sách); socket `system-notification` trong `auth-guard` thêm thẳng vào danh sách. Không còn toast khi có thông báo mới, chỉ số trên chuông tăng.
+- **BE**: không đổi API.
+
+**Đã kiểm chứng:** FE `tsc` (trừ `.next/types` cũ trỏ tới trang đã xoá, tự hết khi build lại). **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
