@@ -6,7 +6,7 @@ import {
   NestInterceptor,
   OnModuleInit,
 } from '@nestjs/common';
-import { DiscoveryService } from '@nestjs/core';
+import { DiscoveryService, Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { Observable, tap } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -14,6 +14,7 @@ import { SystemRole } from '../constants/system-role';
 import type { AuthUser } from '../types/auth-user.type';
 import type { AuditableLoginResponse } from '../types/login-response.type';
 import { AuditTemplate } from '../audit/audit-descriptor';
+import { SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
 import type { AuditDescriptor } from '../audit/audit-descriptor';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -42,6 +43,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly discovery: DiscoveryService,
+    private readonly reflector: Reflector,
   ) {}
 
   /** Thu thập một lần lúc khởi động: provider @AuditTemplate() tự đăng ký chỉ bằng việc tồn tại, nên không có danh sách trong AppModule phải cập nhật. */
@@ -57,6 +59,14 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
 
     const request = context.switchToHttp().getRequest<AuthedRequest>();
     if (!MUTATING_METHODS.has(request.method)) return next.handle();
+    if (
+      this.reflector.getAllAndOverride<boolean>(SKIP_AUDIT_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ])
+    ) {
+      return next.handle();
+    }
 
     const path = request.originalUrl ?? request.url;
     if (

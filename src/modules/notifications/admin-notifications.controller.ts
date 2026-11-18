@@ -16,6 +16,7 @@ import {
   ListSystemNotificationsDto,
 } from './dto/announcement.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -43,21 +44,25 @@ export class AdminNotificationController {
   }
 
   /** Đường dẫn ngắn hơn `:id/read` một đoạn, nên hai route không tranh khớp nhau. */
+  @SkipAudit()
   @Patch('admin/system-notifications/mark-all-read')
   markAllRead() {
     return this.service.markAllSystemRead();
   }
 
+  @SkipAudit()
   @Patch('admin/system-notifications/:id/read')
   markRead(@Param('id') id: string) {
     return this.service.markSystemRead(id);
   }
 
+  @SkipAudit()
   @Delete('admin/system-notifications')
   removeAll() {
     return this.service.removeAllSystem();
   }
 
+  @SkipAudit()
   @Delete('admin/system-notifications/:id')
   remove(@Param('id') id: string) {
     return this.service.removeSystem(id);
