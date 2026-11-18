@@ -153,8 +153,21 @@ export class RevenueByStaffQueryDto extends StatsQueryDto {
   groupBy: string = 'assignee';
 }
 
-/** `/stats/sales-journal`: đọc thẳng các bút toán doanh thu. Khoảng ngày lọc theo `business_date` (ngày địa phương), không theo giờ. */
-export class SalesJournalQueryDto extends StatsQueryDto {
+/** Các báo cáo của trang Báo cáo, mỗi mục một tab; dùng cho `section` của file xuất. */
+export const REPORT_SECTIONS: readonly string[] = [
+  'result',
+  'time',
+  'product',
+  'branch',
+  'staff',
+  'customer',
+  'orders',
+  'cash',
+  'inventory',
+];
+
+/** Bộ lọc của sổ doanh thu, không phân trang: `/stats/export/sales-journal` xuất cả kỳ. Khoảng ngày lọc theo `business_date` (ngày địa phương), không theo giờ. */
+export class SalesJournalExportQueryDto extends StatsQueryDto {
   @IsOptional()
   @upper()
   @IsIn(Object.values(SalesJournalEntryType), {
@@ -165,7 +178,10 @@ export class SalesJournalQueryDto extends StatsQueryDto {
   @IsOptional()
   @IsString()
   orderId?: string;
+}
 
+/** `/stats/sales-journal`: đọc thẳng các bút toán doanh thu, phân trang. */
+export class SalesJournalQueryDto extends SalesJournalExportQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -178,6 +194,41 @@ export class SalesJournalQueryDto extends StatsQueryDto {
   @Min(1)
   @Max(100)
   limit: number = 20;
+}
+
+/** `/stats/export/report`: file của trang Báo cáo chi tiết. Thêm bộ lọc kho cho phần thu chi và tồn kho, như chính trang đó gọi. */
+export class ReportExportQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @IsString()
+  warehouseId?: string;
+
+  /** Mốc của sheet doanh thu theo thời gian: ngày (mặc định) hoặc tháng, như trang đang hiện. */
+  @IsOptional()
+  @IsIn(ADMIN_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${ADMIN_GROUP_BY_VALUES.join(' hoặc ')}`,
+  })
+  groupBy?: GroupBy = GroupBy.DAY;
+
+  /** Chỉ xuất một báo cáo (một tab của trang); bỏ trống là xuất tất cả. */
+  @IsOptional()
+  @IsIn(REPORT_SECTIONS, {
+    message: `section phải là ${REPORT_SECTIONS.join(', ')}`,
+  })
+  section?: string;
+
+  /** Cách tính người của báo cáo theo nhân viên, như ô chọn trên trang. */
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `staffGroupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  staffGroupBy: string = 'assignee';
+
+  /** Ngưỡng "sắp hết" của báo cáo tồn kho, như ô chọn trên trang. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  lowStockThreshold: number = DEFAULT_LOW_STOCK_THRESHOLD;
 }
 
 export class TopProductsQueryDto extends StatsQueryDto {

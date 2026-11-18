@@ -1,13 +1,20 @@
-import { Controller, Get, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, StreamableFile } from '@nestjs/common';
+import { ApiBearerAuth, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { StatsService } from './stats.service';
 import { StatsReportsService } from './stats-reports.service';
+import {
+  StatsExportService,
+  type ExportedFile,
+} from './export/stats-export.service';
+import { XLSX_MIME } from '../products/import/product-import.service';
 import {
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
   OrderPipelineQueryDto,
+  ReportExportQueryDto,
   RevenueByStaffQueryDto,
+  SalesJournalExportQueryDto,
   SalesJournalQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
@@ -29,6 +36,7 @@ export class StatsController {
   constructor(
     private readonly service: StatsService,
     private readonly reports: StatsReportsService,
+    private readonly exporter: StatsExportService,
   ) {}
 
   @Permissions('reports', 'read')
@@ -188,4 +196,44 @@ export class StatsController {
   ) {
     return this.reports.getUnreconciled(user, query.branchId);
   }
+
+  /** File Excel của trang Báo cáo chi tiết: mỗi nhóm số liệu một sheet, cùng kỳ và địa điểm đang xem. */
+  @Permissions('reports', 'read')
+  @Get('export/report')
+  @ApiProduces(XLSX_MIME)
+  async exportReport(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ReportExportQueryDto,
+  ) {
+    return xlsxFile(await this.exporter.report(user, query));
+  }
+
+  /** Sổ doanh thu cả kỳ theo mẫu sổ của Thông tư 99/2025/TT-BTC: Sổ nhật ký bán hàng (S03a4-DN) và Sổ chi tiết bán hàng (S35-DN). */
+  @Permissions('reports', 'read')
+  @Get('export/sales-journal')
+  @ApiProduces(XLSX_MIME)
+  async exportSalesJournal(
+    @CurrentUser() user: AuthUser,
+    @Query() query: SalesJournalExportQueryDto,
+  ) {
+    return xlsxFile(await this.exporter.salesJournal(user, query));
+  }
+
+  /** Báo cáo đối soát tiền tại thời điểm gọi. */
+  @Permissions('reports', 'read')
+  @Get('export/unreconciled')
+  @ApiProduces(XLSX_MIME)
+  async exportUnreconciled(
+    @CurrentUser() user: AuthUser,
+    @Query() query: OrderPipelineQueryDto,
+  ) {
+    return xlsxFile(await this.exporter.unreconciled(user, query.branchId));
+  }
+}
+
+function xlsxFile({ buffer, filename }: ExportedFile): StreamableFile {
+  return new StreamableFile(buffer, {
+    type: XLSX_MIME,
+    disposition: `attachment; filename="${filename}"`,
+  });
 }

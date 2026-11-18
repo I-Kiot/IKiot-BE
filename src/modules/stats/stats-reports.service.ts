@@ -18,8 +18,11 @@ import {
   HELD_UNDECIDED_ORDER_SQL,
 } from '../orders/held-undecided';
 import { orderScope } from './stats-scope';
-import { businessDatesOf } from './stats-math';
-import type { SalesJournalQueryDto } from './dto/stats-query.dto';
+import { businessDatesOf, vietnamDateOf } from './stats-math';
+import type {
+  SalesJournalExportQueryDto,
+  SalesJournalQueryDto,
+} from './dto/stats-query.dto';
 
 /** Số dòng chi tiết mỗi danh sách của báo cáo đối soát; tổng và số đếm tính trên tất cả. */
 const UNRECONCILED_LIST_LIMIT = 50;
@@ -43,11 +46,14 @@ function fullName(
 export class StatsReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Bút toán doanh thu kèm dòng, phân trang, mới nhất trước. `totals` cộng trên cả bộ lọc (không chỉ trang này). Khoảng ngày lọc theo `business_date` địa phương. */
-  async getSalesJournal(user: AuthUser, query: SalesJournalQueryDto) {
+  /** Bộ lọc của sổ doanh thu, dùng chung cho màn hình và file xuất để hai nơi không lệch nhau. Khoảng ngày lọc theo `business_date` địa phương. */
+  private journalWhere(
+    user: AuthUser,
+    query: SalesJournalExportQueryDto,
+  ): Prisma.SalesJournalEntryWhereInput {
     const scope = orderScope(user, query.branchId);
     const { from, to } = businessDatesOf(query.range());
-    const where: Prisma.SalesJournalEntryWhereInput = {
+    return {
       tenantId: user.tenantId ?? undefined,
       businessDate: {
         gte: new Date(`${from}T00:00:00.000Z`),
@@ -57,6 +63,66 @@ export class StatsReportsService {
       ...(query.entryType ? { entryType: query.entryType } : {}),
       ...(query.orderId ? { orderId: query.orderId } : {}),
     };
+  }
+
+  /**
+   * Toàn bộ bút toán của bộ lọc cho file xuất (không phân trang), cũ nhất trước như cách ghi sổ. Kèm tên khách (chụp `customer_id`, không có khoá ngoại nên đọc riêng một lần).
+   * Không giới hạn số dòng: sổ của một kỳ phải đủ, cắt bớt thì tổng cuối sổ sai.
+   */
+  async getSalesJournalForExport(
+    user: AuthUser,
+    query: SalesJournalExportQueryDto,
+  ) {
+    const rows = await this.prisma.salesJournalEntry.findMany({
+      where: this.journalWhere(user, query),
+      orderBy: [{ businessDate: 'asc' }, { postedAt: 'asc' }, { id: 'asc' }],
+      include: {
+        order: { select: { code: true } },
+        lines: {
+          orderBy: { id: 'asc' },
+          include: {
+            orderItem: { select: { productName: true, sku: true } },
+          },
+        },
+      },
+    });
+    const customerIds = [
+      ...new Set(
+        rows.map((r) => r.customerId).filter((id): id is string => !!id),
+      ),
+    ];
+    const customers = await this.prisma.customer.findMany({
+      where: { id: { in: customerIds } },
+      select: { id: true, name: true },
+    });
+    const customerName = new Map(customers.map((c) => [c.id, c.name]));
+
+    return rows.map((row) => ({
+      entryType: row.entryType,
+      orderCode: row.order.code,
+      customerName: row.customerId
+        ? (customerName.get(row.customerId) ?? null)
+        : null,
+      businessDate: row.businessDate.toISOString().slice(0, 10),
+      postedDate: vietnamDateOf(row.postedAt),
+      goodsAmount: Number(row.goodsAmount),
+      shippingAmount: Number(row.shippingAmount),
+      otherIncomeAmount: Number(row.otherIncomeAmount),
+      totalAmount: Number(row.totalAmount),
+      cogsAmount: Number(row.cogsAmount),
+      lines: row.lines.map((line) => ({
+        productName: line.orderItem.productName,
+        sku: line.orderItem.sku,
+        quantity: line.quantity,
+        amount: Number(line.amount),
+        cogs: Number(line.cogs),
+      })),
+    }));
+  }
+
+  /** Bút toán doanh thu kèm dòng, phân trang, mới nhất trước. `totals` cộng trên cả bộ lọc (không chỉ trang này). Khoảng ngày lọc theo `business_date` địa phương. */
+  async getSalesJournal(user: AuthUser, query: SalesJournalQueryDto) {
+    const where = this.journalWhere(user, query);
     const { page, limit } = query;
 
     const [rows, total, totals] = await Promise.all([
