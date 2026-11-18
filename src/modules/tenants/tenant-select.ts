@@ -9,6 +9,7 @@ export const TENANT_SELECT = {
   phoneNumber: true,
   mainAddress: true,
   taxNumber: true,
+  logoUrl: true,
   bankingAccountNumber: true,
   bankingBankName: true,
   bankingAccountName: true,

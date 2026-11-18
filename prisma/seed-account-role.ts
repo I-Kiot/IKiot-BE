@@ -14,7 +14,7 @@ const SHOP_NAME = 'Nội thất Demo';
 const OWNER = {
   phoneNumber: '0981189856',
   lastName: 'Nguyễn Thị',
-  firstName: 'Demo',
+  firstName: 'Mai (Chủ shop)',
 };
 
 type LocationKey = 'DAMAGED' | 'HANOI' | 'HCM';
@@ -103,7 +103,7 @@ const ROLES: {
   },
 ];
 
-/** profile: app hiển thị "họ tên", ví dụ "Sale Hà Nội". */
+/** App hiển thị `lastName firstName`, nên vai trò đặt cuối firstName: "Nguyễn Hoàng Hải (Shipper)". */
 const STAFF: {
   code: string;
   lastName: string;
@@ -114,72 +114,72 @@ const STAFF: {
 }[] = [
   {
     code: 'U1',
-    lastName: 'Sale',
-    firstName: 'Hà Nội',
+    lastName: 'Trần Minh',
+    firstName: 'Anh (Bán hàng)',
     phoneNumber: '0901189801',
     role: 'R1',
     location: 'HANOI',
   },
   {
     code: 'U2',
-    lastName: 'Phụ Trách',
-    firstName: 'Đơn',
+    lastName: 'Lê Quốc',
+    firstName: 'Bảo (Phụ trách đơn)',
     phoneNumber: '0901189802',
     role: 'R2',
     location: 'HANOI',
   },
   {
     code: 'U3',
-    lastName: 'Kho',
-    firstName: 'Hà Nội',
+    lastName: 'Phạm Văn',
+    firstName: 'Đức (Kho)',
     phoneNumber: '0901189803',
     role: 'R3',
     location: 'HANOI',
   },
   {
     code: 'U4',
-    lastName: 'Shipper',
-    firstName: 'Một',
+    lastName: 'Nguyễn Hoàng',
+    firstName: 'Hải (Shipper)',
     phoneNumber: '0901189804',
     role: 'R4',
     location: 'HANOI',
   },
   {
     code: 'U5',
-    lastName: 'Kho',
-    firstName: 'Hồ Chí Minh',
+    lastName: 'Võ Thanh',
+    firstName: 'Tùng (Kho)',
     phoneNumber: '0901189805',
     role: 'R3',
     location: 'HCM',
   },
   {
     code: 'U6',
-    lastName: 'Shipper',
-    firstName: 'Hai',
+    lastName: 'Đặng Văn',
+    firstName: 'Long (Shipper)',
     phoneNumber: '0901189806',
     role: 'R4',
     location: 'HANOI',
   },
   {
     code: 'U7',
-    lastName: 'Kế',
-    firstName: 'Toán',
+    lastName: 'Hoàng Thu',
+    firstName: 'Trang (Kế toán)',
     phoneNumber: '0901189807',
     role: 'R5',
     location: 'HANOI',
   },
   {
     code: 'U8',
-    lastName: 'Sản',
-    firstName: 'Xuất',
+    lastName: 'Bùi Thị',
+    firstName: 'Lan (Sản xuất)',
     phoneNumber: '0901189808',
     role: 'R6',
     location: 'HANOI',
   },
   {
     code: 'U9',
-    lastName: 'Xử Lý',
-    firstName: 'Hoàn',
+    lastName: 'Đỗ Minh',
+    firstName: 'Khoa (Hoàn hàng)',
     phoneNumber: '0901189809',
     role: 'R7',
     location: 'HANOI',

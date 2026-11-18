@@ -62,6 +62,7 @@ model Tenant {
   phoneNumber   String? @map("phone_number")
   mainAddress   String? @map("main_address")
   taxNumber     String? @map("tax_number")
+  logoUrl       String? @map("logo_url") // URL ảnh từ POST /uploads; null = chưa đặt logo
 
   bankingAccountNumber      String?   @unique @map("banking_account_number") // webhook chung tìm shop theo số này
   bankingBankName           String?   @map("banking_bank_name")
