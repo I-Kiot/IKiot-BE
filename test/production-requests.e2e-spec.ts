@@ -480,10 +480,14 @@ describe('production list, production requests and workshop receipts', () => {
     expect(added.items).toHaveLength(1);
     expect(added.items[0].quantity).toBe(3);
 
-    expect(await cabinetRow()).toMatchObject({
-      draftQuantity: 3,
+    // Dòng đơn đã được YCSX gắn nhận hết nên không còn nhu cầu để liệt kê (2026-11-19).
+    const covered = await cabinetRow();
+    expect(covered).toMatchObject({
+      demandQuantity: 0,
+      draftQuantity: 0,
       shortQuantity: 0,
     });
+    expect(covered?.orders).toEqual([]);
   });
 
   it('refuses to receive before the request is sent, then counts it as on order', async () => {
@@ -505,7 +509,8 @@ describe('production list, production requests and workshop receipts', () => {
     ).toBe(ErrorCode.PRODUCTION_REQUEST_LOCKED);
 
     expect(await cabinetRow()).toMatchObject({
-      onOrderQuantity: 3,
+      demandQuantity: 0,
+      onOrderQuantity: 0,
       draftQuantity: 0,
       shortQuantity: 0,
     });
@@ -582,11 +587,18 @@ describe('production list, production requests and workshop receipts', () => {
     });
     expect(Number(workshop.outstandingDebt)).toBe(1200);
 
-    // Tồn 1 + đang đặt 1 so với nhu cầu 3: vẫn thiếu 1, không tạo nháp.
-    expect(await cabinetRow()).toMatchObject({
+    // Tồn 1 + đang đặt 1 so với nhu cầu 3: vẫn thiếu 1, không tạo nháp. Phần dòng được YCSX gắn nhận (1 còn chờ) trừ khỏi cả hai phía.
+    const partly = await cabinetRow();
+    expect(partly).toMatchObject({
       stock: 1,
-      onOrderQuantity: 1,
+      demandQuantity: 2,
+      onOrderQuantity: 0,
       shortQuantity: 1,
+    });
+    expect(partly?.orders[0]).toMatchObject({
+      quantity: 3,
+      remainingQuantity: 2,
+      coveredQuantity: 1,
     });
   });
 

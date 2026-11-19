@@ -57,6 +57,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     return list.body.data[0] as {
       shortQuantity: number;
       onOrderQuantity: number;
+      demandQuantity: number;
     };
   };
 
@@ -323,9 +324,11 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .send({ status: 'SENT' })
       .expect(200);
     expect(sent.body.data.status).toBe('SENT');
+    // Dòng đơn (2) được YCSX gắn nhận hết; còn 1 đặt chung ở lại danh sách.
     expect(await shortRow()).toMatchObject({
       shortQuantity: 0,
-      onOrderQuantity: 3,
+      onOrderQuantity: 1,
+      demandQuantity: 0,
     });
   });
 

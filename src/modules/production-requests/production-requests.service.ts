@@ -61,11 +61,11 @@ import {
   nextProductionRequestCode,
   PRODUCTION_REQUEST_CODE_PREFIX,
   productionExcessOf,
-  remainingNeedOf,
   statusAfterReceipt,
   type RuleViolation,
 } from './production-request-rules';
-import { openProductionByOrderItem } from './production-coverage';
+import { productionStateForPairs } from './production-list.loader';
+import { orderableLinesOf } from './production-orderable';
 import { computeStockChecks } from '../orders/stock-check';
 import { ProductVariantService } from '../products/product-variant.service';
 import {
@@ -1120,8 +1120,9 @@ export class ProductionRequestService {
   }
 
   /**
-   * Đặt xưởng cho dòng đơn không được vượt phần dòng đó còn thiếu: (số còn chờ ở các YCSX mở khác) + (số đặt lần này) <= phần còn cần
-   * (`remainingNeedOf`: hàng may đo = cả dòng, hàng chuẩn = số thiếu `stockCheck` hiện tại). Dòng không tính được stockCheck thì bỏ qua.
+   * Đặt xưởng cho dòng đơn không được vượt phần còn đặt được (`orderableLinesOf`, cùng phép tính với nút "Tạo YCSX" trên đơn):
+   * mỗi dòng <= min(phần dòng còn cần trừ phần YCSX gắn riêng đã nhận, số thiếu chung của (địa điểm, SKU)), và các dòng của một
+   * yêu cầu cùng (địa điểm, SKU) cộng lại <= số thiếu chung. Dòng không tính được thì bỏ qua. `excludeRequestId` = YCSX nháp đang sửa.
    */
   private async assertWithinOrderShortage(
     tenantId: string,
@@ -1145,33 +1146,43 @@ export class ProductionRequestService {
     const checks = await computeStockChecks(this.prisma, tenantId, [
       ...byOrder.values(),
     ]);
-    const need = new Map(
-      orderItems.map((row) => [
-        row.id,
-        remainingNeedOf(row, checks.get(row.id)?.shortQuantity ?? null),
-      ]),
-    );
-    const open = await openProductionByOrderItem(
+    const state = await productionStateForPairs(
       this.prisma,
       tenantId,
-      orderItems.map((row) => row.id),
+      orderItems.map((row) => ({
+        locationId: row.sourceLocationId,
+        productItemId: row.productItemId,
+      })),
       excludeRequestId,
     );
-    const excess = productionExcessOf(
-      prepared,
-      new Map([...open].map(([id, entry]) => [id, entry.openQuantity])),
-      need,
+    const lines = orderableLinesOf(
+      orderItems,
+      (id) => checks.get(id)?.shortQuantity ?? null,
+      state,
     );
+    const excess = productionExcessOf(prepared, lines);
     if (!excess) return;
     const row = orderItems.find((r) => r.id === excess.orderItemId)!;
+    const line = lines.get(excess.orderItemId)!;
+    const coveredBy = [
+      ...new Set([
+        ...line.coveringRequests.map((request) => request.code),
+        ...(state.coverage
+          .get(excess.orderItemId)
+          ?.coveredBy.map((cover) => cover.code) ?? []),
+      ]),
+    ];
     throw new ConflictException({
       code: ErrorCode.PRODUCTION_EXCEEDS_ORDER_SHORTAGE,
-      message: `Order ${row.order.code} still needs ${Math.max(0, excess.need - excess.alreadyOpen)} more from the workshop (short ${excess.need}, already on open requests ${excess.alreadyOpen}); ${excess.requested} requested`,
+      message: `Order ${row.order.code}: the workshop can still take ${excess.orderable} for this line (line short ${excess.need}, linked ${excess.alreadyOpen}, shared shortage ${line.poolShort}); ${excess.requested} requested`,
       orderCode: row.order.code,
       orderItemId: excess.orderItemId,
       need: excess.need,
       alreadyOpen: excess.alreadyOpen,
       requested: excess.requested,
+      orderable: excess.orderable,
+      scope: excess.scope,
+      coveredBy,
     });
   }
 

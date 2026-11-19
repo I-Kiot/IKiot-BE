@@ -38,17 +38,35 @@ export function productionRequestTarget({
   };
 }
 
-/** Phiếu giao của xưởng: `{ id, code, productionRequest: { id, code } }`. */
-export function deliveryTarget({
+/**
+ * Phiếu giao của xưởng: `{ id, code, productionRequest: { id, code } }`. Hủy / từ chối phiếu làm số "đang giao" trên dòng đơn đổi
+ * mà body không có đơn, nên tra các đơn của YCSX một lần (như `packTarget`) để trang đơn đang mở tự đọc lại.
+ */
+export async function deliveryTarget({
   body,
   params,
-}: ChangeExtractContext): ChangeTarget {
+  tenantId,
+  prisma,
+}: ChangeExtractContext): Promise<ChangeTarget> {
   const delivery = readRef(body);
   const request = readRefOf(body, 'productionRequest');
+  const lines = request?.id
+    ? await prisma.productionRequestItem.findMany({
+        where: {
+          productionRequestId: request.id,
+          orderItemId: { not: null },
+          productionRequest: { tenantId },
+        },
+        select: { orderItem: { select: { orderId: true } } },
+      })
+    : [];
   return {
     subjectId: params.id ?? delivery?.id ?? null,
     code: delivery?.code ?? null,
-    related: { [ChangeResource.PRODUCTION_REQUESTS]: [request?.id] },
+    related: {
+      [ChangeResource.PRODUCTION_REQUESTS]: [request?.id],
+      [ChangeResource.ORDERS]: lines.map((line) => line.orderItem?.orderId),
+    },
   };
 }
 

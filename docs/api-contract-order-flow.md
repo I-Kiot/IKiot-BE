@@ -201,7 +201,13 @@ không trừ cho các đơn chưa đóng gói: hai đơn `CONFIRMED` cùng cần
 đều hiện "Đủ hàng"; đơn nào đóng gói trước lấy cái tủ, đơn kia chuyển "Hết hàng" và bị chặn ở `pack`.
 Người dùng chọn đơn đi trước; con số tổng thiếu (đã trừ phần đã đặt xưởng) nằm ở danh sách cần sản xuất (§3).
 
-**`production` trên từng dòng** (2026-11-19, cả `GET /orders` và `GET /orders/:id`): `production: { openQuantity, requests: [{ id, code, status, quantity, receivedQuantity }] }` từ các dòng YCSX gắn `orderItemId` của dòng đó mà YCSX còn mở (`DRAFT` / `SENT` / `PARTIALLY_RECEIVED`); `openQuantity = Σ (quantity − receivedQuantity)`. Dòng chưa đặt xưởng: `{ openQuantity: 0, requests: [] }`. `POST/PATCH /production-requests` và `POST …/items` từ chối đặt vượt phần còn cần của dòng đơn (hàng may đo = cả dòng, hàng chuẩn = `stockCheck.shortQuantity` hiện tại, trừ `openQuantity` của các YCSX mở KHÁC) bằng `409 PRODUCTION_EXCEEDS_ORDER_SHORTAGE` (thân lỗi có `orderCode`, `orderItemId`, `need`, `alreadyOpen`, `requested`).
+**`production` trên từng dòng** (2026-11-19, cả `GET /orders` và `GET /orders/:id`): `production: { openQuantity, requests: [{ id, code, status, quantity, receivedQuantity }] }` từ các dòng YCSX gắn `orderItemId` của dòng đó mà YCSX còn mở (`DRAFT` / `SENT` / `PARTIALLY_RECEIVED`); `openQuantity = Σ (quantity − receivedQuantity)`. Dòng chưa đặt xưởng: `{ openQuantity: 0, requests: [], progress: [], orderableQuantity, coveringRequests: [] }`.
+
+**Còn đặt xưởng được bao nhiêu** (2026-11-19, bổ sung): `production.orderableQuantity = min(phần dòng còn cần − covered, số thiếu chung)`, trong đó phần dòng còn cần = `remainingNeedOf` (hàng may đo = cả dòng, hàng chuẩn = `stockCheck.shortQuantity`), `covered` = phần của dòng đã có YCSX **gắn đúng dòng đó, cùng địa điểm và SKU** đứng ra nhận (YCSX cũ nhất trước, tối đa bằng số lượng dòng, tính trên phần còn chờ `quantity − receivedQuantity`), và số thiếu chung = `shortQuantity` của dòng (địa điểm, SKU) trong danh sách cần sản xuất (§3, tính cả YCSX đặt chung không gắn dòng). `null` = không biết (dòng không có stockCheck hoặc không nằm trong nhu cầu). `production.coveringRequests: [{ id, code, status, openQuantity }]` = YCSX đặt chung còn chờ hàng ở dòng chung đó. `production.openQuantity` / `requests` giữ nguyên nghĩa (YCSX gắn dòng còn mở, mọi địa điểm).
+
+**Tiến độ** `production.progress: [{ id, code, status, supplierName, location: { id, name }, sentAt, acceptedAt, expectedReadyDate (YYYY-MM-DD | null), quantity, receivedQuantity, deliveringQuantity, closedShort }]`: mọi YCSX gắn dòng chưa `CANCELLED` (kể cả `COMPLETED`), cũ nhất trước; `deliveringQuantity` = Σ số xưởng đã ghi giao trên phiếu `PENDING` chưa được nơi nhận xác nhận; `closedShort` = `COMPLETED` mà nhận ít hơn đặt.
+
+`POST/PATCH /production-requests` và `POST …/items` dùng đúng phép tính đó làm guard cho các dòng có `orderItemId` (dòng không gắn đơn không bị chặn): mỗi dòng <= `orderableQuantity`, và các dòng của một yêu cầu cùng (địa điểm, SKU) cộng lại <= số thiếu chung; vượt thì `409 PRODUCTION_EXCEEDS_ORDER_SHORTAGE` (thân lỗi có `orderCode`, `orderItemId`, `need`, `alreadyOpen` (= covered), `requested`, và thêm `orderable`, `scope` = `LINE` | `POOL`, `coveredBy`: mã YCSX đang che).
 
 **Kho dùng để tính `stock`** (theo `sourceLocationId` của dòng, hay tổng các kho): **chờ chốt** (Notion
 B-2). Mọi chỗ trong file này ghi "tại `sourceLocation`" là đề xuất cho tới khi chốt.
@@ -419,12 +425,15 @@ thành dòng riêng, mang theo thông số thiết kế.
 - `draftQuantity` = như trên nhưng YCSX `DRAFT` – đã lập, chưa gửi.
 - `shortQuantity` = `max(0, demandQuantity − stock − onOrderQuantity − draftQuantity)` – **còn thiếu, chưa đặt**.
 
+**YCSX gắn dòng trừ vào chính dòng đó trước** (2026-11-19): dòng YCSX có `orderItemId` cùng địa điểm + SKU với dòng đơn thì phần còn chờ của nó (tối đa bằng số lượng dòng) được trừ khỏi cả nhu cầu của dòng đó lẫn `onOrderQuantity` / `draftQuantity` của dòng chung; phần dư (vượt số lượng dòng, hoặc YCSX giao về địa điểm khác) vẫn là hàng đặt chung. Cùng lượng C trừ cả hai phía nên `shortQuantity = max(0, (D−C) − S − (O−C))` không đổi so với trước; chỉ `demandQuantity`, `onOrderQuantity`, `draftQuantity`, danh sách `orders` và việc dòng có tồn tại hay không là đổi. Dòng đơn được che đủ không còn trong `orders`; dòng YCSX bị dòng đơn của nó nhận hết không còn trong `requests`; dòng chung chỉ có hai thứ đó thì biến mất (dòng danh mục vẫn hiện như cũ).
+
 ```ts
 ProductionListRow = {
   location: { id, name, type }, productItemId, sku, productName, variantLabel,
   isCustom, customization: OrderItemCustomization | null,
   stock, demandQuantity, onOrderQuantity, draftQuantity, shortQuantity,
-  orders: { orderId, orderCode, orderItemId, quantity, priority, requestedDeliveryDate,
+  orders: { orderId, orderCode, orderItemId, quantity /* cả dòng */, remainingQuantity, coveredQuantity,
+            coveredBy: { id, code, status, quantity }[], priority, requestedDeliveryDate,
             assignee: UserRef | null, status: OrderStatus }[],   // sắp: priority giảm dần, rồi requestedDeliveryDate
   requests: { id, code, status, supplierName, quantity, receivedQuantity, expectedReadyDate }[], // YCSX mở cho dòng này
 }
@@ -432,7 +441,7 @@ ProductionListRow = {
 
 | Route | Quyền | Query | Task (BE · FE) |
 |---|---|---|---|
-| `GET /production-list` | `production_requests:read` | `locationId?`, `search?` (SKU, tên), `onlyShort?` (mặc định `true`: chỉ dòng `shortQuantity > 0`) → `ProductionListRow[]` | B-4 · B-6 |
+| `GET /production-list` | `production_requests:read` | `locationId?`, `search?` (SKU, tên), `onlyShort?` (mặc định `true`: chỉ dòng `shortQuantity > 0`), `hasOpenRequest?` (dòng có YCSX đặt chung còn chờ, hoặc có đơn đã được YCSX gắn dòng nhận một phần) → `ProductionListRow[]` | B-4 · B-6 |
 
 **Đơn ở chi nhánh, hàng xưởng về kho:** dòng thiếu nằm ở `sourceLocationId` của dòng đơn. YCSX giao về
 kho khác thì phần đặt **không** trừ vào dòng thiếu của chi nhánh cho tới khi chuyển kho xong – xem §8.

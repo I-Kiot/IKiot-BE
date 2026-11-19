@@ -3,6 +3,7 @@ import {
   ProductionRequestStatus,
 } from '../../common/constants/production-request-status';
 import { ErrorCode } from '../../common/errors/error-codes';
+import type { OrderableLine } from './production-orderable';
 
 // Vòng đời yêu cầu sản xuất dưới dạng hàm thuần, là nơi duy nhất quyết mọi đổi trạng thái (contract §3); test trong production-request-rules.spec.ts.
 //
@@ -125,16 +126,25 @@ export interface ProductionExcess {
   need: number;
   alreadyOpen: number;
   requested: number;
+  orderable: number;
+  /** LINE: vượt phần còn cần của chính dòng; POOL: các dòng của một yêu cầu cộng lại vượt số thiếu chung của (địa điểm, SKU). */
+  scope: 'LINE' | 'POOL';
 }
 
 /**
- * Đặt xưởng không được vượt phần đơn còn thiếu: với mỗi dòng đơn, (số còn chờ của các YCSX mở KHÁC) + (số đặt lần này) <= phần còn cần.
- * Trả dòng đơn vượt đầu tiên hoặc null. `requested` cộng theo dòng đơn; dòng đơn không có trong `need` thì bỏ qua.
+ * Đặt xưởng không được vượt phần còn đặt được (`orderableLinesOf`): mỗi dòng đơn <= `orderable` của nó, và các dòng của một yêu cầu
+ * cùng (địa điểm, SKU) cộng lại <= số thiếu chung. `requested` cộng theo dòng đơn; dòng không có trong `lines` hoặc `orderable` null thì bỏ qua.
+ * Trả chỗ vượt đầu tiên hoặc null.
  */
 export function productionExcessOf(
   requested: readonly { orderItemId: string | null; quantity: number }[],
-  alreadyOpen: ReadonlyMap<string, number>,
-  need: ReadonlyMap<string, number | null>,
+  lines: ReadonlyMap<
+    string,
+    Pick<
+      OrderableLine,
+      'need' | 'covered' | 'orderable' | 'poolKey' | 'poolShort'
+    >
+  >,
 ): ProductionExcess | null {
   const wanted = new Map<string, number>();
   for (const line of requested) {
@@ -144,12 +154,43 @@ export function productionExcessOf(
       (wanted.get(line.orderItemId) ?? 0) + line.quantity,
     );
   }
+  const pools = new Map<
+    string,
+    { first: string; total: number; short: number }
+  >();
   for (const [orderItemId, quantity] of wanted) {
-    const max = need.get(orderItemId);
-    if (max === null || max === undefined) continue;
-    const open = alreadyOpen.get(orderItemId) ?? 0;
-    if (open + quantity > max) {
-      return { orderItemId, need: max, alreadyOpen: open, requested: quantity };
+    const line = lines.get(orderItemId);
+    if (!line || line.orderable === null) continue;
+    if (quantity > line.orderable) {
+      return {
+        orderItemId,
+        need: line.need ?? 0,
+        alreadyOpen: line.covered,
+        requested: quantity,
+        orderable: line.orderable,
+        scope: 'LINE',
+      };
+    }
+    const pool = pools.get(line.poolKey);
+    if (pool) pool.total += quantity;
+    else
+      pools.set(line.poolKey, {
+        first: orderItemId,
+        total: quantity,
+        short: line.poolShort,
+      });
+  }
+  for (const pool of pools.values()) {
+    if (pool.total > pool.short) {
+      const line = lines.get(pool.first)!;
+      return {
+        orderItemId: pool.first,
+        need: line.need ?? 0,
+        alreadyOpen: line.covered,
+        requested: pool.total,
+        orderable: pool.short,
+        scope: 'POOL',
+      };
     }
   }
   return null;

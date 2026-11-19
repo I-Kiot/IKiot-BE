@@ -49,23 +49,44 @@ describe('production change template', () => {
     ).toMatchObject({ subjectId: 'r9', code: null });
   });
 
-  it('delivery subject is the note and the request is related', () => {
-    expect(
-      deliveryTarget(
-        ctx(
-          {
-            id: 'd1',
-            code: 'PGX1',
-            productionRequest: { id: 'r1', code: 'YC001' },
-          },
-          { id: 'd1' },
-        ),
+  it('delivery subject is the note; the request and its orders are related', async () => {
+    const findMany = jest
+      .fn()
+      .mockResolvedValue([
+        { orderItem: { orderId: 'o1' } },
+        { orderItem: { orderId: 'o1' } },
+      ]);
+    const target = await deliveryTarget({
+      ...ctx(
+        {
+          id: 'd1',
+          code: 'PGX1',
+          productionRequest: { id: 'r1', code: 'YC001' },
+        },
+        { id: 'd1' },
       ),
-    ).toEqual({
+      prisma: {
+        productionRequestItem: { findMany },
+      } as unknown as PrismaService,
+    });
+    expect(target).toEqual({
       subjectId: 'd1',
       code: 'PGX1',
-      related: { 'production-requests': ['r1'] },
+      related: { 'production-requests': ['r1'], orders: ['o1', 'o1'] },
     });
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivery without a request in the body does not query', async () => {
+    const findMany = jest.fn();
+    const target = await deliveryTarget({
+      ...ctx({ id: 'd1', code: 'PGX1' }, { id: 'd1' }),
+      prisma: {
+        productionRequestItem: { findMany },
+      } as unknown as PrismaService,
+    });
+    expect(findMany).not.toHaveBeenCalled();
+    expect(target.subjectId).toBe('d1');
   });
 
   it('receiving a delivery names the request code and relates everything touched', () => {

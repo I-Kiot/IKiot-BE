@@ -5,6 +5,7 @@ import {
 import { ProductionRequestStatus } from '../../common/constants/production-request-status';
 import {
   buildProductionList,
+  buildProductionState,
   crossedShortage,
   type DemandLine,
   type RequestLine,
@@ -43,6 +44,7 @@ function request(overrides: Partial<RequestLine> = {}): RequestLine {
     locationId: SHOP,
     productItemId: CABINET,
     customOrderItemId: null,
+    orderItemId: null,
     quantity: 1,
     receivedQuantity: 0,
     ...overrides,
@@ -160,11 +162,14 @@ describe('buildProductionList', () => {
     const custom = demand({ isCustom: true, orderItemId: 'oi-custom' });
     const rows = build({
       demand: [custom, demand()],
-      requests: [request({ customOrderItemId: 'oi-custom' })],
+      requests: [
+        request({ customOrderItemId: 'oi-custom', orderItemId: 'oi-custom' }),
+      ],
     });
     const customRow = rows.find((row) => row.customOrderItemId === 'oi-custom');
     const standardRow = rows.find((row) => row.customOrderItemId === null);
-    expect(customRow?.shortQuantity).toBe(0);
+    // Dòng tuỳ chỉnh đã được YCSX của chính nó nhận hết: không còn dòng nào để liệt kê.
+    expect(customRow).toBeUndefined();
     expect(standardRow?.shortQuantity).toBe(1);
   });
 
@@ -252,5 +257,204 @@ describe('crossedShortage', () => {
     expect(crossedShortage(1, 2)).toBe(false);
     expect(crossedShortage(1, 0)).toBe(false);
     expect(crossedShortage(0, 0)).toBe(false);
+  });
+});
+
+describe('linked requests (2026-11-19)', () => {
+  const state = (input: Partial<Parameters<typeof buildProductionList>[0]>) =>
+    buildProductionState({
+      demand: [],
+      stock: [],
+      customLots: [],
+      requests: [],
+      ...input,
+    });
+  const SOFA = 'item-sofa';
+  const line = (
+    id: string,
+    quantity: number,
+    extra: Partial<DemandLine> = {},
+  ) =>
+    demand({
+      orderItemId: id,
+      orderCode: `DH-${id}`,
+      productItemId: SOFA,
+      quantity,
+      ...extra,
+    });
+  const req = (
+    code: string,
+    status: string,
+    quantity: number,
+    orderItemId: string | null,
+    extra: Partial<RequestLine> = {},
+  ) =>
+    request({
+      requestId: code,
+      code,
+      status,
+      productItemId: SOFA,
+      quantity,
+      orderItemId,
+      ...extra,
+    });
+  const SENT = ProductionRequestStatus.SENT;
+  const DRAFT = ProductionRequestStatus.DRAFT;
+
+  it('A1: an unlinked draft covers the pooled shortage, the line itself is uncovered', () => {
+    const { entries, coverage } = state({
+      demand: [line('L1', 1)],
+      requests: [req('YCSX000002', DRAFT, 1, null)],
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      demandQuantity: 1,
+      draftQuantity: 1,
+      onOrderQuantity: 0,
+      shortQuantity: 0,
+    });
+    expect(entries[0].orders).toMatchObject([
+      { quantity: 1, remainingQuantity: 1, coveredQuantity: 0 },
+    ]);
+    expect(entries[0].requests.map((r) => r.code)).toEqual(['YCSX000002']);
+    expect(coverage.get('L1')?.coveredQuantity).toBe(0);
+  });
+
+  it('A2: a linked SENT request consumes the line, the unlinked draft stays visible', () => {
+    const { entries, coverage } = state({
+      demand: [line('L1', 1)],
+      requests: [
+        req('YCSX000002', DRAFT, 1, null),
+        req('YCSX000003', SENT, 1, 'L1'),
+      ],
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      demandQuantity: 0,
+      onOrderQuantity: 0,
+      draftQuantity: 1,
+      shortQuantity: 0,
+    });
+    expect(entries[0].orders).toEqual([]);
+    expect(entries[0].requests.map((r) => r.code)).toEqual(['YCSX000002']);
+    expect(coverage.get('L1')).toMatchObject({
+      coveredQuantity: 1,
+      remainingQuantity: 0,
+    });
+  });
+
+  it('B: partial coverage across two orders keeps coveredBy and the pooled short', () => {
+    const { entries } = state({
+      demand: [line('L1', 2, { priority: OrderPriority.HIGH }), line('L2', 1)],
+      requests: [
+        req('YCSX000002', DRAFT, 1, null),
+        req('YCSX000003', SENT, 1, 'L1'),
+      ],
+    });
+    expect(entries[0]).toMatchObject({
+      demandQuantity: 2,
+      onOrderQuantity: 0,
+      draftQuantity: 1,
+      shortQuantity: 1,
+    });
+    const l1 = entries[0].orders.find((o) => o.orderItemId === 'L1');
+    expect(l1).toMatchObject({
+      quantity: 2,
+      remainingQuantity: 1,
+      coveredQuantity: 1,
+    });
+    expect(l1?.coveredBy).toMatchObject([{ code: 'YCSX000003', quantity: 1 }]);
+    expect(
+      entries[0].orders.find((o) => o.orderItemId === 'L2')?.remainingQuantity,
+    ).toBe(1);
+  });
+
+  it('keeps shortQuantity per row identical to the result with no links', () => {
+    const demands = [line('L1', 2), line('L2', 1)];
+    const linked = [req('Y3', SENT, 1, 'L1'), req('Y2', DRAFT, 1, null)];
+    const unlinked = linked.map((r) => ({ ...r, orderItemId: null }));
+    const a = state({ demand: demands, requests: linked }).entries;
+    const b = state({ demand: demands, requests: unlinked }).entries;
+    expect(a[0].shortQuantity).toBe(b[0].shortQuantity);
+    const stock = [{ locationId: SHOP, productItemId: SOFA, stock: 1 }];
+    const c = state({
+      demand: [line('L', 3)],
+      stock,
+      requests: [req('Y', SENT, 3, 'L', { receivedQuantity: 2 })],
+    }).entries;
+    const d = state({
+      demand: [line('L', 3)],
+      stock,
+      requests: [req('Y', SENT, 3, null, { receivedQuantity: 2 })],
+    }).entries;
+    expect(c[0].shortQuantity).toBe(d[0].shortQuantity);
+  });
+
+  it('caps coverage at the line quantity; the rest stays pooled supply', () => {
+    const { entries, coverage } = state({
+      demand: [line('L1', 1), line('L2', 2)],
+      requests: [req('Y1', SENT, 3, 'L1')],
+    });
+    expect(coverage.get('L1')?.coveredQuantity).toBe(1);
+    expect(entries[0]).toMatchObject({
+      demandQuantity: 2,
+      onOrderQuantity: 2,
+      shortQuantity: 0,
+    });
+    expect(entries[0].requests[0].outstanding).toBe(2);
+  });
+
+  it('D: a request delivering to another location does not cover the line', () => {
+    const { entries, coverage } = state({
+      demand: [line('L', 1, { locationId: 'loc-wh' })],
+      requests: [req('Y1', SENT, 1, 'L', { locationId: SHOP })],
+    });
+    expect(coverage.get('L')?.coveredQuantity).toBe(0);
+    const wh = entries.find((r) => r.locationId === 'loc-wh');
+    const tx = entries.find((r) => r.locationId === SHOP);
+    expect(wh).toMatchObject({ shortQuantity: 1 });
+    expect(tx).toMatchObject({ onOrderQuantity: 1 });
+  });
+
+  it('drops the row when its only content is a covered line and its request', () => {
+    expect(
+      state({
+        demand: [line('L', 1)],
+        requests: [req('Y1', SENT, 1, 'L')],
+      }).entries,
+    ).toEqual([]);
+    const custom = state({
+      demand: [line('LC', 1, { isCustom: true })],
+      requests: [req('Y1', SENT, 1, 'LC', { customOrderItemId: 'LC' })],
+    }).entries;
+    expect(custom).toEqual([]);
+  });
+
+  it('C: a partly received linked request covers only what is still outstanding', () => {
+    const { entries, coverage } = state({
+      demand: [line('L', 3)],
+      stock: [{ locationId: SHOP, productItemId: SOFA, stock: 1 }],
+      requests: [req('Y1', SENT, 3, 'L', { receivedQuantity: 2 })],
+    });
+    expect(coverage.get('L')).toMatchObject({
+      coveredQuantity: 1,
+      remainingQuantity: 2,
+    });
+    expect(entries[0]).toMatchObject({
+      stock: 1,
+      demandQuantity: 2,
+      onOrderQuantity: 0,
+      shortQuantity: 1,
+    });
+  });
+
+  it('two linked requests on a qty-1 line: the oldest consumes, the next stays pooled', () => {
+    const { entries, coverage } = state({
+      demand: [line('L', 1)],
+      requests: [req('Y1', SENT, 1, 'L'), req('Y2', DRAFT, 1, 'L')],
+    });
+    expect(coverage.get('L')?.coveredBy.map((c) => c.code)).toEqual(['Y1']);
+    expect(entries[0].requests.map((r) => r.code)).toEqual(['Y2']);
+    expect(entries[0]).toMatchObject({ draftQuantity: 1, demandQuantity: 0 });
   });
 });

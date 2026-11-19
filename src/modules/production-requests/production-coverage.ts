@@ -1,63 +1,142 @@
 import type { Prisma } from '../../../generated/prisma/client';
-import { OPEN_PRODUCTION_REQUEST_STATUSES } from '../../common/constants/production-request-status';
+import {
+  OPEN_PRODUCTION_REQUEST_STATUSES,
+  ProductionDeliveryStatus,
+  ProductionRequestStatus,
+} from '../../common/constants/production-request-status';
+import type { PooledRequestRef } from './production-orderable';
 
-/** YCSX còn chờ hàng của một dòng đơn (cho `production` trên dòng đơn và cho kiểm tra đặt vượt). */
-export interface OrderLineProduction {
+/** YCSX gắn dòng đơn còn chờ hàng (cho `production` trên dòng đơn). */
+export interface LinkedOpenRequest {
+  id: string;
+  code: string;
+  status: string;
+  quantity: number;
+  receivedQuantity: number;
+}
+
+/** Tiến độ một YCSX gắn dòng đơn, mọi trạng thái trừ CANCELLED (kể cả đã hoàn tất, để màn đơn còn thấy lịch sử). */
+export interface LineProductionProgress {
+  id: string;
+  code: string;
+  status: string;
+  supplierName: string;
+  location: { id: string; name: string };
+  sentAt: Date | null;
+  /** Lúc xưởng xác nhận nhận làm; null = chưa. */
+  acceptedAt: Date | null;
+  /** YYYY-MM-DD */
+  expectedReadyDate: string | null;
+  quantity: number;
+  receivedQuantity: number;
+  /** Xưởng đã ghi giao (phiếu PENDING) nhưng nơi nhận chưa xác nhận. */
+  deliveringQuantity: number;
+  /** Đóng khi nhận thiếu. */
+  closedShort: boolean;
+}
+
+export interface LinkedProduction {
   /** Σ (đặt − đã nhận) trên các YCSX còn mở (nháp, đã gửi, nhận một phần). */
   openQuantity: number;
-  requests: {
-    id: string;
-    code: string;
-    status: string;
-    quantity: number;
-    receivedQuantity: number;
-  }[];
+  requests: LinkedOpenRequest[];
+  progress: LineProductionProgress[];
+}
+
+/** `production` của một dòng đơn: phần gắn dòng + phần còn đặt được tính từ danh sách sản xuất chung. */
+export interface OrderLineProduction extends LinkedProduction {
+  /** Còn đặt xưởng được bao nhiêu cho dòng này (`orderableLinesOf`); null = không biết. */
+  orderableQuantity: number | null;
+  /** YCSX đặt chung cho cùng (địa điểm, SKU) đang che số thiếu. */
+  coveringRequests: PooledRequestRef[];
 }
 
 export const NO_LINE_PRODUCTION: OrderLineProduction = {
   openQuantity: 0,
   requests: [],
+  progress: [],
+  orderableQuantity: null,
+  coveringRequests: [],
 };
 
 /**
- * YCSX còn mở theo dòng đơn, một query cho cả lô. `excludeRequestId` bỏ qua các dòng của một YCSX (đang sửa chính nó).
- * Dòng đã nhận đủ (`received >= quantity`) vẫn được liệt kê nhưng không cộng vào `openQuantity`.
+ * YCSX gắn dòng đơn, một query cho cả lô. `openQuantity` / `requests` chỉ tính YCSX còn mở (như trước 2026-11-19);
+ * `progress` liệt kê mọi YCSX chưa huỷ. Dòng đã nhận đủ vẫn được liệt kê nhưng không cộng vào `openQuantity`.
  */
-export async function openProductionByOrderItem(
+export async function linkedProductionByOrderItem(
   reader: Pick<Prisma.TransactionClient, 'productionRequestItem'>,
   tenantId: string,
   orderItemIds: readonly string[],
-  excludeRequestId?: string,
-): Promise<Map<string, OrderLineProduction>> {
-  const result = new Map<string, OrderLineProduction>();
+): Promise<Map<string, LinkedProduction>> {
+  const result = new Map<string, LinkedProduction>();
   if (orderItemIds.length === 0) return result;
   const rows = await reader.productionRequestItem.findMany({
     where: {
       orderItemId: { in: [...orderItemIds] },
       productionRequest: {
         tenantId,
-        status: { in: [...OPEN_PRODUCTION_REQUEST_STATUSES] },
-        ...(excludeRequestId ? { id: { not: excludeRequestId } } : {}),
+        status: { not: ProductionRequestStatus.CANCELLED },
       },
     },
     select: {
       orderItemId: true,
       quantity: true,
       receivedQuantity: true,
-      productionRequest: { select: { id: true, code: true, status: true } },
+      deliveryLines: {
+        where: { delivery: { status: ProductionDeliveryStatus.PENDING } },
+        select: { quantity: true },
+      },
+      productionRequest: {
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          sentAt: true,
+          acceptedAt: true,
+          expectedReadyDate: true,
+          location: { select: { id: true, name: true } },
+          supplier: { select: { supplierName: true } },
+        },
+      },
     },
     orderBy: { productionRequest: { createdAt: 'asc' } },
   });
   for (const row of rows) {
     const key = row.orderItemId!;
-    const entry = result.get(key) ?? { openQuantity: 0, requests: [] };
-    entry.openQuantity += Math.max(0, row.quantity - row.receivedQuantity);
-    entry.requests.push({
-      id: row.productionRequest.id,
-      code: row.productionRequest.code,
-      status: row.productionRequest.status,
+    const entry = result.get(key) ?? {
+      openQuantity: 0,
+      requests: [],
+      progress: [],
+    };
+    const request = row.productionRequest;
+    if (OPEN_PRODUCTION_REQUEST_STATUSES.includes(request.status)) {
+      entry.openQuantity += Math.max(0, row.quantity - row.receivedQuantity);
+      entry.requests.push({
+        id: request.id,
+        code: request.code,
+        status: request.status,
+        quantity: row.quantity,
+        receivedQuantity: row.receivedQuantity,
+      });
+    }
+    entry.progress.push({
+      id: request.id,
+      code: request.code,
+      status: request.status,
+      supplierName: request.supplier.supplierName,
+      location: request.location,
+      sentAt: request.sentAt,
+      acceptedAt: request.acceptedAt,
+      expectedReadyDate:
+        request.expectedReadyDate?.toISOString().slice(0, 10) ?? null,
       quantity: row.quantity,
       receivedQuantity: row.receivedQuantity,
+      deliveringQuantity: row.deliveryLines.reduce(
+        (sum, line) => sum + line.quantity,
+        0,
+      ),
+      closedShort:
+        request.status === ProductionRequestStatus.COMPLETED &&
+        row.receivedQuantity < row.quantity,
     });
     result.set(key, entry);
   }
