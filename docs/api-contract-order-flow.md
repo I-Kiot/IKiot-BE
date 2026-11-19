@@ -201,6 +201,8 @@ không trừ cho các đơn chưa đóng gói: hai đơn `CONFIRMED` cùng cần
 đều hiện "Đủ hàng"; đơn nào đóng gói trước lấy cái tủ, đơn kia chuyển "Hết hàng" và bị chặn ở `pack`.
 Người dùng chọn đơn đi trước; con số tổng thiếu (đã trừ phần đã đặt xưởng) nằm ở danh sách cần sản xuất (§3).
 
+**`production` trên từng dòng** (2026-11-19, cả `GET /orders` và `GET /orders/:id`): `production: { openQuantity, requests: [{ id, code, status, quantity, receivedQuantity }] }` từ các dòng YCSX gắn `orderItemId` của dòng đó mà YCSX còn mở (`DRAFT` / `SENT` / `PARTIALLY_RECEIVED`); `openQuantity = Σ (quantity − receivedQuantity)`. Dòng chưa đặt xưởng: `{ openQuantity: 0, requests: [] }`. `POST/PATCH /production-requests` và `POST …/items` từ chối đặt vượt phần còn cần của dòng đơn (hàng may đo = cả dòng, hàng chuẩn = `stockCheck.shortQuantity` hiện tại, trừ `openQuantity` của các YCSX mở KHÁC) bằng `409 PRODUCTION_EXCEEDS_ORDER_SHORTAGE` (thân lỗi có `orderCode`, `orderItemId`, `need`, `alreadyOpen`, `requested`).
+
 **Kho dùng để tính `stock`** (theo `sourceLocationId` của dòng, hay tổng các kho): **chờ chốt** (Notion
 B-2). Mọi chỗ trong file này ghi "tại `sourceLocation`" là đề xuất cho tới khi chốt.
 

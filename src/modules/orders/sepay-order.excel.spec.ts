@@ -113,7 +113,7 @@ describe('Excel sheet Orders - SepayOrderService', () => {
 describe('Excel sheet Orders - completeSepayOrder', () => {
   let prisma: any;
   let tx: any;
-  let realtime: { emitToRoom: jest.Mock };
+  let realtime: { emitToRoom: jest.Mock; emitToRoomExcept: jest.Mock };
   let notifications: { managersOfLocation: jest.Mock; notify: jest.Mock };
   let service: OrderService;
 
@@ -145,7 +145,7 @@ describe('Excel sheet Orders - completeSepayOrder', () => {
       order: { findFirst: jest.fn() },
       $transaction: jest.fn().mockImplementation((fn) => fn(tx)),
     };
-    realtime = { emitToRoom: jest.fn() };
+    realtime = { emitToRoom: jest.fn(), emitToRoomExcept: jest.fn() };
     notifications = {
       managersOfLocation: jest.fn().mockResolvedValue(['M1']),
       notify: jest.fn().mockResolvedValue({ notified: 2 }),

@@ -107,3 +107,50 @@ export function nextProductionRequestCode(
   const current = /^\d+$/.test(digits) ? Number(digits) : 0;
   return `${PRODUCTION_REQUEST_CODE_PREFIX}${String(current + step).padStart(6, '0')}`;
 }
+
+/**
+ * Phần dòng đơn còn cần làm: hàng may đo thì cả dòng (`isCustom` không lấy từ kệ), hàng chuẩn thì số thiếu hiện tại của `stockCheck`.
+ * null = không biết (dòng không có stockCheck: không còn chờ giao, thiếu kho nguồn...), nơi gọi bỏ qua kiểm tra dòng đó.
+ */
+export function remainingNeedOf(
+  line: { isCustom: boolean; quantity: number },
+  shortQuantity: number | null,
+): number | null {
+  if (line.isCustom) return line.quantity;
+  return shortQuantity;
+}
+
+export interface ProductionExcess {
+  orderItemId: string;
+  need: number;
+  alreadyOpen: number;
+  requested: number;
+}
+
+/**
+ * Đặt xưởng không được vượt phần đơn còn thiếu: với mỗi dòng đơn, (số còn chờ của các YCSX mở KHÁC) + (số đặt lần này) <= phần còn cần.
+ * Trả dòng đơn vượt đầu tiên hoặc null. `requested` cộng theo dòng đơn; dòng đơn không có trong `need` thì bỏ qua.
+ */
+export function productionExcessOf(
+  requested: readonly { orderItemId: string | null; quantity: number }[],
+  alreadyOpen: ReadonlyMap<string, number>,
+  need: ReadonlyMap<string, number | null>,
+): ProductionExcess | null {
+  const wanted = new Map<string, number>();
+  for (const line of requested) {
+    if (!line.orderItemId) continue;
+    wanted.set(
+      line.orderItemId,
+      (wanted.get(line.orderItemId) ?? 0) + line.quantity,
+    );
+  }
+  for (const [orderItemId, quantity] of wanted) {
+    const max = need.get(orderItemId);
+    if (max === null || max === undefined) continue;
+    const open = alreadyOpen.get(orderItemId) ?? 0;
+    if (open + quantity > max) {
+      return { orderItemId, need: max, alreadyOpen: open, requested: quantity };
+    }
+  }
+  return null;
+}

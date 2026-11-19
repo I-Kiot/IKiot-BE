@@ -12,6 +12,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
+import { publishChange } from '../../common/realtime/change-feed';
+import { OrderChanges } from './orders.change-template';
 import {
   PaymentKind,
   PaymentMethod,
@@ -798,6 +800,17 @@ export class OrderService {
         if (!done) continue; // webhook hay thu ngân vừa chốt trước
         cancelled += 1;
         this.announceCancelled(order, 'QR_EXPIRED');
+        // Hàm thường chứ không phải ChangeFeedService: OrderService được dựng thủ công / liệt kê trong nhiều provider list e2e, thêm phụ thuộc vào constructor sẽ làm vỡ chúng.
+        publishChange(
+          this.realtime,
+          {
+            tenantId: order.tenantId,
+            spec: OrderChanges.qrExpiredCancelled,
+            target: { subjectId: order.id, code: order.code },
+            actor: { source: 'SYSTEM' },
+          },
+          this.logger,
+        );
       } catch (error) {
         this.logger.error(
           `Failed to cancel expired QR order ${order.code}`,
@@ -1114,6 +1127,18 @@ export class OrderService {
           due: result.due,
           paymentStatus: result.paymentStatus,
         });
+        publishChange(
+          this.realtime,
+          {
+            tenantId: result.order.tenantId,
+            spec: result.partial
+              ? OrderChanges.qrPartiallyPaid
+              : OrderChanges.qrPaid,
+            target: { subjectId: result.order.id, code: result.order.code },
+            actor: { source: 'WEBHOOK' },
+          },
+          this.logger,
+        );
         // Đáng gửi thông báo thật, khác các bước còn lại của hành trình: xác nhận đến sau vài phút, lúc thu ngân không còn nhìn màn hình đó nữa.
         await notifySettled(this.sepayDeps(), result);
         return {

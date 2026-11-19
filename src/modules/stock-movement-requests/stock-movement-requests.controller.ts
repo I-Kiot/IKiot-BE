@@ -19,6 +19,8 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { StockMovementChanges } from './stock-movements.change-template';
 
 /** Port của StockMovementController, cùng path và permission. Không có DELETE: phiếu là chứng từ, nên huỷ chứ không xoá. */
 @ApiTags('stock-movements')
@@ -29,6 +31,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'create')
   @Post()
+  @EmitsChange(StockMovementChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateStockMovementDto) {
     return this.service.create(user, dto);
   }
@@ -53,6 +56,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'update')
   @Patch(':id/details')
+  @EmitsChange(StockMovementChanges.edited)
   updateDetails(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -63,12 +67,14 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'update')
   @Patch(':id/open')
+  @EmitsChange(StockMovementChanges.opened)
   open(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.open(user, id);
   }
 
   @Permissions('stock_movement', 'update')
   @Patch(':id/close')
+  @EmitsChange(StockMovementChanges.closed)
   close(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.close(user, id);
   }
@@ -76,6 +82,7 @@ export class StockMovementController {
   /** → IN_TRANSIT. Hàng rời nguồn tại đây. */
   @Permissions('stock_movement', 'approve')
   @Patch(':id/ship')
+  @EmitsChange(StockMovementChanges.shipped)
   ship(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.ship(user, id);
   }
@@ -83,6 +90,7 @@ export class StockMovementController {
   /** → RECEIVED. Hàng về, và phiếu nhập ghi nhận công nợ NCC. */
   @Permissions('stock_movement', 'receive')
   @Patch(':id/receive')
+  @EmitsChange(StockMovementChanges.received)
   receive(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -93,6 +101,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'approve')
   @Patch(':id/approve-adjust')
+  @EmitsChange(StockMovementChanges.adjustApproved)
   approveAdjust(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -102,6 +111,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'cancel')
   @Patch(':id/cancel')
+  @EmitsChange(StockMovementChanges.cancelled)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

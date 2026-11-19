@@ -27,6 +27,7 @@ import {
   type OrderListRow,
 } from './order-read';
 import { toOrderDetail, toOrderListItem } from './order-read.mapper';
+import { openProductionByOrderItem } from '../production-requests/production-coverage';
 import {
   DUE_SOON_DAYS,
   PaymentKind,
@@ -91,8 +92,13 @@ export class OrderReadService {
       tenantId,
       query,
     );
+    const production = await openProductionByOrderItem(
+      this.prisma,
+      tenantId,
+      rows.flatMap((row) => row.items.map((line) => line.id)),
+    );
     return paginate(
-      rows.map((row) => toOrderListItem(row, stockChecks)),
+      rows.map((row) => toOrderListItem(row, stockChecks, production)),
       total,
       query.page,
       query.limit,
@@ -158,11 +164,17 @@ export class OrderReadService {
       where: { orderId: id },
       select: { entryType: true },
     });
+    const production = await openProductionByOrderItem(
+      this.prisma,
+      tenantId,
+      row.items.map((line) => line.id),
+    );
     return toOrderDetail(
       row,
       stockChecks,
       payments,
       journal.map((e) => e.entryType),
+      production,
     );
   }
 

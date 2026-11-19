@@ -66,6 +66,22 @@ export class RealtimeGateway
     this.server?.to(room).emit(event, payload);
   }
 
+  /**
+   * Như `emitToRoom` nhưng bỏ qua một socket (tab đã gây ra thay đổi, nó tự cập nhật rồi). Tách thành method riêng để các spy / assert trên `emitToRoom` của luồng SePay không bị ảnh hưởng bởi feed `entity:changed`.
+   */
+  emitToRoomExcept(
+    room: string,
+    exceptSocketId: string | null,
+    event: string,
+    payload: unknown,
+  ): void {
+    const target = this.server?.to(room);
+    (exceptSocketId ? target?.except(exceptSocketId) : target)?.emit(
+      event,
+      payload,
+    );
+  }
+
   private extractToken(client: Socket): string {
     const authToken = client.handshake.auth?.token as string | undefined;
     const header = client.handshake.headers.authorization;

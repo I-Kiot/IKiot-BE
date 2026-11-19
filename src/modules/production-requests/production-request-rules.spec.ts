@@ -3,6 +3,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import {
   manualTransitionViolation,
   nextProductionRequestCode,
+  productionExcessOf,
+  remainingNeedOf,
   statusAfterReceipt,
 } from './production-request-rules';
 
@@ -147,5 +149,69 @@ describe('nextProductionRequestCode', () => {
 
   it('ignores a code of another shape', () => {
     expect(nextProductionRequestCode('ABC')).toBe('YCSX000001');
+  });
+});
+
+describe('remainingNeedOf', () => {
+  it('uses the whole line for custom goods and the shelf shortage otherwise', () => {
+    expect(remainingNeedOf({ isCustom: true, quantity: 4 }, 0)).toBe(4);
+    expect(remainingNeedOf({ isCustom: false, quantity: 4 }, 3)).toBe(3);
+  });
+
+  it('is unknown when a standard line has no stock check', () => {
+    expect(remainingNeedOf({ isCustom: false, quantity: 4 }, null)).toBeNull();
+  });
+});
+
+describe('productionExcessOf', () => {
+  const need = new Map<string, number | null>([['L1', 5]]);
+
+  it('accepts exactly the shortage when nothing else is open', () => {
+    expect(
+      productionExcessOf([{ orderItemId: 'L1', quantity: 5 }], new Map(), need),
+    ).toBeNull();
+  });
+
+  it('counts what other open requests already wait for', () => {
+    expect(
+      productionExcessOf(
+        [{ orderItemId: 'L1', quantity: 3 }],
+        new Map([['L1', 3]]),
+        need,
+      ),
+    ).toEqual({ orderItemId: 'L1', need: 5, alreadyOpen: 3, requested: 3 });
+    expect(
+      productionExcessOf(
+        [{ orderItemId: 'L1', quantity: 2 }],
+        new Map([['L1', 3]]),
+        need,
+      ),
+    ).toBeNull();
+  });
+
+  it('sums repeated lines of the same order line', () => {
+    expect(
+      productionExcessOf(
+        [
+          { orderItemId: 'L1', quantity: 3 },
+          { orderItemId: 'L1', quantity: 3 },
+        ],
+        new Map(),
+        need,
+      ),
+    ).not.toBeNull();
+  });
+
+  it('ignores lines without an order line or with an unknown need', () => {
+    expect(
+      productionExcessOf(
+        [
+          { orderItemId: null, quantity: 99 },
+          { orderItemId: 'L2', quantity: 99 },
+        ],
+        new Map(),
+        new Map<string, number | null>([['L2', null]]),
+      ),
+    ).toBeNull();
   });
 });

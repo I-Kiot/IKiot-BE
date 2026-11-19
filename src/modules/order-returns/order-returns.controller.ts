@@ -23,6 +23,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { OrderReturnChanges } from './order-returns.change-template';
 
 class SetReplacementOrderDto {
   @IsUUID()
@@ -53,6 +55,7 @@ export class OrderReturnController {
 
   /** Cố ý không có @Permissions: `returns:create` hoặc người phụ trách đơn đều mở được, một hành động guard không diễn đạt được; service kiểm (ORDER_RETURN_DENIED). */
   @Post()
+  @EmitsChange(OrderReturnChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderReturnDto) {
     return this.service.create(user, requireTenantId(user), dto);
   }
@@ -60,6 +63,7 @@ export class OrderReturnController {
   /** Cố ý không có @Permissions, như `create`: người phụ trách đơn hoặc ai xem được đơn; service kiểm. */
   @HttpCode(HttpStatus.OK)
   @Post('confirm-failed-delivery')
+  @EmitsChange(OrderReturnChanges.failedDeliveryConfirmed)
   confirmFailedDelivery(
     @CurrentUser() user: AuthUser,
     @Body() dto: ConfirmFailedDeliveryDto,
@@ -70,6 +74,7 @@ export class OrderReturnController {
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/receive')
+  @EmitsChange(OrderReturnChanges.received)
   receive(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -80,6 +85,7 @@ export class OrderReturnController {
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/inspect')
+  @EmitsChange(OrderReturnChanges.inspected)
   inspect(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -91,6 +97,7 @@ export class OrderReturnController {
   @Permissions('returns', 'cancel')
   @HttpCode(HttpStatus.OK)
   @Post(':id/cancel')
+  @EmitsChange(OrderReturnChanges.cancelled)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -100,6 +107,7 @@ export class OrderReturnController {
 
   @Permissions('returns', 'create')
   @Patch(':id/replacement-order')
+  @EmitsChange(OrderReturnChanges.replacementLinked)
   setReplacementOrder(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

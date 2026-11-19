@@ -10,6 +10,7 @@ import {
 import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor.service';
 import { accessTokenSecret } from '../../../common/config/env';
+import { personName } from '../../../common/utils/user-profile';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import {
   LOCATION_TYPE_SELECT,
@@ -86,6 +87,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       displayName: user.profileFirstName
         ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
         : null,
+      fullName: personName(user),
       phoneNumber: user.phoneNumber,
     };
   }

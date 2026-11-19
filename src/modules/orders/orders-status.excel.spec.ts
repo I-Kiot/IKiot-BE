@@ -26,7 +26,7 @@ describe('Excel sheet Orders - updateStatus / payOffline', () => {
   let prisma: any;
   let tx: any;
   let inventory: { adjustStock: jest.Mock };
-  let realtime: { emitToRoom: jest.Mock };
+  let realtime: { emitToRoom: jest.Mock; emitToRoomExcept: jest.Mock };
   let service: OrderService;
   let flows: jest.SpyInstance;
 
@@ -63,7 +63,7 @@ describe('Excel sheet Orders - updateStatus / payOffline', () => {
       $transaction: jest.fn().mockImplementation((fn) => fn(tx)),
     };
     inventory = { adjustStock: jest.fn().mockResolvedValue(undefined) };
-    realtime = { emitToRoom: jest.fn() };
+    realtime = { emitToRoom: jest.fn(), emitToRoomExcept: jest.fn() };
     service = new OrderService(
       prisma,
       inventory as never,

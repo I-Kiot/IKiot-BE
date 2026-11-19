@@ -837,5 +837,17 @@ describe('production list, production requests and workshop receipts', () => {
         ),
       ).toBe(ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER);
     });
+
+    it('refuses ordering more than the order line still needs', async () => {
+      expect(
+        await codeOf(
+          requests.create(owner, {
+            supplierId: workshopId,
+            locationId: branchId,
+            items: [{ productItemId: cabinetId, quantity: 99, orderItemId }],
+          }),
+        ),
+      ).toBe(ErrorCode.PRODUCTION_EXCEEDS_ORDER_SHORTAGE);
+    });
   });
 });

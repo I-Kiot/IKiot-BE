@@ -504,6 +504,8 @@ export const ErrorCode = {
   ORDER_RETURN_REFUND_REQUIRED: 'ORDER_RETURN_REFUND_REQUIRED',
   /** `POST /orders/:id/settle-held`: đơn không có tiền treo chưa quyết định (đơn chưa kết thúc, đã ghi thu nhập khác, hoặc đã hoàn / giữ hết). Cũng là kết quả của bấm lần hai. */
   ORDER_NO_HELD_MONEY: 'ORDER_NO_HELD_MONEY',
+  /** Đặt xưởng cho một dòng đơn vượt phần dòng đó còn thiếu (đã trừ số còn chờ ở các YCSX mở khác). Thân lỗi có `orderItemId`, `need`, `alreadyOpen`, `requested`. */
+  PRODUCTION_EXCEEDS_ORDER_SHORTAGE: 'PRODUCTION_EXCEEDS_ORDER_SHORTAGE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

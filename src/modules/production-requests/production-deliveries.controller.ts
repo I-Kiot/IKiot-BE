@@ -21,6 +21,8 @@ import {
   CancelProductionRequestByWorkshopDto,
 } from './dto/production-request.dto';
 import { ProductionDeliveryService } from './production-deliveries.service';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { ProductionChanges } from './production.change-template';
 
 /** Nhân viên xưởng (`users.workshop_id`): xem yêu cầu gửi tới xưởng ở mọi địa điểm và phiếu giao họ viết. Mọi route cần `production:deliver` và xưởng liên kết. */
 @ApiTags('workshop')
@@ -51,6 +53,7 @@ export class WorkshopController {
   @Permissions('production', 'deliver')
   @Post('production-requests/:id/accept')
   @HttpCode(200)
+  @EmitsChange(ProductionChanges.accepted)
   accept(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -62,6 +65,7 @@ export class WorkshopController {
   @Permissions('production', 'deliver')
   @Post('production-requests/:id/cancel')
   @HttpCode(200)
+  @EmitsChange(ProductionChanges.declined)
   cancelRequest(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -72,6 +76,7 @@ export class WorkshopController {
 
   @Permissions('production', 'deliver')
   @Post('production-requests/:id/deliveries')
+  @EmitsChange(ProductionChanges.deliveryCreated)
   createDelivery(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -91,6 +96,7 @@ export class WorkshopController {
 
   @Permissions('production', 'deliver')
   @Post('deliveries/:id/cancel')
+  @EmitsChange(ProductionChanges.deliveryCancelled)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -127,6 +133,7 @@ export class ProductionDeliveryController {
 
   @Permissions('production', 'receive')
   @Post(':id/receive')
+  @EmitsChange(ProductionChanges.deliveryReceived)
   receive(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -137,6 +144,7 @@ export class ProductionDeliveryController {
 
   @Permissions('production', 'receive')
   @Post(':id/cancel')
+  @EmitsChange(ProductionChanges.deliveryRejected)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

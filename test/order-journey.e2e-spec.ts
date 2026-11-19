@@ -307,7 +307,11 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .send({
         supplierId: workshopId,
         locationId: warehouseId,
-        items: [{ productItemId: sofaId, quantity: 3, orderItemId: lineId }],
+        // 2 for the order line (the BE refuses to over-order it) + 1 spare for the shelf, which will turn out defective.
+        items: [
+          { productItemId: sofaId, quantity: 2, orderItemId: lineId },
+          { productItemId: sofaId, quantity: 1 },
+        ],
       })
       .expect(201);
     requestId = created.body.data.id;
@@ -326,20 +330,28 @@ describe('F-1 order journey, end to end over HTTP', () => {
   });
 
   it('receives the workshop delivery: good pieces on the shelf, the defect in the damaged-goods warehouse', async () => {
-    const requestLine = (
+    const requestItems = (
       await http()
         .get(`/production-requests/${requestId}`)
         .set(auth())
         .expect(200)
-    ).body.data.items[0];
+    ).body.data.items as { id: string; orderItem: { id: string } | null }[];
+    const orderedLine = requestItems.find((l) => l.orderItem)!;
+    const spareLine = requestItems.find((l) => !l.orderItem)!;
     const received = await http()
       .post(`/production-requests/${requestId}/receive`)
       .set(auth())
       .send({
         items: [
           {
-            productionRequestItemId: requestLine.id,
-            receivedQuantity: 3,
+            productionRequestItemId: orderedLine.id,
+            receivedQuantity: 2,
+            defectQuantity: 0,
+            unitCost: 5_500_000,
+          },
+          {
+            productionRequestItemId: spareLine.id,
+            receivedQuantity: 1,
             defectQuantity: 1,
             unitCost: 5_500_000,
           },

@@ -15,6 +15,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { RealtimeModule } from './common/realtime/realtime.module';
+import { ChangeFeedInterceptor } from './common/realtime/change-feed.interceptor';
 import { RedisModule } from './common/redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AuthModule } from './modules/auth/auth.module';
@@ -111,6 +112,8 @@ import { SentryModule } from '@sentry/nestjs/setup';
     { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
     // Mô tả audit theo từng domain lấy từ provider @AuditTemplate(); interceptor này giữ tính chung.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    // Đăng ký SAU AuditInterceptor nên là lớp trong cùng: nó cần thấy body thô của handler (chưa bọc envelope) để lấy id / mã chứng từ cho `entity:changed`.
+    { provide: APP_INTERCEPTOR, useClass: ChangeFeedInterceptor },
     // Lớp cuối cùng: đổi lỗi Prisma và các lỗi không phải HttpException thành status code thật.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],

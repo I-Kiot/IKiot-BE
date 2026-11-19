@@ -55,3 +55,17 @@ export function withNestedProfile<T extends FlatUserProfile>(
     },
   };
 }
+
+/** Tên người để hiển thị: "họ tên" (như màn hình nhân viên, "Phạm Thị Lan"), chưa có tên thì số điện thoại. Một bản duy nhất của quy tắc đó. */
+export function personName(row: {
+  profileLastName?: string | null;
+  profileFirstName?: string | null;
+  phoneNumber: string;
+}): string {
+  return (
+    [row.profileLastName, row.profileFirstName]
+      .filter((part) => part && part.trim())
+      .join(' ')
+      .trim() || row.phoneNumber
+  );
+}

@@ -11,10 +11,18 @@ import {
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
 import { sumDong, toDong } from '../../common/utils/money';
+import { personName } from '../../common/utils/user-profile';
 import { derivePaymentStatus, paymentRowsOf } from './payment-status';
 import type { OrderDetailRow, OrderListRow } from './order-read';
 import { isPickupOverdue } from './order-pickup.rules';
 import { summarizeStock, type StockCheck } from './stock-check';
+import {
+  NO_LINE_PRODUCTION,
+  type OrderLineProduction,
+} from '../production-requests/production-coverage';
+
+/** YCSX còn mở theo id dòng đơn; dòng không có trong map là chưa đặt xưởng. */
+export type LineProductionMap = ReadonlyMap<string, OrderLineProduction>;
 
 // Dòng DB -> `OrderListItem` / `OrderDetail` của contract (A-9). Mọi trường POS đang đọc từ hai route này (src/types/order.ts bên FE)
 // được giữ nguyên tên và kiểu; các trường hành trình được thêm bên cạnh. Tiền trả về là number (contract §0).
@@ -50,12 +58,11 @@ export interface UserRef {
 /** `UserRef` của contract. Tên đầy đủ đọc họ trước (`lastName firstName`, "Phạm Thị Lan") như màn hình nhân viên; tài khoản chưa có tên thì hiện số điện thoại. */
 export function toUserRef(user: UserRow | null): UserRef | null {
   if (!user) return null;
-  const name =
-    [user.profileLastName, user.profileFirstName]
-      .filter((part) => part && part.trim())
-      .join(' ')
-      .trim() || user.phoneNumber;
-  return { id: user.id, name, phoneNumber: user.phoneNumber };
+  return {
+    id: user.id,
+    name: personName(user),
+    phoneNumber: user.phoneNumber,
+  };
 }
 
 /** `grandTotal − deposit`: số shipper thu khi giao. Tính lúc đọc, không lưu (contract §6). */
@@ -125,7 +132,11 @@ type ListLineRow = OrderListRow['items'][number];
 type DetailLineRow = OrderDetailRow['items'][number];
 
 /** Một dòng trong danh sách: đủ mọi cột POS đọc, tiền là number, thêm `stockCheck`. */
-function toLine(item: ListLineRow, stockChecks: Map<string, StockCheck>) {
+function toLine(
+  item: ListLineRow,
+  stockChecks: Map<string, StockCheck>,
+  production: LineProductionMap,
+) {
   const {
     listUnitPrice,
     unitPrice,
@@ -144,6 +155,8 @@ function toLine(item: ListLineRow, stockChecks: Map<string, StockCheck>) {
     discountAmount: num(discountAmount),
     lineTotal: num(lineTotal),
     stockCheck: stockChecks.get(item.id) ?? null,
+    // Hàng xưởng đang làm cho dòng này: màn hình trừ vào số thiếu khi gợi ý đặt xưởng.
+    production: production.get(item.id) ?? NO_LINE_PRODUCTION,
   };
 }
 
@@ -174,12 +187,17 @@ function toCustomization(customization: DetailLineRow['customization']) {
 function toDetailLine(
   item: DetailLineRow,
   stockChecks: Map<string, StockCheck>,
+  production: LineProductionMap,
 ) {
   const { sourceLocation, customization, productItem, ...rest } = item;
   // `product` chỉ để đọc cờ; `productItem` trả ra giữ đúng dạng của dòng danh sách.
   const { product, ...productItemRef } = productItem;
   return {
-    ...toLine({ ...rest, productItem: productItemRef }, stockChecks),
+    ...toLine(
+      { ...rest, productItem: productItemRef },
+      stockChecks,
+      production,
+    ),
     isManufacturable: product.isManufacturable,
     sourceLocation: sourceLocation
       ? { id: sourceLocation.id, name: sourceLocation.name }
@@ -256,8 +274,9 @@ function toOrderBase(row: OrderListRow) {
 export function toOrderListItem(
   row: OrderListRow,
   stockChecks: Map<string, StockCheck>,
+  production: LineProductionMap = new Map(),
 ) {
-  const items = row.items.map((item) => toLine(item, stockChecks));
+  const items = row.items.map((item) => toLine(item, stockChecks, production));
   return {
     ...toOrderBase(row),
     items,
@@ -347,12 +366,13 @@ export function toOrderDetail(
   stockChecks: Map<string, StockCheck>,
   payments: readonly SummaryPaymentRow[],
   journalTypes: readonly string[] = [],
+  production: LineProductionMap = new Map(),
 ) {
   const { shipments, returns } = row;
   return {
     ...toOrderBase(row),
     paymentSummary: paymentSummaryOf(row, payments, journalTypes),
-    items: row.items.map((item) => toDetailLine(item, stockChecks)),
+    items: row.items.map((item) => toDetailLine(item, stockChecks, production)),
     shipments: shipments.map(({ driver, ...shipment }) => ({
       ...shipment,
       driver: toUserRef(driver),
