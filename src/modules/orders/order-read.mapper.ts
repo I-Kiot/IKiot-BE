@@ -131,7 +131,7 @@ export function collectionOf(
 type ListLineRow = OrderListRow['items'][number];
 type DetailLineRow = OrderDetailRow['items'][number];
 
-/** Một dòng trong danh sách: đủ mọi cột POS đọc, tiền là number, thêm `stockCheck`. */
+/** Một dòng trong danh sách: đủ mọi cột POS đọc, tiền là number, thêm `stockCheck` và `isManufacturable`. */
 function toLine(
   item: ListLineRow,
   stockChecks: Map<string, StockCheck>,
@@ -144,10 +144,15 @@ function toLine(
     vatRate,
     discountAmount,
     lineTotal,
+    productItem,
     ...rest
   } = item;
+  // `product` chỉ để đọc cờ; `productItem` trả ra giữ đúng dạng cũ `{ id, sku, productName }` mà POS đang đọc.
+  const { product, ...productItemRef } = productItem;
   return {
     ...rest,
+    productItem: productItemRef,
+    isManufacturable: product.isManufacturable,
     listUnitPrice: num(listUnitPrice),
     unitPrice: num(unitPrice),
     unitCostPrice: numOrNull(unitCostPrice),
@@ -183,22 +188,15 @@ function toCustomization(customization: DetailLineRow['customization']) {
   };
 }
 
-/** Một dòng trong chi tiết: như dòng danh sách, thêm kho xuất, thông số may đo và sản phẩm có đặt xưởng được không. */
+/** Một dòng trong chi tiết: như dòng danh sách (đã có `isManufacturable`), thêm kho xuất và thông số may đo. */
 function toDetailLine(
   item: DetailLineRow,
   stockChecks: Map<string, StockCheck>,
   production: LineProductionMap,
 ) {
-  const { sourceLocation, customization, productItem, ...rest } = item;
-  // `product` chỉ để đọc cờ; `productItem` trả ra giữ đúng dạng của dòng danh sách.
-  const { product, ...productItemRef } = productItem;
+  const { sourceLocation, customization, ...rest } = item;
   return {
-    ...toLine(
-      { ...rest, productItem: productItemRef },
-      stockChecks,
-      production,
-    ),
-    isManufacturable: product.isManufacturable,
+    ...toLine(rest, stockChecks, production),
     sourceLocation: sourceLocation
       ? { id: sourceLocation.id, name: sourceLocation.name }
       : null,
