@@ -3,6 +3,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import {
   manualTransitionViolation,
   nextProductionRequestCode,
+  productionExcessOf,
+  remainingNeedOf,
   statusAfterReceipt,
 } from './production-request-rules';
 
@@ -147,5 +149,106 @@ describe('nextProductionRequestCode', () => {
 
   it('ignores a code of another shape', () => {
     expect(nextProductionRequestCode('ABC')).toBe('YCSX000001');
+  });
+});
+
+describe('remainingNeedOf', () => {
+  it('uses the whole line for custom goods and the shelf shortage otherwise', () => {
+    expect(remainingNeedOf({ isCustom: true, quantity: 4 }, 0)).toBe(4);
+    expect(remainingNeedOf({ isCustom: false, quantity: 4 }, 3)).toBe(3);
+  });
+
+  it('is unknown when a standard line has no stock check', () => {
+    expect(remainingNeedOf({ isCustom: false, quantity: 4 }, null)).toBeNull();
+  });
+});
+
+describe('productionExcessOf', () => {
+  const line = (
+    orderable: number | null,
+    extra: Partial<{
+      need: number | null;
+      covered: number;
+      poolKey: string;
+      poolShort: number;
+    }> = {},
+  ) => ({
+    need: 5,
+    covered: 0,
+    poolKey: 'pool-1',
+    poolShort: 5,
+    orderable,
+    ...extra,
+  });
+
+  it('accepts exactly what is orderable', () => {
+    expect(
+      productionExcessOf(
+        [{ orderItemId: 'L1', quantity: 5 }],
+        new Map([['L1', line(5)]]),
+      ),
+    ).toBeNull();
+  });
+
+  it('refuses more than the line can still order', () => {
+    expect(
+      productionExcessOf(
+        [{ orderItemId: 'L1', quantity: 3 }],
+        new Map([['L1', line(2, { covered: 3 })]]),
+      ),
+    ).toEqual({
+      orderItemId: 'L1',
+      need: 5,
+      alreadyOpen: 3,
+      requested: 3,
+      orderable: 2,
+      scope: 'LINE',
+    });
+  });
+
+  it('refuses two lines that fit alone but exceed the shared shortage', () => {
+    const lines = new Map([
+      ['L1', line(1, { poolShort: 1 })],
+      ['L2', line(1, { poolShort: 1 })],
+    ]);
+    expect(
+      productionExcessOf(
+        [
+          { orderItemId: 'L1', quantity: 1 },
+          { orderItemId: 'L2', quantity: 1 },
+        ],
+        lines,
+      ),
+    ).toMatchObject({
+      orderItemId: 'L1',
+      requested: 2,
+      orderable: 1,
+      scope: 'POOL',
+    });
+  });
+
+  it('sums repeated lines of the same order line', () => {
+    expect(
+      productionExcessOf(
+        [
+          { orderItemId: 'L1', quantity: 3 },
+          { orderItemId: 'L1', quantity: 3 },
+        ],
+        new Map([['L1', line(5)]]),
+      ),
+    ).toMatchObject({ scope: 'LINE', requested: 6 });
+  });
+
+  it('ignores lines without an order line, unknown lines or a null orderable', () => {
+    expect(
+      productionExcessOf(
+        [
+          { orderItemId: null, quantity: 99 },
+          { orderItemId: 'L2', quantity: 99 },
+          { orderItemId: 'L3', quantity: 99 },
+        ],
+        new Map([['L3', line(null)]]),
+      ),
+    ).toBeNull();
   });
 });

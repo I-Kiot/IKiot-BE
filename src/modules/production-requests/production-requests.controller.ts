@@ -24,6 +24,8 @@ import {
 } from './dto/production-request.dto';
 import { ProductionListService } from './production-list.service';
 import { ProductionRequestService } from './production-requests.service';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { ProductionChanges } from './production.change-template';
 
 /** Yêu cầu sản xuất (YCSX) gửi NCC loại WORKSHOP, theo dõi bằng tay. Nhận hàng là quyền riêng `production:receive` vì đó là lúc tồn tăng. Mọi route nhận cả `AuthUser`: nơi người gọi làm việc quyết định họ được chạm gì. */
 @ApiTags('production-requests')
@@ -52,6 +54,7 @@ export class ProductionRequestController {
 
   @Permissions('production_requests', 'create')
   @Post()
+  @EmitsChange(ProductionChanges.created)
   create(
     @CurrentUser() user: AuthUser,
     @Body() dto: CreateProductionRequestDto,
@@ -61,6 +64,7 @@ export class ProductionRequestController {
 
   @Permissions('production_requests', 'update')
   @Patch(':id')
+  @EmitsChange(ProductionChanges.edited)
   update(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -71,6 +75,7 @@ export class ProductionRequestController {
 
   @Permissions('production_requests', 'update')
   @Post(':id/items')
+  @EmitsChange(ProductionChanges.itemAdded)
   addItem(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -81,6 +86,7 @@ export class ProductionRequestController {
 
   @Permissions('production_requests', 'update')
   @Patch(':id/status')
+  @EmitsChange(ProductionChanges.statusChanged)
   updateStatus(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -91,6 +97,7 @@ export class ProductionRequestController {
 
   @Permissions('production_requests', 'delete')
   @Delete(':id')
+  @EmitsChange(ProductionChanges.deleted)
   remove(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -100,6 +107,7 @@ export class ProductionRequestController {
 
   @Permissions('production', 'receive')
   @Post(':id/receive')
+  @EmitsChange(ProductionChanges.received)
   receive(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

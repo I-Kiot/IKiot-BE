@@ -61,9 +61,37 @@ export interface RequestLine {
   productItemId: string;
   /** Chỉ có khi dòng làm bản tuỳ chỉnh cho dòng đơn này; dòng chuẩn gắn với đơn thì tính vào dòng chuẩn. */
   customOrderItemId: string | null;
+  /** Dòng đơn mà dòng YCSX gắn (chuẩn hoặc may đo); null = đặt chung. */
+  orderItemId: string | null;
   quantity: number;
   receivedQuantity: number;
 }
+
+/** Một YCSX gắn dòng đơn đã nhận phần nhu cầu của dòng đó. */
+export interface LinkedCover {
+  requestId: string;
+  code: string;
+  status: string;
+  quantity: number;
+}
+
+/** Phần nhu cầu của một dòng đơn đã có YCSX gắn riêng (cùng địa điểm + SKU) đứng ra nhận. */
+export interface LineCoverage {
+  orderItemId: string;
+  locationId: string | null;
+  productItemId: string;
+  isCustom: boolean;
+  quantity: number;
+  coveredQuantity: number;
+  remainingQuantity: number;
+  coveredBy: LinkedCover[];
+}
+
+export type ListedDemand = DemandLine & {
+  remainingQuantity: number;
+  coveredQuantity: number;
+  coveredBy: LinkedCover[];
+};
 
 export interface ProductionListEntry {
   key: string;
@@ -77,8 +105,71 @@ export interface ProductionListEntry {
   draftQuantity: number;
   shortQuantity: number;
   /** Gấp nhất lên trước: ưu tiên, rồi ngày khách yêu cầu giao. */
-  orders: DemandLine[];
+  orders: ListedDemand[];
+  /** `outstanding` = phần còn lại đặt chung của dòng (đã trừ phần dòng đơn gắn đã nhận). */
   requests: (RequestLine & { outstanding: number })[];
+}
+
+export interface ProductionState {
+  entries: ProductionListEntry[];
+  coverage: Map<string, LineCoverage>;
+}
+
+export interface ProductionListInput {
+  demand: DemandLine[];
+  stock: StockLevelRow[];
+  customLots: CustomLotRow[];
+  requests: RequestLine[];
+  catalogue?: { locationId: string; productItemId: string }[];
+}
+
+/**
+ * YCSX gắn dòng đơn (cùng địa điểm + SKU) trừ vào nhu cầu của chính dòng đó trước; phần dư (vượt số lượng dòng, hoặc khác địa điểm)
+ * vẫn là hàng đặt chung. Lượng trừ C ra khỏi nhu cầu và onOrder/draft cùng lúc nên `shortQuantity` của dòng không đổi.
+ * Dòng YCSX duyệt theo thứ tự đầu vào (người tải sắp theo ngày tạo YCSX, cũ nhất trước).
+ */
+export function allocateLinkedSupply(
+  demand: DemandLine[],
+  requests: RequestLine[],
+): { coverage: Map<string, LineCoverage>; pooled: number[] } {
+  const coverage = new Map<string, LineCoverage>();
+  for (const line of demand) {
+    coverage.set(line.orderItemId, {
+      orderItemId: line.orderItemId,
+      locationId: line.locationId,
+      productItemId: line.productItemId,
+      isCustom: line.isCustom,
+      quantity: line.quantity,
+      coveredQuantity: 0,
+      remainingQuantity: line.quantity,
+      coveredBy: [],
+    });
+  }
+  const pooled = requests.map((r) => {
+    const out = Math.max(0, r.quantity - r.receivedQuantity);
+    const cov = r.orderItemId ? coverage.get(r.orderItemId) : undefined;
+    if (
+      !cov ||
+      cov.locationId !== r.locationId ||
+      cov.productItemId !== r.productItemId ||
+      out === 0
+    ) {
+      return out;
+    }
+    const take = Math.min(out, cov.remainingQuantity);
+    if (take > 0) {
+      cov.coveredQuantity += take;
+      cov.remainingQuantity -= take;
+      cov.coveredBy.push({
+        requestId: r.requestId,
+        code: r.code,
+        status: r.status,
+        quantity: take,
+      });
+    }
+    return out - take;
+  });
+  return { coverage, pooled };
 }
 
 export function rowKey(
@@ -108,13 +199,20 @@ export function compareUrgency(a: DemandLine, b: DemandLine): number {
 }
 
 /** Toàn bộ danh sách. Dòng lấy từ nhu cầu, yêu cầu đang mở và `catalogue` (các cặp cần liệt kê dù chưa có gì, để đặt được bất kỳ thứ gì). Dòng thiếu lên trước (đơn gấp nhất trước, rồi khoảng thiếu lớn nhất), rồi tới dòng có đơn; dòng bằng nhau giữ thứ tự đầu vào, người gọi sắp theo tên. */
-export function buildProductionList(input: {
-  demand: DemandLine[];
-  stock: StockLevelRow[];
-  customLots: CustomLotRow[];
-  requests: RequestLine[];
-  catalogue?: { locationId: string; productItemId: string }[];
-}): ProductionListEntry[] {
+export function buildProductionList(
+  input: ProductionListInput,
+): ProductionListEntry[] {
+  return buildProductionState(input).entries;
+}
+
+/** Như `buildProductionList`, kèm bảng phần nhu cầu của từng dòng đơn đã được YCSX gắn nhận (cho `orderableLinesOf`). */
+export function buildProductionState(
+  input: ProductionListInput,
+): ProductionState {
+  const { coverage, pooled } = allocateLinkedSupply(
+    input.demand,
+    input.requests,
+  );
   const totalStock = new Map<string, number>();
   for (const row of input.stock) {
     totalStock.set(stockKey(row.locationId, row.productItemId), row.stock);
@@ -161,17 +259,28 @@ export function buildProductionList(input: {
   }
 
   for (const line of input.demand) {
+    const cov = coverage.get(line.orderItemId)!;
+    // Dòng đã có YCSX gắn nhận đủ thì không còn nhu cầu để liệt kê.
+    if (cov.remainingQuantity === 0) continue;
     const row = rowFor(
       line.locationId,
       line.productItemId,
       line.isCustom ? line.orderItemId : null,
     );
-    row.demandQuantity += line.quantity;
-    row.orders.push(line);
+    row.demandQuantity += cov.remainingQuantity;
+    row.orders.push({
+      ...line,
+      remainingQuantity: cov.remainingQuantity,
+      coveredQuantity: cov.coveredQuantity,
+      coveredBy: cov.coveredBy,
+    });
   }
 
-  for (const line of input.requests) {
-    const outstanding = Math.max(0, line.quantity - line.receivedQuantity);
+  input.requests.forEach((line, i) => {
+    const outstanding = pooled[i];
+    const total = Math.max(0, line.quantity - line.receivedQuantity);
+    // Dòng YCSX bị dòng đơn của nó nhận hết: không còn gì đặt chung để hiện.
+    if (total > 0 && outstanding === 0) return;
     const row = rowFor(
       line.locationId,
       line.productItemId,
@@ -183,7 +292,7 @@ export function buildProductionList(input: {
     } else if (ON_ORDER_PRODUCTION_REQUEST_STATUSES.includes(line.status)) {
       row.onOrderQuantity += outstanding;
     }
-  }
+  });
 
   for (const row of rows.values()) {
     if (row.locationId) {
@@ -199,7 +308,7 @@ export function buildProductionList(input: {
     row.orders.sort(compareUrgency);
   }
 
-  return [...rows.values()].sort(compareRows);
+  return { entries: [...rows.values()].sort(compareRows), coverage };
 }
 
 /** Thiếu trước, rồi dòng có đơn; trong mỗi nhóm, đơn gấp nhất, rồi khoảng thiếu lớn nhất. 0 cho hai dòng không có đơn – người gọi sắp hai dòng đó theo tên. */

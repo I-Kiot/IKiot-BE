@@ -26,6 +26,8 @@ import { ShipmentDeliveryService } from './shipment-delivery.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { ShipmentChanges } from './shipments.change-template';
 
 /**
  * Lấy hàng & giao hàng (contract §4). Route dưới đây **cố ý không có `@Permissions`**: guard chạy trước khi biết đơn / shipment của ai, nên quyền kiểm trong service: `assertOrderStepAccess` (bước của đơn), `visibleWhere` (xem), `deliveryActorAccess` (lấy hàng / giao xong / thu tiền / tạo lại mã QR).
@@ -41,6 +43,7 @@ export class ShipmentController {
 
   /** C-2 + C-8: "Giao cho vận chuyển". EXTERNAL: đơn PACKED → PICKED_UP ngay. INTERNAL: chỉ gán shipper (shipment CREATED), đơn vẫn PACKED tới khi shipper `pick-up`. */
   @Post()
+  @EmitsChange(ShipmentChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateShipmentDto) {
     return this.service.create(user, requireTenantId(user), dto);
   }
@@ -75,6 +78,7 @@ export class ShipmentController {
   /** Shipper xác nhận đã lấy hàng (chốt 2026-10-15): shipment CREATED → PICKED_UP, đơn PACKED → PICKED_UP. Shipper, người phụ trách đơn, chủ shop. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pick-up')
+  @EmitsChange(ShipmentChanges.pickedUp)
   pickUp(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -86,6 +90,7 @@ export class ShipmentController {
   /** C-5: giao thành công – ảnh bằng chứng + thu tiền (tiền mặt / QR / đã cọc đủ). Shipper, người phụ trách đơn, chủ shop. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/deliver')
+  @EmitsChange(ShipmentChanges.delivered)
   deliver(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -97,6 +102,7 @@ export class ShipmentController {
   /** C-5: đã giao với QR nhưng khách không chuyển – thu tiền mặt thay. Cùng nhóm người như `deliver`. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pay-cash')
+  @EmitsChange(ShipmentChanges.cashCollected)
   payCash(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -108,6 +114,7 @@ export class ShipmentController {
   /** Mã QR đã hết hạn mà khách vẫn muốn chuyển khoản: tạo lại khoản QR mới (mã mới, hạn mới). Còn hạn thì trả nguyên chi tiết. Cùng nhóm người như `deliver`. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/reissue-qr')
+  @EmitsChange(ShipmentChanges.qrReissued)
   reissueQr(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -126,6 +133,7 @@ export class ShipmentController {
 
   /** C-3: ghi nhật trình "Đang đi giao" – chủ shop, người phụ trách, shipper, hoặc `shipments:update` tại kho của fulfillment. */
   @Post(':id/events')
+  @EmitsChange(ShipmentChanges.eventAdded)
   addEvent(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -137,6 +145,7 @@ export class ShipmentController {
   /** C-3: giao không thành – shipment FAILED, đơn giữ SHIPPING; cùng nhóm người như nhật trình. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/fail')
+  @EmitsChange(ShipmentChanges.failed)
   fail(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -147,6 +156,7 @@ export class ShipmentController {
 
   /** C-8: đổi shipper / thợ của shipment INTERNAL chưa kết thúc. */
   @Patch(':id/driver')
+  @EmitsChange(ShipmentChanges.driverChanged)
   changeDriver(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

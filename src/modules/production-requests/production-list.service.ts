@@ -3,13 +3,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { ProductionRequestNotificationTemplates } from '../notifications/templates/production-request.templates';
 import {
-  FulfillmentType,
-  OrderItemStatus,
-  STOCKED_LINE_TYPES,
-  UNSHIPPED_ORDER_STATUSES,
-} from '../../common/constants/order-status';
-import { OPEN_PRODUCTION_REQUEST_STATUSES } from '../../common/constants/production-request-status';
-import {
   LOCATION_SELECT,
   resolveLocations,
 } from '../../common/dto/location-ref.dto';
@@ -27,28 +20,14 @@ import {
 import { withNestedProfile } from '../../common/utils/user-profile';
 import type { Prisma } from '../../../generated/prisma/client';
 import { QueryProductionListDto } from './dto/production-request.dto';
+import { crossedShortage, type ProductionListEntry } from './production-list';
 import {
-  buildProductionList,
-  crossedShortage,
-  type ProductionListEntry,
-} from './production-list';
+  loadProductionState,
+  productionStateForPairs,
+  type StockPair,
+} from './production-list.loader';
 
-/** Dòng cần tải. `locationIds: null` = mọi địa điểm, và chỉ khi đó mới lấy dòng chưa chọn kho nguồn (chúng không thuộc địa điểm nào nhân viên có thể được gắn vào). */
-interface ListScope {
-  locationIds: string[] | null;
-  productItemIds?: string[];
-  /** Cặp cần liệt kê dù không có nhu cầu hay yêu cầu nào phía sau – chế độ danh mục. */
-  catalogue?: { locationId: string; productItemId: string }[];
-}
-
-/** Cặp (địa điểm, SKU) mà lần sửa đơn chạm tới; B-3 so sánh trước và sau. */
-export interface StockPair {
-  locationId: string | null;
-  productItemId: string;
-}
-
-const pairKey = (locationId: string | null, productItemId: string) =>
-  `${locationId ?? '-'}|${productItemId}`;
+export type { StockPair } from './production-list.loader';
 
 const PERSON_SELECT = {
   select: {
@@ -124,10 +103,10 @@ export class ProductionListService {
 
     const onlyShort = query.onlyShort ?? false;
     const locationIds = query.locationId ? [query.locationId] : readable;
-    const entries =
+    const state =
       productItemIds?.length === 0
-        ? []
-        : await this.compute(tenantId, {
+        ? { entries: [] as ProductionListEntry[] }
+        : await loadProductionState(this.prisma, tenantId, {
             locationIds,
             productItemIds,
             // Dòng thiếu luôn đến từ nhu cầu, nên danh mục chỉ cần để hiện phần còn lại.
@@ -140,11 +119,14 @@ export class ProductionListService {
                 ),
           });
 
+    const entries = state.entries;
     const shortRows = entries.filter((row) => row.shortQuantity > 0).length;
     const filtered = entries.filter(
       (row) =>
         (!onlyShort || row.shortQuantity > 0) &&
-        (!query.hasOpenRequest || row.requests.length > 0),
+        (!query.hasOpenRequest ||
+          row.requests.length > 0 ||
+          row.orders.some((order) => order.coveredQuantity > 0)),
     );
     // `compareRows` đã đưa dòng thiếu và dòng có đơn lên trước; phần còn lại bằng nhau nên xếp theo tên ở đây, vì tên chỉ biết ở đây.
     const rank = new Map(filtered.map((row, index) => [row.key, index]));
@@ -218,7 +200,11 @@ export class ProductionListService {
     tenantId: string,
     pairs: StockPair[],
   ): Promise<Map<string, number>> {
-    const entries = await this.entriesFor(tenantId, pairs);
+    const { entries } = await productionStateForPairs(
+      this.prisma,
+      tenantId,
+      pairs,
+    );
     return new Map(entries.map((row) => [row.key, row.shortQuantity]));
   }
 
@@ -230,7 +216,9 @@ export class ProductionListService {
     actorId: string,
   ): Promise<void> {
     try {
-      const crossed = (await this.entriesFor(tenantId, pairs)).filter((row) =>
+      const crossed = (
+        await productionStateForPairs(this.prisma, tenantId, pairs)
+      ).entries.filter((row) =>
         crossedShortage(before.get(row.key) ?? 0, row.shortQuantity),
       );
       if (crossed.length === 0) return;
@@ -265,24 +253,6 @@ export class ProductionListService {
     }
   }
 
-  /** Các dòng đúng những cặp (địa điểm, SKU) này, cả chuẩn lẫn tuỳ chỉnh. */
-  private async entriesFor(
-    tenantId: string,
-    pairs: StockPair[],
-  ): Promise<ProductionListEntry[]> {
-    if (pairs.length === 0) return [];
-    const wanted = new Set(
-      pairs.map((pair) => pairKey(pair.locationId, pair.productItemId)),
-    );
-    const entries = await this.compute(tenantId, {
-      locationIds: null,
-      productItemIds: [...new Set(pairs.map((pair) => pair.productItemId))],
-    });
-    return entries.filter((row) =>
-      wanted.has(pairKey(row.locationId, row.productItemId)),
-    );
-  }
-
   /** `null` = mọi địa điểm (chủ/admin). Nhân viên chỉ thấy địa điểm được gắn; chưa gắn nơi nào thì không thấy gì, không được rơi xuống "không lọc" (quy tắc két tiền). */
   readableLocations(user: AuthUser): string[] | null {
     const own = postingOf(user);
@@ -294,160 +264,6 @@ export class ProductionListService {
       });
     }
     return [own.locationId];
-  }
-
-  private async compute(
-    tenantId: string,
-    scope: ListScope,
-  ): Promise<ProductionListEntry[]> {
-    const itemFilter = scope.productItemIds
-      ? { productItemId: { in: scope.productItemIds } }
-      : {};
-
-    const [demandRows, requestRows] = await Promise.all([
-      this.prisma.orderItem.findMany({
-        where: {
-          ...itemFilter,
-          status: OrderItemStatus.PENDING,
-          lineType: { in: [...STOCKED_LINE_TYPES] },
-          // Bán tại quầy (TAKEAWAY) được trả và trừ kho ngay, không bao giờ chờ xưởng.
-          order: {
-            tenantId,
-            status: { in: [...UNSHIPPED_ORDER_STATUSES] },
-            fulfillmentType: { not: FulfillmentType.TAKEAWAY },
-          },
-          ...(scope.locationIds
-            ? { sourceLocationId: { in: scope.locationIds } }
-            : {}),
-        },
-        select: {
-          id: true,
-          productItemId: true,
-          quantity: true,
-          isCustom: true,
-          sourceLocationId: true,
-          order: {
-            select: {
-              id: true,
-              code: true,
-              status: true,
-              priority: true,
-              requestedDeliveryDate: true,
-              assigneeId: true,
-            },
-          },
-        },
-      }),
-      this.prisma.productionRequestItem.findMany({
-        where: {
-          ...itemFilter,
-          productionRequest: {
-            tenantId,
-            status: { in: [...OPEN_PRODUCTION_REQUEST_STATUSES] },
-            ...(scope.locationIds
-              ? { locationId: { in: scope.locationIds } }
-              : {}),
-          },
-        },
-        select: {
-          productItemId: true,
-          quantity: true,
-          receivedQuantity: true,
-          orderItem: { select: { id: true, isCustom: true } },
-          productionRequest: {
-            select: {
-              id: true,
-              code: true,
-              status: true,
-              expectedReadyDate: true,
-              locationId: true,
-              supplier: { select: { supplierName: true } },
-            },
-          },
-        },
-      }),
-    ]);
-
-    const locationIds = new Set<string>();
-    const productItemIds = new Set<string>();
-    for (const line of demandRows) {
-      if (line.sourceLocationId) locationIds.add(line.sourceLocationId);
-      productItemIds.add(line.productItemId);
-    }
-    for (const line of requestRows) {
-      locationIds.add(line.productionRequest.locationId);
-      productItemIds.add(line.productItemId);
-    }
-    for (const pair of scope.catalogue ?? []) {
-      locationIds.add(pair.locationId);
-      productItemIds.add(pair.productItemId);
-    }
-    if (productItemIds.size === 0) return [];
-
-    // Tập trên (mọi địa điểm × mọi SKU đã liệt kê); hàm thuần chỉ đọc các cặp nó cần.
-    const pairWhere = {
-      tenantId,
-      locationId: { in: [...locationIds] },
-      productItemId: { in: [...productItemIds] },
-    };
-    const [stockRows, customLots] =
-      locationIds.size === 0
-        ? [[], []]
-        : await Promise.all([
-            this.prisma.inventory.findMany({
-              where: pairWhere,
-              select: { locationId: true, productItemId: true, stock: true },
-            }),
-            this.prisma.inventoryLot.findMany({
-              where: {
-                ...pairWhere,
-                orderItemId: { not: null },
-                remainingQuantity: { gt: 0 },
-              },
-              select: {
-                locationId: true,
-                productItemId: true,
-                orderItemId: true,
-                remainingQuantity: true,
-              },
-            }),
-          ]);
-
-    return buildProductionList({
-      catalogue: scope.catalogue,
-      demand: demandRows.map((line) => ({
-        orderItemId: line.id,
-        orderId: line.order.id,
-        orderCode: line.order.code,
-        orderStatus: line.order.status,
-        priority: line.order.priority,
-        requestedDeliveryDate: line.order.requestedDeliveryDate,
-        assigneeId: line.order.assigneeId,
-        locationId: line.sourceLocationId,
-        productItemId: line.productItemId,
-        quantity: line.quantity,
-        isCustom: line.isCustom,
-      })),
-      stock: stockRows,
-      customLots: customLots.map((lot) => ({
-        locationId: lot.locationId,
-        productItemId: lot.productItemId,
-        orderItemId: lot.orderItemId!,
-        remaining: lot.remainingQuantity,
-      })),
-      requests: requestRows.map((line) => ({
-        requestId: line.productionRequest.id,
-        code: line.productionRequest.code,
-        status: line.productionRequest.status,
-        supplierName: line.productionRequest.supplier.supplierName,
-        expectedReadyDate: line.productionRequest.expectedReadyDate,
-        locationId: line.productionRequest.locationId,
-        productItemId: line.productItemId,
-        customOrderItemId: line.orderItem?.isCustom ? line.orderItem.id : null,
-        quantity: line.quantity,
-        receivedQuantity: line.receivedQuantity,
-      })),
-    });
   }
 
   /** Tên cho mọi id trong dòng: địa điểm, SKU, người phụ trách, thông số tuỳ chỉnh; mỗi loại một query. */
@@ -547,6 +363,14 @@ export class ProductionListService {
           orderCode: order.orderCode,
           orderItemId: order.orderItemId,
           quantity: order.quantity,
+          remainingQuantity: order.remainingQuantity,
+          coveredQuantity: order.coveredQuantity,
+          coveredBy: order.coveredBy.map((cover) => ({
+            id: cover.requestId,
+            code: cover.code,
+            status: cover.status,
+            quantity: cover.quantity,
+          })),
           priority: order.priority,
           requestedDeliveryDate: order.requestedDeliveryDate,
           assignee: order.assigneeId

@@ -54,9 +54,12 @@ import { PickupHandOverDto } from './dto/pickup-hand-over.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { ChangeFeedService } from '../../common/realtime/change-feed.service';
 import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { OrderChanges } from './orders.change-template';
 
 /** Bản port của OrderController, cộng các route hành trình và webhook SePay. Không có DELETE: đơn không nên có thì chuyển sang CANCELLED hoặc RETURNED, cả hai đều để lại dấu vết. */
 @ApiTags('orders')
@@ -81,6 +84,7 @@ export class OrderController {
   /** Đơn tay (A-2): sinh ra ở CONFIRMED, có người phụ trách (contract §2). */
   @Permissions('orders', 'create')
   @Post()
+  @EmitsChange(OrderChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
     return this.manualOrders.create(user, requireTenantId(user), dto);
   }
@@ -88,6 +92,7 @@ export class OrderController {
   /** Bán tại quầy: thu và trừ kho ngay, nằm ngoài hành trình. Trước A-2 route này là `POST /orders`. */
   @Permissions('orders', 'create')
   @Post('pos')
+  @EmitsChange(OrderChanges.posCreated)
   createPosSale(@CurrentUser() user: AuthUser, @Body() dto: CreatePosOrderDto) {
     return this.service.createPosSale(user, requireTenantId(user), dto);
   }
@@ -99,6 +104,7 @@ export class OrderController {
   @Permissions('orders', 'create', 'update')
   @HttpCode(HttpStatus.OK)
   @Post('pos/:id/cancel')
+  @EmitsChange(OrderChanges.cancelled)
   cancelPosSale(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -166,6 +172,7 @@ export class OrderController {
   /** Sửa đơn hành trình trước khi giao (A-8). Chỉ sửa dòng khi còn CONFIRMED; đã đóng gói thì hàng bị khóa trên kệ (contract §2). */
   @Permissions('orders', 'update')
   @Patch(':id')
+  @EmitsChange(OrderChanges.edited)
   update(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -191,6 +198,7 @@ export class OrderController {
    * **Cố ý không có `@Permissions`**: guard chạy trước khi biết ai đang phụ trách đơn, nên quyền kiểm trong service (`assertReassignAccess`).
    */
   @Patch(':id/assignee')
+  @EmitsChange(OrderChanges.assigneeChanged)
   setAssignee(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -202,6 +210,7 @@ export class OrderController {
   /** Đổi mức ưu tiên của đơn từ danh sách (A-8). */
   @Permissions('orders', 'update')
   @Patch(':id/priority')
+  @EmitsChange(OrderChanges.priorityChanged)
   setPriority(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -213,6 +222,7 @@ export class OrderController {
   /** Làm dòng thành đơn may theo số đo (A-4). Lần đầu dòng có ProductItem riêng; chỉ khi còn CONFIRMED, và bị khóa khi yêu cầu sản xuất của dòng đã gửi. */
   @Permissions('orders', 'update')
   @Put(':id/items/:itemId/customization')
+  @EmitsChange(OrderChanges.customized)
   customize(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -232,6 +242,7 @@ export class OrderController {
   @Permissions('orders', 'confirm_cash')
   @HttpCode(HttpStatus.OK)
   @Post(':id/confirm-remittance')
+  @EmitsChange(OrderChanges.remittanceConfirmed)
   confirmRemittance(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -242,6 +253,7 @@ export class OrderController {
 
   @Permissions('orders', 'update')
   @Patch(':id/status')
+  @EmitsChange(OrderChanges.statusChanged)
   updateStatus(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -260,6 +272,7 @@ export class OrderController {
    */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pack')
+  @EmitsChange(OrderChanges.packed)
   pack(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -273,6 +286,7 @@ export class OrderController {
    */
   @HttpCode(HttpStatus.OK)
   @Post(':id/ship')
+  @EmitsChange(OrderChanges.shipped)
   ship(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -286,6 +300,7 @@ export class OrderController {
    */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pickup/collect')
+  @EmitsChange(OrderChanges.pickupCollected)
   pickupCollect(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -297,6 +312,7 @@ export class OrderController {
   /** Đơn khách tới lấy đã thu đủ: giao hàng cho khách, trừ tồn, PACKED → COMPLETED. Quyền kiểm trong `OrderPickupService`. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pickup/hand-over')
+  @EmitsChange(OrderChanges.pickupHandedOver)
   pickupHandOver(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -309,6 +325,7 @@ export class OrderController {
   @Permissions('orders', 'update')
   @HttpCode(HttpStatus.OK)
   @Post(':id/cancel')
+  @EmitsChange(OrderChanges.cancelled)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -321,6 +338,7 @@ export class OrderController {
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/settle-held')
+  @EmitsChange(OrderChanges.heldSettled)
   settleHeld(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -333,6 +351,7 @@ export class OrderController {
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/refund-excess')
+  @EmitsChange(OrderChanges.excessRefunded)
   refundExcess(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -350,6 +369,7 @@ export class OrderController {
   @Permissions('orders', 'update', 'pay_offline')
   @HttpCode(HttpStatus.OK)
   @Post(':id/pay-offline')
+  @EmitsChange(OrderChanges.paidOffline)
   payOffline(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -373,6 +393,7 @@ export class SepayOrderWebhookController {
     private readonly service: OrderService,
     private readonly sepay: SepayOrderService,
     private readonly delivery: ShipmentDeliveryService,
+    private readonly changeFeed: ChangeFeedService,
   ) {}
 
   @RawResponse()
@@ -435,13 +456,29 @@ export class SepayOrderWebhookController {
       }
 
       // 2. Thu tiền QR lúc giao / tại quầy (C-5): mã nằm trên khoản thanh toán của đơn có giao / khách tới lấy.
-      const handled = await this.delivery.settleSepayTransfer(
+      const outcome = await this.delivery.settleSepayTransfer(
         tenant.id,
         reference,
         transfer,
       );
-      if (handled)
+      if (outcome.kind === 'HANDLED') {
+        // Trùng / bị từ chối thì không có dữ liệu nào đổi, nên không phát gì.
+        if (outcome.settled) {
+          this.changeFeed.publish({
+            tenantId: tenant.id,
+            spec: outcome.settled.partial
+              ? OrderChanges.qrPartiallyPaid
+              : OrderChanges.qrPaid,
+            target: {
+              subjectId: outcome.settled.order.id,
+              code: outcome.settled.order.code,
+              related: { shipments: [] },
+            },
+            actor: { source: 'WEBHOOK' },
+          });
+        }
         return { success: true, message: 'Delivery payment processed' };
+      }
 
       // 3. Có mã ORD nhưng không khoản nào của shop mang mã đó: vẫn là tiền thật đã về, ghi sổ để đối soát.
       const recorded = await this.sepay.recordUnmatched(

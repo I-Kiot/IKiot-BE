@@ -27,5 +27,7 @@ export interface AuthUser {
   /** Chỉ để AuditInterceptor không cần query thêm; không dùng trong kiểm tra quyền nào. */
   email: string | null;
   displayName: string | null;
+  /** Họ + tên (như `toUserRef`) để hiển thị trong feed thay đổi; `displayName` là "tên họ". Tuỳ chọn để user test tự dựng vẫn compile. */
+  fullName?: string | null;
   phoneNumber: string;
 }

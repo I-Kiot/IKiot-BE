@@ -60,9 +60,13 @@ import {
   manualTransitionViolation,
   nextProductionRequestCode,
   PRODUCTION_REQUEST_CODE_PREFIX,
+  productionExcessOf,
   statusAfterReceipt,
   type RuleViolation,
 } from './production-request-rules';
+import { productionStateForPairs } from './production-list.loader';
+import { orderableLinesOf } from './production-orderable';
+import { computeStockChecks } from '../orders/stock-check';
 import { ProductVariantService } from '../products/product-variant.service';
 import {
   OrderEventRefType,
@@ -205,6 +209,17 @@ export interface DeliveryClaim {
   code: string;
   createdById: string;
   delivered: Map<string, number>;
+}
+
+interface OrderItemForGuard {
+  id: string;
+  productItemId: string;
+  sourceLocationId: string | null;
+  lineType: string;
+  status: string;
+  quantity: number;
+  isCustom: boolean;
+  order: { code: string; status: string };
 }
 
 interface PreparedLine {
@@ -375,7 +390,12 @@ export class ProductionRequestService {
           user,
           tenantId,
           dto.items,
-          await this.prepareLines(tenantId, dto.items, skusAlreadyOnRequest),
+          await this.prepareLines(
+            tenantId,
+            dto.items,
+            skusAlreadyOnRequest,
+            id,
+          ),
         )
       : null;
 
@@ -972,6 +992,8 @@ export class ProductionRequestService {
     tenantId: string,
     lines: ProductionRequestLineDto[],
     skusAlreadyOnRequest: ReadonlySet<string> = new Set(),
+    /** Đang sửa YCSX này: các dòng sẵn có của nó sắp bị thay nên không tính vào số "đang chờ hàng" của dòng đơn. */
+    excludeRequestId?: string,
   ): Promise<PreparedLine[]> {
     if (lines.length === 0) {
       throw new BadRequestException({
@@ -1010,7 +1032,7 @@ export class ProductionRequestService {
         },
       }),
       orderItemIds.length === 0
-        ? Promise.resolve<{ id: string; productItemId: string }[]>([])
+        ? Promise.resolve<OrderItemForGuard[]>([])
         : this.prisma.orderItem.findMany({
             where: {
               id: { in: orderItemIds },
@@ -1021,13 +1043,22 @@ export class ProductionRequestService {
                 fulfillmentType: { not: FulfillmentType.TAKEAWAY },
               },
             },
-            select: { id: true, productItemId: true },
+            select: {
+              id: true,
+              productItemId: true,
+              sourceLocationId: true,
+              lineType: true,
+              status: true,
+              quantity: true,
+              isCustom: true,
+              order: { select: { code: true, status: true } },
+            },
           }),
     ]);
     const itemById = new Map(items.map((item) => [item.id, item]));
     const orderItemById = new Map(orderItems.map((row) => [row.id, row]));
 
-    return lines.map((line) => {
+    const prepared = lines.map((line) => {
       const item = itemById.get(line.productItemId);
       if (!item) {
         throw new NotFoundException({
@@ -1049,6 +1080,18 @@ export class ProductionRequestService {
           message: `${item.sku ?? item.id} is not manufacturable; order it from a supplier instead`,
         });
       }
+      if (
+        line.orderItemId &&
+        ((line.attributeValues ?? []).length > 0 ||
+          line.retailPrice !== undefined)
+      ) {
+        // Checked here, before the shortage guard, so a malformed line is told what is wrong with it first.
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER,
+          message:
+            "A line made for an order line follows that line's customization; its attributes and price cannot be changed here",
+        });
+      }
       if (line.orderItemId) {
         const orderItem = orderItemById.get(line.orderItemId);
         if (!orderItem || orderItem.productItemId !== line.productItemId) {
@@ -1066,6 +1109,80 @@ export class ProductionRequestService {
         note: line.note ?? null,
         attachmentUrls: line.attachmentUrls ?? [],
       };
+    });
+    await this.assertWithinOrderShortage(
+      tenantId,
+      prepared,
+      orderItems,
+      excludeRequestId,
+    );
+    return prepared;
+  }
+
+  /**
+   * Đặt xưởng cho dòng đơn không được vượt phần còn đặt được (`orderableLinesOf`, cùng phép tính với nút "Tạo YCSX" trên đơn):
+   * mỗi dòng <= min(phần dòng còn cần trừ phần YCSX gắn riêng đã nhận, số thiếu chung của (địa điểm, SKU)), và các dòng của một
+   * yêu cầu cùng (địa điểm, SKU) cộng lại <= số thiếu chung. Dòng không tính được thì bỏ qua. `excludeRequestId` = YCSX nháp đang sửa.
+   */
+  private async assertWithinOrderShortage(
+    tenantId: string,
+    prepared: PreparedLine[],
+    orderItems: OrderItemForGuard[],
+    excludeRequestId?: string,
+  ) {
+    if (orderItems.length === 0) return;
+    const byOrder = new Map<
+      string,
+      { status: string; items: OrderItemForGuard[] }
+    >();
+    for (const row of orderItems) {
+      const group = byOrder.get(row.order.code) ?? {
+        status: row.order.status,
+        items: [],
+      };
+      group.items.push(row);
+      byOrder.set(row.order.code, group);
+    }
+    const checks = await computeStockChecks(this.prisma, tenantId, [
+      ...byOrder.values(),
+    ]);
+    const state = await productionStateForPairs(
+      this.prisma,
+      tenantId,
+      orderItems.map((row) => ({
+        locationId: row.sourceLocationId,
+        productItemId: row.productItemId,
+      })),
+      excludeRequestId,
+    );
+    const lines = orderableLinesOf(
+      orderItems,
+      (id) => checks.get(id)?.shortQuantity ?? null,
+      state,
+    );
+    const excess = productionExcessOf(prepared, lines);
+    if (!excess) return;
+    const row = orderItems.find((r) => r.id === excess.orderItemId)!;
+    const line = lines.get(excess.orderItemId)!;
+    const coveredBy = [
+      ...new Set([
+        ...line.coveringRequests.map((request) => request.code),
+        ...(state.coverage
+          .get(excess.orderItemId)
+          ?.coveredBy.map((cover) => cover.code) ?? []),
+      ]),
+    ];
+    throw new ConflictException({
+      code: ErrorCode.PRODUCTION_EXCEEDS_ORDER_SHORTAGE,
+      message: `Order ${row.order.code}: the workshop can still take ${excess.orderable} for this line (line short ${excess.need}, linked ${excess.alreadyOpen}, shared shortage ${line.poolShort}); ${excess.requested} requested`,
+      orderCode: row.order.code,
+      orderItemId: excess.orderItemId,
+      need: excess.need,
+      alreadyOpen: excess.alreadyOpen,
+      requested: excess.requested,
+      orderable: excess.orderable,
+      scope: excess.scope,
+      coveredBy,
     });
   }
 
@@ -1085,13 +1202,6 @@ export class ProductionRequestService {
       if (changes.length === 0 && line.retailPrice === undefined) {
         result.push(prepared[index]);
         continue;
-      }
-      if (line.orderItemId) {
-        throw new BadRequestException({
-          code: ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER,
-          message:
-            "A line made for an order line follows that line's customization; its attributes and price cannot be changed here",
-        });
       }
       const resolved = await this.variants.resolve(
         user,

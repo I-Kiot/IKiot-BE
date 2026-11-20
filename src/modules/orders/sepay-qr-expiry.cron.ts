@@ -7,7 +7,9 @@ import {
   PaymentMethod,
   PaymentRecordStatus,
 } from '../../common/constants/payment-method';
+import { ChangeFeedService } from '../../common/realtime/change-feed.service';
 import { OrderService } from './orders.service';
+import { OrderChanges } from './orders.change-template';
 import { isQrExpired, qrIssuedBefore } from './sepay-qr';
 
 /**
@@ -24,6 +26,7 @@ export class SepayQrExpiryCron {
   constructor(
     private readonly prisma: PrismaService,
     private readonly orders: OrderService,
+    private readonly changeFeed: ChangeFeedService,
   ) {}
 
   @Cron('*/5 * * * *', { timeZone: VIETNAM_TIMEZONE })
@@ -60,16 +63,38 @@ export class SepayQrExpiryCron {
           { expiresAt: null, createdAt: { lte: qrIssuedBefore(now) } },
         ],
       },
-      select: { id: true, expiresAt: true, createdAt: true },
+      select: {
+        id: true,
+        expiresAt: true,
+        createdAt: true,
+        tenantId: true,
+        orderId: true,
+      },
       take: 500,
     });
-    const ids = candidates.filter((p) => isQrExpired(p, now)).map((p) => p.id);
+    const due = candidates.filter((p) => isQrExpired(p, now));
+    const ids = due.map((p) => p.id);
     if (ids.length === 0) return { cancelledOrders, expiredPayments: 0 };
 
     const expired = await this.prisma.payment.updateMany({
       where: { id: { in: ids }, status: PaymentRecordStatus.PENDING },
       data: { status: PaymentRecordStatus.EXPIRED },
     });
+    // Một sự kiện gộp (không toast) cho mỗi tenant: màn hình đang mở mã QR chỉ cần tải lại.
+    const orderIdsByTenant = new Map<string, string[]>();
+    for (const payment of due) {
+      const list = orderIdsByTenant.get(payment.tenantId) ?? [];
+      list.push(payment.orderId);
+      orderIdsByTenant.set(payment.tenantId, list);
+    }
+    for (const [tenantId, orderIds] of orderIdsByTenant) {
+      this.changeFeed.publish({
+        tenantId,
+        spec: OrderChanges.paymentQrExpired,
+        target: { subjectId: null, code: null, related: { orders: orderIds } },
+        actor: { source: 'SYSTEM' },
+      });
+    }
     return { cancelledOrders, expiredPayments: expired.count };
   }
 }

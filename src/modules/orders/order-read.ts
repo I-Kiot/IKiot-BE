@@ -29,6 +29,20 @@ const BALANCE_PAYMENT_INCLUDE = {
   },
 } as const satisfies Prisma.Order$paymentsArgs;
 
+/**
+ * SKU của một dòng đơn, dùng chung cho danh sách và chi tiết.
+ * Kèm `isManufacturable` của sản phẩm: danh sách hiện cột "Có thể sản xuất", và nút "Tạo YCSX" chỉ điền sẵn dòng thiếu
+ * mà xưởng làm được (BE từ chối cả YCSX nếu có dòng không làm được).
+ */
+const LINE_PRODUCT_ITEM_SELECT = {
+  select: {
+    id: true,
+    sku: true,
+    productName: true,
+    product: { select: { isManufacturable: true } },
+  },
+} as const satisfies Prisma.ProductItemDefaultArgs;
+
 /** Một dòng danh sách đơn. Giữ mọi dòng hàng: danh sách hóa đơn của POS mở rộng chúng tại chỗ, và `stockSummary` là `stockCheck` của dòng tệ nhất nên vẫn cần các dòng. */
 export const ORDER_LIST_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
@@ -38,9 +52,7 @@ export const ORDER_LIST_INCLUDE = {
   confirmedBy: USER_REF_SELECT,
   shippedBy: USER_REF_SELECT,
   items: {
-    include: {
-      productItem: { select: { id: true, sku: true, productName: true } },
-    },
+    include: { productItem: LINE_PRODUCT_ITEM_SELECT },
   },
   appliedPromotions: true,
   payments: BALANCE_PAYMENT_INCLUDE,
@@ -60,15 +72,7 @@ export const ORDER_DETAIL_INCLUDE = {
   ...ORDER_LIST_INCLUDE,
   items: {
     include: {
-      // `isManufacturable` của sản phẩm: nút "Tạo YCSX" trên đơn chỉ điền sẵn dòng thiếu mà xưởng làm được (BE từ chối cả YCSX nếu có dòng không làm được).
-      productItem: {
-        select: {
-          id: true,
-          sku: true,
-          productName: true,
-          product: { select: { isManufacturable: true } },
-        },
-      },
+      productItem: LINE_PRODUCT_ITEM_SELECT,
       sourceLocation: LOCATION_SELECT,
       customization: {
         include: { specs: { orderBy: { position: 'asc' } } },

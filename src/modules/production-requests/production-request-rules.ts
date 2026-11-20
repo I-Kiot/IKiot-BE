@@ -3,6 +3,7 @@ import {
   ProductionRequestStatus,
 } from '../../common/constants/production-request-status';
 import { ErrorCode } from '../../common/errors/error-codes';
+import type { OrderableLine } from './production-orderable';
 
 // Vòng đời yêu cầu sản xuất dưới dạng hàm thuần, là nơi duy nhất quyết mọi đổi trạng thái (contract §3); test trong production-request-rules.spec.ts.
 //
@@ -106,4 +107,91 @@ export function nextProductionRequestCode(
     : '';
   const current = /^\d+$/.test(digits) ? Number(digits) : 0;
   return `${PRODUCTION_REQUEST_CODE_PREFIX}${String(current + step).padStart(6, '0')}`;
+}
+
+/**
+ * Phần dòng đơn còn cần làm: hàng may đo thì cả dòng (`isCustom` không lấy từ kệ), hàng chuẩn thì số thiếu hiện tại của `stockCheck`.
+ * null = không biết (dòng không có stockCheck: không còn chờ giao, thiếu kho nguồn...), nơi gọi bỏ qua kiểm tra dòng đó.
+ */
+export function remainingNeedOf(
+  line: { isCustom: boolean; quantity: number },
+  shortQuantity: number | null,
+): number | null {
+  if (line.isCustom) return line.quantity;
+  return shortQuantity;
+}
+
+export interface ProductionExcess {
+  orderItemId: string;
+  need: number;
+  alreadyOpen: number;
+  requested: number;
+  orderable: number;
+  /** LINE: vượt phần còn cần của chính dòng; POOL: các dòng của một yêu cầu cộng lại vượt số thiếu chung của (địa điểm, SKU). */
+  scope: 'LINE' | 'POOL';
+}
+
+/**
+ * Đặt xưởng không được vượt phần còn đặt được (`orderableLinesOf`): mỗi dòng đơn <= `orderable` của nó, và các dòng của một yêu cầu
+ * cùng (địa điểm, SKU) cộng lại <= số thiếu chung. `requested` cộng theo dòng đơn; dòng không có trong `lines` hoặc `orderable` null thì bỏ qua.
+ * Trả chỗ vượt đầu tiên hoặc null.
+ */
+export function productionExcessOf(
+  requested: readonly { orderItemId: string | null; quantity: number }[],
+  lines: ReadonlyMap<
+    string,
+    Pick<
+      OrderableLine,
+      'need' | 'covered' | 'orderable' | 'poolKey' | 'poolShort'
+    >
+  >,
+): ProductionExcess | null {
+  const wanted = new Map<string, number>();
+  for (const line of requested) {
+    if (!line.orderItemId) continue;
+    wanted.set(
+      line.orderItemId,
+      (wanted.get(line.orderItemId) ?? 0) + line.quantity,
+    );
+  }
+  const pools = new Map<
+    string,
+    { first: string; total: number; short: number }
+  >();
+  for (const [orderItemId, quantity] of wanted) {
+    const line = lines.get(orderItemId);
+    if (!line || line.orderable === null) continue;
+    if (quantity > line.orderable) {
+      return {
+        orderItemId,
+        need: line.need ?? 0,
+        alreadyOpen: line.covered,
+        requested: quantity,
+        orderable: line.orderable,
+        scope: 'LINE',
+      };
+    }
+    const pool = pools.get(line.poolKey);
+    if (pool) pool.total += quantity;
+    else
+      pools.set(line.poolKey, {
+        first: orderItemId,
+        total: quantity,
+        short: line.poolShort,
+      });
+  }
+  for (const pool of pools.values()) {
+    if (pool.total > pool.short) {
+      const line = lines.get(pool.first)!;
+      return {
+        orderItemId: pool.first,
+        need: line.need ?? 0,
+        alreadyOpen: line.covered,
+        requested: pool.total,
+        orderable: pool.short,
+        scope: 'POOL',
+      };
+    }
+  }
+  return null;
 }

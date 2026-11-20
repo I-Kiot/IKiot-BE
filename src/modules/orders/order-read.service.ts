@@ -28,6 +28,13 @@ import {
 } from './order-read';
 import { toOrderDetail, toOrderListItem } from './order-read.mapper';
 import {
+  linkedProductionByOrderItem,
+  NO_LINE_PRODUCTION,
+  type OrderLineProduction,
+} from '../production-requests/production-coverage';
+import { productionStateForPairs } from '../production-requests/production-list.loader';
+import { orderableLinesOf } from '../production-requests/production-orderable';
+import {
   DUE_SOON_DAYS,
   PaymentKind,
   PRIORITY_SORT_ORDER,
@@ -91,8 +98,9 @@ export class OrderReadService {
       tenantId,
       query,
     );
+    const production = await this.lineProduction(tenantId, rows, stockChecks);
     return paginate(
-      rows.map((row) => toOrderListItem(row, stockChecks)),
+      rows.map((row) => toOrderListItem(row, stockChecks, production)),
       total,
       query.page,
       query.limit,
@@ -158,12 +166,68 @@ export class OrderReadService {
       where: { orderId: id },
       select: { entryType: true },
     });
+    const production = await this.lineProduction(tenantId, [row], stockChecks);
     return toOrderDetail(
       row,
       stockChecks,
       payments,
       journal.map((e) => e.entryType),
+      production,
     );
+  }
+
+  /**
+   * `production` của từng dòng đơn: YCSX gắn dòng (tiến độ) và phần còn đặt xưởng được (`orderableLinesOf`, cùng phép tính với guard khi tạo YCSX).
+   * Theo lô: một query cho phần gắn dòng, và (chỉ khi có dòng tính được stockCheck) vài query cho danh sách sản xuất chung của các cặp (địa điểm, SKU) đó.
+   */
+  private async lineProduction(
+    tenantId: string,
+    orders: readonly {
+      items: readonly {
+        id: string;
+        productItemId: string;
+        sourceLocationId: string | null;
+        quantity: number;
+        isCustom: boolean;
+      }[];
+    }[],
+    stockChecks: Map<string, StockCheck>,
+  ): Promise<Map<string, OrderLineProduction>> {
+    const items = orders.flatMap((order) => order.items);
+    const linked = await linkedProductionByOrderItem(
+      this.prisma,
+      tenantId,
+      items.map((line) => line.id),
+    );
+    const candidates = items.filter((line) => stockChecks.has(line.id));
+    const orderable =
+      candidates.length === 0
+        ? null
+        : orderableLinesOf(
+            candidates,
+            (id) => stockChecks.get(id)?.shortQuantity ?? null,
+            await productionStateForPairs(
+              this.prisma,
+              tenantId,
+              candidates.map((line) => ({
+                locationId: line.sourceLocationId,
+                productItemId: line.productItemId,
+              })),
+            ),
+          );
+    const result = new Map<string, OrderLineProduction>();
+    for (const line of items) {
+      const own = linked.get(line.id);
+      const pooled = orderable?.get(line.id);
+      if (!own && !pooled) continue;
+      result.set(line.id, {
+        ...NO_LINE_PRODUCTION,
+        ...own,
+        orderableQuantity: pooled?.orderable ?? null,
+        coveringRequests: pooled?.coveringRequests ?? [],
+      });
+    }
+    return result;
   }
 
   private async listRows(

@@ -19,6 +19,7 @@ import {
 import {
   notifySettled,
   processSepayTransfer,
+  type SepaySettled,
 } from '../orders/sepay-settlement';
 import { lockOrder } from '../orders/order-lock';
 import { syncOrderPaymentStatus } from '../orders/payment-status';
@@ -107,6 +108,10 @@ const DELIVERY_SELECT = {
  * - Chuyển thiếu: khoản QR thành PAID với số thực nhận, đơn PARTIALLY_PAID và vẫn RECEIVED; shipper thu nốt phần còn lại bằng mã mới (`reissueQr`) hay tiền mặt (`payCash`).
  * Lần giao qua ĐVVC ngoài không đi qua đây (hãng tự báo về, C-4). Dòng thu chi ghi lúc tiền đổi chủ (QR về / chủ nhận tiền shipper nộp), không ở bước giao.
  */
+/** Kết cục của `settleSepayTransfer`: `settled` có giá trị chỉ khi tiền được chốt (trùng / từ chối thì không có gì đổi để báo). */
+export type SepayDeliveryOutcome =
+  { kind: 'NOT_OURS' } | { kind: 'HANDLED'; settled: SepaySettled | null };
+
 @Injectable()
 export class ShipmentDeliveryService {
   private readonly logger = new Logger(ShipmentDeliveryService.name);
@@ -619,7 +624,7 @@ export class ShipmentDeliveryService {
   /**
    * Tiền QR lúc giao / tại quầy đã về, nhận các tham số rời (test và tích hợp gọi trực tiếp). Webhook thật gọi `settleSepayTransfer` với giao dịch đã chuẩn hoá.
    */
-  settleSepayBalance(
+  async settleSepayBalance(
     tenantId: string,
     paymentReference: string,
     sepayTransactionId: string | null,
@@ -627,7 +632,7 @@ export class ShipmentDeliveryService {
     now: Date = new Date(),
     meta: Partial<Omit<SepayTransfer, 'dedupeKey' | 'amount'>> = {},
   ): Promise<boolean> {
-    return this.settleSepayTransfer(
+    const outcome = await this.settleSepayTransfer(
       tenantId,
       paymentReference,
       buildSepayTransfer({
@@ -637,10 +642,11 @@ export class ShipmentDeliveryService {
       }),
       now,
     );
+    return outcome.kind === 'HANDLED';
   }
 
   /**
-   * Tiền QR lúc giao / tại quầy đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `true` nếu mã thuộc một khoản của đơn có giao / khách tới lấy (đã xử lý: chốt, chốt thiếu, trùng, hoặc từ chối), `false` nếu không phải mã của ta.
+   * Tiền QR lúc giao / tại quầy đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `{ kind: 'HANDLED' }` nếu mã thuộc một khoản của đơn có giao / khách tới lấy (đã xử lý: chốt, chốt thiếu, trùng, hoặc từ chối; `settled` có giá trị chỉ khi tiền được chốt, để webhook phát `entity:changed`), `{ kind: 'NOT_OURS' }` nếu không phải mã của ta.
    * Không ném lỗi nghiệp vụ: SePay gọi lại mọi câu trả lời khác 200. Toàn bộ chốt tiền nằm ở `processSepayTransfer` (`sepay-settlement.ts`), dùng chung với đơn quầy.
    * Hết hạn tính TRƯỚC khi quyết định. Khoản còn mở và đơn còn chờ khoản này thì chốt, kể cả khi mã đã hết hạn (tiền về thật; `lateAfterExpiry` trên sự kiện). Chuyển thiếu là khoản trả một phần: đơn chưa hoàn thành, shipper tạo mã mới cho phần còn lại hay thu tiền mặt.
    * Khoản đã huỷ (tiền mặt, mã mới, đơn huỷ), đã thu bằng giao dịch khác, hay đơn không còn chờ thì KHÔNG chốt: ghi sổ REJECTED + dòng thu chi chưa gắn đơn và báo chủ shop hoàn / đối soát.
@@ -650,7 +656,7 @@ export class ShipmentDeliveryService {
     paymentReference: string,
     transfer: SepayTransfer,
     now: Date = new Date(),
-  ): Promise<boolean> {
+  ): Promise<SepayDeliveryOutcome> {
     const result = await processSepayTransfer(
       {
         prisma: this.prisma,
@@ -666,11 +672,12 @@ export class ShipmentDeliveryService {
         now,
       },
     );
-    if (result.kind === 'NOT_OURS') return false;
+    if (result.kind === 'NOT_OURS') return { kind: 'NOT_OURS' };
     if (result.kind === 'SETTLED') {
       await notifySettled({ notifications: this.notifications }, result);
+      return { kind: 'HANDLED', settled: result };
     }
-    return true;
+    return { kind: 'HANDLED', settled: null };
   }
 
   /** Nạp lần giao cùng đơn của nó; không có trong shop thì 404. */
