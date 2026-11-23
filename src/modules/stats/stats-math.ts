@@ -191,3 +191,26 @@ export function previousBusinessDates({
   const prevTo = shiftDate(from, -1);
   return { from: shiftDate(prevTo, -(days - 1)), to: prevTo };
 }
+
+/** Mọi mốc của khoảng ngày địa phương (`YYYY-MM-DD` theo ngày, `YYYY-MM` theo tháng), kể cả mốc không phát sinh - giống `generateDateBuckets` của FE để bảng theo thời gian trên web và trong file có cùng số dòng. */
+export function dateBuckets(
+  { from, to }: BusinessDateRange,
+  groupBy: 'day' | 'month',
+): string[] {
+  const buckets: string[] = [];
+  if (groupBy === 'month') {
+    let [y, m] = from.split('-').map(Number);
+    const [endY, endM] = to.split('-').map(Number);
+    while (y < endY || (y === endY && m <= endM)) {
+      buckets.push(`${y}-${String(m).padStart(2, '0')}`);
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+    return buckets;
+  }
+  for (let day = from; day <= to; day = shiftDate(day, 1)) buckets.push(day);
+  return buckets;
+}

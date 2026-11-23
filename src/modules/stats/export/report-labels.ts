@@ -6,8 +6,8 @@ import {
 } from '../../../common/constants/cash-flow-category';
 
 /**
- * Tên tiếng Việt của các mã in trong file báo cáo. File xuất là giấy tờ đưa cho kế toán nên không thể in mã thô như API trả cho dashboard (dashboard tự dịch ở FE).
- * Cùng câu chữ với `iKiotMS-FE/src/lib/stats-format.ts`; mã chưa có tên thì in nguyên mã.
+ * Tên tiếng Việt của các mã in trong file báo cáo: file xuất không in mã thô như API trả cho dashboard (dashboard tự dịch ở FE).
+ * Cùng câu chữ với `IKiot-FE/src/lib/stats-format.ts`; mã chưa có tên thì in nguyên mã.
  */
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
@@ -58,6 +58,28 @@ const SEPAY_OUTCOME_LABELS: Record<string, string> = {
   UNMATCHED: 'Không gắn được đơn',
 };
 
+/** Cùng câu chữ với `JOURNAL_ENTRY_TYPE_LABELS` / `JOURNAL_SOURCE_LABELS` của FE (cột Loại, Nguồn của Sổ doanh thu). */
+const JOURNAL_ENTRY_TYPE_LABELS: Record<string, string> = {
+  SALE: 'Bán hàng',
+  RETURN: 'Trả hàng',
+  OTHER_INCOME: 'Thu nhập khác',
+};
+
+const JOURNAL_SOURCE_LABELS: Record<string, string> = {
+  POS_SALE: 'Bán tại quầy',
+  POS_PAY_OFFLINE: 'Thanh toán tại quầy',
+  SEPAY_WEBHOOK: 'Chuyển khoản SePay',
+  DELIVERY: 'Giao hàng',
+  REMITTANCE: 'Shipper nộp tiền',
+  PICKUP_HAND_OVER: 'Khách nhận tại kho',
+  RETURN_INSPECTION: 'Kiểm hàng trả',
+  POS_RETURN: 'Trả hàng tại quầy',
+  ORDER_CANCEL: 'Huỷ đơn (giữ tiền)',
+  POS_CANCEL: 'Huỷ đơn quầy (giữ tiền)',
+  RETURN_KEPT: 'Trả hàng (giữ tiền)',
+  HELD_DECISION: 'Quyết định giữ tiền',
+};
+
 const labelFrom =
   (labels: Record<string, string>) =>
   (code: string | null | undefined): string =>
@@ -68,3 +90,5 @@ export const paymentMethodLabel = labelFrom(PAYMENT_METHOD_LABELS);
 export const cashFlowCategoryLabel = labelFrom(CASH_FLOW_CATEGORY_LABELS);
 export const fundLabel = labelFrom(FUND_LABELS);
 export const sepayOutcomeLabel = labelFrom(SEPAY_OUTCOME_LABELS);
+export const journalEntryTypeLabel = labelFrom(JOURNAL_ENTRY_TYPE_LABELS);
+export const journalSourceLabel = labelFrom(JOURNAL_SOURCE_LABELS);
