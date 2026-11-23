@@ -66,7 +66,7 @@ export class StatsReportsService {
   }
 
   /**
-   * Toàn bộ bút toán của bộ lọc cho file xuất (không phân trang), cũ nhất trước như cách ghi sổ. Kèm tên khách (chụp `customer_id`, không có khoá ngoại nên đọc riêng một lần).
+   * Toàn bộ bút toán của bộ lọc cho file xuất (không phân trang), mới nhất trước như bảng trên trang. Kèm tên khách (chụp `customer_id`, không có khoá ngoại nên đọc riêng một lần).
    * Không giới hạn số dòng: sổ của một kỳ phải đủ, cắt bớt thì tổng cuối sổ sai.
    */
   async getSalesJournalForExport(
@@ -75,7 +75,8 @@ export class StatsReportsService {
   ) {
     const rows = await this.prisma.salesJournalEntry.findMany({
       where: this.journalWhere(user, query),
-      orderBy: [{ businessDate: 'asc' }, { postedAt: 'asc' }, { id: 'asc' }],
+      // Cùng thứ tự với bảng trên trang Sổ doanh thu (mới nhất trước), để file xuất đọc như màn hình.
+      orderBy: [{ businessDate: 'desc' }, { postedAt: 'desc' }, { id: 'asc' }],
       include: {
         order: { select: { code: true } },
         lines: {
@@ -96,9 +97,16 @@ export class StatsReportsService {
       select: { id: true, name: true },
     });
     const customerName = new Map(customers.map((c) => [c.id, c.name]));
+    const locations = await this.prisma.location.findMany({
+      where: { id: { in: [...new Set(rows.map((r) => r.branchId))] } },
+      select: { id: true, name: true },
+    });
+    const branchName = new Map(locations.map((l) => [l.id, l.name]));
 
     return rows.map((row) => ({
       entryType: row.entryType,
+      source: row.source,
+      branchName: branchName.get(row.branchId) ?? null,
       orderCode: row.order.code,
       customerName: row.customerId
         ? (customerName.get(row.customerId) ?? null)

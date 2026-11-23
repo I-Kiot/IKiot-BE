@@ -209,7 +209,7 @@ export class StatsController {
     return xlsxFile(await this.exporter.report(user, query));
   }
 
-  /** Sổ doanh thu cả kỳ theo mẫu sổ của Thông tư 99/2025/TT-BTC: Sổ nhật ký bán hàng (S03a4-DN) và Sổ chi tiết bán hàng (S35-DN). */
+  /** Sổ doanh thu cả kỳ dạng bảng như trên trang: sheet bút toán và sheet dòng hàng. */
   @Permissions('reports', 'read')
   @Get('export/sales-journal')
   @ApiProduces(XLSX_MIME)
