@@ -579,3 +579,36 @@ Cùng nhánh `feat/hungld-report-export`.
 - **BE**: không đổi API.
 
 **Đã kiểm chứng:** FE `tsc` (trừ `.next/types` cũ trỏ tới trang đã xoá, tự hết khi build lại). **Chưa kiểm chứng:** chưa bấm thử trên dashboard.
+
+## 2026-11-23 – Tách báo cáo, trang Thống kê, Excel dạng bảng 1:1 với web
+
+Chốt với chủ dự án: menu Báo cáo thành nhóm; giữ trang Tổng hợp; mặc định 30 ngày; bỏ khung TT99 cho **mọi** file xuất (cả Sổ doanh thu, Đối soát tiền); giữ nguyên trang Tổng quan `/dashboard`; phân trang 50 dòng; các dòng tổng luôn thấy khi cuộn.
+
+- **BE**: `GET /stats/revenue-by-staff` và `/stats/revenue-by-branch` nhận `page`, `limit` (tối đa 100) **tuỳ chọn**; luôn trả thêm `summary { revenue, orderCount, aov }` là tổng cả kỳ (không phải của trang). Không gửi `limit` thì trả đủ như cũ, không có `pagination` (AI tool, export, dashboard vẫn gọi kiểu này). Cắt trang trong bộ nhớ (`pageOfRanking` trong `stats.service.ts`) vì query đã gom theo người / chi nhánh.
+- **BE**: `export/report-sheet.ts` viết lại thành khung bảng đơn giản: tên báo cáo + dòng kỳ, đầu bảng tô nền và cố định khi cuộn, dòng tổng in đậm, % là ô định dạng `0.0%`. Bỏ `unitHeader`, mẫu số, dòng ký hiệu cột, ô chữ ký, `TT99_LEGAL_NOTE`.
+- **BE**: `stats-export.service.ts` viết lại để mỗi sheet trùng cột, thứ tự, dòng Cộng với bảng trên web. `report()` chỉ tải số liệu của các section được xuất; bỏ trống `section` là 7 tab của trang Tổng hợp (không gồm `staff`, `branch`, hai báo cáo này có nút xuất riêng). Tên file "Tất cả" đổi thành `bao-cao-tong-hop_*`; chi nhánh thành sheet "Theo điểm bán" / `doanh-thu-theo-diem-ban_*`; tồn kho tách 2 sheet ("Tồn kho", "Hàng sắp hết"). Sổ doanh thu thành sheet "Sổ doanh thu" (cột như trang) + "Dòng hàng", **mới nhất trước** như trang; `getSalesJournalForExport` trả thêm `source`, `branchName`. Thêm `dateBuckets` (stats-math) để sheet theo thời gian có đủ mốc như web.
+- **FE**: sidebar Báo cáo thành nhóm: Tổng hợp `/reports`, Nhân viên `/reports/staff`, Điểm bán `/reports/branches`, Sổ doanh thu, Đối soát tiền (bỏ 2 nút trên đầu trang Báo cáo); thêm mục Thống kê `/statistics`. Mục con lọc theo `reports:read` qua `nav-leaf-permissions.ts` (`getFilteredSidebar` giờ áp `filterLeafNavItems` cả cho mục con).
+- **FE**: bộ lọc kỳ từ → đến dùng chung (`components/report-date-range-filter.tsx`, tối đa 366 ngày, kèm lựa chọn nhanh), kỳ nằm trên URL `?from=&to=` (`hooks/use-report-period.ts`, trang phải bọc Suspense). Kỳ > 92 ngày gom theo tháng.
+- **FE**: `ReportTable` tự cuộn trong khung cao 70vh: đầu bảng dính trên, dòng Cộng dính dưới, dòng in đậm (Doanh thu thuần, Lợi nhuận gộp) dính cả trên lẫn dưới, xếp chồng theo thứ tự; có phân trang tuỳ chọn (20/50/100). Sổ doanh thu có thêm dòng Tổng cộng (toàn bộ lọc) dính đáy.
+- **FE**: trang Thống kê: KPI so kỳ trước, xu hướng theo ngày/tháng (area), tăng trưởng 12 tháng / 8 quý kèm % so cùng kỳ năm trước (hai biểu đồ, không gộp hai trục y), 3 donut cơ cấu (điểm bán, phương thức thanh toán, hàng hóa; tối đa 4 lát + "Khác"), so sánh mốc thời gian và khung giờ bán chạy (chuyển từ tab "Phân tích" cũ). Bảng màu trong `statistics/shared/palette.ts`, đã qua validator CVD ở cả hai chế độ.
+
+**Đã kiểm chứng:** BE `tsc` (chỉ còn lỗi cũ ở các `*.excel.spec.ts` không liên quan), eslint các file đã sửa, `pnpm test -- src/modules/stats` (spec export viết lại qua hết; 1 lỗi có sẵn từ trước ở `admin-stats.excel.spec.ts`). FE `tsc` sạch, eslint các thư mục đã sửa (chỉ còn lỗi cũ ở `NavMain.tsx`), mọi route mới compile trên `next dev` (HTTP 200). **Chưa kiểm chứng:** chưa chạy `next build`; chưa bấm thử trên trình duyệt với dữ liệu thật (BE không chạy lúc làm): cần xem dòng dính khi cuộn, phân trang, mở file Excel từng trang, biểu đồ ở chế độ sáng/tối.
+
+## 2026-11-23 – Báo cáo theo từng chi nhánh / kho bằng dropdown trên trang
+
+Chốt với chủ dự án: báo cáo tổng hợp xem theo từng nơi bằng dropdown trong trang, không phải một mục riêng; bỏ mục "Điểm bán"; dropdown có ở mọi trang báo cáo.
+
+- **FE**: hook `hooks/use-report-location.ts` + `components/report-location-select.tsx`: dropdown Toàn cửa hàng / từng chi nhánh / từng kho, lưu trên URL `?place=all|branch-<id>|warehouse-<id>`; không có thì theo bộ chọn địa điểm trên header. Chỉ TENANT_OWNER/ADMIN đổi được; nhân viên bị ghim ở nơi được gán (dropdown khoá, chỉ tải đúng nơi đó để hiện tên). Có ở Tổng hợp, Nhân viên, Sổ doanh thu, Đối soát tiền, Thống kê; đổi nơi thì về trang 1.
+- **FE**: bỏ trang `/reports/branches` và mục menu "Điểm bán" (mới thêm cùng ngày, chưa phát hành nên không cần redirect). Tổng hợp có tab "Theo điểm bán" (phân trang, dòng Cộng tổng cả kỳ) chỉ khi chọn Toàn cửa hàng; chọn một nơi thì tab ẩn và về tab đầu. Thống kê ẩn donut "Theo điểm bán" khi chọn một nơi.
+- **BE**: "Xuất tất cả" (`/stats/export/report` không `section`) thêm sheet "Theo điểm bán" khi không lọc nơi, cùng thứ tự tab trên web.
+
+**Đã kiểm chứng:** FE `tsc`, eslint các thư mục đã sửa; route compile trên `next dev`. BE `tsc`, eslint, spec export (5/5). **Chưa kiểm chứng:** chưa bấm thử trên trình duyệt với dữ liệu thật (đổi nơi, tài khoản nhân viên bị ghim, file xuất theo nơi).
+
+## 2026-11-23 – Sổ thu chi chuyển vào nhóm Báo cáo
+
+Chủ dự án hỏi bỏ Sổ thu chi vì tưởng trùng Sổ doanh thu; đã giải thích hai sổ khác nguồn (`cash_flows` = tiền thực vào/ra theo ngày phát sinh và quỹ, có trả NCC, hoàn tiền, SePay; `sales_journal_entries` = doanh thu ghi theo ngày đơn hoàn thành) → chốt giữ, chỉ chuyển vào nhóm Báo cáo.
+
+- **FE**: mục "Sổ thu chi" thành mục con của nhóm Báo cáo (sau Sổ doanh thu), bỏ mục ngoài nhóm; URL giữ `/cashflow` (công nợ NCC, đối soát tiền link tới; `/cashflow/sepay` vẫn vào được qua tiền tố). Quyền `reports:read` như trước.
+- **FE**: trang dùng bộ lọc kỳ từ → đến (URL `?from=&to=`) và dropdown nơi (URL `?place=`) như các trang báo cáo khác, thay ô chọn 7/30/90 ngày và bộ chọn header; `useCashflow` nhận kỳ và nơi từ trang. Bảng giao dịch có đầu bảng và dòng Tổng (toàn bộ lọc, từ `/stats/cashflow`) dính khi cuộn. BE không đổi.
+
+**Đã kiểm chứng:** FE `tsc`; eslint (chỉ còn lỗi `set-state-in-effect` có sẵn trong `use-cashflow.ts`); `/cashflow`, `/cashflow/sepay` compile trên `next dev`. **Chưa kiểm chứng:** chưa bấm thử trên trình duyệt với dữ liệu thật.
