@@ -151,6 +151,36 @@ export class RevenueByStaffQueryDto extends StatsQueryDto {
     message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
   })
   groupBy: string = 'assignee';
+
+  /** Trang (từ 1) - chỉ phân trang khi có `limit`; không gửi thì trả đủ mọi dòng như trước (export, AI tool, dashboard dùng cách này). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+/** `/stats/revenue-by-branch`: cùng cách phân trang tuỳ chọn như theo nhân viên. */
+export class RevenueByBranchQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
 }
 
 /** Các báo cáo của trang Báo cáo, mỗi mục một tab; dùng cho `section` của file xuất. */

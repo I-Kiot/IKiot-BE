@@ -47,6 +47,7 @@ import type {
   InventoryStatsQueryDto,
   OrderPipelineQueryDto,
   RevenueByStaffQueryDto,
+  RevenueByBranchQueryDto,
   RevenueComparisonQueryDto,
   RevenueSeriesQueryDto,
   SlowProductsQueryDto,
@@ -113,6 +114,36 @@ function fullName(
 }
 
 /** Port từ `StatsService.js` (dashboard, giữ đường dẫn cũ). Ba câu trả lời vẫn là raw SQL vì Prisma không diễn đạt được (gom theo ngày địa phương, doanh thu theo dòng, giá trị tồn qua join); làm bằng JS sẽ kéo toàn bộ dòng đơn vào bộ nhớ. Mọi truy vấn raw dùng tham số tagged-template, trừ cột ORDER BY của `getTopProducts` - Postgres không nhận bind parameter ở đó nên cột được chọn từ whitelist hai giá trị. */
+/**
+ * Bảng xếp hạng (nhân viên, chi nhánh) đã gom đủ trong một query nhỏ - số dòng là số người/chi nhánh - nên cắt trang ngay trong bộ nhớ.
+ * `summary` luôn là tổng của cả kỳ (mọi dòng), không phải của trang đang xem: dòng Tổng trên bảng không đổi khi chuyển trang.
+ * Không có `limit` thì trả đủ và không có `pagination`.
+ */
+function pageOfRanking<T extends { revenue: number; orderCount: number }>(
+  all: T[],
+  query: { page?: number; limit?: number },
+) {
+  const revenue = all.reduce((n, row) => n + row.revenue, 0);
+  const orderCount = all.reduce((n, row) => n + row.orderCount, 0);
+  const summary = {
+    revenue,
+    orderCount,
+    aov: averageOrderValue(revenue, orderCount),
+  };
+  if (!query.limit) return { rows: all, summary, pagination: undefined };
+  const page = query.page ?? 1;
+  const { data, pagination } = paginate(
+    all.slice(
+      skipFor(page, query.limit),
+      skipFor(page, query.limit) + query.limit,
+    ),
+    all.length,
+    page,
+    query.limit,
+  );
+  return { rows: data, summary, pagination };
+}
+
 @Injectable()
 export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -393,22 +424,22 @@ export class StatsService {
     });
     const nameOf = new Map(staff.map((s) => [s.id, fullName(s)]));
 
-    return {
-      groupBy,
-      staff: rows
-        .map((row) => {
-          const revenue = Number(row.revenue);
-          return {
-            userId: row.userId,
-            // Không có người gắn (đơn đồng bộ từ kênh bán, hoặc khoản thu không ghi người thu) thì không có tên.
-            staffName: row.userId ? (nameOf.get(row.userId) ?? null) : null,
-            revenue,
-            orderCount: row.orderCount,
-            aov: averageOrderValue(revenue, row.orderCount),
-          };
-        })
-        .sort((a, b) => b.revenue - a.revenue),
-    };
+    const all = rows
+      .map((row) => {
+        const revenue = Number(row.revenue);
+        return {
+          userId: row.userId,
+          // Không có người gắn (đơn đồng bộ từ kênh bán, hoặc khoản thu không ghi người thu) thì không có tên.
+          staffName: row.userId ? (nameOf.get(row.userId) ?? null) : null,
+          revenue,
+          orderCount: row.orderCount,
+          aov: averageOrderValue(revenue, row.orderCount),
+        };
+      })
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const { rows: staffRows, summary, pagination } = pageOfRanking(all, query);
+    return { groupBy, staff: staffRows, summary, pagination };
   }
 
   /** Hàng bán chạy, từ các dòng của sổ doanh thu: `quantity` có dấu (hàng trả trừ đi), `revenue` là tiền hàng đã trừ giảm giá đơn (phân bổ xuống dòng). Món trong combo có dòng riêng với doanh thu 0 như trước. */
@@ -648,7 +679,7 @@ export class StatsService {
   }
 
   /** Doanh thu ròng theo chi nhánh bán (`branch_id` của đơn gốc, kể cả hàng trả), từ sổ doanh thu. */
-  async getRevenueByBranch(user: AuthUser, query: StatsQueryDto) {
+  async getRevenueByBranch(user: AuthUser, query: RevenueByBranchQueryDto) {
     const scope = orderScope(user, query.branchId);
 
     const rows = await this.prisma.$queryRaw<
@@ -668,20 +699,21 @@ export class StatsService {
     });
     const nameOf = new Map(locations.map((l) => [l.id, l.name]));
 
-    return {
-      branches: rows
-        .map((row) => {
-          const revenue = Number(row.revenue);
-          return {
-            branchId: row.branchId,
-            branchName: nameOf.get(row.branchId) ?? null,
-            revenue,
-            orderCount: row.orderCount,
-            aov: averageOrderValue(revenue, row.orderCount),
-          };
-        })
-        .sort((a, b) => b.revenue - a.revenue),
-    };
+    const all = rows
+      .map((row) => {
+        const revenue = Number(row.revenue);
+        return {
+          branchId: row.branchId,
+          branchName: nameOf.get(row.branchId) ?? null,
+          revenue,
+          orderCount: row.orderCount,
+          aov: averageOrderValue(revenue, row.orderCount),
+        };
+      })
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const { rows: branches, summary, pagination } = pageOfRanking(all, query);
+    return { branches, summary, pagination };
   }
 
   /** Chỉ các cặp thứ/giờ có bán mới có ô; `weekday` 0 = Chủ nhật .. 6, `hour` 0-23, đều theo giờ địa phương của shop. Chỉ tính bút toán SALE (lúc đơn hoàn thành); hàng trả không làm ô nào âm. */

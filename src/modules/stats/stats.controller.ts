@@ -14,6 +14,7 @@ import {
   OrderPipelineQueryDto,
   ReportExportQueryDto,
   RevenueByStaffQueryDto,
+  RevenueByBranchQueryDto,
   SalesJournalExportQueryDto,
   SalesJournalQueryDto,
   RevenueComparisonQueryDto,
@@ -126,7 +127,7 @@ export class StatsController {
   @Get('revenue-by-branch')
   revenueByBranch(
     @CurrentUser() user: AuthUser,
-    @Query() query: StatsQueryDto,
+    @Query() query: RevenueByBranchQueryDto,
   ) {
     return this.service.getRevenueByBranch(user, query);
   }
