@@ -8,28 +8,96 @@ import {
   withNestedBanking,
 } from './tenant-select';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { withNestedProfile } from '../../common/utils/user-profile';
+import type { Prisma } from '../../../generated/prisma/client';
+
+const OWNER_SELECT = {
+  id: true,
+  email: true,
+  phoneNumber: true,
+  status: true,
+  createdAt: true,
+  profileFirstName: true,
+  profileLastName: true,
+  profileAvatarUrl: true,
+} as const satisfies Prisma.UserSelect;
+
+const PLAN_BRIEF_SELECT = {
+  id: true,
+  planName: true,
+  planCode: true,
+  billingCycle: true,
+} as const satisfies Prisma.PlanSelect;
 
 /** CRUD mọi tenant cho admin nền tảng. Shop tự đọc/sửa hồ sơ của mình đi qua `TenantSelfService`, nơi lấy tenant id từ access token. */
 @Injectable()
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Trả `hasSepayKey` thay cho key; key không bao giờ rời API. */
+  /**
+   * Trả `hasSepayKey` thay cho key; key không bao giờ rời API.
+   * Kèm chủ shop (`tenantOwner`), gói hiện tại (`subscription`, mỗi shop một bản ghi) và hoá đơn gói cho trang admin "Người dùng".
+   * Trước đây chỉ có `tenantOwnerId` dạng chuỗi nên màn đó luôn hiện "Dùng thử" và không có tên chủ.
+   */
   async findAll() {
     const rows = await this.prisma.tenant.findMany({
+      orderBy: { createdAt: 'desc' },
       select: {
         ...TENANT_SELECT,
         bankingSepayWebhookApiKey: true,
         bankingSepayLinkedAt: true,
+        tenantOwner: { select: OWNER_SELECT },
+        subscriptions: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            startDate: true,
+            endDate: true,
+            trialEndDate: true,
+            plan: { select: PLAN_BRIEF_SELECT },
+          },
+        },
+        subscriptionInvoices: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            amount: true,
+            currency: true,
+            status: true,
+            billingPeriodStart: true,
+            billingPeriodEnd: true,
+            paidAt: true,
+            paymentReference: true,
+            paymentMethod: true,
+            createdAt: true,
+            plan: { select: PLAN_BRIEF_SELECT },
+          },
+        },
       },
     });
     return rows.map(
-      ({ bankingSepayWebhookApiKey, bankingSepayLinkedAt, ...row }) => ({
+      ({
+        bankingSepayWebhookApiKey,
+        bankingSepayLinkedAt,
+        tenantOwner,
+        subscriptions,
+        subscriptionInvoices,
+        ...row
+      }) => ({
         ...withNestedBanking(row),
         hasSepayKey: isSepayLinked({
           bankingSepayWebhookApiKey,
           bankingSepayLinkedAt,
         }),
+        tenantOwner: tenantOwner ? withNestedProfile(tenantOwner) : null,
+        subscription: subscriptions?.[0] ?? null,
+        // Decimal lên JSON thành chuỗi: ép số để FE cộng tổng được.
+        invoices: (subscriptionInvoices ?? []).map((invoice) => ({
+          ...invoice,
+          amount: Number(invoice.amount),
+        })),
       }),
     );
   }
