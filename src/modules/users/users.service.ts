@@ -39,6 +39,7 @@ const SELECT_SAFE = {
   id: true,
   tenantId: true,
   email: true,
+  emailVerifiedAt: true,
   phoneNumber: true,
   systemRole: true,
   roleId: true,
@@ -196,7 +197,7 @@ export class UserService {
       : undefined;
 
     // Kiểm tra giống update. Trước đây chỉ update có, nên hai nhân viên có thể tạo trùng email và lỗi chỉ lộ ra khi sửa.
-    await this.assertContactDetailsAreFree(tenantId, null, {
+    await this.assertContactDetailsAreFree(null, tenantId, {
       email: dto.email,
       identificationId,
     });
@@ -251,7 +252,7 @@ export class UserService {
     await this.assertWorkshopBelongsToTenant(tenantId, dto.workshopId);
 
     const identificationId = this.resolveIdentificationId(current, dto);
-    await this.assertContactDetailsAreFree(tenantId, id, {
+    await this.assertContactDetailsAreFree(id, tenantId, {
       email: dto.email,
       identificationId: dto.profile?.identificationId
         ? identificationId
@@ -262,6 +263,10 @@ export class UserService {
       where: { id },
       data: {
         email: dto.email,
+        // Đổi địa chỉ thì phải xác minh lại hộp thư mới ở lần đăng nhập sau.
+        ...(dto.email && dto.email !== current.email
+          ? { emailVerifiedAt: null }
+          : {}),
         roleId: dto.roleId,
         ...posting,
         workshopId: dto.workshopId,
@@ -325,10 +330,10 @@ export class UserService {
     });
   }
 
-  /** Email và CCCD không được trùng với nhân viên khác trong cùng tenant. Bản cũ để `identificationId` toàn cục, khiến shop này dò được ai đang làm ở shop khác. */
+  /** Email phải duy nhất toàn nền tảng (là tên đăng nhập thứ hai và nơi nhận OTP); CCCD chỉ duy nhất trong tenant, vì để toàn cục thì shop này dò được ai đang làm ở shop khác. */
   private async assertContactDetailsAreFree(
-    tenantId: string,
     id: string | null,
+    tenantId: string,
     values: { email?: string; identificationId?: string },
   ) {
     // Dùng spread thay vì `id: { not: id }`: với id null, điều kiện đó thành "id is not null", khớp mọi row.
@@ -337,7 +342,6 @@ export class UserService {
     if (values.email) {
       const taken = await this.prisma.user.findFirst({
         where: {
-          tenantId,
           email: values.email.toLowerCase().trim(),
           ...others,
           status: { not: UserStatus.DELETED },
@@ -423,6 +427,15 @@ export class UserService {
       'create an account for',
     );
     this.assertPasswordsMatch(dto);
+
+    // Lần đăng nhập đầu cần gửi OTP tới email, nên không cấp login cho người chưa có địa chỉ. Kiểm tra trước mọi thay đổi.
+    if (!staff.email) {
+      throw new BadRequestException({
+        code: ErrorCode.ACCOUNT_EMAIL_MISSING,
+        message:
+          'Add an email address to this employee before creating a login',
+      });
+    }
 
     if (staff.status === UserStatus.ACTIVE && staff.password) {
       throw new ConflictException({

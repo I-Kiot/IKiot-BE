@@ -11,13 +11,13 @@ import { StaffProfileDto } from './update-user.dto';
 
 /** Tạo người ở trạng thái INACTIVE, chưa có mật khẩu: tuyển người và cấp login là hai việc tách nhau, cấp login qua `POST /users/:id/account`. Mọi trường của `UpdateUserDto` đều được nhận ở đây; bản NestJS đầu chỉ nhận 7 trường, nên CCCD, địa chỉ, hình thức lương bị `whitelist: true` bỏ im lặng mà vẫn trả 200. */
 export class CreateUserDto {
-  /** Định dạng được `validateVietnamPhoneNumber` kiểm tra trong service: đây là login và nơi nhận OTP nên phải là số nhận được SMS. */
+  /** Định dạng được `validateVietnamPhoneNumber` kiểm tra trong service: đây là login và nơi nhận OTP nên phải là số hợp lệ. */
   @IsString()
   phoneNumber: string;
 
-  @IsOptional()
+  /** Bắt buộc, duy nhất toàn nền tảng: OTP đăng nhập lần đầu gửi tới đây. */
   @NormalizeEmail()
-  email?: string;
+  email: string;
 
   @IsUUID()
   roleId: string;
