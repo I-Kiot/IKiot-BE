@@ -135,31 +135,32 @@ model Tenant {
 
 /// Tài khoản đăng nhập: admin nền tảng, chủ shop, nhân viên hoặc khách hàng (systemRole).
 model User {
-  id             String    @id @default(uuid())
-  tenantId       String?   @map("tenant_id") // null = tài khoản nền tảng (ADMIN)
-  tenant         Tenant?   @relation("TenantUsers", fields: [tenantId], references: [id])
-  email          String?
-  password       String?
-  phoneNumber    String    @map("phone_number") // tên đăng nhập, duy nhất toàn nền tảng
-  systemRole     String    @default("STAFF") @map("system_role") // ADMIN | TENANT_OWNER | CUSTOMER | STAFF
-  roleId         String?   @map("role_id") // vai trò do shop tạo, chỉ cho STAFF
-  role           Role?     @relation(fields: [roleId], references: [id])
-  status         String    @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED | DELETED
-  createdById    String?   @map("created_by")
-  createdBy      User?     @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdUsers   User[]    @relation("UserCreatedBy")
-  deletedById    String?   @map("deleted_by")
-  deletedBy      User?     @relation("UserDeletedBy", fields: [deletedById], references: [id])
-  deletedUsers   User[]    @relation("UserDeletedBy")
-  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
-  deletionReason String?   @map("deletion_reason")
-  lastLogin      DateTime? @map("last_login") @db.Timestamptz(6)
-  hireDate       DateTime? @map("hire_date") @db.Timestamptz(6)
-  locationId     String?   @map("location_id") // nơi làm việc (một chi nhánh hoặc kho)
-  location       Location? @relation(fields: [locationId], references: [id])
-  workshopId     String?   @map("workshop_id") // nhân viên xưởng: xưởng (Supplier type WORKSHOP) mình thuộc về - thấy YCSX của xưởng đó ở mọi location
-  workshop       Supplier? @relation("WorkshopStaff", fields: [workshopId], references: [id])
-  accountNote    String?   @map("account_note")
+  id              String    @id @default(uuid())
+  tenantId        String?   @map("tenant_id") // null = tài khoản nền tảng (ADMIN)
+  tenant          Tenant?   @relation("TenantUsers", fields: [tenantId], references: [id])
+  email           String? // duy nhất toàn nền tảng (index một phần users_email_unique trong SQL, bỏ qua DELETED)
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6) // null = chưa xác minh: /auth/login không cấp token
+  password        String?
+  phoneNumber     String    @map("phone_number") // tên đăng nhập, duy nhất toàn nền tảng
+  systemRole      String    @default("STAFF") @map("system_role") // ADMIN | TENANT_OWNER | CUSTOMER | STAFF
+  roleId          String?   @map("role_id") // vai trò do shop tạo, chỉ cho STAFF
+  role            Role?     @relation(fields: [roleId], references: [id])
+  status          String    @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED | DELETED
+  createdById     String?   @map("created_by")
+  createdBy       User?     @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers    User[]    @relation("UserCreatedBy")
+  deletedById     String?   @map("deleted_by")
+  deletedBy       User?     @relation("UserDeletedBy", fields: [deletedById], references: [id])
+  deletedUsers    User[]    @relation("UserDeletedBy")
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletionReason  String?   @map("deletion_reason")
+  lastLogin       DateTime? @map("last_login") @db.Timestamptz(6)
+  hireDate        DateTime? @map("hire_date") @db.Timestamptz(6)
+  locationId      String?   @map("location_id") // nơi làm việc (một chi nhánh hoặc kho)
+  location        Location? @relation(fields: [locationId], references: [id])
+  workshopId      String?   @map("workshop_id") // nhân viên xưởng: xưởng (Supplier type WORKSHOP) mình thuộc về - thấy YCSX của xưởng đó ở mọi location
+  workshop        Supplier? @relation("WorkshopStaff", fields: [workshopId], references: [id])
+  accountNote     String?   @map("account_note")
 
   profileFirstName        String?   @map("profile_first_name")
   profileLastName         String?   @map("profile_last_name")
