@@ -1,3 +1,4 @@
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class RefreshTokenDto {
@@ -13,16 +14,6 @@ export class LogoutDto {
   refreshToken?: string;
 }
 
-export class VerifyForgotPasswordOtpDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Số điện thoại không được để trống' })
-  phoneNumber: string;
-
-  @IsString()
-  @IsNotEmpty({ message: 'Mã OTP không được để trống' })
-  otpCode: string;
-}
-
 export class ResetPasswordDto {
   @IsString()
   @IsNotEmpty({
@@ -36,11 +27,15 @@ export class ResetPasswordDto {
   newPassword: string;
 }
 
-/** Cả hai trường đều tuỳ chọn, để form kiểm tra trường nào người dùng vừa nhập xong. */
+/** Mọi trường đều tuỳ chọn, để form kiểm tra trường nào người dùng vừa nhập xong. */
 export class CheckAvailabilityDto {
   @IsOptional()
   @IsString()
   phoneNumber?: string;
+
+  @IsOptional()
+  @NormalizeEmail()
+  email?: string;
 
   @IsOptional()
   @IsString()

@@ -224,9 +224,12 @@ async function seedShop(passwordHash: string) {
       data: {
         tenantId: tenant.id,
         phoneNumber: OWNER.phoneNumber,
+        email: `${OWNER.phoneNumber}@demo.ikiot.invalid`,
         password: passwordHash,
         systemRole: 'TENANT_OWNER',
         status: 'ACTIVE',
+        // Seed dev: bỏ qua bước OTP email.
+        emailVerifiedAt: new Date(),
         profileFirstName: OWNER.firstName,
         profileLastName: OWNER.lastName,
       },
@@ -366,9 +369,11 @@ async function seedStaff(
       data: {
         tenantId,
         phoneNumber: person.phoneNumber,
+        email: `${person.phoneNumber}@demo.ikiot.invalid`,
         password: passwordHash,
         systemRole: 'STAFF',
         status: 'ACTIVE',
+        emailVerifiedAt: new Date(),
         roleId: roleIds.get(person.role),
         locationId: locations[person.location],
         createdById: ownerId,

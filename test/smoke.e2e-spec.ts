@@ -24,6 +24,8 @@ jest.setTimeout(120_000);
 
 const PHONE_OWNER = '0987650001';
 const PHONE_STAFF = '0987650002';
+const EMAIL_OWNER = 'owner@smoke.example.com';
+const EMAIL_STAFF = 'staff1@smoke.example.com';
 // Admin nền tảng dùng một lần (tenantId null), cho các route chỉ operator mới vào được.
 const PHONE_ADMIN = '0987650009';
 const TENANT_NAME = 'SmokeTest Shop 25-08';
@@ -52,6 +54,18 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   let scheduleId = '';
 
   const auth = (token = ownerToken) => ({ Authorization: `Bearer ${token}` });
+  /** Đăng nhập; tài khoản chưa xác minh email (nhân viên lần đầu, hoặc vừa đổi email) phải đổi challenge lấy token bằng DEV_BYPASS (NODE_ENV=test). Trả dạng response của /auth/login để chỗ gọi vẫn đọc `body.data`. */
+  const loginOk = async (body: Record<string, unknown>) => {
+    const res = await http().post('/auth/login').send(body).expect(201);
+    if (!res.body.data.requiresOtp) return res;
+    return http()
+      .post('/auth/login/verify-otp')
+      .send({
+        challengeToken: res.body.data.challengeToken,
+        otpCode: 'DEV_BYPASS',
+      })
+      .expect(201);
+  };
   /** Thêm tồn theo cách duy nhất còn được phép - dưới dạng lô (sổ giá vốn theo lô, 2026-10-01). Ghi thẳng `inventories.stock` sẽ phá "các lô cộng lại bằng tồn" và lần bán sau không lấy được hàng. */
   const topUp = (locationId: string, productItemId: string, quantity: number) =>
     prisma.$transaction((tx) =>
@@ -217,17 +231,78 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   }
 
   it('sets up a tenant on a trial with a branch, a warehouse and a supplier', async () => {
+    // Đăng ký chưa cấp token: chủ shop phải nhập mã gửi qua email (ở đây NODE_ENV=test nên DEV_BYPASS).
     const registered = await http()
       .post('/auth/register')
       .send({
         tenantName: TENANT_NAME,
         phoneNumber: PHONE_OWNER,
+        email: EMAIL_OWNER,
         password: 'password123',
-        otpCode: 'DEV_BYPASS',
       })
       .expect(201);
-    ownerToken = registered.body.data.accessToken;
+    expect(registered.body.data.requiresOtp).toBe(true);
+    expect(registered.body.data).not.toHaveProperty('accessToken');
+    const challengeToken: string = registered.body.data.challengeToken;
     tenantId = registered.body.data.user.tenantId;
+
+    // Chưa xác minh thì đăng nhập cũng chỉ ra challenge, không có token.
+    const early = await http()
+      .post('/auth/login')
+      .send({ identifier: EMAIL_OWNER, password: 'password123' })
+      .expect(201);
+    expect(early.body.data.requiresOtp).toBe(true);
+    expect(early.body.data).not.toHaveProperty('accessToken');
+    // Đăng nhập lại trong lúc chờ gắn mã vào challenge mới, nên challenge của lúc đăng ký không còn dùng được.
+    const liveChallenge: string = early.body.data.challengeToken;
+    const stale = await http()
+      .post('/auth/login/verify-otp')
+      .send({ challengeToken, otpCode: '123456' })
+      .expect(400);
+    expect(stale.body.code).toBe('OTP_EXPIRED');
+
+    // Trùng email là 409, kể cả khác hoa thường.
+    const dupEmailSignup = await http()
+      .post('/auth/register')
+      .send({
+        tenantName: 'SmokeTest Other Shop',
+        phoneNumber: '0987650077',
+        email: EMAIL_OWNER.toUpperCase(),
+        password: 'password123',
+      })
+      .expect(409);
+    expect(dupEmailSignup.body.code).toBe('EMAIL_ALREADY_IN_USE');
+    const taken = await http()
+      .post('/auth/check-availability')
+      .send({ email: EMAIL_OWNER, phoneNumber: '0987650078' })
+      .expect(200);
+    expect(taken.body.data).toEqual({
+      phoneNumberTaken: false,
+      emailTaken: true,
+      tenantNameTaken: false,
+    });
+
+    const wrongOtp = await http()
+      .post('/auth/login/verify-otp')
+      .send({ challengeToken: liveChallenge, otpCode: '12345' })
+      .expect(400);
+    expect(wrongOtp.body.code).toBe('OTP_INVALID');
+    const verifiedOwner = await http()
+      .post('/auth/login/verify-otp')
+      .send({ challengeToken: liveChallenge, otpCode: 'DEV_BYPASS' })
+      .expect(201);
+    ownerToken = verifiedOwner.body.data.accessToken;
+    expect(verifiedOwner.body.data.user.emailVerifiedAt).toEqual(
+      expect.any(String),
+    );
+    // Challenge chỉ đổi được một lần, kể cả với DEV_BYPASS.
+    const replay = await http()
+      .post('/auth/login/verify-otp')
+      .send({ challengeToken: liveChallenge, otpCode: 'DEV_BYPASS' })
+      .expect(400);
+    expect(replay.body.code).toBe('OTP_CHALLENGE_INVALID');
+    // Challenge token không phải access token.
+    await http().get('/auth/me').set(auth(liveChallenge)).expect(401);
     note(`register: OK tenant=${tenantId.slice(0, 8)}`);
 
     await http()
@@ -521,13 +596,22 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: '0651234567', roleId, branchId })
+      .send({
+        phoneNumber: '0651234567',
+        email: 'voip@smoke.example.com',
+        roleId,
+        branchId,
+      })
       .expect(400);
 
     const noWorkplace = await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: '0987650009', roleId })
+      .send({
+        phoneNumber: '0987650009',
+        email: 'nowork@smoke.example.com',
+        roleId,
+      })
       .expect(400);
     expect(noWorkplace.body.code).toBe('STAFF_WORKPLACE_REQUIRED');
     note('POST /users with VoIP prefix 065: 400 OK (phone validator wired)');
@@ -536,7 +620,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const staff = await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: PHONE_STAFF, roleId, branchId })
+      .send({
+        phoneNumber: PHONE_STAFF,
+        email: EMAIL_STAFF,
+        roleId,
+        branchId,
+      })
       .expect(201);
     staffId = staff.body.data.id;
     expect(staff.body.data.status).toBe('INACTIVE');
@@ -560,10 +649,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .set(auth())
       .send({ newPassword: 'password123', reEnterPassword: 'password123' })
       .expect(201);
-    const activated = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'password123' })
-      .expect(201);
+    const activated = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'password123',
+    });
     expect(activated.body.data.accessToken).toEqual(expect.any(String));
     note('hire → INACTIVE, no login; POST /users/:id/account activates OK');
 
@@ -588,7 +677,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const overQuota = await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: '0987650008', roleId, branchId })
+      .send({
+        phoneNumber: '0987650008',
+        email: 'quota@smoke.example.com',
+        roleId,
+        branchId,
+      })
       .expect(400);
     expect(overQuota.body.code).toBe('PLAN_QUOTA_EXCEEDED');
     await prisma.subscription.updateMany({
@@ -597,7 +691,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     note('POST /users past the plan seat limit: 400 OK');
 
-    // Email là duy nhất trong mỗi shop và được kiểm khi thuê - không chỉ khi sửa, nơi bản trùng từng nằm im cho tới khi có người mở bản ghi.
+    // Email là duy nhất toàn nền tảng và được kiểm khi thuê - không chỉ khi sửa, nơi bản trùng từng nằm im cho tới khi có người mở bản ghi.
     await http()
       .patch(`/users/${staffId}`)
       .set(auth())
@@ -615,7 +709,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(409);
     expect(dupEmail.body.code).toBe('EMAIL_ALREADY_IN_USE');
-    note('POST /users with an email already in the shop: 409 OK (case-folded)');
+    note('POST /users with an email already in use: 409 OK (case-folded)');
 
     await http()
       .patch(`/users/${staffId}`)
@@ -877,10 +971,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(201);
 
-    const login = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const login = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
 
     await http()
       .patch(`/stock-movements/${created.body.data.id}/receive`)
@@ -1149,10 +1243,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('keeps a staff account inside its own location', async () => {
-    const login = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const login = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = login.body.data.accessToken;
 
     const list = await http()
@@ -1608,6 +1702,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         systemRole: 'ADMIN',
         status: 'ACTIVE',
         tenantId: null,
+        emailVerifiedAt: new Date(),
       },
       select: { id: true },
     });
@@ -2231,10 +2326,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(200);
 
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffMe = await http()
       .get('/auth/me')
       .set(auth(staffLogin.body.data.accessToken))
@@ -2277,10 +2372,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('scopes order reads to the branch a staff account works at', async () => {
-    const login = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const login = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = login.body.data.accessToken;
 
     // Role nhân viên chưa có orders:* - chỉ cấp đọc, không có view_all.
@@ -2419,7 +2514,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const secondStaff = await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: '0987650003', roleId, branchId })
+      .send({
+        phoneNumber: '0987650003',
+        email: 'staff2@smoke.example.com',
+        roleId,
+        branchId,
+      })
       .expect(201);
     await http()
       .post(`/users/${secondStaff.body.data.id}/account`)
@@ -2448,16 +2548,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(409);
     note('second drawer at the same branch: 409 OK (partial unique index)');
 
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = staffLogin.body.data.accessToken;
 
-    const second = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: '0987650003', password: 'password123' })
-      .expect(201);
+    const second = await loginOk({
+      phoneNumber: '0987650003',
+      password: 'password123',
+    });
     const secondToken = second.body.data.accessToken;
 
     // Danh sách cho ô chọn: thay cho `GET /users`, mà thu ngân không có quyền đọc.
@@ -2824,10 +2924,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('keeps a cashier to the sessions they actually worked', async () => {
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
 
     // Role chỉ có read_own, không có read - thu ngân 1 chỉ làm phiên đầu tiên.
     const mine = await http()
@@ -2859,14 +2959,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { id: opened.currentStaffId },
       select: { phoneNumber: true },
     });
-    const login = await http()
-      .post('/auth/login')
-      .send({
-        phoneNumber: holder.phoneNumber,
-        password:
-          holder.phoneNumber === PHONE_STAFF ? 'newpass123' : 'password123',
-      })
-      .expect(201);
+    const login = await loginOk({
+      phoneNumber: holder.phoneNumber,
+      password:
+        holder.phoneNumber === PHONE_STAFF ? 'newpass123' : 'password123',
+    });
     const holderToken = login.body.data.accessToken;
 
     const submit = () =>
@@ -2907,14 +3004,11 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       select: { phoneNumber: true },
     });
     const holderToken = (
-      await http()
-        .post('/auth/login')
-        .send({
-          phoneNumber: holder.phoneNumber,
-          password:
-            holder.phoneNumber === PHONE_STAFF ? 'newpass123' : 'password123',
-        })
-        .expect(201)
+      await loginOk({
+        phoneNumber: holder.phoneNumber,
+        password:
+          holder.phoneNumber === PHONE_STAFF ? 'newpass123' : 'password123',
+      })
     ).body.data.accessToken;
 
     const list = await http()
@@ -2926,10 +3020,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(list.body.data[0].branch.id).toBe(branchId);
     // Thu ngân chỉ có read_own vẫn thấy cảnh báo, kể cả khi không phải người giữ két.
     const staffToken = (
-      await http()
-        .post('/auth/login')
-        .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-        .expect(201)
+      await loginOk({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
     ).body.data.accessToken;
     const staffList = await http()
       .get('/cash-drawer-sessions/overdue')
@@ -3026,7 +3117,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const drifter = await http()
       .post('/users')
       .set(auth())
-      .send({ phoneNumber: '0987650004', roleId, branchId })
+      .send({
+        phoneNumber: '0987650004',
+        email: 'staff3@smoke.example.com',
+        roleId,
+        branchId,
+      })
       .expect(201);
     await http()
       .post(`/users/${drifter.body.data.id}/account`)
@@ -3040,10 +3136,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       data: { locationId: null },
     });
 
-    const login = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: '0987650004', password: 'password123' })
-      .expect(201);
+    const login = await loginOk({
+      phoneNumber: '0987650004',
+      password: 'password123',
+    });
 
     await http()
       .get('/cash-drawer-sessions')
@@ -3173,10 +3269,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('grants shift-supervisor rights only while the shift is running', async () => {
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = staffLogin.body.data.accessToken;
 
     // Role của họ lần cuối được đặt là [orders:read, cash_drawers:read_own, cash_drawers:report] - không có stock_movement nào, nên bị từ chối ngay.
@@ -3391,15 +3487,21 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('runs the forgot-password flow end to end', async () => {
-    await http()
+    // Mã gửi tới email của tài khoản; tra theo số điện thoại hoặc email đều được.
+    const sent = await http()
       .post('/auth/send-forgot-password-otp')
-      .send({ phoneNumber: PHONE_OWNER })
+      .send({ identifier: EMAIL_OWNER })
       .expect(200);
+    expect(sent.body.data.requiresOtp).toBe(true);
+    expect(sent.body.data.sentTo).toMatch(/^ow\*\*\*@/);
 
-    // DEV_BYPASS là lối thoát cho dev mà otpService cũ có; ở đây NODE_ENV=test.
+    // DEV_BYPASS là lối thoát cho dev; ở đây NODE_ENV=test.
     const verified = await http()
       .post('/auth/verify-forgot-password-otp')
-      .send({ phoneNumber: PHONE_OWNER, otpCode: 'DEV_BYPASS' })
+      .send({
+        challengeToken: sent.body.data.challengeToken,
+        otpCode: 'DEV_BYPASS',
+      })
       .expect(200);
     const resetToken = verified.body.data.resetToken;
     expect(typeof resetToken).toBe('string');
@@ -3408,6 +3510,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .post('/auth/reset-password')
       .send({ token: resetToken, newPassword: 'password123' })
       .expect(200);
+    // Reset token chỉ dùng được một lần.
+    const reused = await http()
+      .post('/auth/reset-password')
+      .send({ token: resetToken, newPassword: 'password123' })
+      .expect(400);
+    expect(reused.body.code).toBe('RESET_TOKEN_USED');
 
     await http()
       .post('/auth/login')
@@ -3428,25 +3536,35 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     );
   });
 
-  it('reports whether a phone number or shop name is taken', async () => {
+  it('reports whether a phone number, email or shop name is taken', async () => {
     const taken = await http()
       .post('/auth/check-availability')
-      .send({ phoneNumber: PHONE_OWNER, tenantName: TENANT_NAME })
+      .send({
+        phoneNumber: PHONE_OWNER,
+        email: EMAIL_OWNER,
+        tenantName: TENANT_NAME,
+      })
       .expect(200);
     expect(taken.body.data).toEqual({
       phoneNumberTaken: true,
+      emailTaken: true,
       tenantNameTaken: true,
     });
 
     const free = await http()
       .post('/auth/check-availability')
-      .send({ phoneNumber: '0900000999', tenantName: 'Không tồn tại 26-08' })
+      .send({
+        phoneNumber: '0900000999',
+        email: 'free@smoke.example.com',
+        tenantName: 'Không tồn tại 26-08',
+      })
       .expect(200);
     expect(free.body.data).toEqual({
       phoneNumberTaken: false,
+      emailTaken: false,
       tenantNameTaken: false,
     });
-    note('check-availability: both fields reported OK');
+    note('check-availability: all three fields reported OK');
   });
 
   // Hồi quy: /tenants là tài nguyên nền tảng trên model không có tenantId riêng, và PermissionsGuard bỏ qua TENANT_OWNER - nên chỉ @Permissions thì mọi chủ shop đều đọc, sửa, xóa được tenant khác và đọc được webhook key SePay của họ. AdminOnlyGuard là thứ chặn việc đó.
@@ -3574,10 +3692,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
   });
 
   it('scopes the dashboard by posting, and keeps the platform view for admins', async () => {
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = staffLogin.body.data.accessToken;
 
     // Không có reports:read thì guard chặn dashboard trước khi chạy bất kỳ bước phạm vi nào.
@@ -3752,10 +3870,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
 
   // Hội thoại AI. Không chạy `/ai/chat` ở đây - nó sẽ tốn quota Gemini thật mỗi lần chạy và lỗi bất cứ khi nào mạng hoặc tên model đổi; vòng lặp agent được phủ bởi ai-agent.service.spec.ts với model giả lập. Ở đây kiểm mọi thứ xung quanh: cổng quyền, phạm vi theo từng người và CRUD.
   it('keeps AI conversations private to the person who had them', async () => {
-    const staffLogin = await http()
-      .post('/auth/login')
-      .send({ phoneNumber: PHONE_STAFF, password: 'newpass123' })
-      .expect(201);
+    const staffLogin = await loginOk({
+      phoneNumber: PHONE_STAFF,
+      password: 'newpass123',
+    });
     const staffToken = staffLogin.body.data.accessToken;
 
     // Route cũ bị chặn theo hai role cố định đã không còn; giờ shop tự quyết ai được dùng trợ lý, qua tài nguyên ai_chat trong catalog.

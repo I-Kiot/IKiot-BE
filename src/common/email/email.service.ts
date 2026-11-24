@@ -33,6 +33,50 @@ export class EmailService {
     return this.transporter;
   }
 
+  /** MAIL_* đã đủ để gửi thật chưa. */
+  isConfigured(): boolean {
+    return Boolean(process.env.MAIL_HOST && process.env.MAIL_USER);
+  }
+
+  /** Gửi mã OTP. Khác hai hàm gửi còn lại: KHÔNG nuốt lỗi, vì người dùng đang chờ mã và caller phải trả 503 thay vì báo "đã gửi". */
+  async sendOtpEmail(
+    to: string,
+    code: string,
+    opts: { purpose: 'verify-email' | 'reset-password'; ttlMinutes: number },
+  ): Promise<void> {
+    const reset = opts.purpose === 'reset-password';
+    const subject = reset
+      ? `[iKiot] Mã đặt lại mật khẩu: ${code}`
+      : `[iKiot] Mã xác minh tài khoản: ${code}`;
+    const intro = reset
+      ? 'Bạn vừa yêu cầu đặt lại mật khẩu iKiot.'
+      : 'Bạn vừa đăng ký hoặc đăng nhập tài khoản iKiot.';
+    const text = [
+      intro,
+      `Mã xác minh của bạn: ${code}`,
+      `Mã có hiệu lực trong ${opts.ttlMinutes} phút và chỉ dùng được một lần.`,
+      'Không chia sẻ mã này cho bất kỳ ai, kể cả nhân viên iKiot.',
+      'Nếu không phải bạn yêu cầu, hãy bỏ qua email này.',
+    ].join('\n');
+    await this.getTransporter().sendMail({
+      from: `"iKiot" <${process.env.MAIL_FROM || process.env.MAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+          <h2 style="color: #1a1a1a;">${reset ? 'Đặt lại mật khẩu' : 'Xác minh tài khoản'}</h2>
+          <p>${intro}</p>
+          <p style="font-size: 32px; letter-spacing: 8px; font-weight: bold; margin: 24px 0;">${code}</p>
+          <p>Mã có hiệu lực trong <strong>${opts.ttlMinutes} phút</strong> và chỉ dùng được một lần.</p>
+          <p style="color: #666; font-size: 13px;">Không chia sẻ mã này cho bất kỳ ai, kể cả nhân viên iKiot. Nếu không phải bạn yêu cầu, hãy bỏ qua email này.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
+          <p style="color: #999; font-size: 12px;">Trân trọng,<br/>Đội ngũ iKiot</p>
+        </div>
+      `,
+    });
+  }
+
   async sendSubscriptionReminder(
     to: string,
     data: SubscriptionReminderData,

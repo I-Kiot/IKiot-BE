@@ -14,13 +14,12 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
-import { SendOtpDto } from './dto/send-otp.dto';
+import { ForgotPasswordDto, ResendOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import {
   CheckAvailabilityDto,
   LogoutDto,
   RefreshTokenDto,
   ResetPasswordDto,
-  VerifyForgotPasswordOtpDto,
 } from './dto/session.dto';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { Public } from '../../common/decorators/public.decorator';
@@ -32,12 +31,6 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Public()
-  @Post('send-otp')
-  sendOtp(@Body() dto: SendOtpDto) {
-    return this.authService.sendOtp(dto);
-  }
-
   /** Kiểm tra số điện thoại / tên shop còn trống, cho form đăng ký. Public vì được hỏi trước khi có tài khoản. */
   @Public()
   @HttpCode(HttpStatus.OK)
@@ -46,20 +39,34 @@ export class AuthController {
     return this.authService.checkAvailability(dto);
   }
 
-  // Lưu user-agent vào phiên (như iKiotMS-BE), để sau này có danh sách thiết bị.
+  /** Tạo chủ shop chưa xác minh và gửi OTP qua email; chưa có token, nhận phiên ở /auth/login/verify-otp. */
   @Public()
   @Post('register')
-  register(
-    @Body() dto: RegisterDto,
-    @Headers('user-agent') userAgent?: string,
-  ) {
-    return this.authService.register(dto, userAgent);
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
   }
 
   @Public()
   @Post('login')
   login(@Body() dto: LoginDto, @Headers('user-agent') userAgent?: string) {
     return this.authService.login(dto, userAgent);
+  }
+
+  /** Đổi challenge token + mã OTP lấy phiên đăng nhập. Lưu user-agent vào phiên như login. */
+  @Public()
+  @Post('login/verify-otp')
+  verifyLoginOtp(
+    @Body() dto: VerifyOtpDto,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.authService.verifyLoginOtp(dto, userAgent);
+  }
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('resend-otp')
+  resendOtp(@Body() dto: ResendOtpDto) {
+    return this.authService.resendOtp(dto);
   }
 
   @Public()
@@ -92,14 +99,14 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('send-forgot-password-otp')
-  sendForgotPasswordOtp(@Body() dto: SendOtpDto) {
+  sendForgotPasswordOtp(@Body() dto: ForgotPasswordDto) {
     return this.authService.sendForgotPasswordOtp(dto);
   }
 
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('verify-forgot-password-otp')
-  verifyForgotPasswordOtp(@Body() dto: VerifyForgotPasswordOtpDto) {
+  verifyForgotPasswordOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyForgotPasswordOtp(dto);
   }
 

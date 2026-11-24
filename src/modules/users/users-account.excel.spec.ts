@@ -47,6 +47,7 @@ describe('Excel sheet UsersPermissions - staff account', () => {
     tenantId: 'T1',
     systemRole: 'STAFF',
     roleId: null,
+    email: 'staff@mail.com',
     status: 'INACTIVE',
     password: null,
     ...over,
@@ -117,6 +118,16 @@ describe('Excel sheet UsersPermissions - staff account', () => {
         'Employee not found',
       );
     });
+    it('UTC018: an employee without an email gets no login, and nothing is written', async () => {
+      prisma.user.findFirst.mockResolvedValue(staff({ email: null }));
+      await expectRejects(
+        service.createAccount(owner, 'T1', 'S1', passwords),
+        BadRequestException,
+        'ACCOUNT_EMAIL_MISSING',
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(notifications.notify).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateAccountPassword', () => {
@@ -127,7 +138,7 @@ describe('Excel sheet UsersPermissions - staff account', () => {
       await service.updateAccountPassword(owner, 'T1', 'S1', {
         newPassword: 'Xyz@12345',
         reEnterPassword: 'Xyz@12345',
-      } as never);
+      });
       const data = prisma.user.update.mock.calls[0][0].data;
       expect(await bcrypt.compare('Xyz@12345', data.password)).toBe(true);
       expect(refreshTokens.revokeAllFor).toHaveBeenCalledWith('S1');
@@ -151,7 +162,7 @@ describe('Excel sheet UsersPermissions - staff account', () => {
         service.updateAccountPassword(owner, 'T1', 'S1', {
           newPassword: 'Xyz@12345',
           reEnterPassword: 'Other@123',
-        } as never),
+        }),
         BadRequestException,
         'PASSWORD_CONFIRMATION_MISMATCH',
         'The password confirmation does not match',
