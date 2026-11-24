@@ -95,6 +95,24 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** SET NX EX: true = tạo mới, false = đã tồn tại, null = Redis không dùng được (caller tự fallback). Dùng làm dấu "đã dùng một lần". */
+  async setIfAbsent(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<boolean | null> {
+    if (!this.isReady()) return null;
+    try {
+      const res = await this.client!.set(key, value, {
+        EX: ttlSeconds,
+        NX: true,
+      });
+      return res === 'OK';
+    } catch {
+      return null;
+    }
+  }
+
   async del(...keys: string[]): Promise<void> {
     if (!this.isReady() || keys.length === 0) return;
     try {
