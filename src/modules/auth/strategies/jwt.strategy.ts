@@ -19,6 +19,8 @@ import {
 
 interface JwtPayload {
   sub: string;
+  /** Token chuyên dụng (otp_challenge, password_reset) cùng ký bằng secret này; access token không có trường này. */
+  type?: string;
 }
 
 @Injectable()
@@ -36,6 +38,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   // Đọc lại user và quyền Role ở mỗi request, không tin claim đã cache trong JWT: role do tenant chỉnh được, quyền bị thu hồi phải có hiệu lực ngay.
   async validate(payload: JwtPayload): Promise<AuthUser> {
+    // Challenge OTP / reset token ký cùng secret: không được dùng làm access token, nếu không mật khẩu đúng là đủ vào hệ thống mà chưa qua OTP.
+    if (payload.type !== undefined)
+      throw new UnauthorizedException({
+        code: ErrorCode.UNAUTHENTICATED,
+        message: 'Invalid access token',
+      });
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {

@@ -8,7 +8,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { OtpService } from './otp.service';
 import { RefreshTokenService } from './refresh-token.service';
-import { EsmsService } from './esms.service';
+import { EmailModule } from '../../common/email/email.module';
 import { FirebaseModule } from '../../common/firebase/firebase.module';
 import { WorkingScheduleModule } from '../working-schedules/working-schedules.module';
 
@@ -17,6 +17,8 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
     PassportModule,
     // Dùng chung với PushService: một Firebase Admin app cho cả process.
     FirebaseModule,
+    // OtpService gửi mã qua email.
+    EmailModule,
     // JwtStrategy kiểm tra quyền trưởng ca ở mỗi request.
     WorkingScheduleModule,
     /** Dùng registerAsync để factory chạy sau khi ConfigModule đọc .env (register() đồng bộ sẽ ký bằng secret rỗng). Key lấy từ accessTokenSecret() để signer và JwtStrategy không lệch nhau. */
@@ -30,13 +32,7 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
     }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    JwtStrategy,
-    OtpService,
-    RefreshTokenService,
-    EsmsService,
-  ],
+  providers: [AuthService, JwtStrategy, OtpService, RefreshTokenService],
   // Export RefreshTokenService để users thu hồi phiên của nhân viên khi khoá/xoá: một điểm thu hồi duy nhất.
   exports: [AuthService, RefreshTokenService],
 })

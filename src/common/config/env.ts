@@ -24,7 +24,10 @@ const OPTIONAL = [
     'refresh tokens and OTP codes fall back to in-memory / no sessions',
   ],
   ['CLOUDINARY_CLOUD_NAME', 'file uploads are disabled'],
-  ['MAIL_HOST', 'subscription reminders and announcements are not sent'],
+  [
+    'MAIL_HOST',
+    'subscription reminders and announcements are not sent, OTP codes are only logged (dev) or answered with 503 (production)',
+  ],
   ['GEMINI_API_KEY', 'the AI assistant answers 503'],
   ['GOOGLE_CALENDAR_API_KEY', 'the holiday sync cron is skipped'],
   ['FIREBASE_PRIVATE_KEY', 'Firebase login and FCM push are disabled'],
