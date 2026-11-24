@@ -28,6 +28,8 @@ async function seedAdminUser() {
       password: passwordHash,
       systemRole: 'ADMIN',
       status: 'ACTIVE',
+      // Tài khoản dev không có email để nhận OTP: coi như đã xác minh để đăng nhập thẳng.
+      emailVerifiedAt: new Date(),
     },
   });
   console.log(`Seeded ADMIN account (phone ${ADMIN_PHONE}).`);

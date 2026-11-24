@@ -161,11 +161,19 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .send({
         tenantName: TENANT_NAME,
         phoneNumber: PHONE_OWNER,
+        email: 'journey-owner@journey.example.com',
         password: 'password123',
+      })
+      .expect(201);
+    // Chủ shop mới chưa xác minh email: đổi challenge lấy token bằng DEV_BYPASS (NODE_ENV=test).
+    const verified = await http()
+      .post('/auth/login/verify-otp')
+      .send({
+        challengeToken: registered.body.data.challengeToken,
         otpCode: 'DEV_BYPASS',
       })
       .expect(201);
-    token = registered.body.data.accessToken;
+    token = verified.body.data.accessToken;
     tenantId = registered.body.data.user.tenantId;
     ownerId = registered.body.data.user.id;
     await http()

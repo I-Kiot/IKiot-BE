@@ -101,15 +101,23 @@ class Api {
     return (res.body?.data ?? res.body) as T;
   }
 
-  async login(phoneNumber: string): Promise<string> {
+  /** Đăng nhập; tài khoản chưa xác minh email thì đổi challenge lấy token bằng DEV_BYPASS (chỉ chạy ngoài production). */
+  async login(identifier: string): Promise<string> {
+    const data = await this.call<{
+      accessToken?: string;
+      requiresOtp?: boolean;
+      challengeToken?: string;
+    }>(null, 'post', '/auth/login', { identifier, password: PASSWORD });
+    if (data.requiresOtp) return this.verifyOtp(data.challengeToken!);
+    return data.accessToken!;
+  }
+
+  async verifyOtp(challengeToken: string): Promise<string> {
     const data = await this.call<{ accessToken: string }>(
       null,
       'post',
-      '/auth/login',
-      {
-        phoneNumber,
-        password: PASSWORD,
-      },
+      '/auth/login/verify-otp',
+      { challengeToken, otpCode: 'DEV_BYPASS' },
     );
     return data.accessToken;
   }
@@ -180,12 +188,12 @@ async function setupShop(
   const reg = await api.call(null, 'post', '/auth/register', {
     tenantName: def.tenantName,
     phoneNumber: def.owner.phone,
+    email: `${def.owner.phone}@demo.ikiot.invalid`,
     password: PASSWORD,
-    otpCode: 'DEV_BYPASS',
     firstName: def.owner.firstName,
     lastName: def.owner.lastName,
   });
-  const ownerToken: string = reg.accessToken;
+  const ownerToken = await api.verifyOtp(reg.challengeToken as string);
   const tenantId: string = reg.user.tenantId;
   const ownerId: string = reg.user.id;
   await api.call(ownerToken, 'post', '/subscription/free-trial');
@@ -234,6 +242,7 @@ async function setupShop(
     const locKind = def.locations.find((l) => l.key === s.location)!.kind;
     const user = await api.call(ownerToken, 'post', '/users', {
       phoneNumber: s.phone,
+      email: `${s.phone}@demo.ikiot.invalid`,
       roleId: roleIds[s.role],
       [locKind === 'branch' ? 'branchId' : 'warehouseId']:
         locations[s.location],
