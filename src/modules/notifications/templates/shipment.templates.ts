@@ -12,6 +12,7 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
+  /** Gửi người phụ trách đơn, quản lý kho xuất và chủ shop: ai trong số đó cũng có thể xác nhận Đang vận chuyển. */
   pickedUp: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_PICKED_UP',
     title: 'Shipper đã lấy hàng',

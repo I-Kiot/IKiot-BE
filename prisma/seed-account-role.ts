@@ -16,6 +16,11 @@ const OWNER = {
   lastName: 'Nguyễn Thị',
   firstName: 'Mai (Chủ shop)',
 };
+// Email chủ shop. Mặc định là địa chỉ .invalid (không nhận được thư); đặt SEED_OWNER_EMAIL trong .env để dùng
+// hộp thư thật của mình (test quên mật khẩu / đổi email). Đọc từ env để email cá nhân không nằm trong repo.
+const OWNER_EMAIL =
+  process.env.SEED_OWNER_EMAIL?.trim().toLowerCase() ||
+  `${OWNER.phoneNumber}@demo.ikiot.invalid`;
 
 type LocationKey = 'DAMAGED' | 'HANOI' | 'HCM';
 
@@ -224,7 +229,7 @@ async function seedShop(passwordHash: string) {
       data: {
         tenantId: tenant.id,
         phoneNumber: OWNER.phoneNumber,
-        email: `${OWNER.phoneNumber}@demo.ikiot.invalid`,
+        email: OWNER_EMAIL,
         password: passwordHash,
         systemRole: 'TENANT_OWNER',
         status: 'ACTIVE',

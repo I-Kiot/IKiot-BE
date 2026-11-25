@@ -362,12 +362,24 @@ export class ShipmentService {
       });
     });
 
-    // Sau commit: người phụ trách cần biết hàng đã rời kho để xác nhận Đang vận chuyển. Tự bấm thì không tự báo.
+    // Sau commit: báo những ai có thể bấm Đang vận chuyển (`shipOrder`): người phụ trách và quản lý kho xuất, cộng chủ
+    // shop như `fail`. Trước đây chỉ báo người phụ trách, nên đơn không có người phụ trách thì không ai có thông báo,
+    // kho chỉ biết qua toast realtime. Gộp trùng, trừ chính người bấm.
     const { assigneeId, code } = shipment.order;
-    if (assigneeId && assigneeId !== user.userId) {
+    const [managers, owners] = await Promise.all([
+      this.notifications.managersOfLocation({
+        tenantId,
+        locationId: shipment.fulfillment.locationId,
+      }),
+      this.notifications.tenantOwners(tenantId),
+    ]);
+    const recipientIds = [
+      ...new Set([...(assigneeId ? [assigneeId] : []), ...managers, ...owners]),
+    ].filter((recipient) => recipient !== user.userId);
+    if (recipientIds.length > 0) {
       await this.notifications.notify({
         tenantId,
-        recipientIds: [assigneeId],
+        recipientIds,
         referenceId: id,
         ...ShipmentNotificationTemplates.pickedUp(id, code),
       });
