@@ -612,3 +612,13 @@ Chủ dự án hỏi bỏ Sổ thu chi vì tưởng trùng Sổ doanh thu; đã 
 - **FE**: trang dùng bộ lọc kỳ từ → đến (URL `?from=&to=`) và dropdown nơi (URL `?place=`) như các trang báo cáo khác, thay ô chọn 7/30/90 ngày và bộ chọn header; `useCashflow` nhận kỳ và nơi từ trang. Bảng giao dịch có đầu bảng và dòng Tổng (toàn bộ lọc, từ `/stats/cashflow`) dính khi cuộn. BE không đổi.
 
 **Đã kiểm chứng:** FE `tsc`; eslint (chỉ còn lỗi `set-state-in-effect` có sẵn trong `use-cashflow.ts`); `/cashflow`, `/cashflow/sepay` compile trên `next dev`. **Chưa kiểm chứng:** chưa bấm thử trên trình duyệt với dữ liệu thật.
+
+## 2026-11-26 – Shipper lấy hàng: báo cả chủ shop và quản lý kho xuất
+
+Báo lỗi: shipper bấm "Đã lấy hàng" thì web chỉ hiện toast realtime (`entity:changed`), chuông thông báo không có gì. Nguyên nhân: `ShipmentService.pickUp` chỉ `notify` **người phụ trách đơn**, và chỉ khi đơn có người phụ trách khác người bấm. Chủ shop và kho (bên phải bấm Đang vận chuyển, `POST /orders/:id/ship`) không bao giờ có dòng thông báo.
+
+- **BE**: `pickUp` gửi `SHIPMENT_PICKED_UP` cho người phụ trách ∪ quản lý kho xuất (`managersOfLocation(fulfillment.locationId)`, không có quản lý thì rơi về chủ shop) ∪ chủ shop, gộp trùng, trừ chính người bấm - cùng cách `fail` đã làm. Nội dung thông báo giữ nguyên. FE và app không đổi (đã nghe sự kiện socket `notification`).
+- **Test**: `test/order-ship.e2e-spec.ts` - sửa kỳ vọng người nhận, thêm ca người phụ trách / chủ shop tự bấm thì không tự báo.
+- **Seed (cùng ngày)**: `prisma/seed-account-role.ts` đọc email chủ shop từ `SEED_OWNER_EMAIL` (thêm vào `.env.example`), mặc định vẫn `<sđt>@demo.ikiot.invalid`.
+
+**Đã kiểm chứng:** `tsc` (chỉ còn lỗi có sẵn trong các `*.excel.spec.ts`), eslint, e2e `order-ship`, `order-remittance`, `sepay-qr-expiry`, `sepay-ledger` (113/113) trên `ikiot_e2e`. **Chưa kiểm chứng:** chưa bấm thử trên app + web thật để thấy chuông tăng số.

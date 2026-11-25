@@ -552,7 +552,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
   });
 
   describe('POST /shipments/:id/pick-up – shipper xác nhận đã lấy hàng', () => {
-    it('moves shipment and order to PICKED_UP, the fulfillment to HANDED_OVER, and tells the person in charge', async () => {
+    it('moves shipment and order to PICKED_UP, the fulfillment to HANDED_OVER, and tells the person in charge and the owner', async () => {
       const orderId = await packedOrder();
       const before = await tableStock();
       const created = await shipments.create(
@@ -588,24 +588,35 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         stock: before.stock,
         lockedStock: before.lockedStock,
       });
+      // Từ 2026-11-26 chủ shop (và quản lý kho xuất) cũng được báo: ai trong số đó cũng bấm được Đang vận chuyển.
       expect(notify).toHaveBeenCalledWith(
         expect.objectContaining({
-          recipientIds: [assigneeId],
+          recipientIds: [assigneeId, ownerId],
           type: 'SHIPMENT_PICKED_UP',
         }),
       );
     });
 
-    it('lets the person in charge and the owner confirm on the driver’s behalf', async () => {
-      for (const actor of [assignee, owner]) {
+    it('lets the person in charge and the owner confirm on the driver’s behalf, never telling themselves', async () => {
+      for (const [actor, others] of [
+        [assignee, [ownerId]],
+        [owner, [assigneeId]],
+      ] as const) {
         const orderId = await packedOrder();
         const created = await shipments.create(
           owner,
           tenantId,
           internal(orderId),
         );
+        notify.mockClear();
         const picked = await shipments.pickUp(actor, tenantId, created.id, {});
         expect(picked.status).toBe(ShipmentStatus.PICKED_UP);
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            recipientIds: others,
+            type: 'SHIPMENT_PICKED_UP',
+          }),
+        );
       }
     });
 
