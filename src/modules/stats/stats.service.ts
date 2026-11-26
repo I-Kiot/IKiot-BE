@@ -12,6 +12,7 @@ import { ShipmentStatus } from '../../common/constants/shipment-status';
 import { InventoryTxType } from '../../common/constants/inventory-ledger';
 import { LocationStatus } from '../../common/constants/location-status';
 import { locationScope, orderScope } from './stats-scope';
+import { profileFullName } from '../../common/utils/user-profile';
 import {
   averageOrderValue,
   businessDatesOf,
@@ -42,6 +43,7 @@ import {
   TopProductsSort,
 } from './stats.constants';
 import type {
+  CashflowExportQueryDto,
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
@@ -102,15 +104,45 @@ interface BucketRow {
   orderCount: number;
 }
 
-/** Ghép họ tên, null khi chưa có tên. */
-function fullName(
-  user: {
-    profileFirstName: string | null;
-    profileLastName: string | null;
-  } | null,
-): string | null {
-  if (!user?.profileFirstName) return null;
-  return `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim();
+// Họ tên ghép một kiểu với mọi màn khác ("Ngô Văn Tài"), qua `profileFullName`.
+const fullName = profileFullName;
+
+/** Trần số dòng một file Sổ thu chi; quá thì người dùng thu hẹp kỳ hoặc bộ lọc. */
+export const CASHFLOW_EXPORT_LIMIT = 20_000;
+
+const CASHFLOW_ROW_INCLUDE = {
+  location: { select: { id: true, type: true, name: true } },
+  supplier: { select: { supplierName: true } },
+  createdBy: { select: { profileFirstName: true, profileLastName: true } },
+} satisfies Prisma.CashFlowInclude;
+
+type CashflowRowSource = Prisma.CashFlowGetPayload<{
+  include: typeof CASHFLOW_ROW_INCLUDE;
+}>;
+
+/** Một dòng Sổ thu chi như bảng trên trang và file xuất đọc. */
+function toCashflowRow(row: CashflowRowSource) {
+  const at = withNamedPosting(row);
+  return {
+    id: row.id,
+    flowType: row.flowType,
+    amount: Number(row.amount),
+    paymentMethod: row.paymentMethod,
+    description: row.description,
+    paymentReference: row.paymentReference,
+    category: row.category,
+    fund: row.fund,
+    sepayLedgerId: row.sepayLedgerId,
+    branchName: at.branch?.name ?? null,
+    warehouseName: at.warehouse?.name ?? null,
+    // Gộp chi nhánh/kho thành một cột vị trí.
+    locationName: (at.branch ?? at.warehouse)?.name ?? null,
+    locationType: locationRefOf(row.location)?.locationType ?? null,
+    supplierName: row.supplier?.supplierName ?? null,
+    createdByName: fullName(row.createdBy),
+    orderId: row.orderId,
+    createdAt: row.createdAt,
+  };
 }
 
 /** Thống kê dashboard shop, nhiều truy vấn raw SQL. */
@@ -847,42 +879,23 @@ export class StatsService {
         orderBy: { createdAt: 'desc' },
         skip: skipFor(page, limit),
         take: limit,
-        include: {
-          location: { select: { id: true, type: true, name: true } },
-          supplier: { select: { supplierName: true } },
-          createdBy: {
-            select: { profileFirstName: true, profileLastName: true },
-          },
-        },
+        include: CASHFLOW_ROW_INCLUDE,
       }),
       this.prisma.cashFlow.count({ where }),
     ]);
 
-    const data = rows.map((row) => {
-      const at = withNamedPosting(row);
-      return {
-        id: row.id,
-        flowType: row.flowType,
-        amount: Number(row.amount),
-        paymentMethod: row.paymentMethod,
-        description: row.description,
-        paymentReference: row.paymentReference,
-        category: row.category,
-        fund: row.fund,
-        sepayLedgerId: row.sepayLedgerId,
-        branchName: at.branch?.name ?? null,
-        warehouseName: at.warehouse?.name ?? null,
-        // Gộp chi nhánh/kho thành một cột vị trí.
-        locationName: (at.branch ?? at.warehouse)?.name ?? null,
-        locationType: locationRefOf(row.location)?.locationType ?? null,
-        supplierName: row.supplier?.supplierName ?? null,
-        createdByName: fullName(row.createdBy),
-        orderId: row.orderId,
-        createdAt: row.createdAt,
-      };
-    });
+    return paginate(rows.map(toCashflowRow), total, page, limit);
+  }
 
-    return paginate(data, total, page, limit);
+  /** Mọi dòng của Sổ thu chi khớp bộ lọc, cùng thứ tự và cột với bảng trên trang; để xuất file. */
+  async getCashflowForExport(user: AuthUser, query: CashflowExportQueryDto) {
+    const rows = await this.prisma.cashFlow.findMany({
+      where: this.cashflowWhere(user, query),
+      orderBy: { createdAt: 'desc' },
+      take: CASHFLOW_EXPORT_LIMIT,
+      include: CASHFLOW_ROW_INCLUDE,
+    });
+    return rows.map(toCashflowRow);
   }
 
   private cashflowWhere(

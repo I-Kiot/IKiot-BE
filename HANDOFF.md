@@ -708,3 +708,13 @@ Chủ dự án chốt: bước 1 chỉ nhập email; không được để lộ 
 - **Nhập số điện thoại vẫn báo lỗi rõ** (`PHONE_NOT_REGISTERED`, `ACCOUNT_EMAIL_MISSING`) và vẫn được nhận: app shipper `IKiot-MOBILE` (`forgot_password_screen.dart`) còn cho nhập "Số điện thoại hoặc email" và gửi số điện thoại lên route này. Chưa đổi DTO thành chỉ nhận email để không làm hỏng app; khi app chuyển sang chỉ email thì bỏ nhánh số điện thoại và thêm `@IsEmail` vào `ForgotPasswordDto`.
 - Thời gian trả lời còn lệch: email thật chờ SMTP, mồi thì không. `OTP_SEND_FAILED` chỉ xảy ra với email thật. Chấp nhận, chưa sửa.
 - Chưa chạy e2e (`smoke.e2e-spec` "forgot-password flow" dùng email thật, logic không đổi) và chưa thử OTP thật qua giao diện (không có SMTP / console BE).
+
+## 2026-11-26 - Họ tên trong báo cáo theo kiểu Việt, xuất Excel Sổ thu chi
+
+**Đã làm**
+- `stats.service.ts` và `stats-reports.service.ts` mỗi file có một bản `fullName` ghép "tên họ" ("Tài Ngô Văn"). Gộp về `profileFullName` (`src/common/utils/user-profile.ts`, "họ tên" như `personName`, null khi chưa có tên); `personName` dùng lại nó. Ảnh hưởng: `collectorName` (đối soát tiền), `staffName` (doanh thu theo nhân viên), `createdByName` (sổ thu chi). `jwt.strategy.ts` giữ "tên họ" cho `displayName` như cũ.
+- `GET /stats/export/cashflow` (`reports:read`): file Sổ thu chi, mọi dòng khớp bộ lọc của trang (kỳ, nơi, `flowType`, `flow`, `category`, `fund`, `paymentMethod`), tối đa `CASHFLOW_EXPORT_LIMIT` = 20.000 dòng (quá thì file ghi chú). DTO `CashflowExportQueryDto`; `CashflowListQueryDto` kế thừa nó thêm phân trang. Danh sách và file xuất đi chung `toCashflowRow`.
+- `test/stats-journal.e2e-spec.ts`: tên mong đợi đổi "Tài Xế" → "Xế Tài" (fixture họ "Xế", tên "Tài").
+
+**Chưa kiểm chứng / còn lại**
+- `stats-journal` e2e qua 9/9; unit `admin-stats.excel.spec` UTC027 fail sẵn trên `dev`, không liên quan. Chưa có test riêng cho file xuất Sổ thu chi (đã gọi thử trên local: 200, file xlsx).

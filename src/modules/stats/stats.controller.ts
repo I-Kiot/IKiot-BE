@@ -8,6 +8,7 @@ import {
 } from './export/stats-export.service';
 import { XLSX_MIME } from '../products/import/product-import.service';
 import {
+  CashflowExportQueryDto,
   CashflowListQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
@@ -229,6 +230,17 @@ export class StatsController {
     @Query() query: SalesJournalExportQueryDto,
   ) {
     return xlsxFile(await this.exporter.salesJournal(user, query));
+  }
+
+  /** Sổ thu chi theo đúng bộ lọc trên trang (cùng quyền với `GET /stats/cashflow/transactions`). */
+  @Permissions('reports', 'read')
+  @Get('export/cashflow')
+  @ApiProduces(XLSX_MIME)
+  async exportCashflow(
+    @CurrentUser() user: AuthUser,
+    @Query() query: CashflowExportQueryDto,
+  ) {
+    return xlsxFile(await this.exporter.cashflow(user, query));
   }
 
   /** Báo cáo đối soát tiền tại thời điểm gọi. */
