@@ -692,3 +692,19 @@ Chốt với chủ dự án: khi tạo đơn chọn người ăn doanh thu như 
 
 **Chưa kiểm chứng / còn lại**
 - Chỉ đổi chữ, chưa mở trên trình duyệt.
+
+## 2026-11-26 - Quên mật khẩu: không cho biết email có tài khoản hay không
+
+Chủ dự án chốt: bước 1 chỉ nhập email; không được để lộ email đó có tài khoản hay không; luật mật khẩu giữ nguyên (tối thiểu 6 ký tự).
+
+**Đã làm**
+- `POST /auth/send-forgot-password-otp` với email không có tài khoản hợp lệ (không tồn tại, bị khoá, đã xoá) trả y như email thật: cùng status 200, cùng các trường, `sentTo` che từ email đã nhập, cùng `expiresInSeconds` / `resendAfterSeconds`, câu chung "Nếu email đã đăng ký, mã OTP đã được gửi tới email này." Không gửi email nào.
+- Cách làm: challenge "mồi". `sub` là id giả `decoySubjectId(email, accessTokenSecret())` (`src/modules/auth/forgot-password-decoy.ts`, HMAC có dạng UUID v4, cùng email luôn ra cùng id). `OtpService.sendDecoy` lưu một mã OTP dưới id đó như thật nhưng không ai nhận được mã; `send` và `sendDecoy` đi chung một hàm `issue` nên cooldown, số lần thử, `EMAIL_NOT_CONFIGURED` (production) giống hệt. Mọi challenge quên mật khẩu (thật và mồi) mang thêm `to` = email đã che, để "gửi lại" của challenge mồi trả đúng `sentTo` mà không lưu gì thêm.
+- `verify-forgot-password-otp` / `resend-otp` nhận ra challenge mồi khi không tìm thấy user theo `sub`: chạy đúng phép kiểm mã thật (`OTP_INVALID` + `attemptsLeft` → `OTP_TOO_MANY_ATTEMPTS`; `OTP_RESEND_TOO_SOON`), không bao giờ cấp reset token (DEV_BYPASS ở dev → `OTP_CHALLENGE_INVALID`).
+- Đăng nhập, đăng ký không đổi (vẫn báo lỗi rõ). Không thêm / bớt mã lỗi.
+- Test: `auth-flows.excel.spec.ts` thêm UTC026a-g (email lạ / bị khoá / không có email trả giống hệt email thật, id mồi ổn định theo email, nhập sai và khoá giống hệt, gửi lại cùng cooldown và cùng câu trả lời, mồi không bao giờ ra reset token, email thật vẫn đặt lại được). Các ca auth mới đều qua; 3 ca `changePassword` (UTC035-037) đã fail sẵn trên `dev`, không liên quan.
+
+**Chưa kiểm chứng / còn lại**
+- **Nhập số điện thoại vẫn báo lỗi rõ** (`PHONE_NOT_REGISTERED`, `ACCOUNT_EMAIL_MISSING`) và vẫn được nhận: app shipper `IKiot-MOBILE` (`forgot_password_screen.dart`) còn cho nhập "Số điện thoại hoặc email" và gửi số điện thoại lên route này. Chưa đổi DTO thành chỉ nhận email để không làm hỏng app; khi app chuyển sang chỉ email thì bỏ nhánh số điện thoại và thêm `@IsEmail` vào `ForgotPasswordDto`.
+- Thời gian trả lời còn lệch: email thật chờ SMTP, mồi thì không. `OTP_SEND_FAILED` chỉ xảy ra với email thật. Chấp nhận, chưa sửa.
+- Chưa chạy e2e (`smoke.e2e-spec` "forgot-password flow" dùng email thật, logic không đổi) và chưa thử OTP thật qua giao diện (không có SMTP / console BE).

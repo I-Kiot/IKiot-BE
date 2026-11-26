@@ -102,22 +102,53 @@ export class OtpService {
     this.fallback.delete(key);
   }
 
-  private delivery(email: string): OtpDelivery {
+  private delivery(sentTo: string): OtpDelivery {
     return {
-      sentTo: maskEmail(email),
+      sentTo,
       expiresInSeconds: OTP_TTL_SECONDS,
       resendAfterSeconds: OTP_RESEND_COOLDOWN_SECONDS,
     };
   }
 
   /** Tạo, lưu hash và gửi mã; trong cooldown thì từ chối hoặc gắn sang challenge mới. */
-  async send(
+  send(
     purpose: OtpPurpose,
     user: { id: string; email: string },
     challengeId: string,
     onCooldown: 'reject' | 'rebind' = 'reject',
   ): Promise<OtpDelivery> {
-    const key = this.keyFor(purpose, user.id);
+    return this.issue(purpose, user.id, challengeId, onCooldown, {
+      sentTo: maskEmail(user.email),
+      email: user.email,
+    });
+  }
+
+  /**
+   * Như `send` nhưng không gửi email: mã được lưu và đếm lượt thử, cooldown y như thật,
+   * chỉ là không ai biết mã. Dùng cho "quên mật khẩu" với email không có tài khoản hợp lệ,
+   * để câu trả lời không tiết lộ email đó có tài khoản hay không. `sentTo` đã được che sẵn.
+   */
+  sendDecoy(
+    purpose: OtpPurpose,
+    subjectId: string,
+    sentTo: string,
+    challengeId: string,
+    onCooldown: 'reject' | 'rebind' = 'reject',
+  ): Promise<OtpDelivery> {
+    return this.issue(purpose, subjectId, challengeId, onCooldown, {
+      sentTo,
+      email: null,
+    });
+  }
+
+  private async issue(
+    purpose: OtpPurpose,
+    subjectId: string,
+    challengeId: string,
+    onCooldown: 'reject' | 'rebind',
+    to: { sentTo: string; email: string | null },
+  ): Promise<OtpDelivery> {
+    const key = this.keyFor(purpose, subjectId);
     const now = Date.now();
     const existing = await this.read(key);
 
@@ -140,7 +171,7 @@ export class OtpService {
         );
       }
       await this.write(key, { ...existing, challengeId });
-      return this.delivery(user.email);
+      return this.delivery(to.sentTo);
     }
 
     const code = this.generateCode();
@@ -152,6 +183,7 @@ export class OtpService {
       sentAt: now,
     });
 
+    // Kiểm cấu hình cả khi không gửi (mồi), để 503 không phân biệt được hai trường hợp.
     if (!this.email.isConfigured()) {
       if (process.env.NODE_ENV === 'production') {
         await this.clear(key);
@@ -160,12 +192,14 @@ export class OtpService {
           message: 'Email service is not configured',
         });
       }
-      this.logger.log(`📧 [DEV OTP] ${purpose} ${user.email} -> ${code}`);
-      return this.delivery(user.email);
+      if (to.email)
+        this.logger.log(`📧 [DEV OTP] ${purpose} ${to.email} -> ${code}`);
+      return this.delivery(to.sentTo);
     }
+    if (!to.email) return this.delivery(to.sentTo);
 
     try {
-      await this.email.sendOtpEmail(user.email, code, {
+      await this.email.sendOtpEmail(to.email, code, {
         purpose,
         ttlMinutes: OTP_TTL_SECONDS / 60,
       });
@@ -180,7 +214,7 @@ export class OtpService {
           'Could not send the OTP by email. Please try again in a few minutes.',
       });
     }
-    return this.delivery(user.email);
+    return this.delivery(to.sentTo);
   }
 
   async verify(

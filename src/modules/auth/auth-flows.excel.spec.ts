@@ -536,6 +536,210 @@ describe('AuthService flows', () => {
     });
   });
 
+  // ── PasswordRecovery: an email never reveals whether it has an account (UTC026a-UTC026g) ──
+  describe('Excel sheet Auth - forgot password hides account existence', () => {
+    const REAL_ID = '6f1c2d3e-4b5a-4c6d-8e7f-90a1b2c3d4e5';
+    const UUID_V4 =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const realRow = (over: Record<string, unknown> = {}) =>
+      userRow({ id: REAL_ID, ...over });
+
+    beforeEach(() => {
+      prisma.user.findUnique.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve(where.id === REAL_ID ? realRow() : null),
+      );
+    });
+
+    const sendFor = (identifier: string, row: unknown) => {
+      prisma.user.findFirst.mockResolvedValue(row);
+      return service.sendForgotPasswordOtp({ identifier });
+    };
+    /** Những gì client nhìn thấy, trừ các giá trị ngẫu nhiên theo từng lần gửi. */
+    const visible = (res: Record<string, unknown>) => {
+      const { challengeToken, ...rest } = res;
+      const { sub, jti, iat, exp, ...claims } = jwt.verify<
+        Record<string, unknown> & {
+          sub: string;
+          jti: string;
+          iat: number;
+          exp: number;
+        }
+      >(challengeToken as string);
+      return {
+        ...rest,
+        claims,
+        subIsUuid: UUID_V4.test(sub),
+        jtiType: typeof jti,
+        ttl: exp - iat,
+      };
+    };
+    const failure = async (run: Promise<unknown>) => {
+      try {
+        await run;
+      } catch (error) {
+        const e = error as HttpException;
+        return {
+          type: e.constructor.name,
+          status: e.getStatus(),
+          body: e.getResponse(),
+        };
+      }
+      throw new Error('expected a rejection');
+    };
+    const wrongCodes = async (challengeToken: string) => {
+      const seen: unknown[] = [];
+      for (let i = 0; i < 5; i++)
+        seen.push(
+          await failure(
+            service.verifyForgotPasswordOtp({
+              challengeToken,
+              otpCode: '000000',
+            }),
+          ),
+        );
+      return seen;
+    };
+
+    it('UTC026a: an unknown email gets exactly the answer a registered one gets, and no email', async () => {
+      const real = await sendFor('Anna@mail.com ', realRow());
+      expect(email.sendOtpEmail).toHaveBeenCalledTimes(1);
+      const decoy = await sendFor('anna@mail.com', null);
+      expect(email.sendOtpEmail).toHaveBeenCalledTimes(1);
+
+      expect(visible(decoy)).toEqual(visible(real));
+      expect(visible(decoy)).toEqual(
+        expect.objectContaining({
+          requiresOtp: true,
+          sentTo: 'an***@mail.com',
+          expiresInSeconds: 300,
+          resendAfterSeconds: 60,
+          message: 'Nếu email đã đăng ký, mã OTP đã được gửi tới email này.',
+          subIsUuid: true,
+        }),
+      );
+    });
+
+    it('UTC026b: a locked account and an account without email look the same as an unknown email', async () => {
+      const unknown = visible(await sendFor('anna@mail.com', null));
+      redis.store.clear();
+      const locked = visible(
+        await sendFor('anna@mail.com', realRow({ status: 'SUSPENDED' })),
+      );
+      redis.store.clear();
+      const noEmail = visible(
+        await sendFor('anna@mail.com', realRow({ email: null })),
+      );
+      expect(locked).toEqual(unknown);
+      expect(noEmail).toEqual(unknown);
+      expect(email.sendOtpEmail).not.toHaveBeenCalled();
+    });
+
+    it('UTC026c: the decoy subject is stable per email and differs between emails', async () => {
+      const subOf = async (identifier: string) =>
+        jwt.verify<{ sub: string }>(
+          (await sendFor(identifier, null)).challengeToken,
+        ).sub;
+      const a1 = await subOf('ghost@mail.com');
+      const a2 = await subOf('GHOST@mail.com');
+      const b = await subOf('other@mail.com');
+      expect(a1).toBe(a2);
+      expect(a1).not.toBe(b);
+      expect(a1).toMatch(UUID_V4);
+    });
+
+    it('UTC026d: a wrong code on a decoy fails with the same countdown and lockout as on a real challenge', async () => {
+      const real = await sendFor('anna@mail.com', realRow());
+      // Mã thật tình cờ là 000000 (1/10^6): lượt này không so được.
+      if (emailed() === '000000') return;
+      const decoy = await sendFor('ghost@mail.com', null);
+
+      const realSeen = await wrongCodes(real.challengeToken);
+      const decoySeen = await wrongCodes(decoy.challengeToken);
+      expect(decoySeen).toEqual(realSeen);
+      expect(
+        decoySeen.map((f) => (f as { body: { code: string } }).body.code),
+      ).toEqual([
+        'OTP_INVALID',
+        'OTP_INVALID',
+        'OTP_INVALID',
+        'OTP_INVALID',
+        'OTP_TOO_MANY_ATTEMPTS',
+      ]);
+      expect(
+        (decoySeen[0] as { body: { attemptsLeft: number } }).body.attemptsLeft,
+      ).toBe(4);
+    });
+
+    it('UTC026e: resend on a decoy has the same cooldown and the same answer as on a real challenge', async () => {
+      const t0 = Date.now();
+      const now = jest.spyOn(Date, 'now').mockReturnValue(t0);
+      try {
+        const real = await sendFor('anna@mail.com', realRow());
+        const decoy = await sendFor('anna@mail.com', null);
+
+        now.mockReturnValue(t0 + 10_000);
+        const realTooSoon = await failure(
+          service.resendOtp({ challengeToken: real.challengeToken }),
+        );
+        const decoyTooSoon = await failure(
+          service.resendOtp({ challengeToken: decoy.challengeToken }),
+        );
+        expect(decoyTooSoon).toEqual(realTooSoon);
+        expect(decoyTooSoon).toEqual(
+          expect.objectContaining({
+            status: 429,
+            body: expect.objectContaining({
+              code: 'OTP_RESEND_TOO_SOON',
+              retryAfterSeconds: 50,
+            }),
+          }),
+        );
+
+        now.mockReturnValue(t0 + 61_000);
+        const sentBefore = email.sendOtpEmail.mock.calls.length;
+        const realAgain = await service.resendOtp({
+          challengeToken: real.challengeToken,
+        });
+        const decoyAgain = await service.resendOtp({
+          challengeToken: decoy.challengeToken,
+        });
+        expect(decoyAgain).toEqual(realAgain);
+        expect(email.sendOtpEmail.mock.calls.length).toBe(sentBefore + 1);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('UTC026f: a decoy never yields a reset token, even with the dev bypass', async () => {
+      const decoy = await sendFor('ghost@mail.com', null);
+      await expectRejects(
+        service.verifyForgotPasswordOtp({
+          challengeToken: decoy.challengeToken,
+          otpCode: 'DEV_BYPASS',
+        }),
+        BadRequestException,
+        'OTP_CHALLENGE_INVALID',
+      );
+    });
+
+    it('UTC026g: a registered email still gets a working reset token', async () => {
+      const real = await sendFor('anna@mail.com', realRow());
+      expect(email.sendOtpEmail).toHaveBeenCalledWith(
+        'anna@mail.com',
+        expect.any(String),
+        { purpose: 'reset-password', ttlMinutes: 5 },
+      );
+      const res = await service.verifyForgotPasswordOtp({
+        challengeToken: real.challengeToken,
+        otpCode: emailed(),
+      });
+      expect(jwt.verify<{ sub: string; type: string }>(res.resetToken)).toEqual(
+        expect.objectContaining({ sub: REAL_ID, type: 'password_reset' }),
+      );
+    });
+  });
+
   // ── PasswordRecovery: resetPassword (UTC030-UTC034) ──
   describe('Excel sheet Auth - resetPassword', () => {
     const resetToken = (jti: string | undefined = 'r1') =>
