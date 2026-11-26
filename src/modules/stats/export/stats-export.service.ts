@@ -74,6 +74,7 @@ const SUMMARY_SECTIONS = [
 
 /** Mô tả của bảng theo nhân viên, cùng câu chữ với ô chọn "Tính theo" trên trang. */
 const STAFF_DESCRIPTION: Record<string, string> = {
+  seller: 'Doanh thu thuần theo nhân viên bán hàng chọn lúc tạo đơn',
   assignee:
     'Doanh thu thuần theo người phụ trách đơn (đơn quầy tính cho người lên đơn)',
   creator: 'Doanh thu thuần theo người tạo đơn',
@@ -807,7 +808,7 @@ export class StatsExportService {
     );
     out.title('Doanh thu theo nhân viên', [
       periodLine,
-      STAFF_DESCRIPTION[query.staffGroupBy] ?? STAFF_DESCRIPTION.assignee,
+      STAFF_DESCRIPTION[query.staffGroupBy] ?? STAFF_DESCRIPTION.seller,
     ]);
     this.revenueTable(
       out,

@@ -151,6 +151,7 @@ export class ManualOrderService {
       });
 
     await this.assertAssignee(tenantId, dto.assigneeId, dto.branchId);
+    if (dto.sellerId) await this.assertSeller(tenantId, dto.sellerId);
     if (dto.customerId)
       await this.orders.assertCustomerExists(tenantId, dto.customerId);
 
@@ -217,6 +218,7 @@ export class ManualOrderService {
           fulfillmentType: dto.fulfillmentType,
           userId,
           assigneeId: dto.assigneeId,
+          sellerId: dto.sellerId ?? userId,
           // Tạo đơn tay cũng là xác nhận đơn (contract §2), không có bước nháp.
           confirmedById: userId,
           confirmedAt: now,
@@ -350,6 +352,25 @@ export class ManualOrderService {
       throw new BadRequestException({
         code: ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
         message: 'The person in charge must work at the location of the order',
+      });
+    }
+  }
+
+  /** Kiểm nhân viên bán hàng là tài khoản còn hoạt động của shop, không ràng buộc nơi làm việc. */
+  async assertSeller(tenantId: string, sellerId: string) {
+    const seller = await this.prisma.user.findFirst({
+      where: {
+        id: sellerId,
+        tenantId,
+        status: UserStatus.ACTIVE,
+        systemRole: { in: [...ASSIGNABLE_ROLES] },
+      },
+      select: { id: true },
+    });
+    if (!seller) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_SELLER_INVALID,
+        message: 'The sales person is not an active account of this shop',
       });
     }
   }

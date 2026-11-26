@@ -221,6 +221,8 @@ export class OrderService {
           userId,
           // Người lên đơn quầy là người phụ trách.
           assigneeId: userId,
+          // Đơn quầy: người bán là nhân viên bán hàng.
+          sellerId: userId,
           confirmedById: userId,
           confirmedAt: now,
           fulfillmentType: FulfillmentType.TAKEAWAY,

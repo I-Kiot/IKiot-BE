@@ -9,6 +9,7 @@ import { OrderService } from './../src/modules/orders/orders.service';
 import { StatsService } from './../src/modules/stats/stats.service';
 import { StatsReportsService } from './../src/modules/stats/stats-reports.service';
 import {
+  RevenueByStaffEntriesQueryDto,
   RevenueByStaffQueryDto,
   RevenueSeriesQueryDto,
   SalesJournalQueryDto,
@@ -242,6 +243,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
           customerId,
           assigneeId: driverId,
           creatorId: ownerId,
+          sellerId: ownerId,
           source: 'DELIVERY',
           lines: {
             create: [
@@ -303,6 +305,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
           customerId,
           assigneeId: driverId,
           creatorId: ownerId,
+          sellerId: ownerId,
           source: 'RETURN_INSPECTION',
           lines: {
             create: [
@@ -392,6 +395,94 @@ describe('stats on the sales journal + reconciliation reports', () => {
       ]);
     });
 
+    it('staff entries list the journal rows behind one ranking row', async () => {
+      const range = { fromDate: '2026-09-01', toDate: '2026-10-31' };
+      const ofDriver = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...range,
+          groupBy: 'assignee',
+          userId: driverId,
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(ofDriver.staffName).toBe('Tài Xế');
+      expect(ofDriver.summary).toEqual({
+        revenue: 600,
+        orderCount: 1,
+        aov: 600,
+      });
+      expect(ofDriver.pagination.total).toBe(2);
+      expect(ofDriver.data.map((e) => [e.kind, e.date, e.amount])).toEqual([
+        ['RETURN', '2026-10-05', -400],
+        ['SALE', '2026-09-10', 1000],
+      ]);
+      expect(ofDriver.data[1]).toMatchObject({
+        orderId,
+        branchName: expect.any(String),
+        customerName: expect.any(String),
+      });
+
+      const ofCreator = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...range,
+          groupBy: 'creator',
+          userId: ownerId,
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(ofCreator.summary.revenue).toBe(600);
+      // mặc định gom theo nhân viên bán hàng
+      const ofSeller = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...range,
+          userId: ownerId,
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(ofSeller.groupBy).toBe('seller');
+      expect(ofSeller.summary).toEqual({
+        revenue: 600,
+        orderCount: 1,
+        aov: 600,
+      });
+      const bySeller = await stats.getRevenueByStaff(
+        user(),
+        query(RevenueByStaffQueryDto, range),
+      );
+      expect(bySeller.staff.map((s) => [s.userId, s.revenue])).toEqual([
+        [ownerId, 600],
+      ]);
+      // người lên đơn không phải người phụ trách nên không có dòng nào theo người phụ trách
+      const ownerAsAssignee = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...range,
+          groupBy: 'assignee',
+          userId: ownerId,
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(ownerAsAssignee.data).toHaveLength(0);
+      const noStaff = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...range,
+          userId: 'none',
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(noStaff.userId).toBeNull();
+      expect(noStaff.data).toHaveLength(0);
+    });
+
     it('the journal route lists entries with lines and totals, filtered by type', async () => {
       const all = await reports.getSalesJournal(
         user(),
@@ -453,6 +544,17 @@ describe('stats on the sales journal + reconciliation reports', () => {
       expect(overview.revenue).toBe(2000);
       expect(overview.costOfGoods).toBe(200);
       expect(overview.linesMissingCost).toBe(0);
+      // đơn quầy: người bán là nhân viên bán hàng, sổ chụp lại
+      const tillEntries = await prisma.salesJournalEntry.findMany({
+        where: { tenantId, source: 'POS_SALE' },
+        include: { order: { select: { sellerId: true } } },
+      });
+      expect(tillEntries).toHaveLength(2);
+      expect(
+        tillEntries.every(
+          (e) => e.sellerId === ownerId && e.order.sellerId === ownerId,
+        ),
+      ).toBe(true);
 
       const methods = await stats.getRevenueByPaymentMethod(
         user(),
@@ -500,6 +602,39 @@ describe('stats on the sales journal + reconciliation reports', () => {
         fund: 'DRAWER',
         amount: 500,
       });
+    });
+
+    it('collector entries list the payments behind the collector ranking row', async () => {
+      const ranking = await stats.getRevenueByStaff(
+        user(),
+        query(RevenueByStaffQueryDto, { ...day, groupBy: 'collector' }),
+      );
+      const row = ranking.staff.find((s) => s.userId === ownerId);
+      const entries = await reports.getRevenueByStaffEntries(
+        user(),
+        query(RevenueByStaffEntriesQueryDto, {
+          ...day,
+          groupBy: 'collector',
+          userId: ownerId,
+          page: 1,
+          limit: 50,
+        }),
+      );
+      expect(entries.summary).toMatchObject({
+        revenue: row?.revenue,
+        orderCount: row?.orderCount,
+      });
+      expect(
+        entries.data.map((e) => [e.kind, e.paymentMethod, e.amount]),
+      ).toEqual(
+        expect.arrayContaining([
+          ['PAYMENT', 'CASH', 1500],
+          ['PAYMENT', 'BANK_TRANSFER', 1000],
+        ]),
+      );
+      expect(entries.data.every((e) => e.date === today && e.orderCode)).toBe(
+        true,
+      );
     });
 
     it('stock value comes from the lots, not the catalogue cost', async () => {

@@ -241,6 +241,8 @@ export const ErrorCode = {
   ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
   /** Người phụ trách đơn phải làm việc tại địa điểm bán của đơn. */
   ORDER_ASSIGNEE_WRONG_LOCATION: 'ORDER_ASSIGNEE_WRONG_LOCATION',
+  /** Nhân viên bán hàng phải là tài khoản còn hoạt động của shop. */
+  ORDER_SELLER_INVALID: 'ORDER_SELLER_INVALID',
   /** Đã đóng gói và bàn giao - đường quay lại duy nhất là OrderReturn. */
   ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
   ORDER_COMBO_INVALID: 'ORDER_COMBO_INVALID',

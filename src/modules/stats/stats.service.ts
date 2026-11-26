@@ -114,6 +114,14 @@ function fullName(
 }
 
 /** Thống kê dashboard shop, nhiều truy vấn raw SQL. */
+
+/** Cột người được tính doanh thu trên sổ doanh thu, theo cách gom. */
+const STAFF_COLUMN: Record<string, Prisma.Sql> = {
+  seller: Prisma.sql`e.seller_id`,
+  assignee: Prisma.sql`COALESCE(e.assignee_id, e.creator_id)`,
+  creator: Prisma.sql`e.creator_id`,
+};
+
 /** Phân trang bảng xếp hạng trong bộ nhớ; `summary` luôn là tổng cả kỳ. */
 function pageOfRanking<T extends { revenue: number; orderCount: number }>(
   all: T[],
@@ -363,7 +371,7 @@ export class StatsService {
     };
   }
 
-  /** Doanh thu theo người phụ trách, người lên đơn hoặc người thu tiền. */
+  /** Doanh thu theo nhân viên bán hàng, người phụ trách, người lên đơn hoặc người thu tiền. */
   async getRevenueByStaff(user: AuthUser, query: RevenueByStaffQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
@@ -390,7 +398,7 @@ export class StatsService {
             GROUP BY 1
           `
         : await this.prisma.$queryRaw<StaffRow[]>`
-            SELECT ${groupBy === 'creator' ? Prisma.sql`e.creator_id` : Prisma.sql`COALESCE(e.assignee_id, e.creator_id)`} AS "userId",
+            SELECT ${STAFF_COLUMN[groupBy] ?? STAFF_COLUMN.seller} AS "userId",
                    COALESCE(SUM(e.total_amount), 0) AS "revenue",
                    (COUNT(*) FILTER (WHERE e.entry_type = 'SALE'))::int AS "orderCount"
             FROM sales_journal_entries e

@@ -658,3 +658,37 @@ Báo lỗi: shipper bấm "Đã lấy hàng" thì web chỉ hiện toast realtim
 **Chưa kiểm chứng / còn lại**
 - Chưa chạy e2e, chưa áp migration lên DB nào, chưa mở màn Vai trò / trang `/workshop` trên trình duyệt.
 - Nhân viên xưởng đang đăng nhập cần gọi lại `GET /auth/me` (tải lại trang) để FE thấy quyền mới; BE kiểm lại quyền ở mỗi request nên route chạy ngay.
+
+## 2026-11-26 - Báo cáo nhân viên: lọc từng nhân viên, xem các đơn của họ
+
+**Đã làm**
+- BE: `GET /stats/revenue-by-staff/entries?userId=<id>|none&groupBy=assignee|creator|collector&page&limit` (`reports:read`, `StatsReportsService.getRevenueByStaffEntries`). Cùng cách tính với `/stats/revenue-by-staff`: phụ trách = `COALESCE(assignee_id, creator_id)` trên `sales_journal_entries`, lên đơn = `creator_id`, người thu = `payments.collected_by` của `cash_flows` `ORDER_PAYMENT` theo ngày thu. Trả `{ data, pagination, summary, staffName, userId, groupBy }`; `summary` khớp dòng của nhân viên trên bảng xếp hạng. Mỗi dòng: `kind` (SALE / RETURN / OTHER_INCOME / PAYMENT), `date`, mã đơn, khách, chi nhánh, phương thức (chỉ người thu), số tiền.
+- FE (nhánh `feat/staff-report-orders` cùng tên): trang `/reports/staff` có dropdown nhân viên (những người có số liệu trong kỳ + nơi đang xem, lưu `?staff=`), bấm tên trên bảng xếp hạng cũng chọn được. Chọn một người thì thay bảng bằng danh sách đơn, dòng Cộng là tổng cả kỳ, link sang đơn; nút xuất Excel ẩn ở chế độ này. `RankingReportPage` thêm slot `filters`, `detail`.
+- Test: `stats-journal.e2e-spec` thêm 2 ca (bút toán theo phụ trách / lên đơn / không gắn người; khoản thu theo người thu khớp bảng xếp hạng). 9/9 trên `ikiot_e2e`.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa bấm thử trên trình duyệt với dữ liệu thật; chưa có file xuất Excel cho danh sách đơn của một nhân viên.
+- Có sẵn từ trước, không đổi: "Người thu tiền" cộng tiền khách đưa (`ORDER_PAYMENT`), chưa trừ tiền thối (`SALE_CHANGE`) và hoàn tiền, nên đơn quầy tiền mặt có thối có thể cao hơn doanh thu thật.
+
+## 2026-11-26 - Người ăn doanh thu của đơn (`orders.seller_id`)
+
+Chốt với chủ dự án: khi tạo đơn chọn người ăn doanh thu như chọn người phụ trách, nhưng cố định, không sửa được. Mặc định người tạo đơn; đơn quầy là người bán; đơn cũ để nguyên (không điền lại); báo cáo nhân viên mặc định tính theo người ăn doanh thu, giữ 3 cách cũ.
+
+**Đã làm**
+- Migration `20261126140000_order_seller`: `orders.seller_id` (FK users, RESTRICT), `sales_journal_entries.seller_id` (chụp lúc ghi, không FK), trigger `orders_seller_immutable` chặn đổi khi đã có giá trị.
+- `POST /orders` (đơn tay) nhận `sellerId` tuỳ chọn, bỏ trống là người tạo; chỉ cần là tài khoản còn hoạt động của shop (không ràng buộc nơi làm việc như người phụ trách), sai thì 400 `ORDER_SELLER_INVALID` (mã mới). Đơn quầy `sellerId = người bán`. `UpdateOrderDto` không có trường này (whitelist bỏ đi). Đọc đơn trả thêm `seller` (UserRef).
+- Sổ doanh thu chụp `seller_id` ở SALE / RETURN / OTHER_INCOME. `/stats/revenue-by-staff`, `/entries` và file xuất thêm `groupBy=seller`, thành mặc định (cả `staffGroupBy` của file xuất, AI tool). Đơn cũ không có người ăn doanh thu rơi vào "Không gắn nhân viên" khi xem theo cách này.
+- FE: form tạo đơn có ô "Người ăn doanh thu" (mặc định người tạo, chọn được mọi nhân viên), thẻ thông tin đơn hiện "Người ăn doanh thu", mã lỗi mới, báo cáo nhân viên có lựa chọn "Người ăn doanh thu" mặc định.
+- Test: `order-create` thêm ca mặc định / chọn người khác / trigger chặn sửa / người ngừng hoạt động hoặc khác shop; `stats-journal` thêm gom theo người ăn doanh thu và đơn quầy chụp người bán. e2e `stats-journal`, `order-create`, `order-journey`, `pos` 58/58 trên `ikiot_e2e`; unit 708/708 (bỏ `*.excel.spec.ts`).
+
+**Chưa kiểm chứng / còn lại**
+- Migration mới chỉ áp lên `ikiot_e2e`. Chưa bấm thử trên trình duyệt. App mobile (nếu tạo đơn tay) chưa gửi `sellerId`, sẽ mặc định người tạo.
+- Kỳ có đơn cũ thì báo cáo mặc định có dòng "Không gắn nhân viên" lớn; chuyển "Tính theo" sang Người phụ trách để xem như trước.
+
+## 2026-11-26 - Đổi nhãn "Người ăn doanh thu" thành "Nhân viên bán hàng"
+
+**Đã làm**
+- Chủ dự án thấy chữ "ăn doanh thu" không hay: đổi nhãn trên form tạo đơn, thẻ thông tin đơn, ô "Tính theo" của báo cáo nhân viên, câu mô tả file xuất, câu lỗi `ORDER_SELLER_INVALID` và comment. Mã (`sellerId`, `groupBy=seller`) không đổi. Comment trong migration `20261126140000_order_seller` giữ nguyên vì sửa SQL đổi checksum.
+
+**Chưa kiểm chứng / còn lại**
+- Chỉ đổi chữ, chưa mở trên trình duyệt.

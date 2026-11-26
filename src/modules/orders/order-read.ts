@@ -43,6 +43,7 @@ export const ORDER_LIST_INCLUDE = {
   branch: BRANCH_NAME_SELECT,
   user: USER_REF_SELECT,
   assignee: USER_REF_SELECT,
+  seller: USER_REF_SELECT,
   confirmedBy: USER_REF_SELECT,
   shippedBy: USER_REF_SELECT,
   items: {

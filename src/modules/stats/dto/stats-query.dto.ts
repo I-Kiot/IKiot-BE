@@ -138,6 +138,7 @@ export class CashflowListQueryDto extends CashflowQueryDto {
 }
 
 export const STAFF_GROUP_BY_VALUES: readonly string[] = [
+  'seller',
   'assignee',
   'creator',
   'collector',
@@ -145,12 +146,12 @@ export const STAFF_GROUP_BY_VALUES: readonly string[] = [
 
 /** `/stats/revenue-by-staff`: doanh thu gắn với ai. */
 export class RevenueByStaffQueryDto extends StatsQueryDto {
-  /** Gom doanh thu theo người phụ trách, người lên đơn hoặc người thu tiền. */
+  /** Gom doanh thu theo nhân viên bán hàng, người phụ trách, người lên đơn hoặc người thu tiền. */
   @IsOptional()
   @IsIn(STAFF_GROUP_BY_VALUES, {
     message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
   })
-  groupBy: string = 'assignee';
+  groupBy: string = 'seller';
 
   /** Trang (từ 1), chỉ phân trang khi có `limit`. */
   @IsOptional()
@@ -165,6 +166,35 @@ export class RevenueByStaffQueryDto extends StatsQueryDto {
   @Min(1)
   @Max(100)
   limit?: number;
+}
+
+/** Giá trị `userId` cho phần doanh thu không gắn nhân viên. */
+export const NO_STAFF_ID = 'none';
+
+/** `/stats/revenue-by-staff/entries`: từng bút toán / khoản thu tạo nên một dòng của báo cáo nhân viên. */
+export class RevenueByStaffEntriesQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  groupBy: string = 'seller';
+
+  /** Id nhân viên, hoặc `none` cho phần không gắn nhân viên. */
+  @IsString()
+  userId!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 50;
 }
 
 /** `/stats/revenue-by-branch`: cùng cách phân trang tuỳ chọn như theo nhân viên. */
@@ -251,7 +281,7 @@ export class ReportExportQueryDto extends StatsQueryDto {
   @IsIn(STAFF_GROUP_BY_VALUES, {
     message: `staffGroupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
   })
-  staffGroupBy: string = 'assignee';
+  staffGroupBy: string = 'seller';
 
   /** Ngưỡng "sắp hết" của báo cáo tồn kho, như ô chọn trên trang. */
   @IsOptional()
