@@ -49,12 +49,9 @@ jobs:
             docker compose -f docker-compose.dev.yml --env-file .env.dev run --rm --no-deps nestjs npx --no-install prisma migrate deploy || exit 1
             docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --no-deps nestjs || exit 1
             # Readiness, not liveness: 200 only once the DB answers and holds every migration this image ships.
-            for i in $(seq 1 24); do
+            for i in $(seq 1 12); do
               curl -fsS https://api-dev.ikiot.io.vn/health/ready && break
-              if [ "$i" -eq 24 ]; then
-                docker compose -f docker-compose.dev.yml --env-file .env.dev ps -a nestjs
-                exit 1
-              fi
+              [ "$i" -eq 12 ] && exit 1
               sleep 5
             done
             # The image tag just moved, so the previous one is dangling; without this the disk filled up (2026-10-07).
