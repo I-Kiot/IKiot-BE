@@ -42,9 +42,7 @@ import {
   paymentRowsOf,
 } from './../src/modules/orders/payment-status';
 
-/**
- * Lấy hàng & giao hàng (C-2, C-8) trên Postgres thật: “ĐVVC đã lấy hàng” (POST /shipments), đổi shipper, chuyển sang Đang vận chuyển (bước trừ tồn kho). Ai được làm theo luật chốt 2026-10-06: chủ shop, người phụ trách đơn, hoặc người có quyền tại đúng kho. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm giao cho vận chuyển, đổi shipper, chuyển Đang vận chuyển (Postgres thật). */
 describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orders/:id/ship', () => {
   let prisma: PrismaService;
   let fulfillments: FulfillmentService;
@@ -153,7 +151,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         status: OrderStatus.CONFIRMED,
         grandTotal: 1000 * quantity,
         depositAmount: deposit,
-        // Cọc ghi thẳng ở cột `deposit_amount` (đơn lập trước khi cọc có Payment, `paymentRowsOf` vẫn tính là đã thu), nên trạng thái thanh toán đặt đúng theo quy tắc suy ra.
+        // Cọc ghi thẳng ở `deposit_amount`.
         paymentStatus: derivePaymentStatus(
           1000 * quantity,
           paymentRowsOf({ depositAmount: deposit, payments: [] }),
@@ -186,7 +184,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     driverId: driver,
   });
 
-  /** Gán shipper rồi shipper xác nhận đã lấy hàng (chốt 2026-10-15): đơn PICKED_UP, sẵn sàng chuyển Đang vận chuyển. */
+  /** Gán shipper rồi shipper xác nhận lấy hàng. */
   async function handedOver(orderId: string) {
     const created = await shipments.create(owner, tenantId, internal(orderId));
     return shipments.pickUp(driver, tenantId, created.id, {});
@@ -312,7 +310,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
   });
 
   afterAll(async () => {
-    await prisma.shipment.deleteMany({ where: { tenantId } }); // events: onDelete Cascade
+    await prisma.shipment.deleteMany({ where: { tenantId } }); // events: xoá cascade
     await prisma.fulfillmentPackage.deleteMany({ where: { tenantId } });
     await prisma.fulfillmentItem.deleteMany({
       where: { fulfillment: { tenantId } },
@@ -332,7 +330,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     await prisma.branch.deleteMany({ where: { tenantId } });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
-    await prisma.role.deleteMany({ where: { tenantId } }); // role_permissions: onDelete Cascade
+    await prisma.role.deleteMany({ where: { tenantId } }); // role_permissions: xoá cascade
     await prisma.cashFlow.deleteMany({ where: { tenantId } });
     await prisma.sepayTransaction.deleteMany({ where: { tenantId } });
     await prisma.tenant.delete({ where: { id: tenantId } });
@@ -505,7 +503,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
       ]);
       expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
       const loser = attempts.find((a) => a.status === 'rejected');
-      // Đơn vẫn PACKED sau khi gán: người thua bị chặn bởi "đã có lần giao đang mở", không phải trạng thái đơn.
+      // Người thua bị chặn vì đã có lần giao đang mở.
       expect([
         ErrorCode.SHIPMENT_ALREADY_OPEN,
         ErrorCode.ORDER_STATUS_CONFLICT,
@@ -588,7 +586,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
         stock: before.stock,
         lockedStock: before.lockedStock,
       });
-      // Từ 2026-11-26 chủ shop (và quản lý kho xuất) cũng được báo: ai trong số đó cũng bấm được Đang vận chuyển.
+      // Chủ shop và quản lý kho xuất cũng được báo.
       expect(notify).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientIds: [assigneeId, ownerId],
@@ -970,7 +968,7 @@ describe('Shipments – POST /shipments, PATCH /shipments/:id/driver, POST /orde
     });
   });
 
-  /** Đơn đã đóng gói, đã giao cho shipper `driverId` (shipper đã lấy hàng), đã chuyển Đang vận chuyển. Còn phải thu = 1000 − cọc. */
+  /** Đơn đã ở Đang vận chuyển; còn phải thu = 1000 - cọc. */
   async function shippedShipment(inCharge = assigneeId, deposit = 300) {
     const orderId = await packedOrder(1, inCharge, deposit);
     const created = await handedOver(orderId);

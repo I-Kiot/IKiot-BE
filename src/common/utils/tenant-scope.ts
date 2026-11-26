@@ -3,9 +3,9 @@ import { SystemRole } from '../constants/system-role';
 import type { AuthUser } from '../types/auth-user.type';
 import { ErrorCode } from '../errors/error-codes';
 
-// Tenant luôn suy ra từ user đã xác thực, không lấy từ client; chỉ ADMIN (không có tenant riêng) mới được nêu tenant tường minh.
+// Tenant luôn lấy từ user đã xác thực; chỉ ADMIN được chọn tenant.
 
-/** Filter tenant cho đọc: `undefined` với ADMIN không nêu tenant, nghĩa là mọi tenant; với người khác là tenant của chính họ. */
+/** Filter tenant khi đọc: ADMIN không chọn thì mọi tenant. */
 export function resolveTenantScope(
   user: AuthUser,
   requested?: string,
@@ -40,7 +40,7 @@ export function requireTenantId(user: AuthUser, requested?: string): string {
   return tenantId;
 }
 
-/** Nơi tài khoản làm việc, chi nhánh hay kho. Đơn thuộc địa điểm bán, và kho cũng bán được, nên phạm vi xem đơn đọc ở đây. */
+/** Nơi làm việc của tài khoản, dùng cho phạm vi xem đơn. */
 export function postingOf(user: AuthUser): string | null {
   return user.branchId ?? user.warehouseId ?? null;
 }

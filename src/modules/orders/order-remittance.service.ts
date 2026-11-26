@@ -33,9 +33,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { OrderEventType } from '../../common/constants/order-event-type';
 import { recordOrderEvent, userActor } from './order-events';
 
-/**
- * `POST /orders/:id/confirm-remittance` (A-10): bước cuối khi đơn thu tiền lúc giao. Tiền shipper thu nằm ở Payment `BALANCE` PENDING (đang ở tay shipper). Chủ chỉ chốt khi nhận đủ; khi đó Payment thành RECEIVED và đơn COMPLETED. Nộp thiếu bị từ chối. Tiền vào sổ thu chi ở bước này, vì trước đó nó còn ở tay shipper.
- */
+/** Chủ shop xác nhận đã nhận tiền mặt shipper nộp; đủ thì đơn hoàn tất. */
 @Injectable()
 export class OrderRemittanceService {
   constructor(
@@ -81,7 +79,7 @@ export class OrderRemittanceService {
         message: 'This order does not belong to your branch',
       });
     }
-    // Giao bằng QR cũng là RECEIVED, nhưng tiền đến qua webhook SePay chứ không qua shipper. Đơn đã RETURNED (giao xong rồi khách trả hàng khi tiền mặt còn ở tay shipper) vẫn nhận được tiền shipper nộp: tiền đã thu thật, chỉ không còn đơn nào để hoàn thành (quyết định 4, 2026-11-11).
+    // Chỉ khoản tiền mặt shipper thu; đơn đã RETURNED vẫn nhận được.
     const accepting: readonly string[] = [
       OrderStatus.RECEIVED,
       OrderStatus.RETURNED,
@@ -106,7 +104,7 @@ export class OrderRemittanceService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // Khoá đơn trước: xác nhận hai lần cùng lúc xếp hàng ở đây, lần sau thua ở lệnh chiếm khoản bên dưới (khoản không còn PENDING).
+      // Khoá đơn trước để xác nhận hai lần không ghi trùng.
       await lockOrder(tx, tenantId, id);
       for (const payment of order.payments) {
         const settled = await tx.payment.updateMany({
@@ -128,7 +126,7 @@ export class OrderRemittanceService {
             message: 'The payment has just changed, please reload',
           });
         }
-        // Shipper nộp thẳng cho chủ shop, không qua két nào: quỹ OWNER, `locationId` chỉ để quy về chi nhánh của đơn.
+        // Tiền shipper nộp vào quỹ OWNER.
         await writePaymentCashFlow(tx, {
           tenantId,
           payment,
@@ -142,7 +140,7 @@ export class OrderRemittanceService {
         });
       }
 
-      // Các khoản đã được chiếm: trạng thái thanh toán suy ra, rồi `nextStatusAfterPayment` quyết định đơn có hoàn thành không (RECEIVED, đủ tiền, hết tiền shipper đang giữ). Đơn RETURNED hay chưa đủ tiền thì giữ nguyên.
+      // Cập nhật trạng thái thanh toán và hoàn tất đơn nếu đủ điều kiện.
       const derived = await syncOrderPaymentStatus(tx, id);
       const stillHeld =
         (await tx.payment.count({

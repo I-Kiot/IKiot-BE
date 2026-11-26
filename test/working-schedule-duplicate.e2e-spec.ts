@@ -11,10 +11,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import { SystemRole } from './../src/common/constants/system-role';
 import { UserStatus } from './../src/common/constants/user-status';
 
-/**
- * Bug DEF-ST-08 trên Postgres thật: phân lại một nhân viên vào đúng ca, đúng ngày họ đã có thì bị từ chối và không ghi gì;
- * thêm người mới vào ca đã có vẫn được. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm không xếp trùng người vào cùng ca (Postgres thật). */
 describe('Working schedules – assigning the same person to the same shift twice', () => {
   let prisma: PrismaService;
   let schedules: WorkingScheduleService;

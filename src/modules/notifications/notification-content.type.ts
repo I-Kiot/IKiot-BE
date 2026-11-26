@@ -1,4 +1,4 @@
-/** Nội dung thông báo (title, description, link), do template theo domain tạo, không viết inline trong service nghiệp vụ. */
+/** Nội dung thông báo: tiêu đề, mô tả, link. */
 export interface NotificationContent {
   type: string;
   title: string;

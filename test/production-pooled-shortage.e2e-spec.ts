@@ -12,8 +12,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Số thiếu dùng chung (2026-11-19) trên Postgres thật: YCSX gắn dòng đơn trừ vào chính dòng đó, YCSX đặt chung che số thiếu
-// của mọi đơn cùng (địa điểm, SKU), nên nút "Tạo YCSX" (orderableQuantity) và guard khi tạo cùng một phép tính. Tự tạo và xoá tenant riêng.
+// Kiểm số thiếu dùng chung giữa YCSX gắn dòng và YCSX chung (Postgres thật).
 describe('pooled production shortage and per-line progress', () => {
   let app: INestApplication;
   let prisma: PrismaService;

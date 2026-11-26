@@ -13,11 +13,7 @@ import { SepayResolution } from '../../common/constants/payment-method';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/**
- * `POST /orders/:id/refund-excess` (Phase 6): trả lại phần khách chuyển dư (`paymentSummary.overpaidBy`) của một đơn đã chốt. Một transaction: khoá đơn → khoản REFUND + dòng chi `ORDER_REFUND` (quỹ chi nhánh của đơn nếu tiền mặt) → đồng bộ trạng thái thanh toán → sự kiện `REFUNDED`.
- * Khi hoàn hết phần dư, dòng sổ SePay của đơn có `excess_amount > 0` được đánh dấu đã xử lý (`REFUNDED_MANUALLY`, người hoàn là người xử lý) để khỏi nằm mãi trong danh sách cần đối soát. Hoàn một phần thì dòng sổ còn mở.
- * Quyền `returns:inspect` (quyết định D1: không thêm quyền mới).
- */
+/** Hoàn phần khách chuyển dư của đơn đã chốt. */
 @Injectable()
 export class OrderExcessRefundService {
   constructor(

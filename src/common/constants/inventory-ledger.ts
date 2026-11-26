@@ -1,4 +1,4 @@
-/** `InventoryTransaction.type` - loại dòng sổ cái. Số lượng có dấu (+ vào, - ra); mỗi dòng chỉ tác động đúng một lot. `balanceAfter` luôn là `stock` (chỉ hàng bán được) sau dòng đó, nên dòng chạm lô hỏng giữ nguyên số trước. */
+/** Loại dòng sổ kho: số lượng có dấu, mỗi dòng tác động đúng một lô. */
 export const InventoryTxType = {
   IMPORT: 'IMPORT',
   TRANSFER_OUT: 'TRANSFER_OUT',
@@ -12,9 +12,9 @@ export const InventoryTxType = {
   RETURN_GOOD: 'RETURN_GOOD',
   /** Khách trả hàng hỏng: về lô con hỏng tại nơi nhận, không vào `stock`. */
   RETURN_DAMAGED: 'RETURN_DAMAGED',
-  /** Hàng lỗi từ phiếu nhập xưởng: mở lô hỏng (`isSellable = false`) ngay tại nơi nhận, không vào `stock`. */
+  /** Hàng lỗi từ phiếu nhập xưởng: mở lô hỏng tại nơi nhận, không vào `stock`. */
   DEFECT: 'DEFECT',
-  /** Phát hiện hỏng trên kệ (2026-11-26): dòng âm rút lô bán được, dòng dương vào lô con hỏng cùng địa điểm. */
+  /** Phát hiện hỏng trên kệ: rút lô bán được, thêm lô hỏng cùng địa điểm. */
   MARK_DAMAGED: 'MARK_DAMAGED',
   /** Hàng hỏng đã sửa xong: dòng âm rút lô hỏng, dòng dương vào lô con bán được cùng địa điểm. */
   REPAIRED: 'REPAIRED',
@@ -34,14 +34,14 @@ export const InventoryRefType = {
   ORDER: 'ORDER',
   PRODUCTION_REQUEST: 'PRODUCTION_REQUEST',
   ORDER_RETURN: 'ORDER_RETURN',
-  /** Dòng OPENING: dòng inventory có tồn kho đã chuyển thành lot. Cũng là chứng từ của MARK_DAMAGED / REPAIRED / WRITE_OFF (id dòng inventory). */
+  /** Chuyển tồn có sẵn thành lô; cũng là chứng từ của đánh dấu hỏng, sửa xong, huỷ hàng hỏng. */
   INVENTORY: 'INVENTORY',
 } as const;
 
 export type InventoryRefType =
   (typeof InventoryRefType)[keyof typeof InventoryRefType];
 
-/** `InventoryLot.sourceType` - hàng gốc từ đâu. Giữ nguyên khi lot bị tách do chuyển kho hoặc trả hàng, để biên lợi nhuận theo nguồn không đổi qua các lần di chuyển. */
+/** Nguồn gốc lô hàng, giữ nguyên khi lô bị tách do chuyển kho hay trả hàng. */
 export const LotSourceType = {
   SUPPLIER: 'SUPPLIER',
   WORKSHOP: 'WORKSHOP',
@@ -53,7 +53,7 @@ export const LotSourceType = {
 
 export type LotSourceType = (typeof LotSourceType)[keyof typeof LotSourceType];
 
-/** `StockMovementRequest.importSource` - hai luồng nhận hàng, không bao giờ lẫn trên một chứng từ. Chỉ đặt cho IMPORT (SQL CHECK). */
+/** Hai luồng nhập hàng (NCC / xưởng), chỉ đặt cho phiếu IMPORT. */
 export const ImportSource = {
   SUPPLIER: 'SUPPLIER',
   WORKSHOP: 'WORKSHOP',
@@ -63,7 +63,7 @@ export type ImportSource = (typeof ImportSource)[keyof typeof ImportSource];
 
 export const IMPORT_SOURCES: readonly string[] = Object.values(ImportSource);
 
-/** `Supplier.type`. GOODS bán thành phẩm (nhập SUPPLIER); WORKSHOP làm theo đơn (yêu cầu sản xuất + nhập WORKSHOP). */
+/** Loại nhà cung cấp: GOODS bán thành phẩm, WORKSHOP làm theo yêu cầu sản xuất. */
 export const SupplierType = {
   GOODS: 'GOODS',
   WORKSHOP: 'WORKSHOP',

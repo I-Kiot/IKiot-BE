@@ -55,11 +55,7 @@ const CUSTOMIZATION_SELECT = {
   },
 } as const satisfies Prisma.OrderItemCustomizationDefaultArgs;
 
-/**
- * "Danh sách cần sản xuất" (hành trình GĐ1 – Bước 4, contract §3 `GET /production-list`). Không có bảng: mỗi dòng được tính lại
- * từ đơn đang mở, tồn kho và yêu cầu sản xuất đang mở mỗi lần đọc, nên không thể lệch với chúng. Phép tính nằm ở `production-list.ts`;
- * service này chỉ tải dòng (hai vòng query bất kể số dòng, coding rule 19) và trang trí kết quả.
- */
+/** Danh sách cần sản xuất, tính lại mỗi lần đọc. */
 @Injectable()
 export class ProductionListService {
   constructor(
@@ -76,7 +72,7 @@ export class ProductionListService {
         message: 'You can only see the production list of your own location',
       });
     }
-    // Id không thuộc shop này sẽ lọc hết mọi dòng, và danh sách rỗng bị hiểu là "không có gì để làm" – địa điểm cũ ở client từng cho đúng kết quả đó.
+    // Lọc bỏ id không thuộc shop.
     if (query.locationId) {
       await resolveLocations(this.prisma, tenantId, [query.locationId]);
     }
@@ -128,7 +124,7 @@ export class ProductionListService {
           row.requests.length > 0 ||
           row.orders.some((order) => order.coveredQuantity > 0)),
     );
-    // `compareRows` đã đưa dòng thiếu và dòng có đơn lên trước; phần còn lại bằng nhau nên xếp theo tên ở đây, vì tên chỉ biết ở đây.
+    // Sắp theo tên cho các dòng bằng nhau.
     const rank = new Map(filtered.map((row, index) => [row.key, index]));
     const rows = (await this.decorate(tenantId, filtered)).sort((a, b) => {
       const ra = rank.get(a.key)!;
@@ -155,7 +151,7 @@ export class ProductionListService {
     };
   }
 
-  /** Mọi SKU sản xuất được (PRODUCT chưa ngừng, của sản phẩm có `isManufacturable`) ở mọi địa điểm bán được trong phạm vi – thứ "đặt bất kỳ gì" liệt kê. */
+  /** Mọi SKU sản xuất được ở các địa điểm trong phạm vi. */
   private async cataloguePairs(
     tenantId: string,
     locationIds: string[] | null,
@@ -191,10 +187,7 @@ export class ProductionListService {
     );
   }
 
-  /**
-   * B-3: mỗi cặp bị chạm đang thiếu bao nhiêu ngay bây giờ, khoá bởi `rowKey` (gồm cả dòng tuỳ chỉnh của cặp). Lần sửa đơn
-   * chụp một snapshot trước khi đổi và đưa cho `notifyNewShortages` sau commit. Hook thuộc module đơn (track A); đây là nửa nó gọi.
-   */
+  /** Chụp số thiếu hiện tại của các cặp bị chạm. */
   async shortagesFor(
     tenantId: string,
     pairs: StockPair[],
@@ -207,7 +200,7 @@ export class ProductionListService {
     return new Map(entries.map((row) => [row.key, row.shortQuantity]));
   }
 
-  /** Sau commit, đọc lại các cặp đó và báo quản lý từng địa điểm về mỗi dòng vừa thành thiếu (`crossedShortage`). Không bao giờ ném lỗi. */
+  /** Báo quản lý địa điểm về dòng vừa thành thiếu, không ném lỗi. */
   async notifyNewShortages(
     tenantId: string,
     pairs: StockPair[],
@@ -252,7 +245,7 @@ export class ProductionListService {
     }
   }
 
-  /** `null` = mọi địa điểm (chủ/admin). Nhân viên chỉ thấy địa điểm được gắn; chưa gắn nơi nào thì không thấy gì, không được rơi xuống "không lọc" (quy tắc két tiền). */
+  /** Phạm vi địa điểm, null là mọi địa điểm. */
   readableLocations(user: AuthUser): string[] | null {
     const own = postingOf(user);
     if (!own) return null;

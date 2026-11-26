@@ -68,7 +68,7 @@ describe('cash flow category / fund', () => {
 
 describe('cash flow writers', () => {
   it('only order-cash-flow.ts and suppliers.service.ts create cash flows', () => {
-    // Một nơi ghi dòng tiền của đơn và tiền SePay chưa gắn đơn (`writePaymentCashFlow`, `writeUnallocatedCashFlow`) và một nơi cho nhà cung cấp. Đơn quầy hết ghi trực tiếp từ Phase 3: nó cũng có Payment.
+    // Nơi ghi dòng tiền của đơn, tiền SePay chưa gắn đơn và tiền nhà cung cấp.
     const allowed = new Set([
       'modules/orders/order-cash-flow.ts',
       'modules/suppliers/suppliers.service.ts',

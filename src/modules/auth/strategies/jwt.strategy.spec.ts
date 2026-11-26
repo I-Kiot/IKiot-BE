@@ -1,6 +1,6 @@
 import { JwtStrategy } from './jwt.strategy';
 
-/** Quyền tự cấp cho nhân viên xưởng (2026-11-26): chỉ tài khoản STAFF gắn xưởng có `production:deliver`, không cần role. */
+/** Quyền tự cấp `production:deliver` cho nhân viên gắn xưởng. */
 describe('JwtStrategy - workshop staff permissions', () => {
   const saved = process.env.ACCESS_TOKEN_SECRET;
   beforeAll(() => {

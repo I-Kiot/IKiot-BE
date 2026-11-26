@@ -12,13 +12,7 @@ import { OrderService } from './orders.service';
 import { OrderChanges } from './orders.change-template';
 import { isQrExpired, qrIssuedBefore } from './sepay-qr';
 
-/**
- * Dọn mã QR SePay hết hạn, mỗi 5 phút:
- * (a) đơn quầy chờ QR quá hạn → CANCELLED, hàng về kho (nguồn sự kiện SYSTEM);
- * (b) khoản thu khi giao / tại quầy quá hạn → EXPIRED. Đơn giữ nguyên trạng thái, không có sự kiện: shipper còn tạo lại mã hay thu tiền mặt được.
- * Chạy được trên nhiều instance cùng lúc: mọi thay đổi đều là lệnh chiếm có điều kiện (còn PENDING), nên instance sau không làm gì thêm.
- * Giữa lúc hết hạn và lượt cron kế tiếp một khoản vẫn PENDING: mọi chỗ đọc phải dùng `isQrExpired`, không tin riêng status.
- */
+/** Cron 5 phút: huỷ đơn quầy QR quá hạn, đánh dấu EXPIRED cho khoản QR quá hạn. */
 @Injectable()
 export class SepayQrExpiryCron {
   private readonly logger = new Logger(SepayQrExpiryCron.name);

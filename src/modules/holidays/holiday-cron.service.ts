@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { HolidaySyncService } from './holiday-sync.service';
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 
-/** Chạy 02:30 ngày 1 hàng tháng, đồng bộ năm hiện tại và năm sau (tháng 12 cần biết trước năm sau). Bỏ qua nếu thiếu GOOGLE_CALENDAR_API_KEY; lỗi của một tenant không dừng cả vòng. */
+/** Cron 02:30 ngày 1 hàng tháng, đồng bộ ngày lễ năm nay và năm sau. */
 @Injectable()
 export class HolidayCronService {
   private readonly logger = new Logger(HolidayCronService.name);

@@ -1,4 +1,4 @@
-/** Yêu cầu sản xuất chỉ là danh sách theo dõi và gọi xưởng, không tự gửi gì. Nhân viên chuyển DRAFT → SENT hoặc huỷ; PARTIALLY_RECEIVED và COMPLETED chỉ đến từ phiếu nhận (`POST /production-requests/:id/receive`). */
+/** Trạng thái YCSX: nhân viên gửi hoặc huỷ, nhận một phần / hoàn tất chỉ đến từ phiếu nhận. */
 export const ProductionRequestStatus = {
   DRAFT: 'DRAFT',
   /** Đã gọi xưởng. Từ đây thông số đặt riêng bị khoá. */
@@ -15,14 +15,14 @@ export const PRODUCTION_REQUEST_STATUSES: readonly string[] = Object.values(
   ProductionRequestStatus,
 );
 
-/** Yêu cầu còn chờ hàng, kể cả nháp - danh sách sản xuất trừ các yêu cầu này trước khi gọi phần thiếu là "chưa đặt". */
+/** YCSX còn chờ hàng, kể cả nháp. */
 export const OPEN_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.DRAFT,
   ProductionRequestStatus.SENT,
   ProductionRequestStatus.PARTIALLY_RECEIVED,
 ];
 
-/** Đã gửi xưởng và chưa giao đủ - là `onOrderQuantity` của danh sách. DRAFT được tính riêng (`draftQuantity`) vì chưa ai gọi xưởng (hợp đồng §3). */
+/** YCSX đã gửi xưởng và chưa giao đủ. */
 export const ON_ORDER_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.SENT,
   ProductionRequestStatus.PARTIALLY_RECEIVED,
@@ -31,7 +31,7 @@ export const ON_ORDER_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
 export const RECEIVABLE_PRODUCTION_REQUEST_STATUSES: readonly string[] =
   ON_ORDER_PRODUCTION_REQUEST_STATUSES;
 
-/** Trạng thái người dùng tự đặt (`PATCH /production-requests/:id/status`). PARTIALLY_RECEIVED chỉ đến từ phiếu nhận; COMPLETED cũng vậy, trừ khi đóng yêu cầu giao thiếu (2026-10-05). */
+/** Trạng thái người dùng tự đặt được qua `PATCH /production-requests/:id/status`. */
 export const MANUAL_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.SENT,
   ProductionRequestStatus.CANCELLED,
@@ -44,7 +44,7 @@ export const FINAL_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.CANCELLED,
 ];
 
-/** Phiếu giao của xưởng gắn với yêu cầu SENT / PARTIALLY_RECEIVED (2026-10-09). PENDING chưa đụng tới kho; RECEIVED chỉ do địa điểm nhận xác nhận - lúc đó tồn kho và công nợ xưởng tăng. */
+/** Trạng thái phiếu giao xưởng: RECEIVED khi nơi nhận xác nhận, lúc đó mới tăng tồn và công nợ. */
 export const ProductionDeliveryStatus = {
   PENDING: 'PENDING',
   RECEIVED: 'RECEIVED',
@@ -58,7 +58,7 @@ export const PRODUCTION_DELIVERY_STATUSES: readonly string[] = Object.values(
   ProductionDeliveryStatus,
 );
 
-/** Những gì nhân viên xưởng thấy: mọi yêu cầu đã gửi tới xưởng. DRAFT chưa gửi nên vẫn là việc của shop. */
+/** Trạng thái YCSX nhân viên xưởng thấy được (đã gửi tới xưởng). */
 export const WORKSHOP_VISIBLE_PRODUCTION_REQUEST_STATUSES: readonly string[] = [
   ProductionRequestStatus.SENT,
   ProductionRequestStatus.PARTIALLY_RECEIVED,

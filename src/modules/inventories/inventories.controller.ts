@@ -22,7 +22,7 @@ import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { InventoryChanges } from './inventories.change-template';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Port của InventoryController, vẫn ở `/inventory` số ít. Thêm / xoá hàng tại địa điểm nay dùng `inventory:create` / `delete` (tenant cấp), vì role cũ đã bỏ. */
+/** Controller tồn kho ở `/inventory`. */
 @ApiTags('inventory')
 @ApiBearerAuth('bearer')
 @Controller('inventory')

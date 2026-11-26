@@ -42,9 +42,7 @@ const ORDER_FOR_INVOICE = {
   },
 } as const satisfies Prisma.OrderSelect;
 
-/**
- * Mỗi đơn có một hoá đơn BÁN, ở trạng thái PENDING từ khi đơn tồn tại; chuyển sang ISSUED (đánh số, khoá dòng) khi đơn COMPLETED. ISSUED không bao giờ bị sửa: hàng trả sau đó sinh ADJUSTMENT âm. Mọi method nhận transaction của caller, để hoá đơn không ISSUED khi việc hoàn thành đơn bị rollback.
- */
+/** Hoá đơn theo vòng đời đơn: PENDING → ISSUED khi hoàn tất, trả hàng thì ADJUSTMENT âm. */
 @Injectable()
 export class InvoiceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -69,7 +67,7 @@ export class InvoiceService {
     });
   }
 
-  /** PENDING -> ISSUED cho đơn COMPLETED. Idempotent: lần gọi thứ hai (webhook gửi lại, hai route chạy đua) trả về hoá đơn đã ISSUED. */
+  /** Phát hành hoá đơn cho đơn COMPLETED, gọi lại không sao. */
   async issueForOrder(tx: Tx, orderId: string, actorId?: string | null) {
     const order = await this.loadOrder(tx, orderId);
     const existing = await this.liveSale(tx, orderId);
@@ -163,7 +161,7 @@ export class InvoiceService {
     });
   }
 
-  /** Đơn bị huỷ (hoặc trả hết) trước khi hoàn thành: hoá đơn chưa từng ISSUED nên bị rút lại, không điều chỉnh. */
+  /** Huỷ hoá đơn chưa phát hành khi đơn bị huỷ. */
   async voidPending(tx: Tx, orderId: string) {
     await tx.invoice.updateMany({
       where: {
@@ -175,10 +173,7 @@ export class InvoiceService {
     });
   }
 
-  /**
-   * Hàng được trả. Khi hoá đơn BÁN đã ISSUED thì ghi ADJUSTMENT âm theo giá trị trả; còn PENDING thì không ghi gì, vì `issueForOrder` đã trừ số lượng trả.
-   * `items` rỗng nghĩa là trả cả đơn.
-   */
+  /** Ghi hoá đơn điều chỉnh âm khi trả hàng. */
   async adjustForReturn(
     tx: Tx,
     orderId: string,
@@ -194,7 +189,7 @@ export class InvoiceService {
       orderBy: { position: 'asc' },
     });
     const wanted = new Map(items?.map((i) => [i.orderItemId, i.quantity]));
-    // Số đã điều chỉnh ở các hoá đơn điều chỉnh trước, để các lát trả cộng lại đúng bằng giá trị dòng (không trôi từng lần làm tròn).
+    // Số đã điều chỉnh ở các lần trước.
     const earlier = await tx.invoiceLine.findMany({
       where: {
         invoice: {
@@ -270,7 +265,7 @@ export class InvoiceService {
     });
   }
 
-  /** Số hoá đơn đếm tăng theo từng shop; advisory lock tuần tự hoá hai lần phát hành trong cùng shop để không đọc trùng số lớn nhất. */
+  /** Số hoá đơn tăng theo shop, dùng advisory lock. */
   private async allocateNumber(
     tx: Tx,
     tenantId: string,

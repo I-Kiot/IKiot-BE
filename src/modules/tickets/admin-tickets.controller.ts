@@ -18,7 +18,7 @@ import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Phía operator. Controller cũ tự check `role === 'SUPER_ADMIN'` trong từng handler; giờ guard làm việc đó, nên các route này không có `@Permissions`. */
+/** Route ticket cho admin. */
 @ApiTags('tickets')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)

@@ -80,10 +80,7 @@ type ItemWithCodes = Omit<CreateProductItemDto, 'barcode'> & {
   barcode: string | null;
 };
 
-/**
- * Mã vạch là tuỳ chọn, nên trống phải là `null` chứ không phải `''`: `@@unique([tenantId, barcode])`
- * coi mọi chuỗi rỗng là cùng một mã, còn null thì không trùng với nhau.
- */
+/** Barcode trống là null để không trùng unique. */
 function normalizeBarcode(value: string | null | undefined): string | null {
   return value?.trim() || null;
 }
@@ -113,7 +110,7 @@ type ThumbnailSource = Prisma.ProductItemGetPayload<{
   select: typeof THUMBNAIL_SELECT;
 }>;
 
-/** Ảnh đại diện (isThumbnail) trước, rồi ảnh đầu tiên; phiên bản không có ảnh nào thì dùng ảnh hàng hoá. */
+/** Ảnh đại diện của phiên bản, không có thì dùng ảnh hàng hoá. */
 function thumbnailOf({ images, product }: ThumbnailSource): string | null {
   const pick = (list: { url: string; isThumbnail: boolean }[]) =>
     (list.find((image) => image.isThumbnail) ?? list[0])?.url;
@@ -144,8 +141,7 @@ const ITEM_INCLUDE = {
       },
     },
   },
-  // Một tầng: thành phần là combo thì FE mở tiếp bằng GET /products/:productId của nó.
-  // Thứ tự cố định theo SKU: mỗi lần lưu là xoá rồi ghi lại, bảng không có cột vị trí nên không giữ được thứ tự nhập.
+  // Thành phần combo một tầng, sắp theo SKU.
   comboComponents: {
     orderBy: [{ componentItem: { sku: 'asc' } }, { componentItemId: 'asc' }],
     select: {
@@ -181,24 +177,19 @@ export interface StockDetail {
   location: LocationRef;
 }
 
-/**
- * Tồn của phiên bản cho màn theo địa điểm: `details` là nơi đang xem, `allLocations` là toàn chuỗi, để biết còn hàng ở đâu khi nơi đang xem hết.
- */
+/** Tồn của phiên bản tại nơi đang xem và toàn chuỗi. */
 interface ItemStock {
   details: StockDetail[];
   allLocations: number;
-  /** Số bán được tại nơi đang xem: `stock − lockedStock` mỗi dòng, không âm. `stock` ở trên là tổng trên tay, kể cả hàng đã đóng gói. */
+  /** Số bán được tại nơi đang xem. */
   available: number;
   /** Như trên, nhưng trên mọi địa điểm. */
   availableAllLocations: number;
-  /** Chỉ với COMBO (không có dòng riêng): số bộ đủ hàng theo kệ của các thành phần (`comboSetsAvailable`), thay các số trên khi có. */
+  /** Số bộ đủ hàng của combo. */
   sets?: { here: number; allLocations: number };
 }
 
-/**
- * Port của ProductService: Product là danh mục, ProductItem là phiên bản bán được (giá, SKU, tồn kho).
- * Khác bản cũ: bắt buộc có gói để tạo, `categoryName` tự suy ra, xoá kiểm mọi FK tham chiếu.
- */
+/** Service sản phẩm: sản phẩm là danh mục, phiên bản là thứ bán được. */
 @Injectable()
 export class ProductService {
   constructor(
@@ -215,12 +206,7 @@ export class ProductService {
     return this.findOne(tenantId, productId, {});
   }
 
-  /**
-   * Tạo nhiều hàng hoá kèm biến thể trong một transaction - form "Thêm hàng hóa" và nhập Excel
-   * đi cùng một bộ kiểm tra, nên không đường nào bỏ sót được. Tất cả hoặc không gì: quota phải
-   * đủ cho mọi hàng hoá, và mã được cấp cho cả lô một lần (cấp theo từng hàng hoá sẽ trao hai
-   * hàng hoá cùng một số `SP`, vì chưa gì được ghi trước khi transaction chạy).
-   */
+  /** Tạo nhiều hàng hoá kèm phiên bản trong một transaction. */
   async createMany(
     tenantId: string,
     dtos: CreateProductDto[],
@@ -273,8 +259,7 @@ export class ProductService {
       return { dto, items };
     });
 
-    // Một hàng hoá vài biến thể là vài chục câu lệnh; nhập vài trăm dòng là hàng nghìn,
-    // vượt xa mặc định 5 s của interactive transaction.
+    // Tăng timeout transaction cho lô lớn.
     const timeout = Math.max(5_000, allItems.length * 200);
     return this.prisma.$transaction(
       async (tx) => {
@@ -358,13 +343,13 @@ export class ProductService {
       this.prisma.product.count({ where }),
     ]);
 
-    // Không kèm `items`: danh sách là bảng sản phẩm, gắn mọi phiên bản làm payload lớn gấp nhiều lần. Cần phiên bản thì dùng /products/search hoặc /products/items.
+    // Danh sách sản phẩm không kèm phiên bản.
     const totals = await this.totalStockByProduct(
       tenantId,
       rows.map((row) => row.id),
       query,
     );
-    // Combo không có dòng tồn riêng nên truy vấn trên trả 0. Tổng combo là số bộ mà các phiên bản của nó đủ phủ (`stockWithCombos`), cộng như phiên bản thường.
+    // Tồn của combo tính theo số bộ.
     const comboSets = await this.comboProductTotals(
       tenantId,
       rows
@@ -394,7 +379,7 @@ export class ProductService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** Tìm cho POS: từ khoá khớp tên sản phẩm (bất kỳ vị trí) và khớp đầu mã / SKU / barcode của phiên bản; trả kèm phiên bản để chọn thẳng. */
+  /** Tìm sản phẩm cho POS, kèm phiên bản. */
   async search(tenantId: string, query: SearchProductDto) {
     const where = this.buildProductWhere(tenantId, query);
     if (query.q) {
@@ -462,10 +447,7 @@ export class ProductService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /**
-   * Danh sách phẳng phiên bản cho bộ chọn SKU, giới hạn số dòng thay vì phân trang.
-   * `branchIds` chỉ gắn tồn tại các chi nhánh đó, không lọc: hàng chưa có ở chi nhánh vẫn hiện với `stock: 0`.
-   */
+  /** Danh sách phẳng phiên bản cho bộ chọn SKU. */
   async listItems(tenantId: string, query: QueryProductItemDto) {
     const where: Prisma.ProductItemWhereInput = { tenantId };
 
@@ -581,7 +563,7 @@ export class ProductService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
-    // Prisma update({ where: { id } }) không nhận bộ lọc tenant không unique, nên phải kiểm phạm vi trước, không thì tenant nào cũng ghi được dòng theo id.
+    // Kiểm tenant trước khi update theo id.
     const existing = await this.prisma.product.findFirst({
       where: { id, tenantId },
       select: { id: true },
@@ -599,9 +581,7 @@ export class ProductService {
         : await this.resolveCategoryName(tenantId, dto.categoryId);
 
     await this.prisma.$transaction(async (tx) => {
-      // Ngừng bán combo thì các món của nó được phép ngừng theo (`discontinue` không tính combo đã
-      // ngừng), nên bật combo lại phải kiểm lại. Trạng thái đọc lại sau khoá: đọc trước đó thì một
-      // `discontinue` chen vào giữa làm lệnh này bật combo lên mà không qua kiểm tra.
+      // Bật lại combo phải kiểm lại thành phần sau khoá.
       if (
         dto.status !== undefined &&
         dto.status !== ProductStatus.DISCONTINUED
@@ -653,7 +633,7 @@ export class ProductService {
     return this.findOne(tenantId, id, {});
   }
 
-  /** Thêm một thuộc tính (đứng cuối); trùng tên (không phân biệt hoa thường) thì trả thuộc tính đã có, chỉ cập nhật đơn vị nếu vừa gửi. */
+  /** Thêm một thuộc tính; trùng tên thì trả thuộc tính có sẵn. */
   async addAttribute(
     tenantId: string,
     productId: string,
@@ -705,7 +685,7 @@ export class ProductService {
     });
   }
 
-  /** Xoá mềm thành DISCONTINUED. Dòng đơn, phiếu kho và tồn kho đều có FK tới phiên bản, nên bị từ chối khi còn tồn, phiếu chưa xong hoặc đơn chưa thanh toán. */
+  /** Ngừng bán (xoá mềm), từ chối khi còn tồn, phiếu chưa xong hoặc đơn chưa thanh toán. */
   async discontinue(tenantId: string, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, tenantId },
@@ -773,11 +753,10 @@ export class ProductService {
       }
     }
 
-    // Kiểm combo và ghi trạng thái dưới cùng khoá với việc sửa thành phần / bật lại combo, nếu không một combo
-    // vừa thêm món này (chưa commit) sẽ không được đếm.
+    // Kiểm combo dưới cùng khoá với sửa thành phần.
     await this.prisma.$transaction(async (tx) => {
       await lockComboGraph(tx, tenantId);
-      // Combo của sản phẩm khác còn bán mà chứa SKU của sản phẩm này: ngừng nó thì combo bán ra món đã ngừng.
+      // Chặn ngừng bán khi combo đang bán còn chứa SKU này.
       const combos = await tx.comboComponent.count({
         where: {
           componentItem: { productId: id },
@@ -808,7 +787,7 @@ export class ProductService {
     dto: CreateProductItemDto,
     actorId: string | null = null,
   ) {
-    // Bản cũ đặt sau requireActiveSubscription: thêm phiên bản không tốn hạn mức sản phẩm, nhưng vẫn là ghi vào danh mục.
+    // Thêm phiên bản cần gói còn hiệu lực.
     await this.subscriptions.requireActiveSubscription(tenantId);
 
     const product = await this.prisma.product.findFirst({
@@ -841,7 +820,7 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  /** Lịch sử giá bán lẻ / giá vốn của một mặt hàng, mới nhất trước (`GET /products/items/:itemId/price-history`). `fromValue` null = giá lúc tạo; `changedBy` null = hệ thống (giá vốn combo tự tính lại). */
+  /** Lịch sử giá của một mặt hàng, mới nhất trước. */
   async priceHistory(
     tenantId: string,
     itemId: string,
@@ -915,15 +894,14 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    // Trimmed like `allocateItemCodes` does on create. Blank means "keep the current code": both are
-    // the variant's identity and must stay unique, and an empty string would be a code nobody can search.
+    // Mã trống thì giữ mã hiện tại.
     const sku = dto.sku?.trim() || undefined;
     const productCode = dto.productCode?.trim() || undefined;
     if (sku) await this.assertSkusAreFree(tenantId, [sku], itemId);
     if (productCode) {
       await this.assertProductCodesAreFree(tenantId, [productCode], itemId);
     }
-    // Unlike the two codes a barcode is optional, so blank clears it (null) rather than keeping it.
+    // Barcode trống thì xoá (null).
     const barcode =
       dto.barcode === undefined ? undefined : normalizeBarcode(dto.barcode);
     if (barcode) await this.assertBarcodesAreFree(tenantId, [barcode], itemId);
@@ -975,7 +953,7 @@ export class ProductService {
         await recomputeComboCosts(tx, tenantId, [itemId], actorId);
       }
 
-      // Hai danh sách được thay toàn bộ khi có gửi, như API cũ: client gửi danh sách cuối cùng, không gửi phần vá.
+      // Thay toàn bộ hai danh sách khi có gửi.
       if (dto.images) {
         await tx.productItemImage.deleteMany({
           where: { productItemId: itemId },
@@ -1011,7 +989,7 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  /** Xoá cứng phiên bản, bị từ chối khi còn gì trỏ tới. Bản cũ chỉ kiểm tồn kho; ở đây còn ba tham chiếu FK nữa. */
+  /** Xoá cứng phiên bản khi không còn gì trỏ tới. */
   async removeItem(tenantId: string, itemId: string) {
     const item = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
@@ -1109,9 +1087,7 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  /**
-   * Combo của `productId` chỉ bán lại khi không thành phần nào đã ngừng. Thành phần là chính `productId` thì bỏ qua (chúng bật lại cùng nó).
-   */
+  /** Combo của sản phẩm chỉ bán lại khi không thành phần nào đã ngừng. */
   private async assertCombosSellable(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -1176,8 +1152,7 @@ export class ProductService {
       });
     }
     assertComponentsMatchType(itemType, dto.comboComponents);
-    // A combo's cost is derived from its components (set by `writeComboComponents` below), so the
-    // client's figure, if any, is dropped; everything else must bring one.
+    // Giá vốn combo tự tính, bỏ số client gửi.
     if (itemType !== ProductItemType.COMBO && dto.costPrice === undefined) {
       throw new BadRequestException({
         code: ErrorCode.VALIDATION_FAILED,
@@ -1263,23 +1238,18 @@ export class ProductService {
       where.isManufacturable = query.isManufacturable;
     }
 
-    // "Products this supplier supplies" is a fact about the variants, so it is a relation filter rather than the old fetch-ids-then-intersect dance.
+    // Lọc sản phẩm theo NCC của phiên bản.
     if (query.supplierId) {
       where.productItems = {
         some: { suppliers: { some: { supplierId: query.supplierId } } },
       };
     }
 
-    // Địa điểm cố ý KHÔNG lọc danh sách: danh mục thuộc shop, mọi chi nhánh / kho đều thấy mọi sản phẩm;
-    // địa điểm chỉ đổi con số bên cạnh (xem stockByItem). Không lọc bằng `inventories: { some: … }`, vì khi đó
-    // sản phẩm chưa từng nhập ở đây sẽ biến mất thay vì hiện "chưa có tồn".
+    // Địa điểm không lọc danh sách, chỉ đổi số tồn.
     return where;
   }
 
-  /**
-   * Tồn kho của từng phiên bản trong một query cho cả trang. Cố ý **không** lọc theo địa điểm: hai số
-   * (chi nhánh này / toàn chuỗi) đều lấy từ cùng các dòng, lọc trong SQL sẽ tốn thêm một query để lấy lại tổng.
-   */
+  /** Tồn của mọi phiên bản trong trang bằng một truy vấn. */
   private async stockByItem(
     tenantId: string,
     itemIds: string[],
@@ -1370,11 +1340,7 @@ export class ProductService {
     return byItem;
   }
 
-  /**
-   * `stockByItem` cho trang có thể chứa COMBO. Combo không có dòng tồn kho nên số được suy ra: mở xuống
-   * các món lá (`flattenCombo`), món hết trước quyết định số bộ, ở nơi đang xem và toàn chuỗi. Tồn của các
-   * món lá đi chung query với các món của trang.
-   */
+  /** Tồn cho trang có combo: tính số bộ từ các món lá. */
   private async stockWithCombos(
     tenantId: string,
     items: { id: string; itemType: string }[],
@@ -1396,11 +1362,11 @@ export class ProductService {
           try {
             leavesOf.set(id, flattenCombo(id, graph));
           } catch {
-            // A combo that cannot be opened (empty, cyclic) cannot be sold either: it reads 0 sets below rather than failing the whole search.
+            // Combo không bung được thì 0 bộ.
           }
         }
       } catch {
-        // Same for a graph nested past the limit: every combo on the page reads 0.
+        // Lồng quá giới hạn thì mọi combo là 0.
       }
     }
 
@@ -1451,7 +1417,7 @@ export class ProductService {
       where: { tenantId, productItem: { productId: { in: productIds } } },
       select: {
         stock: true,
-        // Only what the matcher reads (id + kind) - nothing about the location is returned here.
+        // Chỉ lấy id và loại địa điểm.
         locationId: true,
         location: { select: { type: true } },
         productItem: { select: { productId: true } },
@@ -1495,23 +1461,22 @@ export class ProductService {
     return byProduct;
   }
 
-  /** Ba số tồn của một phiên bản (combo thì lấy từ số bộ). Đây là bản duy nhất của phép tính; món và thành phần combo báo cùng cách. */
+  /** Ba số tồn của một phiên bản. */
   private stockFigures(stock: ItemStock | undefined) {
     const details = stock?.details ?? [];
     return {
-      // A combo has no rows: its figures are the sets its components cover (shelf-based, see `comboSetsAvailable`).
+      // Combo lấy số bộ.
       stock:
         stock?.sets?.here ??
         details.reduce((sum, detail) => sum + detail.stock, 0),
-      // What the till may actually take: a packed-for-an-order piece is on hand but not for sale, so `stock > 0` alone can promise a sale that `deductStock` then refuses.
+      // Số bán được, trừ hàng đã đóng gói.
       availableStock: stock?.sets?.here ?? stock?.available ?? 0,
-      // A variant with no row anywhere is 0 everywhere - the field is always a number, so
-      // no caller has to tell "not stocked here" from "not loaded".
+      // Phiên bản chưa có dòng tồn thì là 0.
       stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
     };
   }
 
-  /** The items plus the combos they directly contain, for `stockWithCombos`: a nested combo is shown with its own set count, so it has to be opened too. */
+  /** Các món cùng combo chứa trực tiếp, để tính tồn combo lồng. */
   private withComponentCombos(items: ItemRow[]) {
     return items.flatMap((item) => [
       item,
@@ -1519,7 +1484,7 @@ export class ProductService {
     ]);
   }
 
-  /** Per combo product, the sets its variants cover here and over the chain. */
+  /** Số bộ của từng combo tại đây và toàn chuỗi. */
   private async comboProductTotals(
     tenantId: string,
     productIds: string[],
@@ -1550,7 +1515,7 @@ export class ProductService {
     return totals;
   }
 
-  /** Giá là `Decimal` trong Postgres sẽ thành chuỗi, nhưng FE cần số nên đổi ở đây. `all` là tồn của mọi món trang chạm tới, để mỗi thành phần combo có số riêng. */
+  /** Đổi Decimal sang số và gắn tồn cho từng thành phần. */
   private toItemResponse(
     item: ItemRow,
     stock: ItemStock | undefined,
@@ -1573,7 +1538,7 @@ export class ProductService {
             retailPrice: Number(component.retailPrice),
             costPrice: Number(component.costPrice),
             thumbnailUrl: thumbnailOf({ images, product }),
-            // How many of this component are on hand / for sale, so a combo's expanded row can show why it is or is not in stock. Always numbers; a SERVICE reads 0 (it holds none).
+            // Tồn của một thành phần combo.
             ...this.stockFigures(all?.get(componentItem.id)),
           },
         };
@@ -1583,10 +1548,7 @@ export class ProductService {
     };
   }
 
-  /**
-   * Điền mã client để trống. `productCode` lấy số kế tiếp kiểu `SP000001` của tenant (mã gõ tay khác dạng
-   * không làm nhảy bộ đếm); `sku` mặc định bằng mã sản phẩm, thêm hậu tố `-2`, `-3` nếu đã trùng.
-   */
+  /** Điền mã sản phẩm và SKU còn trống. */
   private async allocateItemCodes(
     tenantId: string,
     items: CreateProductItemDto[],
@@ -1625,8 +1587,7 @@ export class ProductService {
     );
     for (const sku of wantedSkus) usedSkus.add(sku);
 
-    // A code typed on another line of this batch is not in the database yet, so the counter (read
-    // from the database) could land on it; skip those numbers rather than hand out a duplicate.
+    // Bỏ qua số đã được gõ ở dòng khác trong lô.
     const typedCodes = new Set(candidates);
     const nextCode = (): string => {
       let code: string;
@@ -1652,7 +1613,7 @@ export class ProductService {
     });
   }
 
-  /** SKU, product code and barcode each identify one variant within the tenant, so none may repeat inside one request. */
+  /** SKU, mã và barcode không được trùng trong một request. */
   private assertNoDuplicateCodesInPayload(
     items: { sku: string; productCode: string; barcode: string | null }[],
   ): void {
@@ -1692,7 +1653,7 @@ export class ProductService {
     }
   }
 
-  /** Same reason as `assertSkusAreFree`; `@@unique([tenantId, barcode])` is the backstop. Blank barcodes are skipped. */
+  /** Barcode không được trùng. */
   private async assertBarcodesAreFree(
     tenantId: string,
     barcodes: (string | null)[],
@@ -1716,7 +1677,7 @@ export class ProductService {
     }
   }
 
-  /** Same reason as `assertSkusAreFree`: `@@unique([tenantId, productCode])` is the backstop, this names the code. */
+  /** Mã sản phẩm không được trùng. */
   private async assertProductCodesAreFree(
     tenantId: string,
     codes: string[],
@@ -1738,7 +1699,7 @@ export class ProductService {
     }
   }
 
-  /** `@@unique([tenantId, sku])` would catch this anyway, but as a bare constraint error naming a column; a tenant creating twenty variants deserves to be told which SKU. */
+  /** SKU không được trùng, báo rõ SKU nào. */
   private async assertSkusAreFree(
     tenantId: string,
     skus: string[],
@@ -1760,7 +1721,7 @@ export class ProductService {
     }
   }
 
-  /** Mọi NCC trong lô phiên bản phải thuộc tenant này. Không nêu địa điểm: phiên bản tạo ra chưa có tồn ở đâu, dòng tồn chỉ xuất hiện khi có phiếu kho nhập hàng tới đó. */
+  /** Kiểm mọi NCC thuộc tenant. */
   private async assertItemReferencesExist(
     tenantId: string,
     items: Pick<CreateProductItemDto, 'supplierIds'>[],
@@ -1804,7 +1765,7 @@ export class ProductService {
       });
   }
 
-  /** `Product.categoryName` is a denormalized copy for list screens, filled from the category the product actually points at; `CategoryService` refreshes it on rename. */
+  /** Điền tên danh mục từ `categoryId`. */
   private async resolveCategoryName(
     tenantId: string,
     categoryId?: string,
@@ -1814,7 +1775,7 @@ export class ProductService {
     return names.get(categoryId) ?? null;
   }
 
-  /** Every named category must be this tenant's; answers id → name for the denormalized copy. */
+  /** Kiểm danh mục thuộc tenant, trả id → tên. */
   private async categoryNamesOf(
     tenantId: string,
     categoryIds: (string | undefined)[],

@@ -1,4 +1,4 @@
-/** Vòng đời tài khoản. DELETED là xoá mềm (đặt cùng `User.deletedAt`), vì đơn, phiếu kho và audit log đang giữ FK. */
+/** Trạng thái tài khoản; DELETED là xoá mềm. */
 export const UserStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',
@@ -8,7 +8,7 @@ export const UserStatus = {
 
 export type UserStatus = (typeof UserStatus)[keyof typeof UserStatus];
 
-/** Các trạng thái từ chối đăng nhập và vô hiệu token đã cấp - kiểm tra lúc đăng nhập và mọi request, nên đình chỉ sẽ khoá cả phiên đang chạy. */
+/** Trạng thái bị chặn đăng nhập và vô hiệu token đang dùng. */
 export const INACTIVE_USER_STATUSES: ReadonlySet<string> = new Set([
   UserStatus.SUSPENDED,
   UserStatus.INACTIVE,

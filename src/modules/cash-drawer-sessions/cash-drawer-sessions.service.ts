@@ -51,11 +51,7 @@ const STAFF_SELECT = {
   profileLastName: true,
 } as const;
 
-/**
- * Ai được giữ két của một chi nhánh: nhân viên STAFF đang hoạt động, được gán đúng chi nhánh đó. Một bản duy nhất:
- * bước kiểm tra khi mở két / bàn giao (`assertBranchAndStaff`) và hai danh sách cho ô chọn (`eligibleStaff`,
- * `handoverCandidates`) đều đi qua đây, nên ô chọn không bao giờ hiện ra người mà lúc gửi lại bị từ chối.
- */
+/** Điều kiện người giữ két: nhân viên đang hoạt động, gán đúng chi nhánh. */
 function cashierWhere(
   tenantId: string,
   branchId: string,
@@ -68,7 +64,7 @@ function cashierWhere(
   };
 }
 
-/** Chỉ tên - đủ cho ô chọn. Hai route danh sách mở cho thu ngân, những người không có `users:read`, nên không trả số điện thoại hay hồ sơ. */
+/** Chỉ chọn tên cho ô chọn. */
 const CASHIER_SELECT = {
   id: true,
   profileFirstName: true,
@@ -81,7 +77,7 @@ const SESSION_INCLUDE = {
   currentStaff: { select: STAFF_SELECT },
   finalLogManager: { select: STAFF_SELECT },
   shiftLogs: {
-    // `id` chỉ để phá thế hoà khi hai log cách nhau một micro-giây vẫn trả về theo thứ tự ổn định; thứ thực sự chặn trùng là guard trong submitShiftLog.
+    // Sắp theo id để thứ tự ổn định.
     orderBy: [{ loggedAt: 'asc' }, { id: 'asc' }],
     include: {
       staff: { select: STAFF_SELECT },
@@ -119,11 +115,11 @@ interface SessionCashRow {
 }
 
 const DEFAULT_REPORT_DAYS = 30;
-/** Một năm và một ngày: báo cáo tải mọi phiên trong khoảng trước khi phân trang, nên tổng phản ánh cả khoảng chứ không phải trang hiện tại; đánh đổi đó cần một trần. */
+/** Khoảng tối đa của báo cáo: một năm và một ngày. */
 const MAX_REPORT_DAYS = 366;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** Két của một chi nhánh trong một ngày: mở với số đã đếm, chuyển giữa thu ngân qua shift log, chốt một lần. Unique index ép một phiên mỗi chi nhánh mỗi ngày và tối đa một phiên OPEN. Chi nhánh lấy từ nơi tài khoản được gán; `cash_drawers:read` hay `read_own` quyết định thấy bao nhiêu. */
+/** Két tiền theo ngày của chi nhánh: mở, chuyển ca qua sổ ca, chốt một lần. */
 @Injectable()
 export class CashDrawerSessionService {
   constructor(private readonly prisma: PrismaService) {}
@@ -150,7 +146,7 @@ export class CashDrawerSessionService {
       });
       return this.toResponse(created);
     } catch (error) {
-      // Cả hai bất biến đều có thể là cái bị kích hoạt (két đã mở, hoặc phiên hôm nay đã đóng), và tại quầy cả hai đều có nghĩa như nhau.
+      // Báo két đã mở hoặc phiên hôm nay đã đóng.
       if (this.isUniqueViolation(error)) {
         throw new ConflictException({
           code: ErrorCode.CASH_DRAWER_ALREADY_OPEN,
@@ -212,7 +208,7 @@ export class CashDrawerSessionService {
       this.prisma.cashDrawerSession.count({ where }),
     ]);
 
-    // Danh sách cũ bỏ shiftLogs cho gọn payload; phần tóm tắt giữ ý hữu ích (bao nhiêu ca, ai đang giữ) mà không kèm toàn bộ lịch sử.
+    // Tóm tắt sổ ca thay vì trả toàn bộ.
     return paginate(
       rows.map((row) => this.toSummary(row)),
       total,
@@ -225,11 +221,7 @@ export class CashDrawerSessionService {
     return this.toResponse(await this.findRow(user, id));
   }
 
-  /**
-   * Két quá hạn (còn mở từ ngày giao dịch trước) trong phạm vi chi nhánh của người gọi - để màn két và màn bán tại
-   * quầy cảnh báo. Cố ý **không** áp `ownershipFilter`: ai đứng ở chi nhánh cũng cần biết két hôm qua chưa chốt, kể
-   * cả người chỉ có `read_own` và chưa từng giữ két đó. Chỉ trả ngày, chi nhánh và người đang giữ, không trả tiền.
-   */
+  /** Két quá hạn trong phạm vi chi nhánh, ai ở chi nhánh cũng xem được. */
   async overdue(user: AuthUser, requestedBranchId?: string) {
     const tenantId = this.tenantOf(user);
     const branchId = this.resolveBranch(user, requestedBranchId, false);
@@ -249,7 +241,7 @@ export class CashDrawerSessionService {
       },
       orderBy: { businessDate: 'asc' },
     });
-    // Tối đa một phiên OPEN mỗi chi nhánh, nên tải hết phiên mở rồi lọc bằng `isOverdue` - không viết lại quy tắc thành `where`.
+    // Lọc phiên quá hạn bằng `isOverdue`.
     return rows
       .filter((row) => isOverdue(row))
       .map(({ branch, currentStaff, status: _status, ...row }) => ({
@@ -259,11 +251,7 @@ export class CashDrawerSessionService {
       }));
   }
 
-  /**
-   * Ai có thể nhận két khi mở két đầu ngày ở chi nhánh này. Thay cho việc màn mở két gọi `GET /users` (cần
-   * `users:read` và trả cả hồ sơ nhân sự): người được mở két không nhất thiết được xem hồ sơ đồng nghiệp.
-   * Chi nhánh đi qua `resolveBranch` như `open`, nên nhân viên được gán chỉ xem được chi nhánh của mình.
-   */
+  /** Người nhận được két khi mở két đầu ngày tại chi nhánh. */
   async eligibleStaff(user: AuthUser, requestedBranchId?: string) {
     const tenantId = this.tenantOf(user);
     const branchId = this.resolveBranch(user, requestedBranchId)!;
@@ -271,11 +259,7 @@ export class CashDrawerSessionService {
     return this.listCashiers(tenantId, branchId);
   }
 
-  /**
-   * Ai có thể nhận bàn giao của phiên này. Chỉ người đang giữ két được hỏi, cùng điều kiện `submitShiftLog` đặt
-   * cho việc ghi log: chỉ người đó gửi được END có `nextStaffId`, nên với bất kỳ ai khác danh sách này chỉ là một
-   * cách liệt kê đồng nghiệp. Không gồm chính người hỏi (`SHIFT_LOG_NEXT_STAFF_SELF`).
-   */
+  /** Người nhận được bàn giao, chỉ người đang giữ két được hỏi. */
   async handoverCandidates(user: AuthUser, id: string) {
     const session = await this.findRow(user, id);
     if (session.status !== CashDrawerStatus.OPEN) {
@@ -295,7 +279,7 @@ export class CashDrawerSessionService {
     return this.listCashiers(session.tenantId, session.branchId, user.userId);
   }
 
-  /** Tiền mặt lẽ ra phải có so với số đã đếm, chia theo ca. Chỉ tính tiền mặt: thẻ và SePay không vào két, doanh thu không tiền mặt chỉ để làm ngữ cảnh, không nằm trong chênh lệch. */
+  /** Tiền mặt lẽ ra phải có so với số đã đếm, theo ca. */
   async reconcile(user: AuthUser, id: string) {
     const session = await this.findRow(user, id);
     const window = sessionWindow(session);
@@ -305,7 +289,7 @@ export class CashDrawerSessionService {
         where: {
           ...this.sessionFlowWhere(session.tenantId, session.branchId, window),
           paymentMethod: PaymentMethod.CASH,
-          // Chỉ tiền mặt đã qua két: tiền shipper nộp thẳng chủ (OWNER) cùng chi nhánh không nằm trong két nên không được đếm vào số lẽ ra phải có.
+          // Chỉ tính tiền mặt qua két.
           fund: CashFlowFund.DRAWER,
         },
         select: { id: true, createdAt: true, flowType: true, amount: true },
@@ -315,7 +299,7 @@ export class CashDrawerSessionService {
         by: ['paymentMethod', 'flowType'],
         where: {
           ...this.sessionFlowWhere(session.tenantId, session.branchId, window),
-          // `NOT` chứ không phải `paymentMethod: { not: 'CASH' }` - cột này nullable và `not` của Prisma bỏ qua NULL, nên phương thức chưa ghi sẽ không được báo ở đâu.
+          // Dùng `NOT` để không bỏ sót phương thức NULL.
           NOT: { paymentMethod: PaymentMethod.CASH },
         },
         _sum: { amount: true },
@@ -348,7 +332,7 @@ export class CashDrawerSessionService {
         businessDate: session.businessDate,
         status: session.status,
       },
-      // Thời điểm chính xác mà tổng bao phủ: từ lúc mở tới lúc chốt (hoặc tới lúc gọi khi còn mở). Xem `sessionWindow`.
+      // Khoảng thời gian của phiên, xem `sessionWindow`.
       window,
       ...result,
       segments: result.segments.map((segment) =>
@@ -363,7 +347,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** Cùng phép trừ trên khoảng nhiều ngày: hai query bất kể khoảng nào, rồi lọc và phân trang trên bộ nhớ, để `varianceOnly` và tổng phản ánh cả khoảng chứ không chỉ một trang. */
+  /** Đối soát nhiều ngày, lọc và phân trang trong bộ nhớ. */
   async report(user: AuthUser, query: QueryCashVarianceDto) {
     const tenantId = this.tenantOf(user);
     const branchId = this.resolveBranch(user, query.branchId, false);
@@ -437,11 +421,7 @@ export class CashDrawerSessionService {
     return { fromDate, toDate };
   }
 
-  /**
-   * Thu chi tiền mặt của từng phiên trong khoảng thời gian thật của nó (`sessionWindow`): một truy vấn cho mọi phiên,
-   * không theo ngày giao dịch. Biên của phiên còn mở là `now`, đọc một lần cho cả báo cáo. Điều kiện `created_at`
-   * là khoảng thường trên từng phiên, nên index `(tenant_id, location_id, created_at)` vẫn dùng được.
-   */
+  /** Thu chi tiền mặt của từng phiên trong khoảng thời gian của nó. */
   private async cashBySession(
     sessions: VarianceRow[],
   ): Promise<Map<string, SessionCashRow>> {
@@ -493,7 +473,7 @@ export class CashDrawerSessionService {
   }
 
   private reportTotals(rows: { variance: number | null }[]) {
-    // Phiên chưa ai đóng không có tổng đếm nên không được coi là khớp hay lệch; đếm riêng, không cộng vào tổng nào.
+    // Đếm riêng phiên chưa chốt.
     const settled = rows.filter((row) => row.variance !== null);
     const off = settled.filter((row) => row.variance !== 0);
     return {
@@ -522,7 +502,7 @@ export class CashDrawerSessionService {
     };
   }
 
-  /** Dòng tiền thuộc một phiên: chi nhánh của nó, trong `sessionWindow`. `branchId` bắt buộc, nên chi EXPENSE không gắn chi nhánh (trả nhà cung cấp bằng tiền mặt) không được tính; shop trả NCC từ két thì phiên đó sẽ thiếu, và điều đó là đúng. */
+  /** Điều kiện dòng tiền thuộc một phiên. */
   private sessionFlowWhere(
     tenantId: string,
     branchId: string,
@@ -544,7 +524,7 @@ export class CashDrawerSessionService {
     return { ...segment, staff: log?.staff ?? null };
   }
 
-  /** Ghi nhận thu ngân nhận két hoặc trả lại. Thứ tự được kiểm chứ không giả định: START chỉ mở phiên hoặc nối sau một END đã chỉ định người này, vì nếu không thì thiếu hụt sẽ không quy được trách nhiệm. */
+  /** Ghi sổ ca nhận / trả két, kiểm thứ tự START/END. */
   async submitShiftLog(user: AuthUser, id: string, dto: SubmitShiftLogDto) {
     const tenantId = this.tenantOf(user);
     const session = await this.findRow(user, id);
@@ -562,9 +542,7 @@ export class CashDrawerSessionService {
           'Only the cashier currently holding the drawer can file a shift log',
       });
     }
-    // Két quá hạn không được chuyền tiếp sang người khác: bàn giao sẽ kéo két hôm qua vào vòng ca của hôm nay. START và
-    // END không bàn giao vẫn được, vì đó là đường duy nhất để chốt - người được giao két hôm qua mà chưa nhận ca phải
-    // ghi START rồi END trước khi quản lý chốt (`SHIFT_LOG_START_REQUIRED`); chặn cả START thì két không bao giờ chốt được.
+    // Két quá hạn không được bàn giao tiếp.
     if (isOverdue(session) && dto.nextStaffId) {
       throw this.overdueError(session);
     }
@@ -617,7 +595,7 @@ export class CashDrawerSessionService {
     const nextHolder = dto.nextStaffId ?? user.userId;
 
     await this.prisma.$transaction(async (tx) => {
-      // Điều kiện theo trạng thái đã đọc, và `data` không bao giờ được rỗng: `updateMany({ data: {} })` khớp dòng nhưng không đụng `@updatedAt`, nên bấm đúp hoặc client retry sẽ insert hai lần. iKiotMS-BE có được điều này miễn phí nhờ `$push` trên mảng nhúng.
+      // Ghi có điều kiện theo trạng thái để không insert hai lần.
       const claimed = await tx.cashDrawerSession.updateMany({
         where: {
           id,
@@ -651,7 +629,7 @@ export class CashDrawerSessionService {
     return this.toResponse(await this.findRow(user, id));
   }
 
-  /** Chốt ngày với tổng đã đếm. Bị từ chối trừ khi log cuối là `END` của người đang giữ két và không chỉ định ai nhận; log đó là bàn giao cho quản lý. */
+  /** Chốt két với tổng đã đếm. */
   async finalize(user: AuthUser, id: string, dto: FinalizeCashDrawerDto) {
     const tenantId = this.tenantOf(user);
     const session = await this.findRow(user, id);
@@ -712,14 +690,14 @@ export class CashDrawerSessionService {
     return user.tenantId;
   }
 
-  /** Két của chi nhánh nào đang được gọi tới, hoặc `null` nếu là mọi chi nhánh. Có phân công thì phân công thắng (chỉ định chi nhánh khác là 403); owner được chỉ định một chi nhánh; ai không có phân công thì bị từ chối thay vì rơi vào "không lọc". Không bao giờ là `''`, vì nó sẽ thành id thật trong `where`. */
+  /** Chi nhánh của két đang gọi tới, null là mọi chi nhánh. */
   private resolveBranch(
     user: AuthUser,
     requested: string | undefined,
     required = true,
   ): string | null {
     if (user.branchId) {
-      // Trưởng ca đến được chi nhánh mà ca đang làm bao phủ. Đã giao với phân công của họ, nhưng vẫn kiểm để quy tắc đọc giống với stock movements.
+      // Trưởng ca được tới chi nhánh ca đang bao phủ.
       const allowed =
         requested === user.branchId ||
         supervisesLocation(user.shiftSupervision, {
@@ -755,7 +733,7 @@ export class CashDrawerSessionService {
     return null;
   }
 
-  /** Tài khoản này thấy mọi phiên của chi nhánh (`cash_drawers:read`) hay chỉ những phiên chính họ làm (`read_own`). */
+  /** Thấy mọi phiên của chi nhánh hay chỉ phiên của mình. */
   private ownershipFilter(user: AuthUser): Prisma.CashDrawerSessionWhereInput {
     if (can(user, 'cash_drawers', 'read')) return {};
     return {
@@ -785,7 +763,7 @@ export class CashDrawerSessionService {
     return session;
   }
 
-  /** Chi nhánh phải đang hoạt động và thu ngân phải thực sự làm việc tại đó; đây là phần còn lại của kiểm tra cũ sau khi bỏ kiểm tra role họ STAFF. */
+  /** Kiểm chi nhánh đang hoạt động và thu ngân làm việc tại đó. */
   private async assertBranchAndStaff(
     tenantId: string,
     branchId: string,
@@ -807,7 +785,7 @@ export class CashDrawerSessionService {
     }
   }
 
-  /** Không mở két mới khi két ngày trước của chi nhánh chưa chốt. Bất biến "một phiên OPEN" vốn đã chặn, nhưng chỉ với `CASH_DRAWER_ALREADY_OPEN`; đây nói rõ là két nào, để màn hình dẫn thẳng tới đó. */
+  /** Không mở két mới khi két ngày trước chưa chốt. */
   private async assertNoOverdueAt(tenantId: string, branchId: string) {
     const open = await this.prisma.cashDrawerSession.findFirst({
       where: { tenantId, branchId, status: CashDrawerStatus.OPEN },
@@ -890,7 +868,7 @@ export class CashDrawerSessionService {
       currentStaff,
       ...rest
     } = session;
-    // Người dùng trả về với `profile` lồng nhau như mọi payload user khác, để màn hình in được tên thay vì nhãn chung.
+    // Trả user kèm `profile` lồng.
     const person = <T extends FlatUserProfile | null>(row: T) =>
       row ? withNestedProfile(row) : row;
 

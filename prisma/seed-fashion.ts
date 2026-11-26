@@ -1,20 +1,4 @@
-// Shop thời trang (quần áo, giày dép, phụ kiện) để test thủ công - thay cho seed-furniture-test.ts. Dev only.
-//
-// Chạy sau:
-//   npx prisma db seed
-//   npx tsx prisma/seed-account-role.ts
-//   npx tsx prisma/seed-fashion.ts
-//
-// Hai nguồn hàng, đúng hai luồng nhập của app:
-//   - Hàng hãng Adidas / Nike: mua từ nhà phân phối (Supplier GOODS) - tồn đầu là phiếu nhập SUPPLIER.
-//   - Hàng tự may "IKI Studio": đặt Xưởng may Phúc Thịnh (Supplier WORKSHOP, isManufacturable) - tồn đầu là
-//     YCSX đã nhận đủ (COMPLETED) + phiếu nhập WORKSHOP, như `ProductionRequestService.receiveGoods`.
-//     Thêm một YCSX đã gửi (SENT) chưa nhận, để thử bước nhận hàng xưởng.
-// Mọi lần nhập đi qua `InventoryService.openLot` nên stock = Σ lot.remaining và có dòng sổ kho.
-//
-// Shop tạo bởi seed-account-role.ts được đổi tên thành SHOP_NAME. Seed nội thất không chạy cùng seed này
-// (seed-c5/c6 dựa vào SKU nội thất).
-// Idempotent theo từng phần: danh mục/thương hiệu/NCC/khách/sản phẩm tìm theo tên; tồn đầu bỏ qua khi đã có YCSX.
+// Shop thời trang để test thủ công (dev): hàng hãng từ NCC, hàng tự may từ xưởng.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -461,10 +445,7 @@ const PRODUCTS: ProductDef[] = [
   },
 ];
 
-/**
- * Tồn đầu theo tiền tố SKU (mọi SKU bắt đầu bằng khoá nhận số lượng đó), theo chi nhánh.
- * Cố ý để vài chỗ trống/ít để thấy được "hết hàng tại đây", "sắp hết", "cần sản xuất".
- */
+/** Tồn đầu theo tiền tố SKU và chi nhánh. */
 const OPENING: Record<LocKey, Record<string, number>> = {
   HANOI: {
     'ADI-UBL': 3,
@@ -612,10 +593,7 @@ async function receiveFromSupplier(args: {
   });
 }
 
-/**
- * YCSX đã nhận đủ: YCSX COMPLETED + phiếu nhập WORKSHOP + lot WORKSHOP + công nợ xưởng - cùng hình dạng
- * `ProductionRequestService.receiveGoods` để lại (không có hàng lỗi).
- */
+/** YCSX đã nhận đủ kèm phiếu nhập, lô và công nợ xưởng. */
 async function receiveFromWorkshop(args: {
   tenantId: string;
   actorId: string;

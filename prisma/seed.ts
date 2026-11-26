@@ -1,5 +1,4 @@
-// Seed PermissionCatalog cố định mà mọi Role do tenant định nghĩa đều lấy từ đó. Đây là hợp đồng của app, không phải dữ liệu tenant sửa được.
-// Mọi `@Permissions(resource, action)` trong code phải có dòng ở đây, nếu không role nào được cấp quyền đó. Chạy bằng `prisma db seed`.
+// Seed danh mục quyền cố định; mọi `@Permissions` phải có ở đây.
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
@@ -7,7 +6,7 @@ import * as bcrypt from 'bcryptjs';
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 
-// Admin dev nội bộ. phoneNumber không có unique ở DB (giống iKiotMS-BE; unique được kiểm tra ở app trong AuthService.register), nên dùng find-then-create thay vì upsert() để seed chạy lại an toàn.
+// Admin dev nội bộ, tìm trước rồi tạo.
 const ADMIN_PHONE = '0000000000';
 const ADMIN_PASSWORD = 'password123';
 
@@ -174,9 +173,7 @@ async function seedPlans() {
   console.log(`Seeded ${PLANS.length} plans.`);
 }
 
-/**
- * `descriptions`: mô tả quyền hiện dưới ô chọn ở màn Vai trò. Mã `resource:action` không đổi được (`role_permissions` trỏ vào nó), nên khi tên quyền khó hiểu thì sửa mô tả, không đổi mã.
- */
+/** Mô tả quyền hiện ở màn Vai trò. */
 const CATALOG: Record<
   string,
   { actions: string[]; label: string; descriptions?: Record<string, string> }
@@ -213,7 +210,7 @@ const CATALOG: Record<
     label: 'Nhà cung cấp',
   },
   branches: {
-    // `read_own` nằm trong STAFF_BASE_PERMISSIONS (mọi nhân viên được đọc chi nhánh mình làm), nên role editor ẩn nó; vẫn khai báo để bộ quyền cơ bản chỉ gồm dòng catalog hợp lệ.
+    // `read_own` là quyền nền nhân viên, màn Vai trò ẩn.
     actions: [
       'create',
       'read',
@@ -236,7 +233,7 @@ const CATALOG: Record<
     label: 'Kho',
   },
   orders: {
-    // 'confirm' (giữ tồn kho khi xác nhận đơn) và 'assign' (chỉ định người phụ trách) là hai quyết định riêng.
+    // 'confirm' và 'assign' là hai quyền riêng.
     actions: [
       'create',
       'read',
@@ -246,14 +243,14 @@ const CATALOG: Record<
       'pay_offline',
       'confirm',
       'assign',
-      // 'pack', 'ship' (bước trừ tồn kho) và 'confirm_cash' là ba quyết định riêng, do người khác nhau giữ. 'pack' không gộp vào 'update' để người đóng hàng không sửa được giá hay dòng hàng.
+      // 'pack', 'ship', 'confirm_cash' là ba quyền riêng.
       'pack',
       'ship',
       'confirm_cash',
     ],
     label: 'Đơn hàng',
     descriptions: {
-      // Người phụ trách đơn KHÔNG được miễn ở bước này (ASSIGNEE_MAY_SHIP, order-handler.ts) - chờ khách xác nhận.
+      // Người phụ trách không được miễn ở bước này (ASSIGNEE_MAY_SHIP).
       ship: 'Bấm "Bắt đầu vận chuyển" ở đơn hàng (Đã lấy hàng → Đang vận chuyển), tức xác nhận hàng đã giao cho ĐVVC: trừ tồn kho và gỡ phần hàng đang giữ cho đơn. Chỉ làm được tại kho xuất mình được phân công. Người phụ trách đơn cũng cần quyền này.',
     },
   },
@@ -327,8 +324,7 @@ const CATALOG: Record<
   },
   profile: { actions: ['read'], label: 'Hồ sơ cá nhân' },
 
-  // ── Resource không có trong permissions.json của iKiotMS-BE ──────────────────
-  // Các module này cũ không gọi authorize() nên mọi user đăng nhập đều vào được. Khai báo resource để role của tenant có thể tách chúng ra.
+  // ── Resource mới, cũ không kiểm quyền ──
   customers: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Khách hàng',
@@ -338,7 +334,7 @@ const CATALOG: Record<
     label: 'Yêu cầu hỗ trợ',
   },
   cash_flows: {
-    // Khác cash_drawers: drawer là ca của một thu ngân, cash_flows là mọi dòng tiền của tenant (trả nhà cung cấp, ...). Hệ thống cũ chỉ cho xem chỉ đọc qua báo cáo ('/stats/cashflow').
+    // Mọi dòng tiền của tenant.
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Dòng tiền',
   },
@@ -347,14 +343,13 @@ const CATALOG: Record<
     label: 'Lịch sử chat AI',
   },
 
-  // ── Hành trình đơn hàng (docs/order-flow.md) ─────────────────────────────
-  // Thêm đầy đủ từ Phase 0 để các track song song không phải sửa file này.
+  // ── Hành trình đơn hàng ──
   production_requests: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Yêu cầu sản xuất',
   },
   production: {
-    // Nhập số lượng đã sản xuất là thứ làm tăng tồn kho nên có quyền riêng (contract §6). 'deliver' là của nhân viên xưởng: xem yêu cầu của xưởng và lập phiếu giao; phiếu không tăng tồn, việc đó do 'receive' ở kho nhận làm. 'deliver' tự cấp cho tài khoản gắn xưởng (WORKSHOP_STAFF_PERMISSIONS), role không giữ được.
+    // 'receive' tăng tồn khi nhận hàng xưởng; 'deliver' tự cấp cho tài khoản gắn xưởng.
     actions: ['receive', 'deliver'],
     label: 'Nhập hàng sản xuất',
   },

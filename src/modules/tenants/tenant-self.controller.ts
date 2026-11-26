@@ -21,7 +21,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Cài đặt của chính shop, ở đường dẫn số ít `/tenant/*` như API cũ. Tenant id luôn lấy từ `requireTenantId(user)`, nên không route nào trỏ được sang shop khác; `/tenants` là CRUD riêng cho admin. */
+/** Cài đặt của chính shop ở `/tenant/*`. */
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @Controller('tenant')
@@ -47,7 +47,7 @@ export class TenantSelfController {
     return this.service.updateBanking(requireTenantId(user), user.userId, dto);
   }
 
-  /** Lịch sử đổi tài khoản nhận tiền, key và liên kết SePay của shop. Cùng quyền với sửa thông tin nhận tiền (`tenants:update`). */
+  /** Lịch sử đổi tài khoản nhận tiền và liên kết SePay. */
   @Permissions('tenants', 'update')
   @Get('banking/history')
   bankingHistory(
@@ -57,7 +57,7 @@ export class TenantSelfController {
     return this.service.bankingHistory(requireTenantId(user), query);
   }
 
-  /** Chỉ admin nền tảng. Xem `TenantSelfService.setSepayKey` vì sao guard này là sửa lỗi chứ không phải port. Tenant id nằm trên path vì operator đang thao tác trên shop của người khác. */
+  /** Đặt key SePay, chỉ admin nền tảng. */
   @UseGuards(AdminOnlyGuard)
   @Put(':tenantId/sepay-key')
   setSepayKey(

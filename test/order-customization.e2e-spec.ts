@@ -30,9 +30,7 @@ import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 import type { OrderItemCustomizationDto } from './../src/modules/orders/dto/order-item-customization.dto';
 
-/**
- * Dòng custom (A-4) trên Postgres thật: lần đầu tạo ProductItem riêng cho sản phẩm (kích thước, chi tiết, ảnh, kiện), lần sau sửa đúng item đó; chặn dòng combo, đơn đã đóng gói, dòng đã có YCSX; YCSX nháp chuyển theo item mới. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm dòng may đo (Postgres thật). */
 describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationService', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;

@@ -80,7 +80,7 @@ interface SummaryRow {
   customerCount: number;
 }
 
-/** Một dòng tồn trong danh sách cảnh báo. `shelf` là tồn trên kệ (stock − locked_stock), con số bán được. */
+/** Một dòng tồn trong danh sách cảnh báo. */
 interface StockAlertRow {
   category: string;
   inventoryId: string;
@@ -102,7 +102,7 @@ interface BucketRow {
   orderCount: number;
 }
 
-/** Ghép họ tên giống `JwtStrategy` và `NotificationService.displayName`; trả `null` khi chưa có tên (bản cũ `$lookup` cũng trả null). */
+/** Ghép họ tên, null khi chưa có tên. */
 function fullName(
   user: {
     profileFirstName: string | null;
@@ -113,12 +113,8 @@ function fullName(
   return `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim();
 }
 
-/** Port từ `StatsService.js` (dashboard, giữ đường dẫn cũ). Ba câu trả lời vẫn là raw SQL vì Prisma không diễn đạt được (gom theo ngày địa phương, doanh thu theo dòng, giá trị tồn qua join); làm bằng JS sẽ kéo toàn bộ dòng đơn vào bộ nhớ. Mọi truy vấn raw dùng tham số tagged-template, trừ cột ORDER BY của `getTopProducts` - Postgres không nhận bind parameter ở đó nên cột được chọn từ whitelist hai giá trị. */
-/**
- * Bảng xếp hạng (nhân viên, chi nhánh) đã gom đủ trong một query nhỏ - số dòng là số người/chi nhánh - nên cắt trang ngay trong bộ nhớ.
- * `summary` luôn là tổng của cả kỳ (mọi dòng), không phải của trang đang xem: dòng Tổng trên bảng không đổi khi chuyển trang.
- * Không có `limit` thì trả đủ và không có `pagination`.
- */
+/** Thống kê dashboard shop, nhiều truy vấn raw SQL. */
+/** Phân trang bảng xếp hạng trong bộ nhớ; `summary` luôn là tổng cả kỳ. */
 function pageOfRanking<T extends { revenue: number; orderCount: number }>(
   all: T[],
   query: { page?: number; limit?: number },
@@ -148,10 +144,7 @@ function pageOfRanking<T extends { revenue: number; orderCount: number }>(
 export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Điều kiện chung của mọi truy vấn trên sổ doanh thu: tenant, khoảng ngày địa phương (`business_date`) và chi nhánh. Doanh thu đọc từ sổ `sales_journal_entries`
-   * (xem `orders/sales-journal.ts`), không tính lại từ `orders`: đơn còn đổi sau khi hoàn thành (trả hàng, hoá đơn điều chỉnh) nên tính lại sẽ làm kỳ đã chốt đổi số.
-   */
+  /** Điều kiện chung của truy vấn sổ doanh thu. */
   private journalFilter(
     tenantId: string | null,
     branchId: string | undefined,
@@ -165,7 +158,7 @@ export class StatsService {
       ${branchId ? Prisma.sql`AND ${a}.branch_id = ${branchId}` : Prisma.empty}`;
   }
 
-  /** KPI chính kèm % thay đổi so với kỳ trước. Từ 2026-11-11 đọc từ sổ doanh thu (xem `journalFilter`); `customerCount` vẫn tính nhóm khách vãng lai là một khách. */
+  /** KPI chính kèm % so với kỳ trước. */
   async getOverview(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
@@ -193,7 +186,7 @@ export class StatsService {
     };
   }
 
-  /** Đơn COMPLETED trong kỳ mà sổ không có bút toán SALE (hoàn thành trước ngày chạy migration sổ, D9: không backfill). Báo cho người đọc biết số thiếu thay vì im lặng. */
+  /** Số đơn COMPLETED trong kỳ chưa có bút toán SALE. */
   private async journalGap(
     user: AuthUser,
     scope: { branchId?: string },
@@ -262,7 +255,7 @@ export class StatsService {
     const shippingCost = Number(row?.shippingCost ?? 0);
     const channelFee = Number(row?.channelFee ?? 0);
     return {
-      // Doanh thu ròng của kỳ = bán (SALE) + hàng trả (RETURN, số âm) + thu nhập khác (OTHER_INCOME). Gồm phí vận chuyển khách trả.
+      // Doanh thu ròng = bán + hàng trả (âm) + thu nhập khác.
       revenue,
       grossSales: Number(row?.grossSales ?? 0),
       returns: Number(row?.returns ?? 0),
@@ -276,13 +269,13 @@ export class StatsService {
       returnCount: row?.returnCount ?? 0,
       customerCount: row?.customerCount ?? 0,
       aov: averageOrderValue(revenue, orderCount),
-      // Lợi nhuận gộp = doanh thu ròng − giá vốn thực (sổ kho lô, đã trừ phần hàng trả) − chi phí vận chuyển thực (Shipment.shippingCost) − phí sàn. Phí ship khách trả đã nằm trong doanh thu nên không trừ riêng như trước.
+      // Lợi nhuận gộp = doanh thu ròng - giá vốn - phí vận chuyển - phí sàn.
       grossProfit: revenue - costOfGoods - shippingCost - channelFee,
       linesMissingCost: missing[0]?.linesMissingCost ?? 0,
     };
   }
 
-  /** Doanh thu theo thời gian từ sổ doanh thu: ngày/tháng là `business_date`, giờ là giờ ghi bút toán (`posted_at`, giờ địa phương). Hàng trả là số âm ở kỳ trả, kỳ bán không đổi. */
+  /** Doanh thu theo thời gian từ sổ doanh thu. */
   async getRevenueSeries(user: AuthUser, query: RevenueSeriesQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
@@ -322,11 +315,7 @@ export class StatsService {
     };
   }
 
-  /**
-   * Tiền thu theo phương thức, theo **tiền thực thu** (cơ sở tiền mặt) từ `cash_flows`, không theo `Order.paymentMethod` (một đơn trả nhiều lần, nhiều cách).
-   * `received` = ORDER_PAYMENT, `refunded` = ORDER_REFUND, `change` = SALE_CHANGE (tiền thối quầy); `revenue` = received − refunded − change.
-   * Không tính tiền chưa gắn đơn (UNALLOCATED_*) và trả nhà cung cấp. Theo thời điểm tiền chuyển tay, nên kỳ này khác doanh thu (sổ doanh thu) khi đơn thu cọc trước, giao sau.
-   */
+  /** Tiền thu theo phương thức, theo tiền thực thu. */
   async getRevenueByPaymentMethod(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const { fromDate, toDate } = query.range();
@@ -374,10 +363,7 @@ export class StatsService {
     };
   }
 
-  /**
-   * Doanh thu gắn với người. `groupBy=assignee` (mặc định): người phụ trách đơn lúc ghi sổ (đơn quầy không có thì lấy người lên đơn); `creator`: người lên đơn;
-   * cả hai đọc từ sổ doanh thu (doanh thu ròng, hàng trả trừ vào người của đơn gốc). `collector`: người thu tiền, theo tiền thực thu (ORDER_PAYMENT, theo `payments.collected_by`).
-   */
+  /** Doanh thu theo người phụ trách, người lên đơn hoặc người thu tiền. */
   async getRevenueByStaff(user: AuthUser, query: RevenueByStaffQueryDto) {
     const scope = orderScope(user, query.branchId);
     const range = query.range();
@@ -442,7 +428,7 @@ export class StatsService {
     return { groupBy, staff: staffRows, summary, pagination };
   }
 
-  /** Hàng bán chạy, từ các dòng của sổ doanh thu: `quantity` có dấu (hàng trả trừ đi), `revenue` là tiền hàng đã trừ giảm giá đơn (phân bổ xuống dòng). Món trong combo có dòng riêng với doanh thu 0 như trước. */
+  /** Hàng bán chạy từ dòng sổ doanh thu. */
   async getTopProducts(user: AuthUser, query: TopProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const sortBy =
@@ -450,7 +436,7 @@ export class StatsService {
         ? TopProductsSort.REVENUE
         : TopProductsSort.QUANTITY;
 
-    // Không phải bind parameter vì Postgres không nhận tham số trong ORDER BY. An toàn vì luôn là một trong hai literal ở trên, không lấy từ query string.
+    // Cột ORDER BY lấy từ hai giá trị cố định.
     const orderColumn = Prisma.raw(`"${sortBy}"`);
 
     const rows = await this.prisma.$queryRaw<
@@ -485,7 +471,7 @@ export class StatsService {
     };
   }
 
-  /** Năm mốc lịch trong một lần trả về. Mỗi kỳ trước chỉ lấy cùng khoảng thời gian đã trôi qua, nên tháng đi được nửa tháng thì so với nửa tháng trước. Đọc từ sổ doanh thu theo ngày địa phương. */
+  /** Doanh thu năm mốc lịch so với cùng khoảng kỳ trước. */
   async getRevenueComparison(user: AuthUser, query: RevenueComparisonQueryDto) {
     const scope = orderScope(user, query.branchId);
     const windows = comparisonWindows(new Date());
@@ -531,7 +517,7 @@ export class StatsService {
     return { comparisons };
   }
 
-  /** Mọi đơn tạo trong khoảng, bất kể trạng thái - phễu và tỉ lệ huỷ cần cả những đơn mà doanh thu bỏ qua. */
+  /** Mọi đơn tạo trong khoảng, bất kể trạng thái. */
   async getOrdersByStatus(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
     const { fromDate, toDate } = query.range();
@@ -560,14 +546,7 @@ export class StatsService {
     };
   }
 
-  /**
-   * Tình trạng đơn đang chạy, đếm tại thời điểm gọi chứ không theo kỳ (đơn chờ xác nhận từ tuần
-   * trước vẫn là việc hôm nay, nên `orders-by-status` không trả lời được). Các nhóm không giao nhau.
-   * "Giao thất bại" là đơn SHIPPING có chuyến FAILED, và bị trừ khỏi "đang giao". Từ PR #39
-   * FAILED không còn là trạng thái cuối: giao lại trên chính chuyến đó hoặc xác nhận hoàn về đều
-   * tự đưa đơn ra khỏi nhóm. Mỗi đơn chỉ có một chuyến mở nên không cần xét chuyến nào mới hơn.
-   * Một câu SQL duy nhất để các con số cùng một thời điểm.
-   */
+  /** Tình trạng đơn đang chạy tại thời điểm gọi, một câu SQL. */
   async getOrderPipeline(user: AuthUser, query: OrderPipelineQueryDto) {
     const scope = orderScope(user, query.branchId);
     const rows = await this.countOpenOrders(user.tenantId, scope.branchId);
@@ -617,9 +596,7 @@ export class StatsService {
     `;
   }
 
-  /**
-   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết nên dừng nhập gì. Tồn tính ở chi nhánh người xem nếu được gắn vào một chi nhánh, còn chủ shop thì cả chuỗi; `stock` không gồm hàng hỏng. Số bán đọc từ sổ doanh thu (hàng trả trừ đi).
-   */
+  /** Hàng còn trên kệ nhưng bán ít nhất trong kỳ. */
   async getSlowProducts(user: AuthUser, query: SlowProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
 
@@ -715,7 +692,7 @@ export class StatsService {
     return { branches, summary, pagination };
   }
 
-  /** Chỉ các cặp thứ/giờ có bán mới có ô; `weekday` 0 = Chủ nhật .. 6, `hour` 0-23, đều theo giờ địa phương của shop. Chỉ tính bút toán SALE (lúc đơn hoàn thành); hàng trả không làm ô nào âm. */
+  /** Doanh thu theo thứ và giờ. */
   async getSalesHeatmap(user: AuthUser, query: StatsQueryDto) {
     const scope = orderScope(user, query.branchId);
 
@@ -748,7 +725,7 @@ export class StatsService {
     };
   }
 
-  /** Chỉ khách có tên: dòng `KH_VANGLAI` gom mọi đơn vãng lai và sẽ đứng đầu mọi danh sách. Doanh thu ròng từ sổ doanh thu (hàng trả trừ vào khách của đơn gốc). */
+  /** Khách mua nhiều nhất, bỏ khách vãng lai. */
   async getTopCustomers(user: AuthUser, query: TopCustomersQueryDto) {
     const scope = orderScope(user, query.branchId);
 
@@ -797,7 +774,7 @@ export class StatsService {
       _sum: { amount: true },
       _count: { _all: true },
     });
-    // Cùng bộ lọc, chia thêm theo loại tiền và quỹ: báo cáo thu chi theo quỹ (DRAWER / OWNER / BANK) và loại.
+    // Thu chi chia theo loại và quỹ.
     const detail = await this.prisma.cashFlow.groupBy({
       by: ['fund', 'category', 'flowType'],
       where: this.cashflowWhere(user, query),
@@ -887,7 +864,7 @@ export class StatsService {
         sepayLedgerId: row.sepayLedgerId,
         branchName: at.branch?.name ?? null,
         warehouseName: at.warehouse?.name ?? null,
-        // Bảng chỉ có một cột "vị trí" nên gộp chi nhánh/kho vào đây; `locationType` giữ lại để vẫn truy ngược được loại.
+        // Gộp chi nhánh/kho thành một cột vị trí.
         locationName: (at.branch ?? at.warehouse)?.name ?? null,
         locationType: locationRefOf(row.location)?.locationType ?? null,
         supplierName: row.supplier?.supplierName ?? null,
@@ -916,7 +893,7 @@ export class StatsService {
       ...(query.category ? { category: query.category } : {}),
       ...(query.fund ? { fund: query.fund } : {}),
       ...(paymentMethod ? { paymentMethod } : {}),
-      // `flow` lọc theo tiền tố mã chứng từ (ORD bán hàng, SUP trả NCC). `startsWith` không phân biệt hoa thường thay cho regex neo cũ, vẫn dùng được index.
+      // Lọc theo tiền tố mã chứng từ.
       ...(query.flow
         ? {
             paymentReference: {
@@ -928,7 +905,7 @@ export class StatsService {
     };
   }
 
-  /** Giá trị tồn và hàng sắp hết, theo một địa điểm hoặc toàn tenant. `lowStockThreshold` là số phẳng từ query, không dùng `Inventory.minStock` từng dòng (cảnh báo dùng cái đó): một bên là “cần nhập thêm”, bên kia chỉ là ngưỡng trên dashboard. */
+  /** Giá trị tồn và hàng sắp hết. */
   async getInventory(user: AuthUser, query: InventoryStatsQueryDto) {
     const scope = locationScope(user, query.branchId, query.warehouseId);
     const threshold = query.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;
@@ -955,8 +932,7 @@ export class StatsService {
         WHERE i.tenant_id = ${tenantId}
           ${locationFilter}
       `,
-      // Giá trị tồn từ các lô còn hàng (số còn lại x giá vốn của lô: giá nhập NCC / giá xưởng), không phải giá vốn trên danh mục.
-      // Tách hai số (2026-11-26): tồn bán được và hàng hỏng (lô `is_sellable = false`), hàng hỏng vẫn nằm trong sổ kho.
+      // Giá trị tồn từ các lô, tách hàng bán được và hàng hỏng.
       this.prisma.$queryRaw<
         {
           stockValue: Prisma.Decimal;
@@ -1010,19 +986,7 @@ export class StatsService {
     };
   }
 
-  /**
-   * Cảnh báo tồn kho cho dashboard: hết hàng, sắp hết (theo ngưỡng dashboard), dưới mức tối thiểu
-   * (theo `Inventory.minStock` từng dòng, cùng quy tắc `<=`) và hàng lâu không bán (30/60/90 ngày,
-   * xem `stockAgingLevel`). Mọi số đọc trên kệ (stock − locked_stock): hàng đã đóng gói cho đơn
-   * thì không bán được nữa.
-   *
-   * Số ngày không bán tính từ lần bán cuối (sổ kho SALE) tại đúng địa điểm; SKU chưa bán lần nào
-   * thì tính từ lô cũ nhất còn hàng, rồi tới ngày tạo dòng tồn. Đếm theo ngày giờ Việt Nam, không
-   * chia mili-giây, để không phụ thuộc giờ gọi.
-   *
-   * Đếm và danh sách chạy trong một transaction REPEATABLE READ để cùng một ảnh dữ liệu - đơn chốt
-   * giữa hai câu không làm chúng lệch nhau.
-   */
+  /** Cảnh báo tồn kho cho dashboard: hết, sắp hết, dưới mức tối thiểu, lâu không bán. */
   async getStockAlerts(user: AuthUser, query: StockAlertsQueryDto) {
     const scope = locationScope(user, query.branchId, query.warehouseId);
     const threshold = query.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;

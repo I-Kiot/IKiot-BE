@@ -29,16 +29,12 @@ const PLAN_BRIEF_SELECT = {
   billingCycle: true,
 } as const satisfies Prisma.PlanSelect;
 
-/** CRUD mọi tenant cho admin nền tảng. Shop tự đọc/sửa hồ sơ của mình đi qua `TenantSelfService`, nơi lấy tenant id từ access token. */
+/** CRUD tenant cho admin nền tảng. */
 @Injectable()
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Trả `hasSepayKey` thay cho key; key không bao giờ rời API.
-   * Kèm chủ shop (`tenantOwner`), gói hiện tại (`subscription`, mỗi shop một bản ghi) và hoá đơn gói cho trang admin "Người dùng".
-   * Trước đây chỉ có `tenantOwnerId` dạng chuỗi nên màn đó luôn hiện "Dùng thử" và không có tên chủ.
-   */
+  /** Tenant kèm chủ shop, gói và hoá đơn gói; không trả key. */
   async findAll() {
     const rows = await this.prisma.tenant.findMany({
       orderBy: { createdAt: 'desc' },
@@ -102,7 +98,7 @@ export class TenantService {
     );
   }
 
-  // Dùng findFirst và throw tường minh thay vì findFirstOrThrow: lỗi not-found của Prisma không phải HttpException, và row của shop khác phải trông y hệt row không tồn tại.
+  // Tenant khác coi như không tồn tại.
   async findOne(id: string) {
     const found = await this.prisma.tenant.findFirst({
       where: { id },

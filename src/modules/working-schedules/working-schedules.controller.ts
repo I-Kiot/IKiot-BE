@@ -20,7 +20,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Giữ đường dẫn và quyền cũ, kể cả bốn action cũ (`read_all`, `readBR`, `readWH`, `read` / `read_own`). `current`, `me`, `branches`, `warehouses` phải khai báo trước `:id`, nếu không sẽ bị hiểu là id lịch. */
+/** Controller lịch làm việc; route tĩnh khai báo trước `:id`. */
 @ApiTags('working-schedules')
 @ApiBearerAuth('bearer')
 @Controller('working-schedules')
@@ -51,7 +51,7 @@ export class WorkingScheduleController {
     return this.service.findMine(requireTenantId(user), user.userId, query);
   }
 
-  /** Hai view chi nhánh/kho là cùng một danh sách, chỉ khác location; thiếu id được báo lỗi validation (route cũ trả 400). */
+  /** Lịch theo chi nhánh / kho. */
   @Permissions('schedules', 'readBR')
   @Get('branches')
   findByBranch(

@@ -1,6 +1,6 @@
 import { AdminStatsService } from './admin-stats.service';
 
-// Excel sheet "Stats" - getOverview (UTC020-UTC030).
+// Sheet Excel "Stats" - getOverview (UTC020-UTC030).
 describe('Excel sheet Stats - getOverview', () => {
   let prisma: any;
   let service: AdminStatsService;
@@ -14,7 +14,7 @@ describe('Excel sheet Stats - getOverview', () => {
       }),
     }) as never;
 
-  /** Counts by status in the shape of a Prisma groupBy result. */
+  /** Số đếm theo trạng thái dạng kết quả groupBy của Prisma. */
   const counts = (obj: Record<string, number>, key = 'status') =>
     Object.entries(obj).map(([value, n]) => ({
       [key]: value,
@@ -25,7 +25,7 @@ describe('Excel sheet Stats - getOverview', () => {
     prisma = {
       tenant: {
         groupBy: jest.fn().mockResolvedValue([]),
-        // order of calls: total, new in period, new in previous period, SePay linked
+        // Thứ tự gọi: tổng, mới trong kỳ, mới kỳ trước, đã liên kết SePay.
         count: jest.fn().mockResolvedValue(0),
         findMany: jest.fn().mockResolvedValue([]),
       },

@@ -21,7 +21,7 @@ export class ResetPasswordDto {
   })
   token: string;
 
-  // 6 ký tự là mức tối thiểu của service cũ; giữ đồng bộ với register và changePassword, vì lệch nhau là cách các chỗ này bị lệch.
+  // Mật khẩu tối thiểu 6 ký tự.
   @IsString()
   @MinLength(6, { message: 'Mật khẩu mới phải có ít nhất 6 ký tự' })
   newPassword: string;

@@ -16,7 +16,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Phần của shop trong support, giữ đường dẫn cũ. `GET :id` và `DELETE :id` dùng chung với operator như router cũ, nên link tới ticket mở ra giống nhau với mọi người. */
+/** Route ticket cho shop. */
 @ApiTags('tickets')
 @ApiBearerAuth('bearer')
 @Controller('tickets')

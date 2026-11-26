@@ -7,8 +7,7 @@ import {
 } from '../../common/constants/order-status';
 import { STOCK_CHECK_SEVERITY, StockCheckStatus } from './order-read.constants';
 
-// stockCheck của một dòng đơn (contract §2, GĐ1 - Bước 3): số lượng dòng có trên kệ ngay lúc này không. Chỉ đọc, không giữ hàng cho đơn.
-// Viết cho A-9; B-2 sở hữu quy tắc, còn kho nào để đếm vẫn chưa chốt (contract §8). Tới lúc đó, hàm đếm `sourceLocationId` của dòng theo đề xuất của contract. Đổi ở đây, một chỗ duy nhất.
+// Kiểm số lượng dòng đơn có trên kệ lúc này, chỉ đọc.
 
 export interface StockCheck {
   status: StockCheckStatus;
@@ -48,7 +47,7 @@ export function classifyStock(quantity: number, onShelf: number): StockCheck {
   return { status, stock, shortQuantity };
 }
 
-/** `stockSummary` của đơn là dòng tệ nhất, hoặc null khi không dòng nào có check (đã giao, hoặc chỉ có dòng COMBO / SERVICE). */
+/** Tình trạng hàng tệ nhất của đơn, null nếu không dòng nào cần kiểm. */
 export function summarizeStock(
   checks: (StockCheck | null | undefined)[],
 ): StockCheckStatus | null {
@@ -58,7 +57,7 @@ export function summarizeStock(
   return STOCK_CHECK_SEVERITY.find((status) => present.has(status)) ?? null;
 }
 
-/** Dòng có được tính stockCheck không: chỉ dòng có hàng còn chờ giao, trên đơn chưa giao, và có kho để đếm. */
+/** Dòng có cần tính stockCheck không. */
 function isCheckable(
   order: StockCheckOrder,
   line: StockCheckLine,
@@ -71,11 +70,7 @@ function isCheckable(
   );
 }
 
-/**
- * stockCheck của mọi dòng cần kiểm, khoá theo id dòng; dòng không có trong map là `stockCheck: null`. Một query tồn cho mọi đơn, bất kể số lượng.
- *
- * Mỗi dòng so riêng với tồn trên kệ (đã loại phần các đơn đã đóng gói đang giữ): hai đơn CONFIRMED cùng muốn một chiếc còn lại đều báo ENOUGH, đơn đóng gói trước được lấy trước (contract §2). Dòng của đơn PACKED / PICKED_UP nằm trong nhóm đã khoá nên báo ENOUGH.
- */
+/** Tính stockCheck cho mọi dòng trong một truy vấn tồn. */
 export async function computeStockChecks(
   reader: Pick<Prisma.TransactionClient, 'inventory'>,
   tenantId: string,

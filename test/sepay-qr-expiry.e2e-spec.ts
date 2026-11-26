@@ -40,11 +40,7 @@ const MIN = 60_000;
 const LATE = () => new Date(Date.now() + 16 * MIN);
 const SOON = () => new Date(Date.now() + 10 * MIN);
 
-/**
- * Mã QR SePay hết hạn sau 15 phút (orders/sepay-qr.ts) trên Postgres thật: cron huỷ đơn quầy và đánh dấu EXPIRED, tạo lại mã, tiền về muộn (chốt hoặc từ chối + báo chủ shop), sổ giao dịch chống trùng, và nút "Hủy đơn này" của quầy.
- * Thời gian giả bằng tham số `now` của cron / webhook; lúc đọc qua HTTP thì lùi giờ của dòng trong DB. Hàng vào kho bằng `openLot`.
- * Lưu ý: cron quét mọi tenant, nên các đơn quầy chờ QR cũ trong DB dùng chung cũng bị huỷ khi `now` giả được đẩy lên.
- */
+/** Kiểm mã QR SePay hết hạn sau 15 phút (Postgres thật); cron quét mọi tenant. */
 describe('SePay QR expiry', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -360,7 +356,7 @@ describe('SePay QR expiry', () => {
     await prisma.payment.deleteMany({ where: { tenantId } });
     await prisma.invoice.deleteMany({ where: { tenantId } });
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
-    await prisma.order.deleteMany({ where: { tenantId } }); // order_events: Cascade
+    await prisma.order.deleteMany({ where: { tenantId } }); // order_events: cascade
     await prisma.inventory.deleteMany({ where: { tenantId } });
     await prisma.customer.deleteMany({ where: { tenantId } });
     await prisma.productItem.deleteMany({ where: { tenantId } });

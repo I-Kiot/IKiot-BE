@@ -4,21 +4,7 @@ import {
   ProductionRequestStatus,
 } from '../../common/constants/production-request-status';
 
-// Danh sách cần sản xuất (docs/hanh-trinh-don-hang.md GĐ1 – Bước 4, contract §3) dưới dạng hàm thuần, không DB,
-// để mọi quy tắc "thiếu bao nhiêu" được unit test riêng. Service tải dòng và trang trí kết quả.
-//
-// Mọi SKU sản xuất được (`Product.isManufacturable`, từ 2026-10-13; trước đó là mọi SKU) đều đặt được từ xưởng, thiếu hay không
-// (2026-10-05): danh sách là danh mục đó ở mỗi địa điểm, "thiếu bao nhiêu" là một cột kèm bộ lọc, dòng thiếu lên trước.
-// Dòng thiếu lấy từ nhu cầu, nên SKU chỉ mua từ NCC vẫn hiện khi đơn bị thiếu; dòng mang `isManufacturable: false` và được
-// nhập lại qua đơn nhập hàng ("Tạo đơn nhập hàng"), không bao giờ qua yêu cầu.
-//
-// Một dòng là một (địa điểm, SKU), hoặc với hàng làm theo thiết kế của một dòng đơn là (địa điểm, SKU, dòng đơn):
-// hàng tuỳ chỉnh chỉ dành cho dòng đó, nên không được phủ bằng hàng trên kệ, cũng không phủ nhu cầu của ai khác.
-//
-//   shortQuantity = max(0, demand − stock − onOrder − draft)
-//
-// `stock` là TỔNG tồn (`inventories.stock`), không phải phần trên kệ (`stock − locked_stock`): nhu cầu gồm cả dòng của
-// đơn đã PACKED / PICKED_UP, và đúng hàng đó nằm trong `locked_stock`. Trừ phần trên kệ sẽ tính các đơn đó thiếu lần thứ hai.
+// Danh sách cần sản xuất dạng hàm thuần: thiếu = max(0, nhu cầu - tồn - đang đặt - nháp).
 
 /** Một dòng đơn chưa giao, đã có hàng – là nhu cầu. `locationId` null = chưa chọn kho nguồn. */
 export interface DemandLine {
@@ -42,7 +28,7 @@ export interface StockLevelRow {
   stock: number;
 }
 
-/** Phần còn lại của lot làm cho một dòng đơn tuỳ chỉnh (`inventory_lots.order_item_id`). Nằm trong `stock`, nhưng không của ai khác. */
+/** Tồn của lô làm riêng cho một dòng đơn. */
 export interface CustomLotRow {
   locationId: string;
   productItemId: string;
@@ -123,11 +109,7 @@ export interface ProductionListInput {
   catalogue?: { locationId: string; productItemId: string }[];
 }
 
-/**
- * YCSX gắn dòng đơn (cùng địa điểm + SKU) trừ vào nhu cầu của chính dòng đó trước; phần dư (vượt số lượng dòng, hoặc khác địa điểm)
- * vẫn là hàng đặt chung. Lượng trừ C ra khỏi nhu cầu và onOrder/draft cùng lúc nên `shortQuantity` của dòng không đổi.
- * Dòng YCSX duyệt theo thứ tự đầu vào (người tải sắp theo ngày tạo YCSX, cũ nhất trước).
- */
+/** YCSX gắn dòng đơn trừ vào nhu cầu của chính dòng đó trước. */
 export function allocateLinkedSupply(
   demand: DemandLine[],
   requests: RequestLine[],
@@ -188,7 +170,7 @@ function priorityRank(priority: string): number {
   return Math.max(0, ORDER_PRIORITIES.indexOf(priority));
 }
 
-/** Ai đi trước khi nhiều đơn cần cùng hàng: nhãn ưu tiên, rồi ngày giao sớm nhất (không có = cuối), rồi mã đơn để kết quả ổn định. */
+/** Thứ tự ưu tiên khi nhiều đơn cần cùng hàng. */
 export function compareUrgency(a: DemandLine, b: DemandLine): number {
   const byPriority = priorityRank(b.priority) - priorityRank(a.priority);
   if (byPriority !== 0) return byPriority;
@@ -198,14 +180,14 @@ export function compareUrgency(a: DemandLine, b: DemandLine): number {
   return a.orderCode.localeCompare(b.orderCode);
 }
 
-/** Toàn bộ danh sách. Dòng lấy từ nhu cầu, yêu cầu đang mở và `catalogue` (các cặp cần liệt kê dù chưa có gì, để đặt được bất kỳ thứ gì). Dòng thiếu lên trước (đơn gấp nhất trước, rồi khoảng thiếu lớn nhất), rồi tới dòng có đơn; dòng bằng nhau giữ thứ tự đầu vào, người gọi sắp theo tên. */
+/** Dựng toàn bộ danh sách cần sản xuất, dòng thiếu lên trước. */
 export function buildProductionList(
   input: ProductionListInput,
 ): ProductionListEntry[] {
   return buildProductionState(input).entries;
 }
 
-/** Như `buildProductionList`, kèm bảng phần nhu cầu của từng dòng đơn đã được YCSX gắn nhận (cho `orderableLinesOf`). */
+/** Như `buildProductionList`, kèm phần nhu cầu đã được YCSX gắn nhận. */
 export function buildProductionState(
   input: ProductionListInput,
 ): ProductionState {
@@ -311,7 +293,7 @@ export function buildProductionState(
   return { entries: [...rows.values()].sort(compareRows), coverage };
 }
 
-/** Thiếu trước, rồi dòng có đơn; trong mỗi nhóm, đơn gấp nhất, rồi khoảng thiếu lớn nhất. 0 cho hai dòng không có đơn – người gọi sắp hai dòng đó theo tên. */
+/** So sánh dòng: thiếu trước, rồi dòng có đơn. */
 export function compareRows(
   a: ProductionListEntry,
   b: ProductionListEntry,
@@ -329,7 +311,7 @@ export function compareRows(
   return b.shortQuantity - a.shortQuantity;
 }
 
-/** Thay đổi này vừa làm dòng thiếu hàng à? Bắt cạnh như `crossedLowStock` và `crossedCreditWarning`: chỉ bắn ở lần sửa mở ra khoảng thiếu, không bắn ở mọi lần sửa sau khi khoảng thiếu còn mở – nếu không người theo dõi danh sách sẽ tắt nó ngay ngày đầu. */
+/** Dòng vừa chuyển sang thiếu do thay đổi này. */
 export function crossedShortage(before: number, after: number): boolean {
   return before <= 0 && after > 0;
 }

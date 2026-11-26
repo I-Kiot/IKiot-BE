@@ -1,8 +1,8 @@
 import { FlowType } from '../stats/stats.constants';
 
-/** Phép tính đằng sau “két bị hụt”, thuần để test không cần DB. Mỗi đoạn kiểm bằng `counted − (số đếm trước + tiền mặt thuần ở giữa)`, nên tổng chênh các đoạn bằng chênh của phiên: chỉ ra ngày hụt và ca làm mất. Chỉ tiền mặt; caller tự lọc. */
+/** Phép tính két hụt: chênh lệch theo từng đoạn giữa các lần đếm. */
 
-// Giữ literal cục bộ thay vì import ShiftLogType: module đó kéo theo hằng múi giờ, còn file này chỉ là số học thuần. Được assert với enum thật trong spec.
+// Literal cục bộ để file chỉ là số học thuần.
 const ShiftLogStart = 'START';
 
 /** Mắt xích nào đoạn kết thúc, tức ai chịu trách nhiệm. */
@@ -81,7 +81,7 @@ export interface Reconciliation {
   segments: CashSegment[];
 }
 
-/** Làm tròn đến xu: `CashFlow.amount` là `Decimal(14,2)` đọc qua `Number()`, vài trăm dòng cộng lại có thể ra 1234.9999999999998. */
+/** Làm tròn đến xu. */
 function money(value: number): number {
   const rounded = Math.round(value * 100) / 100;
   // `-0` là giá trị JS thật mà phép so sánh nghiêm ngặt ở client không coi là 0.
@@ -95,7 +95,7 @@ export function signedAmount(movement: CashMovement): number {
     : -movement.amount;
 }
 
-/** Chia ngày giao dịch thành đoạn tại mỗi số tiền đã đếm và gán từng dòng vào đoạn chứa nó. Dòng đúng tại biên thuộc đoạn sau, để rơi vào thu ngân đang nhận két chứ không phụ thuộc thứ tự sắp xếp. */
+/** Chia ngày thành đoạn tại mỗi lần đếm, gán dòng tiền vào đoạn. */
 export function reconcileSession(input: ReconcileInput): Reconciliation {
   const logs = [...input.shiftLogs].sort(
     (a, b) => a.loggedAt.getTime() - b.loggedAt.getTime(),
@@ -175,7 +175,7 @@ export function reconcileSession(input: ReconcileInput): Reconciliation {
   };
 }
 
-/** `next` phân biệt đoạn cuối ngày với khoảng nghỉ thường: cả hai đều theo sau một END, nhưng chỉ đoạn không có gì sau nó mới kết thúc ở số đếm đóng ca của quản lý, nơi chênh lệch đếm lại hiện ra. */
+/** Đoạn cuối ngày kết thúc ở số đếm khi chốt. */
 function segmentKind(
   previous: ShiftLogEntry | null,
   next: ShiftLogEntry | null,
@@ -185,7 +185,7 @@ function segmentKind(
   return next ? CashSegmentKind.GAP : CashSegmentKind.CLOSING;
 }
 
-/** Bản rút gọn cho danh sách session: cùng số tổng từ tổng đã gom sẵn, nên báo cáo 90 ngày là một truy vấn gom nhóm thay vì 90 lần phân bổ từng dòng. */
+/** Tính tổng cho danh sách phiên từ số đã gom. */
 export function summarizeVariance(input: {
   openingAmount: number;
   finalAmount: number | null;

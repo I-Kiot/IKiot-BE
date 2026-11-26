@@ -1,7 +1,7 @@
 import type { Prisma } from '../../../generated/prisma/client';
 import type { TenantBankingChangeSource } from '../../common/constants/tenant-banking-change';
 
-/** Các cột nhận tiền của shop mà lịch sử theo dõi. `bankingSepayWebhookApiKey` là bí mật: chỉ được ghi dạng `{ keyChanged: true }`. */
+/** Các cột ngân hàng được theo dõi lịch sử; key chỉ ghi `keyChanged`. */
 export interface BankingState {
   bankingAccountNumber?: string | null;
   bankingBankName?: string | null;
@@ -24,7 +24,7 @@ const PLAIN_FIELDS = [
 const iso = (value: Date | null | undefined) =>
   value ? value.toISOString() : null;
 
-/** So hai ảnh chụp, chỉ giữ trường đổi. Thuần, không đọc DB; key webhook không bao giờ vào kết quả ngoài cờ `keyChanged`. Rỗng = không có gì để ghi. */
+/** So hai ảnh chụp, giữ trường đã đổi. */
 export function diffBanking(
   before: BankingState,
   after: BankingState,

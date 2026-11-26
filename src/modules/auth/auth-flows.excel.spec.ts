@@ -20,7 +20,7 @@ const bodyOf = (error: unknown) =>
     message: string;
   };
 
-/** Expects `run` to reject with `type`, carrying `code` (and `message` when given). */
+/** Kiểm `run` bị reject với lỗi `type` mang `code` (và `message` nếu có). */
 async function expectRejects(
   run: Promise<unknown>,
   type: new (...args: never[]) => Error,
@@ -38,7 +38,7 @@ async function expectRejects(
   if (message) expect(bodyOf(caught).message).toBe(message);
 }
 
-/** In-memory stand-in for RedisService (a Map with the methods the services use). */
+/** Bản giả RedisService trong bộ nhớ. */
 function fakeRedis() {
   const store = new Map<string, string>();
   return {
@@ -287,7 +287,7 @@ describe('AuthService flows', () => {
         'OTP_SEND_FAILED',
       );
       expect(redis.store.size).toBe(0);
-      // Lỗi gửi mail thoát ra từ chính callback của transaction, nên Postgres rollback tenant + owner: gửi lại form không bị báo trùng.
+      // Gửi mail lỗi thì rollback tenant và chủ shop.
       expect(email.sendOtpEmail).toHaveBeenCalledTimes(1);
       await expect(prisma.$transaction.mock.results[0].value).rejects.toThrow(
         ServiceUnavailableException,
@@ -712,7 +712,7 @@ describe('AuthService flows', () => {
       expect(refreshTokens.revoke).not.toHaveBeenCalled();
     });
   });
-  // ── Email OTP guard and flows (UTC056+) ──
+  // ── OTP email: guard và các luồng (UTC056+) ──
   describe('Email OTP - guard rules', () => {
     const u = { id: 'U1', email: 'anna@mail.com' };
     const send = (challengeId = 'c1', mode: 'reject' | 'rebind' = 'reject') =>
@@ -1115,8 +1115,8 @@ describe('AuthService flows', () => {
       const claims = { sub: 'U1', jti: 'j1' };
       const tokens = [
         'garbage',
-        jwt.sign({ sub: 'U1' }), // access token
-        jwt.sign({ ...claims, type: 'password_reset' }), // reset token
+        jwt.sign({ sub: 'U1' }), // token truy cập
+        jwt.sign({ ...claims, type: 'password_reset' }), // token đặt lại mật khẩu
         jwt.sign({
           ...claims,
           type: 'otp_challenge',

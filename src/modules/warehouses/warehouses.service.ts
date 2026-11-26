@@ -21,14 +21,14 @@ const WAREHOUSE_CONFIG: LocationConfig = {
   },
 };
 
-/** Port từ WarehouseService + WarehouseController, đồng bộ với BranchService vì tenant nay có nhiều kho. Bản cũ nhận mọi NV đang làm việc làm quản lý, khác bên chi nhánh; nên có LocationService dùng chung để một luật không bị thêm cho bên này mà quên bên kia. */
+/** Service kho, dùng chung LocationService với chi nhánh. */
 @Injectable()
 export class WarehouseService extends LocationService {
   constructor(prisma: PrismaService, subscriptions: SubscriptionService) {
     super(prisma, subscriptions, WAREHOUSE_CONFIG);
   }
 
-  /** Thin wrapper so the response keeps the `warehouseId` key the old API returned. */
+  /** Giữ khoá `warehouseId` trong response. */
   async assignManager(tenantId: string, warehouseId: string, staffId: string) {
     const manager = await this.appointManager(tenantId, warehouseId, staffId);
     return { warehouseId, manager };

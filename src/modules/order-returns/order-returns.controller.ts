@@ -31,7 +31,7 @@ class SetReplacementOrderDto {
   orderId: string;
 }
 
-/** Đơn hoàn hàng, mở tay cho mọi kênh. Dòng GOOD về kho bán được, dòng DAMAGED về kho hàng hỏng của kho đó (contract §5, D-5). */
+/** Controller đơn hoàn hàng. */
 @ApiTags('order-returns')
 @ApiBearerAuth('bearer')
 @Controller('order-returns')
@@ -53,7 +53,7 @@ export class OrderReturnController {
     return this.service.findOne(user, requireTenantId(user), id);
   }
 
-  /** Cố ý không có @Permissions: `returns:create` hoặc người phụ trách đơn đều mở được, một hành động guard không diễn đạt được; service kiểm (ORDER_RETURN_DENIED). */
+  /** Quyền mở đơn hoàn kiểm trong service. */
   @Post()
   @EmitsChange(OrderReturnChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderReturnDto) {

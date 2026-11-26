@@ -48,7 +48,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Port của ProductController. Mọi route có permission riêng: module cũ chỉ kiểm JWT nên mọi tài khoản (cả CUSTOMER) đều sửa được danh mục. Hai đường bỏ hậu tố `/delete`. */
+/** Controller sản phẩm, mỗi route có quyền riêng. */
 @ApiTags('products')
 @ApiBearerAuth('bearer')
 @Controller('products')
@@ -70,7 +70,7 @@ export class ProductController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  /** File Excel mẫu để nhập hàng hoá - dropdown danh mục/thương hiệu/NCC lấy từ chính cửa hàng, nên gated như việc tạo. */
+  /** Tải file Excel mẫu để nhập hàng hoá. */
   @Permissions('products', 'create')
   @Get('import/template')
   @ApiProduces(XLSX_MIME)
@@ -82,7 +82,7 @@ export class ProductController {
     });
   }
 
-  /** Nhập hàng hoá + mặt hàng từ file mẫu. Cả file hợp lệ mới tạo; sai thì 400 kèm `errors: [{ row, column, message }]`. */
+  /** Nhập hàng hoá từ file mẫu. */
   @Permissions('products', 'create')
   @Post('import')
   @HttpCode(HttpStatus.CREATED)
@@ -104,7 +104,7 @@ export class ProductController {
     return this.importer.import(requireTenantId(user), file, user.userId);
   }
 
-  // `items` và `search` phải nằm trên `:id`, nếu không router coi chúng là product id và mọi lần gọi 404.
+  // Route tĩnh phải khai báo trên `:id`.
   @Permissions('products', 'read')
   @Get('items')
   listItems(
@@ -140,7 +140,7 @@ export class ProductController {
     return this.service.update(requireTenantId(user), id, dto);
   }
 
-  /** Thêm thuộc tính cho sản phẩm (nút "Thêm thuộc tính" ở màn đơn và YCSX). Trùng tên thì trả thuộc tính có sẵn. */
+  /** Thêm thuộc tính cho sản phẩm; trùng tên thì trả thuộc tính có sẵn. */
   @Permissions('products', 'update')
   @Post(':id/attributes')
   addAttribute(

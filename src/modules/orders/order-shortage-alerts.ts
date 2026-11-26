@@ -31,12 +31,7 @@ export function stockPairsOf(lines: readonly PairLine[]): StockPair[] {
   return [...seen.values()];
 }
 
-/**
- * Phía đơn của cảnh báo thiếu hàng (B-3, contract §3): tạo đơn tay, sửa dòng hoặc làm dòng thành may đo có thể đẩy một dòng (kho, SKU)
- * trên danh sách sản xuất từ đủ sang thiếu. Người phụ trách kho đó được báo đúng một lần lúc nó chuyển trạng thái, không báo cho mọi đơn sau đó.
- * Danh sách và nội dung thông báo thuộc `ProductionListService`; file này chỉ chụp trạng thái "trước" trước khi ghi và trả lại sau khi commit,
- * đọc lại dòng đơn để dòng vừa chuyển sang SKU custom trong transaction cũng được so sánh. Chỉ là kênh phụ: không bao giờ làm hỏng đơn.
- */
+/** Cảnh báo thiếu hàng phía đơn: chụp trạng thái trước khi ghi, báo người phụ trách kho khi dòng chuyển từ đủ sang thiếu. */
 @Injectable()
 export class OrderShortageAlerts {
   private readonly logger = new Logger(OrderShortageAlerts.name);

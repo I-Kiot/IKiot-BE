@@ -7,7 +7,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Nhật ký của tenant, chỉ owner. Nếu sau này staff cần xem, hãy thêm `audit_logs:read` và dùng @Permissions(), đừng nới lỏng guard.
+// Nhật ký của tenant, chỉ chủ shop xem.
 @ApiTags('audit-logs')
 @ApiBearerAuth('bearer')
 @UseGuards(OwnerOrAdminGuard)

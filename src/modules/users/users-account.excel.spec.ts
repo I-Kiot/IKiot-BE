@@ -29,7 +29,7 @@ async function expectRejects(
   if (message) expect(bodyOf(caught).message).toBe(message);
 }
 
-// Excel sheet "UsersPermissions" - createAccount, updateAccountPassword, deactivateAccount (UTC009-UTC017).
+// Sheet Excel "UsersPermissions" - createAccount, updateAccountPassword, deactivateAccount (UTC009-UTC017).
 describe('Excel sheet UsersPermissions - staff account', () => {
   let prisma: any;
   let notifications: { notify: jest.Mock };

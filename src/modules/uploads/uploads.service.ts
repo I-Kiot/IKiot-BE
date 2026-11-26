@@ -15,7 +15,7 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const ALLOWED_MIME = new Set(ALLOWED_FORMATS.map((f) => `image/${f}`));
 
-/** Upload ảnh lên Cloudinary. Bản cũ đẩy request thẳng qua `multer-storage-cloudinary`; ở đây file nằm trong bộ nhớ rồi gửi bằng `upload_stream`, cùng thư mục, định dạng, trần 5MB và response `{ url }`, bớt một dependency, và validate trả được 400 thật. Không upload gì khi Cloudinary chưa cấu hình; bản cũ chỉ phát hiện điều này khi lỗi 500 ở lần dùng đầu. */
+/** Upload ảnh lên Cloudinary (tối đa 5MB). */
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);

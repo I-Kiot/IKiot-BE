@@ -82,7 +82,7 @@ describe('deadTokensIn', () => {
     expect(deadTokensIn(['a'], [])).toEqual([]);
   });
 
-  // Đây là thứ FCM v1 thực sự trả về cho token rác - các mã legacy không bao giờ xuất hiện trong trường hợp này.
+  // Lỗi FCM v1 trả về cho token rác.
   it('treats invalid-argument as dead when the message blames the token', () => {
     const responses = [
       {
@@ -98,7 +98,7 @@ describe('deadTokensIn', () => {
     expect(deadTokensIn(['junk'], responses)).toEqual(['junk']);
   });
 
-  // Một payload lỗi thì cả batch cùng nhận, nên xoá theo invalid-argument sẽ huỷ đăng ký mọi thiết bị một lúc.
+  // Lỗi payload làm cả batch cùng lỗi, không được xoá token theo lỗi này.
   it('keeps tokens when invalid-argument is about the payload', () => {
     const responses = [
       {
@@ -256,7 +256,7 @@ describe('PushService.sendToUsers', () => {
     expect(deleteMany).not.toHaveBeenCalled();
   });
 
-  // notify() chạy sau khi transaction nghiệp vụ đã commit, nên throw ở đây sẽ làm lỗi một thao tác đã thành công.
+  // notify() chạy sau commit nên không được ném lỗi.
   it('never throws when FCM rejects', async () => {
     const send = jest.fn().mockRejectedValue(new Error('FCM is down'));
     const { service } = makeService({ tokens: ['t1'], send });

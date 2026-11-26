@@ -38,9 +38,7 @@ import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 import type { UpdateOrderDto } from './../src/modules/orders/dto/update-order.dto';
 
-/**
- * Sửa đơn (A-8) trên Postgres thật: sửa dòng khi CONFIRMED (giữ / thêm / bỏ, combo co giãn), chặn sửa dòng sau khi đóng gói, tiền cọc không lệch số đã thu, dòng đã có YCSX không bỏ được, đơn POS / đã đi không sửa được, và `excludePos` của `GET /orders`. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm sửa đơn (Postgres thật). */
 describe('PATCH /orders/:id – OrderEditService', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;

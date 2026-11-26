@@ -1,6 +1,6 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Copy gói dịch vụ/billing nằm ngoài NotificationService để service đó chỉ lo việc gửi, không biết về domain. */
+/** Nội dung thông báo gói dịch vụ. */
 export const SubscriptionNotificationTemplates = {
   activated: (): NotificationContent => ({
     type: 'SUBSCRIPTION_ACTIVATED',

@@ -25,7 +25,7 @@ export const QUOTA_COUNTED_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.INACTIVE,
 ];
 
-/** `ProductItem.itemType`. Chỉ PRODUCT tự giữ kho: COMBO được tính giá như một bộ và giữ kho qua thành phần; SERVICE không cần hàng. */
+/** Loại SKU: chỉ PRODUCT giữ kho, COMBO giữ qua thành phần, SERVICE không cần hàng. */
 export const ProductItemType = {
   PRODUCT: 'PRODUCT',
   COMBO: 'COMBO',
@@ -35,9 +35,7 @@ export const ProductItemType = {
 export type ProductItemType =
   (typeof ProductItemType)[keyof typeof ProductItemType];
 
-/**
- * `Product.productType`: `/products` liệt kê PRODUCT và SERVICE, `/combos` liệt kê COMBO. Cố định khi tạo, như `itemType`: đổi sản phẩm đã có tồn thành combo sẽ làm mất số tồn đó.
- */
+/** Loại sản phẩm, cố định khi tạo. */
 export const ProductType = {
   PRODUCT: 'PRODUCT',
   COMBO: 'COMBO',
@@ -48,14 +46,12 @@ export type ProductType = (typeof ProductType)[keyof typeof ProductType];
 
 export const PRODUCT_TYPES: readonly string[] = Object.values(ProductType);
 
-/**
- * Loại SKU mà mọi biến thể của sản phẩm loại này phải có. Quan hệ 1-1 có chủ ý, để chặn biến thể COMBO nằm trong sản phẩm PRODUCT. `itemType` vẫn nằm trên `product_items` vì đơn, kho và mở rộng combo đọc theo từng dòng.
- */
+/** Loại SKU bắt buộc theo loại sản phẩm. */
 export function itemTypeFor(productType: ProductType): ProductItemType {
   return productType;
 }
 
-/** Biến thể loại này có được có dòng tồn kho và lot hay không. Bản duy nhất của quy tắc "chỉ PRODUCT giữ kho". */
+/** Loại SKU có được giữ tồn kho và lô không. */
 export function holdsStock(itemType: string): boolean {
   return itemType === ProductItemType.PRODUCT;
 }

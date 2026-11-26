@@ -2,7 +2,7 @@ import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
 import { IsEmail } from 'class-validator';
 
-/** Email đồng thời là khoá tra cứu: được validate, chuyển chữ thường và trim trong plainToInstance, nên mọi đường ghi lưu cùng một dạng chuẩn. */
+/** Chuẩn hoá email: kiểm tra, chữ thường, bỏ khoảng trắng. */
 export function NormalizeEmail(): PropertyDecorator {
   return applyDecorators(
     Transform(({ value }: { value: unknown }) =>

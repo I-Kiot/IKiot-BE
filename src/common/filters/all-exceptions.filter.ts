@@ -5,16 +5,14 @@ import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../errors/error-codes';
 import { SentryExceptionCaptured } from '@sentry/nestjs';
 
-/** Nơi duy nhất biến lỗi thành HTTP response. Lỗi Prisma và lỗi không phải HttpException vẫn có status code thật. */
+/** Đổi mọi lỗi thành HTTP response, kể cả lỗi Prisma. */
 const ERROR_LABELS: Record<number, string> = {
   [HttpStatus.BAD_REQUEST]: 'Bad Request',
   [HttpStatus.NOT_FOUND]: 'Not Found',
   [HttpStatus.CONFLICT]: 'Conflict',
 };
 
-/**
- * Nửa lỗi của envelope. `code` là phần ổn định của hợp đồng. Chỉ vắng khi body HttpException là chuỗi trần (lỗi framework); khi đó client dùng `statusCode`.
- */
+/** Phần lỗi của envelope; `code` là phần ổn định. */
 interface ErrorEnvelope {
   success: false;
   statusCode: number;
@@ -65,7 +63,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } satisfies ErrorEnvelope);
   }
 
-  /** Body của HttpException trong envelope: mảng `message` của ValidationPipe chuyển sang `errors`, các key phụ khác giữ nguyên. */
+  /** Đưa body lỗi vào envelope, mảng `message` của ValidationPipe thành `errors`. */
   private envelopeOf(statusCode: number, body: unknown): ErrorEnvelope {
     if (typeof body === 'string') {
       return { success: false, statusCode, message: body };

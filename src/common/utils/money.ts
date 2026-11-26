@@ -1,7 +1,4 @@
-/**
- * Tiền trong bộ nhớ luôn là số nguyên đồng. Decimal của Prisma đổi ra số ở ranh giới đọc (`toDong`), và không so sánh `===` trên tổng các `Number(decimal)` lẻ: 0.1 + 0.2 !== 0.3 là chỗ lệch một đồng lọt vào sổ.
- * File thuần, không đọc DB, để mọi nơi (đơn, giao hàng, hoàn tiền, báo cáo) dùng chung một cách làm tròn.
- */
+/** Tiện ích tiền: luôn tính bằng số nguyên đồng. */
 
 /** Mọi thứ đọc ra từ cột tiền: Decimal của Prisma có `toNumber`, hoặc số, chuỗi, null. */
 export type MoneyLike =
@@ -24,10 +21,7 @@ export function sumDong(values: readonly MoneyLike[]): number {
   return values.reduce<number>((total, value) => total + toDong(value), 0);
 }
 
-/**
- * Chia `total` theo tỉ lệ `weights` bằng phương pháp phần dư lớn nhất: các phần cộng lại đúng bằng `total`, không lệch một đồng nào.
- * Phần dư bằng nhau thì phần đứng trước được cộng trước (ổn định). Tổng trọng số bằng 0 thì mọi phần là 0.
- */
+/** Chia `total` theo tỉ lệ `weights`, tổng các phần đúng bằng `total`. */
 export function allocateProportional(
   total: number,
   weights: readonly number[],
@@ -51,10 +45,7 @@ export function allocateProportional(
   return parts;
 }
 
-/**
- * Phần giá trị của `returning` đơn vị khi dòng đã trả `alreadyReturned` đơn vị: chênh lệch của phân bổ luỹ kế, nên các lần trả cộng lại đúng bằng giá trị dòng và không trôi từng lần.
- * `lineNet` là giá trị thực của cả dòng (sau giảm giá), `lineQty` là số lượng cả dòng.
- */
+/** Giá trị của phần hàng trả, tính luỹ kế để các lần trả cộng đúng bằng giá trị dòng. */
 export function sliceValue(
   lineNet: number,
   lineQty: number,

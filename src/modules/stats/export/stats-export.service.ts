@@ -60,10 +60,7 @@ const SECTION_SLUG: Record<string, string> = {
   inventory: 'ton-kho',
 };
 
-/**
- * Các tab của trang Báo cáo tổng hợp, theo thứ tự tab - "Xuất tất cả" ở đó gồm đúng các báo cáo này.
- * `branch` (so sánh các điểm bán) chỉ có khi xem toàn cửa hàng, như tab trên web; nhân viên có trang và nút xuất riêng.
- */
+/** Các tab của trang Báo cáo tổng hợp theo thứ tự. */
 const SUMMARY_SECTIONS = [
   'result',
   'time',
@@ -121,10 +118,7 @@ interface ReportContext {
   orderQuery: StatsQueryDto;
 }
 
-/**
- * Dựng file Excel cho các trang báo cáo. Mỗi sheet là đúng bảng trên trang web: cùng cột, cùng thứ tự, cùng dòng tổng (chốt 2026-11-23).
- * Không tính lại số nào: mọi con số lấy từ đúng hàm mà màn hình gọi (`StatsService`, `StatsReportsService`), nên file và màn hình không thể lệch nhau.
- */
+/** Dựng file Excel từ đúng số liệu màn hình đang dùng. */
 @Injectable()
 export class StatsExportService {
   constructor(
@@ -145,7 +139,7 @@ export class StatsExportService {
 
   // ---------------------------------------------------------------- Sổ doanh thu
 
-  /** Sổ doanh thu: sheet 1 là bảng bút toán như trên trang, sheet 2 là các dòng hàng (phần mở rộng của mỗi bút toán trên trang). */
+  /** Xuất sổ doanh thu: sheet bút toán và sheet dòng hàng. */
   async salesJournal(
     user: AuthUser,
     query: SalesJournalExportQueryDto,
@@ -266,7 +260,7 @@ export class StatsExportService {
 
   // ---------------------------------------------------------------- Đối soát tiền
 
-  /** Đối soát tiền tại thời điểm xuất: mỗi mục trên màn hình là một bảng cùng cột, dòng cộng là con số tổng ở góc mục. */
+  /** Xuất đối soát tiền tại thời điểm xuất. */
   async unreconciled(user: AuthUser, branchId?: string): Promise<ExportedFile> {
     const [data, place] = await Promise.all([
       this.reports.getUnreconciled(user, branchId),
@@ -448,10 +442,7 @@ export class StatsExportService {
 
   // ---------------------------------------------------------------- Báo cáo
 
-  /**
-   * File của các trang Báo cáo: `section` là một báo cáo (một tab của trang Tổng hợp, hoặc trang Nhân viên / Điểm bán);
-   * bỏ trống là mọi tab của trang Tổng hợp, mỗi báo cáo một sheet. Chỉ lấy số liệu của các báo cáo được xuất.
-   */
+  /** Xuất một báo cáo, hoặc mọi tab của trang Tổng hợp. */
   async report(
     user: AuthUser,
     query: ReportExportQueryDto,
@@ -499,7 +490,7 @@ export class StatsExportService {
     };
   }
 
-  /** Kết quả bán hàng: kỳ này cạnh khoảng cùng độ dài ngay trước đó; dòng Doanh thu thuần, Lợi nhuận gộp in đậm như web. */
+  /** Bảng kết quả bán hàng so với kỳ trước. */
   private async resultSheet({
     user,
     workbook,
@@ -717,10 +708,7 @@ export class StatsExportService {
     );
   }
 
-  /**
-   * Bảng doanh thu theo đối tượng (điểm bán, nhân viên, khách hàng): STT, các cột tên, rồi Số đơn, Doanh thu thuần, Giá trị đơn TB, Tỷ trọng - như `revenueColumns` trên web.
-   * Dòng Cộng có số đơn và doanh thu; hai cột còn lại để trống như web.
-   */
+  /** Bảng doanh thu theo đối tượng. */
   private revenueTable(
     out: ReportSheet,
     nameHeaders: string[],

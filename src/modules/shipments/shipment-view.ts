@@ -12,8 +12,7 @@ import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { type MoneyLike } from '../../common/utils/money';
 import { derivePaymentStatus, paymentRowsOf } from '../orders/payment-status';
 
-// Hình dạng `Shipment` của contract §4, dùng chung cho ShipmentService và ShipmentDeliveryService
-// để hai nơi không thể trả về hai hình dạng khác nhau.
+// Dạng `Shipment` trả về.
 
 /** Một người trong payload: `{ id, phoneNumber, profile }` như mọi chỗ khác (`withNestedProfile`). */
 export const PERSON_SELECT = {
@@ -51,11 +50,7 @@ type ShipmentSummaryRow = Prisma.ShipmentGetPayload<{
   include: typeof SHIPMENT_SUMMARY_INCLUDE;
 }>;
 
-/**
- * Số còn phải thu của đơn tại thời điểm xem: lớp mỏng trên `derivePaymentStatus(...).due` (một quy tắc cho mọi nơi tính số còn thu): tổng đơn trừ mọi khoản đã thu (cọc, thu khi giao, trả đủ), trừ tiền đã trả lại khách. Khoản đang chờ chưa tính; không âm.
- * Đơn cũ có `depositAmount` nhưng không có dòng Payment cọc vẫn tính cọc theo `depositAmount` (dữ liệu trước khi cọc có Payment).
- * Trước đây số shipper thu lúc giao là `grandTotal − depositAmount` (không trừ khoản đã thu thật), nên một khoản QR về trước khi giao làm shipper thu lần hai.
- */
+/** Số còn phải thu của đơn. */
 export function amountStillDueOf(order: {
   grandTotal: unknown;
   depositAmount: unknown;
@@ -90,9 +85,7 @@ export function toSummary(row: ShipmentSummaryRow) {
   };
 }
 
-/**
- * Khoản thu QR lúc giao của đơn, để shipper mở lại mã QR. `qrUrl` chỉ có khi khoản còn chờ tiền về VÀ chưa hết hạn: hết hạn thì `qrUrl` null, `status` là EXPIRED và `expired` true (kể cả khi cron chưa kịp đổi trạng thái).
- */
+/** Khoản thu QR lúc giao; hết hạn thì `qrUrl` null. */
 export interface ShipmentQrPayment {
   reference: string;
   amount: number;
@@ -102,10 +95,7 @@ export interface ShipmentQrPayment {
   expired: boolean;
 }
 
-/**
- * Chi tiết một lần giao: thông tin, nhật trình, khoản thu QR (nếu có). Mã QR dựng lại từ tài khoản ngân hàng
- * hiện tại của shop, nên mở lại sau khi đóng màn vẫn đúng mã.
- */
+/** Chi tiết một lần giao. */
 export async function loadShipmentDetail(
   prisma: Pick<PrismaService, 'shipment' | 'payment' | 'tenant'>,
   tenantId: string,
@@ -181,9 +171,7 @@ export async function loadShipmentDetail(
   };
 }
 
-/**
- * `from` / `to` (YYYY-MM-DD) là khoảng nửa mở theo giờ Việt Nam, tính trọn ngày: dòng ghi 23:30 vẫn thuộc đúng ngày, không bị đẩy sang hôm sau. Dùng chung cho danh sách và lịch sử shipper để hai nơi không lệch điểm kết thúc ngày.
- */
+/** Khoảng ngày `from`/`to` theo giờ Việt Nam. */
 export function localDayWindow(
   from: string | undefined,
   to: string | undefined,

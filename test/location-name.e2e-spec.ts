@@ -9,9 +9,7 @@ import { WarehouseService } from './../src/modules/warehouses/warehouses.service
 import { ErrorCode } from './../src/common/errors/error-codes';
 import { LocationStatus } from './../src/common/constants/location-status';
 
-/**
- * Tên chi nhánh / kho trên Postgres thật: không trùng trong cùng loại (không phân biệt hoa thường), chi nhánh và kho được trùng nhau, nơi đã xoá không tính. Hạn mức gói được bỏ qua; tự tạo một tenant riêng và dọn sạch.
- */
+/** Kiểm tên chi nhánh / kho không trùng trong cùng loại (Postgres thật). */
 describe('Branch and warehouse names – LocationService', () => {
   let prisma: PrismaService;
   let branches: BranchService;

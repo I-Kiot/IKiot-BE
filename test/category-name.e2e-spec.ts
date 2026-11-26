@@ -6,9 +6,7 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { CategoryService } from './../src/modules/categories/categories.service';
 import { ErrorCode } from './../src/common/errors/error-codes';
 
-/**
- * Tên danh mục trên Postgres thật: hai danh mục cùng cha không được trùng tên (không phân biệt hoa thường), khác cha thì được. Tự tạo một tenant riêng và dọn sạch.
- */
+/** Kiểm tên danh mục không trùng trong cùng cha (Postgres thật). */
 describe('Category names – CategoryService', () => {
   let prisma: PrismaService;
   let categories: CategoryService;

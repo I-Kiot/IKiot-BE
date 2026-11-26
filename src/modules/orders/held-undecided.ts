@@ -3,12 +3,7 @@ import { OrderStatus } from '../../common/constants/order-status';
 import { SalesJournalEntryType } from '../../common/constants/sales-journal';
 import { derivePaymentStatus, paymentRowsOf } from './payment-status';
 
-/**
- * Tiền "treo chưa quyết định" (quyết định của user 2026-11-11: "giữ tiền treo, quyết định sau"): đơn đã kết thúc (RETURNED / CANCELLED) mà shop vẫn giữ tiền của khách, chưa hoàn và chưa ghi nhận là thu nhập.
- * Không có cột đánh dấu: SUY RA từ trạng thái đơn + sổ doanh thu + các khoản, nên không thể lệch với tiền thật. Đơn có `OTHER_INCOME` là đã quyết định giữ; đơn có `SALE` thì tiền giữ là một phần doanh thu đã ghi (RETURN âm lo phần hàng trả), không treo.
- * Treo = đơn kết thúc, KHÔNG có SALE, KHÔNG có OTHER_INCOME, và tiền đang giữ (thu trừ hoàn trừ thối) > 0.
- * Đây là MỘT quy tắc: `paymentSummary.heldUndecided`, `POST /orders/:id/settle-held` dùng `heldUndecidedOf` / `loadHeldUndecided`; `GET /stats/unreconciled` dùng bản SQL cùng quy tắc (`HELD_UNDECIDED_*_SQL`, e2e đối chiếu hai bản).
- */
+/** Tiền treo: đơn đã kết thúc mà shop vẫn giữ tiền, chưa hoàn và chưa ghi thu nhập khác. */
 const HELD_TERMINAL_STATUSES: readonly string[] = [
   OrderStatus.RETURNED,
   OrderStatus.CANCELLED,
@@ -25,7 +20,7 @@ export function heldUndecidedOf(input: {
   return Math.max(0, input.net);
 }
 
-/** Đọc rồi áp `heldUndecidedOf` cho một đơn. Gọi trong transaction đã khoá đơn khi dùng để quyết định ghi. */
+/** Đọc tiền treo của một đơn. */
 export async function loadHeldUndecided(
   tx: Prisma.TransactionClient,
   orderId: string,
@@ -52,7 +47,7 @@ export async function loadHeldUndecided(
   });
 }
 
-/** Tiền đang giữ của đơn `o` bằng SQL (thu trừ hoàn trừ thối; cọc cũ chưa có dòng Payment tính như `paymentRowsOf`). */
+/** SQL tính tiền shop đang giữ của đơn. */
 export const HELD_NET_SQL = Prisma.sql`((
   SELECT COALESCE(SUM(CASE WHEN p.kind IN ('FULL', 'DEPOSIT', 'BALANCE') THEN p.amount
                            WHEN p.kind IN ('REFUND', 'CHANGE') THEN -p.amount ELSE 0 END), 0)

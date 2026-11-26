@@ -18,12 +18,7 @@ import {
   type SaleItemInput,
 } from './sales-math';
 
-/**
- * Nhật ký doanh thu CHỈ GHI THÊM (`sales_journal_entries` + `_lines`, trigger chặn UPDATE). Hàm thường, nhận `tx` của người gọi (cùng kiểu `order-events.ts`); mọi lệnh ghi nằm trong transaction của việc gây ra nó nên rollback thì không còn bút toán nào.
- * Vì sao không tính lại từ `orders.completed_at`: đơn còn đổi sau khi hoàn thành (`returned_quantity` tăng, trạng thái RETURNED, hoá đơn điều chỉnh), tính lại sẽ làm đổi cả tháng đã chốt. Ở đây mỗi sự kiện ghi số có dấu của nó vào ngày nó xảy ra:
- * SALE vào ngày đơn COMPLETED, RETURN âm vào ngày trả hàng, OTHER_INCOME vào ngày shop giữ tiền. Kỳ cũ không bao giờ đổi.
- * Mọi chỗ chốt đơn COMPLETED phải gọi `postSale` sau lệnh chiếm (và sau khi hàng đã rời kho, vì giá vốn đọc từ sổ lô): `sales-journal.spec.ts` quét `src/` bắt cặp `completedData(` ↔ `postSale(`, và e2e `assertMoneyInvariants` kiểm "đơn COMPLETED có đúng một SALE".
- */
+/** Nhật ký doanh thu chỉ ghi thêm, mỗi sự kiện ghi vào ngày nó xảy ra. */
 
 type Tx = Prisma.TransactionClient;
 
@@ -48,10 +43,7 @@ interface CogsRow {
   cogs: number;
 }
 
-/**
- * Giá vốn ròng của các dòng đơn từ SỔ LÔ (`inventory_transactions.unit_cost` = giá lô lúc hàng ra / về), không phải `costPrice` danh mục:
- * Σ(−số lượng × giá lô) trên SALE (số lượng âm → dương), SALE_REVERSAL / RETURN_* (số lượng dương → trừ lại). Dòng chưa xuất kho không có dòng sổ nên 0.
- */
+/** Giá vốn ròng của các dòng đơn tính từ sổ lô. */
 async function netCogsByItem(
   tx: Tx,
   itemIds: readonly string[],
@@ -67,7 +59,7 @@ async function netCogsByItem(
   return new Map(rows.map((r) => [r.orderItemId, toDong(r.cogs)]));
 }
 
-/** Giá vốn của đúng các dòng sổ RETURN_* do MỘT chứng từ trả hàng ghi (đơn hoàn hoặc trả đơn quầy), dương. */
+/** Giá vốn của các dòng sổ RETURN_* của một chứng từ trả hàng. */
 async function returnCogsByItem(
   tx: Tx,
   itemIds: readonly string[],
@@ -160,11 +152,7 @@ function linesOf(amounts: EntryAmounts) {
   };
 }
 
-/**
- * Bút toán SALE của một đơn vừa COMPLETED: hàng thực bán (sau hàng đã trả trước đó) với giá trị thực sau giảm giá cả đơn, phí ship thu của khách, giá vốn từ sổ lô,
- * và hai chi phí để báo cáo lợi nhuận (`shipping_cost` = Σ phí ĐVVC của các chuyến chưa huỷ, `channel_fee` = phí sàn). Ngày = ngày `now` (cùng mốc `completedAt`).
- * Gọi ngay sau lệnh chiếm COMPLETED, SAU khi hàng đã rời kho. Đã có SALE (gọi lại) thì không ghi gì và trả `null`.
- */
+/** Ghi bút toán SALE khi đơn vừa COMPLETED; đã có thì trả null. */
 export async function postSale(
   tx: Tx,
   input: {
@@ -212,11 +200,7 @@ export async function postSale(
   });
 }
 
-/**
- * Bút toán RETURN (âm) cho hàng khách trả, ghi vào ngày trả. CHỈ khi đơn đã có SALE: trả trước khi hoàn thành thì SALE ghi sau đã trừ `returned_quantity`, và tiền shop giữ (nếu có) là OTHER_INCOME (`postOtherIncome`).
- * `orderReturnId` null = đơn quầy trả cả đơn (chỉ mục `sales_journal_one_pos_return`). Gọi SAU khi `returned_quantity` đã tăng và hàng đã về lô (giá vốn lấy từ các dòng sổ RETURN_* của chính chứng từ này).
- * Phí ship không hoàn. Trả `null` khi không có SALE hoặc không có dòng nào.
- */
+/** Ghi bút toán RETURN (âm) cho hàng khách trả, chỉ khi đơn đã có SALE. */
 export async function postReturn(
   tx: Tx,
   input: {
@@ -305,10 +289,7 @@ export async function postPosReturn(
   });
 }
 
-/**
- * Bút toán OTHER_INCOME: tiền shop GIỮ của một đơn không thành (huỷ có giữ cọc, trả hàng trước khi hoàn thành mà không hoàn). Số = `kept` (> 0), ghi vào ngày giữ, một lần cho mỗi đơn.
- * Người gọi đã tính `kept` = tiền còn giữ SAU khi hoàn (derive.net). Đã có thì không ghi.
- */
+/** Ghi thu nhập khác cho tiền shop giữ của đơn không thành. */
 export async function postOtherIncome(
   tx: Tx,
   input: {

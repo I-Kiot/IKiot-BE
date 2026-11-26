@@ -46,7 +46,7 @@ export class ApplicableRuleDto {
   productItemIds?: string[];
 }
 
-/** Port từ CreatePromotionRequestDTO. `usedCount` do server quản lý; `status` chỉ đổi qua DELETE (đó là cách vô hiệu hoá khuyến mãi). */
+/** Body tạo khuyến mãi. */
 export class CreatePromotionDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên khuyến mãi không được để trống' })
@@ -70,7 +70,7 @@ export class CreatePromotionDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01, { message: 'Giá trị giảm phải lớn hơn 0' })
-  // Giảm trên 100% sẽ trả tiền cho khách. Engine có kẹp giá trị, nhưng nhập 150% là lỗi gõ nên chặn ngay từ đầu vào.
+  // Giảm tối đa 100%.
   @ValidateIf(
     (p: CreatePromotionDto) => p.discountType === DiscountType.PERCENT,
   )
@@ -118,7 +118,7 @@ export class CreatePromotionDto {
   usageLimitPerCustomer?: number;
 }
 
-/** Port từ UpdatePromotionRequestDTO, không dùng `PartialType(CreatePromotionDto)`: rule có điều kiện đọc field khác có thể vắng khi update một phần, nên service kiểm lại trên kết quả đã gộp. */
+/** Body sửa khuyến mãi, kiểm lại trên dữ liệu đã gộp. */
 export class UpdatePromotionDto {
   @IsOptional()
   @IsString()
@@ -217,7 +217,7 @@ export class CartItemDto {
   @Min(1, { message: 'Số lượng phải từ 1 trở lên' })
   quantity: number;
 
-  // Không có `unitPrice`: giá lấy từ `ProductItem.retailPrice` phía server; mọi giá gửi lên đều bị whitelist toàn cục loại bỏ.
+  // Dòng giỏ không có giá, giá lấy từ server.
 }
 
 /** Port từ PromotionCalculateRequestDTO - payload dùng cho `/candidates`, `/calculate` và `/apply`. */

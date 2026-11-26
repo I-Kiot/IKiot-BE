@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { geminiModel } from './ai-chat.constants';
 
-/** Shape transcript mà cả Gemini lẫn bộ lưu của mình dùng; `parts` là union trong API thật, còn đây là ba loại mà agent này tạo ra. */
+/** Dạng transcript dùng cho Gemini và lưu trữ. */
 export interface TextPart {
   text: string;
 }
@@ -35,7 +35,7 @@ export interface GenerateResult {
   functionCalls: { name: string; args: Record<string, unknown> }[];
 }
 
-/** Ranh giới giữa agent và Google, để vòng lặp ReAct test được với client giả, không cần mạng hay API key. */
+/** Client Gemini trừu tượng để test được. */
 export abstract class GeminiClient {
   abstract isConfigured(): boolean;
   abstract generate(options: GenerateOptions): Promise<GenerateResult>;

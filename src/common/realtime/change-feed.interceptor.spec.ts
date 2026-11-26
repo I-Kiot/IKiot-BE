@@ -64,7 +64,7 @@ function build(setup: Setup = {}) {
     const result = await firstValueFrom(
       interceptor.intercept(context, handler),
     );
-    // `emit` is fire-and-forget: let the microtasks settle.
+    // `emit` chạy nền, chờ microtask xong.
     await new Promise((resolve) => setImmediate(resolve));
     return result;
   };

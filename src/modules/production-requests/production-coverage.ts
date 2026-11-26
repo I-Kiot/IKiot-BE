@@ -15,7 +15,7 @@ export interface LinkedOpenRequest {
   receivedQuantity: number;
 }
 
-/** Tiến độ một YCSX gắn dòng đơn, mọi trạng thái trừ CANCELLED (kể cả đã hoàn tất, để màn đơn còn thấy lịch sử). */
+/** Tiến độ một YCSX gắn dòng đơn. */
 export interface LineProductionProgress {
   id: string;
   code: string;
@@ -25,7 +25,7 @@ export interface LineProductionProgress {
   sentAt: Date | null;
   /** Lúc xưởng xác nhận nhận làm; null = chưa. */
   acceptedAt: Date | null;
-  /** YYYY-MM-DD */
+  /** Ngày dạng YYYY-MM-DD. */
   expectedReadyDate: string | null;
   quantity: number;
   receivedQuantity: number;
@@ -58,10 +58,7 @@ export const NO_LINE_PRODUCTION: OrderLineProduction = {
   coveringRequests: [],
 };
 
-/**
- * YCSX gắn dòng đơn, một query cho cả lô. `openQuantity` / `requests` chỉ tính YCSX còn mở (như trước 2026-11-19);
- * `progress` liệt kê mọi YCSX chưa huỷ. Dòng đã nhận đủ vẫn được liệt kê nhưng không cộng vào `openQuantity`.
- */
+/** YCSX gắn các dòng đơn trong một truy vấn. */
 export async function linkedProductionByOrderItem(
   reader: Pick<Prisma.TransactionClient, 'productionRequestItem'>,
   tenantId: string,

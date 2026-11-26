@@ -1,13 +1,10 @@
-/**
- * Hành trình đơn: PENDING_CONFIRMATION (Shopee) → CONFIRMED → PACKED → PICKED_UP → SHIPPING → RECEIVED → COMPLETED. Mọi đổi trạng thái đi qua `assertTransition`.
- * Mục @deprecated là thiết kế giữ hàng đã bỏ, giữ tới khi track A, C viết lại (migration 20261004120000 chặn khi còn đơn ở trạng thái này).
- */
+/** Hành trình đơn: chờ xác nhận → xác nhận → đóng gói → lấy hàng → vận chuyển → đã nhận → hoàn tất. */
 export const OrderStatus = {
   /** Đơn marketplace vừa đồng bộ, chờ nhân viên xác nhận và gán người phụ trách. */
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
   /** Đã xác nhận có người phụ trách; đơn thủ công được tạo ở trạng thái này. Chưa đụng tới kho. */
   CONFIRMED: 'CONFIRMED',
-  /** Đã đóng gói, chờ shipper/đơn vị vận chuyển. Hàng bị khoá khỏi kệ (`lockStock`), vẫn nằm trong `stock`. */
+  /** Đã đóng gói, chờ giao; hàng bị khoá khỏi kệ nhưng vẫn trong `stock`. */
   PACKED: 'PACKED',
   /** Shipper/đơn vị vận chuyển đã nhận hàng. Vẫn khoá, vẫn trong `stock`. */
   PICKED_UP: 'PICKED_UP',
@@ -20,9 +17,7 @@ export const OrderStatus = {
   CANCELLED: 'CANCELLED',
   /** Mọi dòng đã được trả lại. */
   RETURNED: 'RETURNED',
-  /**
-   * Legacy: trạng thái chờ chuyển khoản SePay của máy bán hàng. OrdersService vẫn mở đơn SePay ở đây tới khi track A (A-2) chuyển sang trạng thái mới và migrate dữ liệu; sau đó bỏ mục này.
-   */
+  /** Cũ: trạng thái chờ chuyển khoản SePay của máy bán hàng, sẽ bỏ. */
   PENDING: 'PENDING',
   /** @deprecated Thiết kế giữ hàng - không còn ai tạo (hợp đồng §7). */
   DRAFT: 'DRAFT',
@@ -36,7 +31,7 @@ export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
 export const ORDER_STATUSES: readonly string[] = Object.values(OrderStatus);
 
-/** Các trạng thái chưa cần người phụ trách; mọi trạng thái khác bị ràng buộc bởi CHECK `orders_assignee_required`. */
+/** Các trạng thái chưa cần người phụ trách. */
 export const UNASSIGNED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.PENDING_CONFIRMATION,
 ];
@@ -96,7 +91,7 @@ export const STOCKED_LINE_TYPES: readonly string[] = [
   OrderLineType.COMBO_COMPONENT,
 ];
 
-/** Nguồn đơn. MANUAL và SHOPEE đều là đơn khách đặt online; MANUAL là đơn nhân viên nhập tay. Bán tại quầy cũng lưu MANUAL, khác ở `fulfillmentType = TAKEAWAY`. Không có kênh website riêng. */
+/** Nguồn đơn: MANUAL (nhập tay, cả bán quầy) hoặc SHOPEE. */
 export const OrderChannel = {
   MANUAL: 'MANUAL',
   SHOPEE: 'SHOPEE',
@@ -119,7 +114,7 @@ export type FulfillmentType =
 export const FULFILLMENT_TYPES: readonly string[] =
   Object.values(FulfillmentType);
 
-/** Thẻ ưu tiên nhân viên dùng để chọn đơn giao tiếp theo (cùng requestedDeliveryDate). Danh sách cố định, cao nhất đứng cuối để sắp xếp được. */
+/** Mức ưu tiên để chọn đơn giao tiếp theo, cao nhất đứng cuối. */
 export const OrderPriority = {
   NORMAL: 'NORMAL',
   HIGH: 'HIGH',
@@ -145,7 +140,7 @@ export type OrderPaymentStatus =
 export const ORDER_PAYMENT_STATUSES: readonly string[] =
   Object.values(OrderPaymentStatus);
 
-/** `Payment.remittanceStatus`: tiền shipper thu hộ đã về tới chủ shop chưa? Chỉ PENDING khi thu tiền mặt lúc giao. */
+/** Tiền shipper thu hộ đã nộp về chủ shop chưa. */
 export const RemittanceStatus = {
   NOT_APPLICABLE: 'NOT_APPLICABLE',
   PENDING: 'PENDING',

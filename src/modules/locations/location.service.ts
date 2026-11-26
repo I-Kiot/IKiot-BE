@@ -17,7 +17,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Tham số mà hai endpoint danh sách nhận; DTO kế thừa PaginationQueryDto nên page/limit luôn có mặc định. */
+/** Tham số danh sách địa điểm. */
 export interface LocationQuery {
   search?: string;
   status?: string;
@@ -34,8 +34,7 @@ export interface LocationInput {
   status?: string;
 }
 
-/** Chi nhánh và kho dùng chung logic; phần khác nhau truyền qua `LocationConfig`.
- * Cả hai nằm trong bảng `locations`, phân biệt bằng `type`; `branches` / `warehouses` dùng chung id với Location. */
+/** Logic chung cho chi nhánh và kho. */
 export abstract class LocationService {
   protected constructor(
     protected readonly prisma: PrismaService,
@@ -49,7 +48,7 @@ export abstract class LocationService {
     return rest;
   }
 
-  /** `read_own` thu danh sách về nơi phân công của người gọi (xem `locationReadScope`). Không được phân công ở loại này thì danh sách rỗng chứ không lỗi. */
+  /** `read_own` chỉ thấy nơi được phân công. */
   async findAll(user: AuthUser, tenantId: string, query: LocationQuery) {
     const where: Prisma.LocationWhereInput = {
       tenantId,
@@ -88,7 +87,7 @@ export abstract class LocationService {
     );
   }
 
-  /** Luôn lọc theo tenant; không thấy thì 404 chứ không 403, để địa điểm tenant khác trông như không tồn tại. */
+  /** Lọc theo tenant, không thấy thì 404. */
   protected async findRow(tenantId: string, id: string): Promise<LocationRow> {
     const row = await this.prisma.location.findFirst({
       where: { id, tenantId, type: this.config.kind },
@@ -114,7 +113,7 @@ export abstract class LocationService {
     return this.toResponse(await this.findRow(tenantId, id));
   }
 
-  /** Hai chi nhánh (hoặc hai kho) còn hoạt động trong cùng shop không được trùng tên; nơi đã xoá mềm không tính, để tên cũ dùng lại được. */
+  /** Tên chi nhánh / kho không trùng trong shop. */
   private async assertNameFree(
     tenantId: string,
     name: string,
@@ -138,7 +137,7 @@ export abstract class LocationService {
 
   async create(tenantId: string, dto: LocationInput & { name: string }) {
     await this.assertNameFree(tenantId, dto.name);
-    // Hành vi cũ: POST /branches qua requireActiveSubscription rồi kiểm hạn mức gói; nay cả hai ở SubscriptionService (maxWarehouses là mới khi port).
+    // Kiểm gói và hạn mức.
     await this.subscriptions.assertQuota(
       tenantId,
       this.config.quotaField,
@@ -152,8 +151,7 @@ export abstract class LocationService {
         }),
       this.config.messages.quotaLabel,
     );
-    // Dòng chuyên biệt dùng chung id của Location, để `branchId` / `locationId` trỏ tới bảng nào cũng được.
-    // Mọi địa điểm đều có dòng `branches` vì kho cũng tạo được đơn; loại địa điểm vẫn do `type` quyết định.
+    // Tạo dòng chuyên biệt dùng chung id với Location.
     const id = randomUUID();
     const specialization = { create: { id, tenantId } };
     const row = await this.prisma.location.create({
@@ -173,13 +171,12 @@ export abstract class LocationService {
       include: LOCATION_INCLUDE,
     });
 
-    // Địa điểm mới không có gì và không ghi dòng tồn: danh mục vốn không lọc theo địa điểm; dòng xuất hiện
-    // lần đầu khi phiếu kho thực sự đưa hàng tới.
+    // Địa điểm mới chưa có dòng tồn.
     return this.toResponse(row);
   }
 
   async update(tenantId: string, id: string, dto: LocationInput) {
-    // Prisma update({ where: { id } }) không nhận bộ lọc tenant không unique, nên phải kiểm phạm vi trước, không thì tenant nào cũng ghi được dòng theo id.
+    // Kiểm tenant trước khi update theo id.
     const existing = await this.findRow(tenantId, id);
     if (dto.name !== undefined && !isSameName(dto.name, existing.name)) {
       await this.assertNameFree(tenantId, dto.name, id);
@@ -199,7 +196,7 @@ export abstract class LocationService {
     return this.toResponse(row);
   }
 
-  /** Xoá mềm như hệ thống cũ. Xoá cứng không được: users, đơn, tồn, phiếu kho và sổ quỹ đều có FK tới đây. */
+  /** Xoá mềm địa điểm. */
   async remove(tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     if (existing.status === LocationStatus.DELETED) {
@@ -209,7 +206,7 @@ export abstract class LocationService {
       });
     }
 
-    // Thêm khi port: xoá mềm địa điểm mà nhân viên còn gắn vào sẽ để họ ở nơi không còn trong danh sách nào.
+    // Chặn xoá khi còn nhân viên gắn vào.
     const staffCount = await this.prisma.user.count({
       where: {
         tenantId,
@@ -232,7 +229,7 @@ export abstract class LocationService {
     return this.toResponse(row);
   }
 
-  /** Bổ nhiệm quản lý, trả về người được bổ nhiệm. Không còn lật role; ghi ở `managerId`, người cũ được gỡ liên kết, Role của họ giữ nguyên vì tenant quyết quản lý được làm gì. */
+  /** Bổ nhiệm quản lý địa điểm. */
   protected async appointManager(
     tenantId: string,
     locationId: string,

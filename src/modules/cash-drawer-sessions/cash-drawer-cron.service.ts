@@ -11,10 +11,7 @@ import {
 import { CashDrawerStatus } from './cash-drawer.constants';
 import { isOverdue } from './session-window';
 
-/**
- * Nhắc buổi sáng về két quên chốt. Chốt két vẫn phải do người đếm tiền làm, nên cron không chốt hộ - nó chỉ báo
- * cho quản lý chi nhánh (manager của địa điểm, không có thì chủ shop) mỗi sáng cho tới khi két được chốt.
- */
+/** Cron nhắc quản lý chi nhánh về két quên chốt mỗi sáng. */
 @Injectable()
 export class CashDrawerCronService {
   private readonly logger = new Logger(CashDrawerCronService.name);
@@ -24,7 +21,7 @@ export class CashDrawerCronService {
     private readonly notifications: NotificationService,
   ) {}
 
-  // 07:00 giờ Việt Nam, trước giờ mở cửa: quản lý biết két hôm qua chưa chốt trước khi ca mới cần mở két.
+  // Chạy 07:00 giờ Việt Nam.
   @Cron('0 7 * * *', { timeZone: VIETNAM_TIMEZONE })
   async runDailyJob() {
     if (process.env.NODE_ENV === 'test') return;
@@ -41,7 +38,7 @@ export class CashDrawerCronService {
 
   /** Trả về số két đã nhắc. Tách khỏi `runDailyJob` để gọi được trong test mà không phụ thuộc `NODE_ENV`. */
   async notifyOverdue(now: Date = new Date()): Promise<number> {
-    // Tối đa một phiên OPEN mỗi chi nhánh, nên tập này nhỏ; lọc bằng `isOverdue` thay vì viết lại quy tắc thành `where`.
+    // Lọc phiên quá hạn bằng `isOverdue`.
     const open = await this.prisma.cashDrawerSession.findMany({
       where: { status: CashDrawerStatus.OPEN },
       select: {

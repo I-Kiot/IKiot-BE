@@ -53,10 +53,7 @@ const INVOICE_INCLUDE = {
 
 type InvoiceRow = Prisma.InvoiceGetPayload<{ include: typeof INVOICE_INCLUDE }>;
 
-/**
- * Chỉ đọc. Hoá đơn chỉ được ghi bởi route đơn hàng khi hoàn thành, trả hoặc huỷ đơn (`InvoiceService`).
- * Quyền xem theo đơn: chi nhánh của mình, hoặc mọi chi nhánh nếu có `orders:view_all`.
- */
+/** Đọc hoá đơn, phạm vi theo chi nhánh. */
 @Injectable()
 export class InvoiceReadService {
   constructor(private readonly prisma: PrismaService) {}

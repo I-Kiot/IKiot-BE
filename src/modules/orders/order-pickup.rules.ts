@@ -14,7 +14,7 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import { derivePaymentStatus } from './payment-status';
 import type { MoneyLike } from '../../common/utils/money';
 
-// Quy tắc thuần của đơn khách tới lấy (STORE_PICKUP). Không đọc DB để OrderPickupService, bộ lọc danh sách và test dùng chung một nguồn.
+// Quy tắc thuần của đơn khách tới lấy.
 
 /** Chỉ đơn khách tới lấy mới được thu tiền và giao tại quầy. */
 export function assertStorePickup(order: { fulfillmentType: string }): void {
@@ -57,10 +57,7 @@ export function assertNoPickupShippingFee(shippingFee: number): void {
   }
 }
 
-/**
- * Đổi hình thức giao từ hoặc sang “khách tới lấy” (khách đổi ý, hoặc muốn nhận tại nhà): chỉ khi đơn chưa có ai mang hàng đi, tức CONFIRMED,
- * hoặc PACKED mà chưa có shipment. Từ PICKED_UP trở đi hàng đã trao cho người giao. Các đổi hình thức không liên quan tới khách tới lấy thì không ràng buộc ở đây.
- */
+/** Chỉ đổi sang/khỏi "khách tới lấy" khi chưa ai mang hàng đi. */
 export function assertFulfillmentTypeChangeAllowed(
   order: { status: string; fulfillmentType: string },
   nextType: string,
@@ -82,10 +79,7 @@ export function assertFulfillmentTypeChangeAllowed(
   }
 }
 
-/**
- * Đơn đã thu tiền tại quầy thì không rời luồng khách tới lấy được: lúc giao, shipper thu `grandTotal − cọc` nên khách bị thu lần nữa.
- * Muốn giao tận nơi thì huỷ đơn (hoàn khoản đã thu) rồi tạo lại.
- */
+/** Đơn đã thu tiền tại quầy thì không rời luồng khách tới lấy. */
 export function assertNoCounterPayment(
   payments: readonly { kind: string; status: string }[],
 ): void {
@@ -102,7 +96,7 @@ export function assertNoCounterPayment(
   }
 }
 
-/** Khoản QR thu tại quầy còn mở (PENDING hoặc EXPIRED): chưa thu, chưa huỷ. Hết hạn vẫn tính là mở vì tiền về muộn vẫn chốt được, và khi đổi cách thu phải huỷ cả khoản đó. */
+/** Khoản QR thu tại quầy còn mở (kể cả hết hạn). */
 export function openCounterQr<
   T extends { kind: string; method: string; status: string },
 >(payments: readonly T[]): T[] {
@@ -120,10 +114,7 @@ export interface PickupPaymentRow {
   amount: MoneyLike;
 }
 
-/**
- * Số khách còn phải trả để nhận hàng: lớp mỏng trên `derivePaymentStatus(...).due` (một quy tắc cho mọi nơi tính số còn thu).
- * Khoản đang chờ (QR chưa về tiền) chưa tính; không âm; đơn đã có hoàn tiền thì không còn gì để thu.
- */
+/** Số khách còn phải trả để nhận hàng. */
 export function pickupAmountDue(
   grandTotal: MoneyLike,
   payments: readonly PickupPaymentRow[],
@@ -141,10 +132,7 @@ export function vietnamDay(at: Date): string {
   }).format(at);
 }
 
-/**
- * Quá hạn lấy hàng: đơn còn chờ khách (PACKED) và ngày hẹn lấy đã qua theo lịch Việt Nam. Chỉ là cờ để nhân viên liên hệ khách;
- * hệ thống không tự huỷ vì huỷ còn phải quyết định hoàn hay giữ cọc (A-5).
- */
+/** Quá hạn lấy hàng: đơn chờ khách và đã qua ngày hẹn. */
 export function isPickupOverdue(
   order: {
     fulfillmentType: string;

@@ -8,9 +8,7 @@ import {
 
 const SRC = join(__dirname, '..', '..');
 
-/**
- * `STAFF_BASE_PERMISSIONS` được gộp vào quyền mọi nhân viên trước khi guard chạy, nên một key sai là quyền trao cho cả shop. Test chốt những gì bộ quyền được và không được chứa.
- */
+/** Kiểm tra bộ quyền nền cấp cho mọi nhân viên. */
 describe('STAFF_BASE_PERMISSIONS', () => {
   it('is made of well-formed resource:action pairs', () => {
     expect(STAFF_BASE_PERMISSIONS.size).toBeGreaterThan(0);

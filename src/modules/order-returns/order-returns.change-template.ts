@@ -16,7 +16,7 @@ import {
 
 /** Nội dung feed `entity:changed` của đơn hoàn hàng. Chỉ tên người làm + động từ + mã đơn hoàn. */
 
-/** Body là view OrderReturn `{ id, code, order, replacementOrder, shipmentId }`. `confirmFailedDelivery` không có `:id`, id lấy từ `body.id`. */
+/** Lấy id đơn hoàn từ body. */
 export function returnTarget({
   body,
   params,

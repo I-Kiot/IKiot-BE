@@ -131,7 +131,7 @@ describe('returnEntryAmounts', () => {
     expect(first.goods).toBeLessThan(0);
     expect(first.cogs).toBe(-200);
     expect(first.lines[0].quantity).toBe(-1);
-    // Line a net = 1000 - 50 (half of the 100 order discount) = 950.
+    // Dòng a = 1000 - 50 (nửa phần giảm 100 của đơn) = 950.
     expect(first.goods + second.goods).toBe(-950);
   });
 });

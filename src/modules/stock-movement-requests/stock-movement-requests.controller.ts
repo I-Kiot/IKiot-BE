@@ -22,7 +22,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { StockMovementChanges } from './stock-movements.change-template';
 
-/** Port của StockMovementController, cùng path và permission. Không có DELETE: phiếu là chứng từ, nên huỷ chứ không xoá. */
+/** Controller phiếu kho; không có DELETE, chỉ huỷ. */
 @ApiTags('stock-movements')
 @ApiBearerAuth('bearer')
 @Controller('stock-movements')

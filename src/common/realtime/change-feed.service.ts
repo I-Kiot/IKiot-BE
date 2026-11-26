@@ -3,7 +3,7 @@ import { publishChange } from './change-feed';
 import type { PublishChangeInput } from './change-feed.types';
 import { RealtimeGateway } from './realtime.gateway';
 
-/** Cửa vào DI của feed thay đổi cho interceptor, cron và webhook controller. Service đã có `RealtimeGateway` thì gọi thẳng `publishChange`. */
+/** Cửa vào feed thay đổi cho interceptor, cron và webhook. */
 @Injectable()
 export class ChangeFeedService {
   private readonly logger = new Logger(ChangeFeedService.name);

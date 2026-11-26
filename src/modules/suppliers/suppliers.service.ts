@@ -113,7 +113,7 @@ export class SupplierService {
     return this.prisma.supplier.update({ where: { id }, data: dto });
   }
 
-  /** `type` quyết định NCC thuộc luồng nhập nào (`IMPORT_SOURCE_FOR_SUPPLIER_TYPE`). Đã có phiếu nhập hoặc yêu cầu sản xuất gắn vào thì không đổi được, nếu không các phiếu đó sẽ thuộc luồng mà NCC không còn thuộc. */
+  /** Không đổi loại NCC khi đã có phiếu gắn vào. */
   private async assertTypeIsFree(supplierId: string): Promise<void> {
     const [movements, requests] = await Promise.all([
       this.prisma.stockMovementRequest.count({
@@ -140,7 +140,7 @@ export class SupplierService {
       });
     }
 
-    // Supplier không có cột status nên xoá cứng: phải kiểm các dòng đang trỏ tới trước, nếu không Postgres báo lỗi khoá ngoại và Nest chỉ trả được 500.
+    // Kiểm các dòng đang trỏ tới trước khi xoá.
     const [items, movements, flows, requests] = await Promise.all([
       this.prisma.productItemSupplier.count({ where: { supplierId: id } }),
       this.prisma.stockMovementRequest.count({
@@ -160,7 +160,7 @@ export class SupplierService {
     return this.prisma.supplier.delete({ where: { id } });
   }
 
-  /** Ghi một khoản trả nợ NCC: giảm nợ, ghi một dòng sổ công nợ (PAYMENT) và phiếu chi (EXPENSE) trong một transaction, rồi báo chủ shop. Mặc định tiền mặt là tiền của chủ (quỹ OWNER, không qua két nào); gửi `locationId` thì tiền mặt đi ra từ két của chi nhánh đó (quỹ DRAWER, vào đối soát két) - chỉ được chọn nơi mình được làm việc. Số tiền là số nguyên đồng (`toDong`). */
+  /** Trả nợ NCC: giảm nợ, ghi sổ công nợ và phiếu chi. */
   async payDebt(
     tenantId: string,
     user: AuthUser,
@@ -189,7 +189,7 @@ export class SupplierService {
           message: 'Supplier not found',
         });
 
-      // Dùng UPDATE có điều kiện thay vì đọc-kiểm-ghi: hai khoản trả gửi cùng lúc sẽ cùng qua so sánh thường và làm nợ âm.
+      // Giảm nợ bằng UPDATE có điều kiện.
       const decremented = await tx.supplier.updateMany({
         where: { id: supplierId, tenantId, outstandingDebt: { gte: amount } },
         data: { outstandingDebt: { decrement: amount } },
@@ -210,7 +210,7 @@ export class SupplierService {
           tenantId,
           flowType: 'EXPENSE',
           category: CashFlowCategory.SUPPLIER_PAYMENT,
-          // Tiền mặt trả nhà cung cấp là tiền của chủ, không qua két chi nhánh nào (dòng chưa có nơi nên cũng không vào đối soát két).
+          // Tiền mặt trả NCC mặc định là tiền của chủ.
           fund: fundOf(dto.paymentMethod ?? PaymentMethod.CASH, {
             toOwner: !drawer,
           }),
@@ -264,10 +264,9 @@ export class SupplierService {
     return result;
   }
 
-  // Ghi nhận công nợ khi nhận hàng từ NCC, dùng chung cho nhập NCC (`/stock-movements`) và nhận từ thợ
-  // (`/production-requests/:id/receive`), để quy tắc hạn mức chỉ có một nơi (coding rule 6).
+  // Ghi công nợ khi nhận hàng từ NCC hoặc xưởng.
 
-  /** NCC của phiếu nhập: phải thuộc tenant và đúng luồng. GOODS bán hàng có sẵn (SUPPLIER), WORKSHOP làm theo đơn (WORKSHOP). Hàng thợ chỉ về qua yêu cầu sản xuất, nên gọi trong nhập thường có mã lỗi riêng. */
+  /** Kiểm NCC của phiếu nhập thuộc tenant và đúng luồng. */
   async requireForImport(
     tenantId: string,
     supplierId: string | null | undefined,
@@ -312,7 +311,7 @@ export class SupplierService {
     return supplier;
   }
 
-  /** Từ chối phiếu nhập làm NCC vượt hạn mức; hạn mức `0` trở xuống nghĩa là không giới hạn (khớp cách seed). Chỉ kiểm sơ bộ: nhiều phiếu có thể mở cùng lúc, nên `charge` kiểm lại theo nợ thực tế. */
+  /** Kiểm sơ bộ hạn mức công nợ. */
   assertCreditHeadroom(
     supplier: { creditLimit: Prisma.Decimal; outstandingDebt: Prisma.Decimal },
     amount: number,
@@ -329,7 +328,7 @@ export class SupplierService {
     }
   }
 
-  /** Ghi nhận hàng nhận về: nợ tăng, và các biến thể được ghi là NCC này bán cho mình. Hạn mức kiểm lại sau khi tăng và throw để rollback phiếu nhận (vì nhiều phiếu có thể mở cùng lúc); trả cảnh báo để gửi sau commit (`notifyCreditWarning`) hoặc null. Chạy trong transaction của người gọi. */
+  /** Tăng công nợ khi nhận hàng, vượt hạn mức thì rollback. */
   async charge(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -368,7 +367,7 @@ export class SupplierService {
       });
     }
 
-    // Một dòng sổ cho mỗi lần nợ tăng, cùng transaction với `update` ở trên: dư nợ sau lần đổi lấy từ chính kết quả `update`, không đọc lại.
+    // Ghi một dòng sổ cho mỗi lần nợ tăng.
     await tx.supplierDebtEntry.create({
       data: {
         tenantId,
@@ -403,7 +402,7 @@ export class SupplierService {
       : null;
   }
 
-  /** Nơi tiền mặt đi ra khi trả NCC: phải là địa điểm của tenant và là nơi người trả được làm việc (chủ shop: mọi nơi). */
+  /** Kiểm nơi tiền mặt đi ra khi trả NCC. */
   private async requireDrawerLocation(
     tenantId: string,
     user: AuthUser,
@@ -473,7 +472,7 @@ export class SupplierService {
     };
   }
 
-  /** Sau commit: cảnh báo `charge` trả về gửi cho chủ shop, không gửi cho người nhận hàng. Không bao giờ ném lỗi (`notify()` cũng vậy). */
+  /** Gửi cảnh báo công nợ cho chủ shop sau commit. */
   async notifyCreditWarning(
     tenantId: string,
     actorId: string,

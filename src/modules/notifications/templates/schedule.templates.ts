@@ -1,6 +1,6 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Cố ý không nêu ca nào: một thông báo phủ cả đợt xếp ca hàng loạt, nêu ngày sẽ sai với mọi người trừ người đầu tiên. */
+/** Thông báo xếp ca không nêu ca cụ thể. */
 export const ScheduleNotificationTemplates = {
   assigned: (): NotificationContent => ({
     type: 'SCHEDULE_ASSIGNED',

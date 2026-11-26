@@ -3,7 +3,7 @@ import { App, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
 
-/** Firebase Admin, port từ config/firebase.js của iKiotMS-BE: khởi tạo lazy, chỉ cảnh báo một lần, và khi thiếu FIREBASE_* thì coi như "chưa cấu hình" thay vì crash. */
+/** Firebase Admin: khởi tạo lazy, thiếu cấu hình thì coi như chưa bật. */
 @Injectable()
 export class FirebaseService {
   private readonly logger = new Logger(FirebaseService.name);
@@ -48,7 +48,7 @@ export class FirebaseService {
     return getAuth(app).verifyIdToken(idToken);
   }
 
-  /** FCM sender, hoặc null khi Firebase chưa có credential. Push chỉ là kênh phụ, không được làm hỏng thao tác đã kích hoạt nó - khác với đăng nhập. */
+  /** Trả FCM sender, null khi chưa cấu hình Firebase. */
   messaging(): Messaging | null {
     const app = this.getApp();
     return app ? getMessaging(app) : null;

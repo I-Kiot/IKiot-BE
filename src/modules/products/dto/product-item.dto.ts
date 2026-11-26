@@ -26,7 +26,7 @@ export class ProductImageDto {
   isThumbnail?: boolean;
 }
 
-/** Một thuộc tính của sản phẩm. `id` giữ dòng cũ khi cập nhật (đổi tên / đơn vị); không có thì thêm mới. */
+/** Một thuộc tính của sản phẩm; có `id` là sửa dòng cũ. */
 export class ProductAttributeDto {
   @IsOptional()
   @IsUUID()
@@ -41,7 +41,7 @@ export class ProductAttributeDto {
   unit?: string;
 }
 
-/** Một dòng giá trị trên phiên bản (VD "Màu" / "Đỏ"), khớp với thuộc tính cùng tên của sản phẩm (tạo nếu chưa có). */
+/** Một giá trị thuộc tính trên phiên bản (VD "Màu" / "Đỏ"). */
 export class ProductItemDetailDto {
   @IsOptional()
   @IsString()
@@ -136,7 +136,7 @@ export class CreateProductItemDto {
   @IsUUID('4', { each: true })
   supplierIds?: string[];
 
-  /** Không bắt buộc (từ 2026-10-23): server lấy từ `productType`, lệch thì 400 `PRODUCT_ITEM_TYPE_MISMATCH`. Cố định lúc tạo, vì phiên bản đã có tồn kho không được thành combo. */
+  /** Không bắt buộc, server lấy theo `productType`; cố định lúc tạo. */
   @IsOptional()
   @IsIn(Object.values(ProductItemType), {
     message: `itemType phải là ${Object.values(ProductItemType).join(', ')}`,

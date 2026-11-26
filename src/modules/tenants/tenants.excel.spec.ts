@@ -23,7 +23,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-// Excel sheet "Tenants" - TenantSelfService (UTC008-UTC019).
+// Sheet Excel "Tenants" - TenantSelfService (UTC008-UTC019).
 describe('Excel sheet Tenants - TenantSelfService', () => {
   let prisma: any;
   let notifications: {
@@ -190,7 +190,7 @@ describe('Excel sheet Tenants - TenantSelfService', () => {
   });
 });
 
-// Excel sheet "Tenants" - findAll / create (UTC005-UTC007).
+// Sheet Excel "Tenants" - findAll / create (UTC005-UTC007).
 describe('Excel sheet Tenants - TenantService', () => {
   let prisma: any;
   let service: TenantService;

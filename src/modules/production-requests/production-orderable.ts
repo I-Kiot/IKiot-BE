@@ -1,10 +1,7 @@
 import { rowKey, type ProductionState } from './production-list';
 import { remainingNeedOf } from './production-request-rules';
 
-// "Còn đặt xưởng được bao nhiêu cho một dòng đơn" - một phép tính cho nút "Tạo YCSX" (đọc đơn) và cho guard đặt vượt
-// (`assertWithinOrderShortage`), nên hai nơi không thể lệch nhau. Hàm thuần: nhận `ProductionState` đã tải.
-//
-//   orderable(dòng) = min(phần còn cần của chính dòng, số thiếu của dòng chung (địa điểm, SKU))
+// Số còn đặt xưởng được cho một dòng đơn.
 
 export interface OrderableLineInput {
   id: string;

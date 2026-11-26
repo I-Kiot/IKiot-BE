@@ -49,7 +49,7 @@ export class CreateOrderItemDto {
   @Min(1, { message: 'Số lượng phải từ 1 trở lên' })
   quantity: number;
 
-  /** Giá đã thỏa thuận với khách (nội thất hay mặc cả hoặc báo theo số đo). Bỏ trống = `retailPrice` của danh mục, giá đó vẫn được chụp làm `listUnitPrice`. */
+  /** Giá thoả thuận với khách, bỏ trống thì lấy giá bán lẻ. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -62,12 +62,12 @@ export class CreateOrderItemDto {
   @Min(0, { message: 'Số tiền giảm không được âm' })
   discountAmount?: number;
 
-  /** Kho xuất hàng. Bỏ trống = `defaultFulfillmentLocationId` của chi nhánh, không có thì chính chi nhánh. */
+  /** Kho xuất hàng, bỏ trống thì lấy kho mặc định của chi nhánh. */
   @IsOptional()
   @IsUUID()
   sourceLocationId?: string;
 
-  /** Đơn may theo số đo: dòng có ProductItem riêng trong cùng transaction với đơn. Sửa sau qua `PUT /orders/:id/items/:itemId/customization`. */
+  /** Thông số may theo số đo, tạo SKU riêng cho dòng. */
   @IsOptional()
   @ValidateNested()
   @Type(() => OrderItemCustomizationDto)
@@ -111,7 +111,7 @@ export class OrderDepositDto {
   method: string;
 }
 
-/** `POST /orders` (contract §2): đơn tay, sinh ra ở CONFIRMED. Tổng tiền, status, channel, confirmedBy và mã đơn do server quyết. */
+/** Body `POST /orders`: tạo đơn tay ở trạng thái CONFIRMED. */
 export class CreateOrderDto {
   @IsUUID()
   branchId: string;
@@ -126,7 +126,7 @@ export class CreateOrderDto {
   @Type(() => InlineCustomerDto)
   customer?: InlineCustomerDto;
 
-  /** Bắt buộc. Kiểm trong service để thiếu thì trả `ORDER_ASSIGNEE_REQUIRED` thay vì lỗi validation chung. */
+  /** Người phụ trách, bắt buộc (kiểm trong service để trả mã lỗi riêng). */
   @IsOptional()
   @IsUUID()
   assigneeId?: string;

@@ -8,7 +8,7 @@ export interface RequiredPermission {
   actions: string[];
 }
 
-/** Khai báo route cần quyền gì (ADMIN và TENANT_OWNER luôn qua). Nhiều action nghĩa là "một trong số đó", như `authorize(module, [a, b])` của iKiotMS-BE. */
+/** Khai báo quyền route cần; nhiều action thì có một là đủ. */
 export const Permissions = (resource: string, ...actions: string[]) =>
   SetMetadata(PERMISSIONS_KEY, {
     resource,

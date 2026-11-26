@@ -7,7 +7,7 @@ import {
 } from '../../../common/constants/location-status';
 
 export class UpdateWarehouseDto extends PartialType(CreateWarehouseDto) {
-  // Không nhận DELETED ở đây: xoá mềm đi qua DELETE /warehouses/:id để `warehouses:delete` thực sự kiểm soát.
+  // Không đổi sang DELETED ở đây, dùng DELETE.
   @IsOptional()
   @IsIn(SETTABLE_LOCATION_STATUSES, {
     message: `status phải là ${SETTABLE_LOCATION_STATUSES.join(' hoặc ')}`,

@@ -28,7 +28,7 @@ import {
 import { OrderEventType } from '../../common/constants/order-event-type';
 import { recordOrderEvent, userActor } from '../orders/order-events';
 
-/** Đóng gói đơn hàng (C-1): tạo Fulfillment + thùng và khoá hàng tại kho xuất. Route nằm ở OrderController. */
+/** Đóng gói đơn: tạo fulfillment, thùng, khoá hàng tại kho xuất. */
 
 @Injectable()
 export class FulfillmentService {
@@ -37,7 +37,7 @@ export class FulfillmentService {
     private readonly inventory: InventoryService,
   ) {}
 
-  /** Đóng gói ở kho xuất dự kiến của các dòng. Kho nào khi các dòng khác nhau: chờ chốt B-2 – tạm thời phải chuyển kho trước. */
+  /** Kho xuất của các dòng. */
   private packLocationOf(lines: OrderItem[]): string {
     const ids = [
       ...new Set(
@@ -62,7 +62,7 @@ export class FulfillmentService {
     return ids[0];
   }
 
-  /** Mỗi đơn vị hàng × mỗi kiện khai báo của SKU (ProductPackage); SKU không khai báo kiện = 1 thùng. Một query cho cả đơn. */
+  /** Số thùng theo kiện khai báo của SKU. */
   private async boxesFor(lines: OrderItem[]) {
     const declared = await this.prisma.productPackage.findMany({
       // ProductPackage không có tenantId – lọc qua SKU của chính đơn này nên không với sang shop khác.
@@ -94,7 +94,7 @@ export class FulfillmentService {
     });
   }
 
-  /** CONFIRMED → PACKED (GĐ1–B5): tạo Fulfillment PACKED + thùng, khoá hàng; trên kệ thiếu thì chặn cả đơn. Không trừ `stock` – việc đó ở SHIPPING (C-2). */
+  /** CONFIRMED → PACKED: khoá hàng, thiếu thì chặn cả đơn. */
   async packOrder(user: AuthUser, orderId: string, dto: PackOrderDto) {
     const tenantId = requireTenantId(user);
     const order = await this.prisma.order.findFirst({
@@ -133,7 +133,7 @@ export class FulfillmentService {
 
     const { fulfillmentId, crossings } = await this.prisma.$transaction(
       async (tx) => {
-        // Nhận đơn trong MỘT câu ghi có điều kiện (trạng thái, và người phụ trách nếu được phép): hai người bấm cùng lúc thì một người nhận 409.
+        // Chiếm đơn bằng một câu ghi có điều kiện.
         const claimed = await tx.order.updateMany({
           where: {
             id: orderId,

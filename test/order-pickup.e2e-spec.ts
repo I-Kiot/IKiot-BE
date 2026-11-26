@@ -40,11 +40,7 @@ import { writePaymentCashFlow } from './../src/modules/orders/order-cash-flow';
 import { syncOrderPaymentStatus } from './../src/modules/orders/payment-status';
 import { CashFlowCategory } from './../src/common/constants/cash-flow-category';
 
-/**
- * Đơn khách tới lấy (STORE_PICKUP) trên Postgres thật: đóng gói xong thì chờ khách ở PACKED, thu số còn lại tại quầy
- * (tiền mặt hoặc QR), rồi giao hàng cho khách: trừ tồn, PACKED → COMPLETED, xuất hoá đơn. Không có shipment nào.
- * Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm đơn khách tới lấy: thu tại quầy và giao hàng (Postgres thật). */
 describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', () => {
   let prisma: PrismaService;
   let fulfillments: FulfillmentService;
@@ -139,7 +135,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
       },
     });
     if (deposit > 0) {
-      // Cọc là một khoản thật: có dòng sổ thu chi và trạng thái thanh toán suy ra, như khi tạo đơn bằng route.
+      // Cọc là khoản thật có dòng sổ.
       const depositPayment = await prisma.payment.findFirstOrThrow({
         where: { orderId: id, kind: PaymentKind.DEPOSIT },
         select: { id: true, amount: true, method: true },
@@ -724,7 +720,7 @@ describe('Store pickup – POST /orders/:id/pickup/collect, /pickup/hand-over', 
         expect(cancelled.status).toBe('fulfilled');
         expect(paid(PaymentKind.REFUND)).toBe(300);
         if (collected.status === 'fulfilled') {
-          // Thu trước huỷ: số hoàn 300 không đủ trả hết, phần còn lại shop giữ lại có chủ đích (người huỷ chọn số hoàn).
+          // Hoàn 300, phần còn lại shop giữ.
           expect(paid(PaymentKind.BALANCE)).toBe(700);
         }
       } else {

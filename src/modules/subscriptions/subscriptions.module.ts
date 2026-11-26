@@ -18,7 +18,7 @@ import { EmailModule } from '../../common/email/email.module';
     SubscriptionCronService,
     SubscriptionAuditTemplate,
   ],
-  // Chỉ export SubscriptionService: module khác dùng gói để bật/tắt tính năng, còn hoá đơn chỉ do module này tạo. SubscriptionAuditTemplate không cần export; AuditInterceptor tự tìm qua decorator.
+  // Chỉ xuất SubscriptionService.
   exports: [SubscriptionService],
 })
 export class SubscriptionModule {}

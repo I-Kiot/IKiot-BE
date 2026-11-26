@@ -37,7 +37,7 @@ describe('invoice-math', () => {
     );
     expect(kept.reduce((s, l) => s + l.amount, 0)).toBe(2900);
     expect(kept.reduce((s, l) => s + l.discount, 0)).toBe(100);
-    // grandTotal = 3000 - 100 + 50 ship.
+    // grandTotal = 3000 - 100 + 50 phí ship.
     expect(saleTotal(kept, 50)).toBe(2950);
   });
 

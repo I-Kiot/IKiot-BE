@@ -13,9 +13,7 @@ const FIELDS = [
   { field: PriceChangeField.COST_PRICE, key: 'costPrice' },
 ] as const;
 
-/**
- * Các dòng lịch sử cho một lần đổi giá. `before` null = mặt hàng vừa tạo (from null, ghi cả hai giá). Trường vắng ở `after` hoặc không đổi (theo đồng) thì bỏ. Thuần, không đọc DB.
- */
+/** Các dòng lịch sử cho một lần đổi giá. */
 export function priceChangeRows(
   before: PriceBook | null,
   after: PriceBook,
@@ -31,7 +29,7 @@ export function priceChangeRows(
   return rows;
 }
 
-/** Ghi lịch sử giá của một mặt hàng trong transaction của người gọi. `actorId` null = hệ thống (giá vốn combo tự tính lại). */
+/** Ghi lịch sử giá của một mặt hàng; `actorId` null là hệ thống. */
 export async function recordPriceChange(
   tx: Prisma.TransactionClient,
   args: {

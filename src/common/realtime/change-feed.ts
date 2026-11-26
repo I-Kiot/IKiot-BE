@@ -64,10 +64,7 @@ export function buildEntityChanged(
   };
 }
 
-/**
- * Phát một sự kiện thay đổi tới cả room tenant (trừ tab gây ra nó). Không bao giờ ném vào người gọi - cùng hợp đồng với thông báo: đây là kênh phụ, lỗi ở đây không được làm hỏng thao tác đã commit.
- * Nhận `Pick<RealtimeGateway, 'emitToRoomExcept'>` để service đã có sẵn `RealtimeGateway` (OrderService) gọi được mà không phải thêm phụ thuộc mới vào constructor.
- */
+/** Phát sự kiện thay đổi tới room tenant trừ tab gây ra, không bao giờ ném lỗi. */
 export function publishChange(
   gateway: Pick<RealtimeGateway, 'emitToRoomExcept'>,
   input: PublishChangeInput,

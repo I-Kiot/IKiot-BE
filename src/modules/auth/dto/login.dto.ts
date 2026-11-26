@@ -1,6 +1,6 @@
 import { IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 
-/** `identifier` là số điện thoại hoặc email; `phoneNumber` là tên trường cũ (mobile web, script), vẫn nhận. */
+/** Số điện thoại hoặc email; `phoneNumber` là tên trường cũ. */
 export class LoginDto {
   @IsOptional()
   @IsString()

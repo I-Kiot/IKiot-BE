@@ -24,7 +24,7 @@ import { ProductionDeliveryService } from './production-deliveries.service';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { ProductionChanges } from './production.change-template';
 
-/** Nhân viên xưởng (`users.workshop_id`): xem yêu cầu gửi tới xưởng ở mọi địa điểm và phiếu giao họ viết. Mọi route cần `production:deliver` (tự cấp cho tài khoản gắn xưởng) và xưởng liên kết. */
+/** Route cho nhân viên xưởng; cần `production:deliver` và tài khoản gắn xưởng. */
 @ApiTags('workshop')
 @ApiBearerAuth('bearer')
 @Controller('workshop')
@@ -106,7 +106,7 @@ export class WorkshopController {
   }
 }
 
-/** Phía nhận phiếu giao của xưởng: danh sách "chờ nhận", xác nhận phiếu (lúc này tồn mới tăng, `production:receive`) hoặc từ chối. */
+/** Phía nhận phiếu giao: danh sách chờ nhận, xác nhận hoặc từ chối. */
 @ApiTags('production-deliveries')
 @ApiBearerAuth('bearer')
 @Controller('production-deliveries')

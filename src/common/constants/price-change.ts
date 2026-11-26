@@ -1,4 +1,4 @@
-/** `product_item_price_changes.field` (CHECK). */
+/** Trường giá bị đổi. */
 export const PriceChangeField = {
   RETAIL_PRICE: 'RETAIL_PRICE',
   COST_PRICE: 'COST_PRICE',

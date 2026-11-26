@@ -18,7 +18,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Sổ giao dịch SePay của shop: xem tiền về chưa chốt được và đánh dấu đã xử lý. Chỉ đọc + một thao tác "đã xử lý"; sổ không có route sửa hay xoá. */
+/** Controller sổ giao dịch SePay: xem và đánh dấu đã xử lý. */
 @ApiTags('sepay-transactions')
 @ApiBearerAuth('bearer')
 @Controller('sepay-transactions')

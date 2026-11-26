@@ -3,7 +3,7 @@ import { CREDIT_WARNING_RATIO, crossedCreditWarning } from './credit-warning';
 const LIMIT = 100_000_000;
 const THRESHOLD = CREDIT_WARNING_RATIO * LIMIT;
 
-// Cùng lỗi như cảnh báo tồn thấp: bản bắn ở mọi lần nhận trên ngưỡng sẽ bị tắt, rồi cảnh báo thật cũng không ai đọc.
+// Chỉ cảnh báo khi vừa vượt ngưỡng.
 describe('crossedCreditWarning', () => {
   it('fires on the receipt that lands exactly on the threshold', () => {
     expect(crossedCreditWarning(THRESHOLD, 5_000_000, LIMIT)).toBe(true);

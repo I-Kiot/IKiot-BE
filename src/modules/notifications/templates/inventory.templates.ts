@@ -1,7 +1,7 @@
 import type { NotificationContent } from '../notification-content.type';
 
 export const InventoryNotificationTemplates = {
-  /** Chỉ gửi khi dòng vừa xuống dưới ngưỡng, không gửi lại mỗi lần còn dưới ngưỡng. Xem `InventoryService.lowStockCrossing`. */
+  /** Báo khi dòng vừa xuống dưới ngưỡng. */
   lowStock: (args: {
     label: string;
     stock: number;

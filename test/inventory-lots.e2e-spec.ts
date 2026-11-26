@@ -16,10 +16,7 @@ import {
 } from './../src/common/constants/order-status';
 import { ErrorCode } from './../src/common/errors/error-codes';
 
-// Gọi primitive tồn kho của InventoryService trên Postgres thật (docker compose up -d): lô, sổ kho,
-// và bất biến mọi thao tác phải giữ - Σ remaining của lô bán được = stock (lô hỏng nằm ngoài). Đóng gói khóa hàng khỏi kệ
-// (lockStock, locked_stock); hàng chỉ rời tồn khi đơn chuyển sang SHIPPING (shipLockedStock).
-// Tự tạo tenant riêng và xóa mọi thứ đã ghi, nên chạy lại được.
+// Kiểm các thao tác lô của InventoryService (Postgres thật): tổng lô bán được = stock.
 describe('InventoryService stock primitives (lots, ledger)', () => {
   let prisma: PrismaService;
   let inventory: InventoryService;
@@ -483,7 +480,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     ).rejects.toThrow();
   });
 
-  // Hàng hỏng (2026-11-26): lô isSellable = false tại chính địa điểm, ngoài stock. Ở đây chi nhánh giữ 6, chưa khoá gì.
+  // Hàng hỏng: chi nhánh giữ 6, chưa khoá.
   describe('damaged lots', () => {
     const damagedHere = async () =>
       (
@@ -667,7 +664,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
       );
       expect((await stockRow()).stock).toBe(0);
       expect(await damagedHere()).toBe(1);
-      // Không lô bán được nào tăng lại: assertInvariants (Σ lô bán được = stock = 0) bắt đúng lỗi gộp vào lô cha.
+      // Không lô bán được nào tăng lại.
       const back = await prisma.inventoryLot.findFirstOrThrow({
         where: {
           ...key,
@@ -765,7 +762,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
         }),
       ).toBe(0);
 
-      // Sửa xong rút lô hỏng theo FIFO: lô cũ nhất là hàng dùng chung, nên sửa 4 để chắc chạm cả chiếc may riêng.
+      // Sửa 4 để chạm cả chiếc may riêng.
       await run((tx) =>
         inventory.repairDamaged(tx, {
           ...key,

@@ -28,7 +28,7 @@ async function expectRejects(
   if (message) expect(bodyOf(caught).message).toBe(message);
 }
 
-// Excel sheet "Inventory" - updateMinStock, addProductToLocation, removeProductFromLocation (UTC018-UTC026).
+// Sheet Excel "Inventory" - updateMinStock, addProductToLocation, removeProductFromLocation (UTC018-UTC026).
 describe('Excel sheet Inventory - location records', () => {
   let prisma: any;
   let service: InventoryService;

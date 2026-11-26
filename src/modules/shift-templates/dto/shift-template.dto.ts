@@ -8,7 +8,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** Create và update dùng chung body, nên PATCH thay mọi trường. `endTime` trước `startTime` được phép có chủ đích: đó là ca đêm 22:00–06:00, `WorkingScheduleService` dựa vào đó để đẩy `endAt` sang ngày hôm sau. */
+/** Body ca mẫu; giờ kết thúc trước giờ bắt đầu là ca đêm. */
 export class ShiftTemplateDto {
   @IsString()
   @trim()

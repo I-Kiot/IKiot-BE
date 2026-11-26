@@ -3,8 +3,7 @@ import {
   ProductType,
 } from '../../../common/constants/product-status';
 
-// Bảng cột của file import hàng hoá. Template và bộ đọc file cùng đọc bảng này, nên đổi tên một
-// cột ở đây là đổi cả hai - không có bản thứ hai của danh sách cột để lệch nhau.
+// Bảng cột của file nhập hàng hoá, dùng chung cho file mẫu và bộ đọc.
 
 /** Số cặp thuộc tính (tên / đơn vị / giá trị) có trong template. */
 export const IMPORT_ATTRIBUTE_SLOTS = 3;
@@ -131,8 +130,7 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
   {
     key: 'productType',
     header: 'Loại hàng hóa',
-    // Đến 2026-11-04 cột này là "Loại mặt hàng", điền theo từng SKU. Loại giờ thuộc về hàng hóa
-    // (mọi SKU cùng `itemType` với `productType`), nên cột lên cấp hàng hóa và đổi tên theo.
+    // Loại hàng hoá, áp cho mọi SKU của hàng hoá.
     aliases: ['Loại mặt hàng'],
     required: false,
     level: 'product',
@@ -301,7 +299,7 @@ export function headerLabel(column: ImportColumn): string {
   return column.required ? `${column.header} (*)` : column.header;
 }
 
-/** Khoá so khớp tiêu đề: bỏ `(*)`, khoảng trắng thừa, hoa/thường - người dùng sửa nhẹ tiêu đề vẫn nhận ra. */
+/** Chuẩn hoá tiêu đề cột để so khớp. */
 export function headerKey(text: string): string {
   return text
     .normalize('NFC')

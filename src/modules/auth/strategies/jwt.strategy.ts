@@ -20,7 +20,7 @@ import {
 
 interface JwtPayload {
   sub: string;
-  /** Token chuyên dụng (otp_challenge, password_reset) cùng ký bằng secret này; access token không có trường này. */
+  /** Loại token chuyên dụng; access token không có. */
   type?: string;
 }
 
@@ -37,9 +37,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  // Đọc lại user và quyền Role ở mỗi request, không tin claim đã cache trong JWT: role do tenant chỉnh được, quyền bị thu hồi phải có hiệu lực ngay.
+  // Đọc lại user và quyền ở mỗi request.
   async validate(payload: JwtPayload): Promise<AuthUser> {
-    // Challenge OTP / reset token ký cùng secret: không được dùng làm access token, nếu không mật khẩu đúng là đủ vào hệ thống mà chưa qua OTP.
+    // Không chấp nhận token OTP / reset làm access token.
     if (payload.type !== undefined)
       throw new UnauthorizedException({
         code: ErrorCode.UNAUTHENTICATED,
@@ -64,10 +64,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         message: 'Account is not active',
       });
 
-    // AuthUser tách branch/warehouse vì mọi kiểm tra phạm vi dựa trên hai trường này; DB chỉ lưu một `location_id`, loại của Location cho biết thuộc bên nào.
+    // Tách nơi làm việc thành chi nhánh/kho.
     const { branchId, warehouseId } = columnsOfLocation(user.location);
 
-    // Trưởng ca đang chạy có thêm quyền cố định trong suốt ca; tính lại ở mỗi request để ca vừa kết thúc không còn cấp quyền.
+    // Thêm quyền trưởng ca đang trực, tính lại mỗi request.
     const supervision = await this.shiftSupervisor.resolve({
       userId: user.id,
       tenantId: user.tenantId,

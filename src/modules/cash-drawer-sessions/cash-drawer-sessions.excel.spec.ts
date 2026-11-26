@@ -28,7 +28,7 @@ async function expectRejects(
   if (message) expect(bodyOf(caught).message).toBe(message);
 }
 
-// Excel sheet "CashDrawer" - open, submitShiftLog, finalize (UTC017-UTC031).
+// Sheet Excel "CashDrawer" - open, submitShiftLog, finalize (UTC017-UTC031).
 describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
   let prisma: any;
   let tx: any;

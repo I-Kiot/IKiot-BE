@@ -31,5 +31,5 @@ export type PromotionStatus =
 export const PROMOTION_STATUSES: readonly string[] =
   Object.values(PromotionStatus);
 
-/** Số khuyến mãi được cộng trên một đơn: tối đa hai, và chỉ khi tất cả đều `stackable`. Giới hạn vì càng nhiều khuyến mãi dồn vào một dòng thì kẹp giảm theo dòng càng khó giải thích cho thu ngân. */
+/** Tối đa hai khuyến mãi cộng dồn. */
 export const MAX_STACKED_PROMOTIONS = 2;

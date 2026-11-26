@@ -16,7 +16,7 @@ export interface FetchedHoliday {
 const DEFAULT_VN_HOLIDAY_CALENDAR_ID =
   'vi.vietnamese#holiday@group.v.calendar.google.com';
 
-/** Kéo ngày lễ công cộng VN từ Google Calendar vào lịch của tenant. Quy tắc quan trọng: dòng tenant đã sửa tay không bao giờ bị ghi đè, kể cả dòng đã tắt. */
+/** Đồng bộ ngày lễ VN từ Google Calendar; không ghi đè dòng đã sửa tay. */
 @Injectable()
 export class HolidaySyncService {
   private readonly logger = new Logger(HolidaySyncService.name);
@@ -75,7 +75,7 @@ export class HolidaySyncService {
       );
   }
 
-  /** Đồng bộ một tenant, một năm. Prisma không có bulk upsert nên lặp trong một transaction: đồng bộ dở dang nửa năm còn tệ hơn là thất bại hẳn. */
+  /** Đồng bộ một tenant, một năm, trong một transaction. */
   async syncVietnamPublicHolidays(tenantId: string, year: number) {
     const holidays = await this.fetchFromGoogle(year);
     if (holidays.length === 0) {

@@ -4,12 +4,8 @@ import {
   paymentRowsOf,
 } from '../../src/modules/orders/payment-status';
 
-/**
- * Các bất biến của sổ tiền (docs/payment-flow.md, CLAUDE.md "Money ledger rules"), kiểm bằng SQL / đọc bảng. Gọi ở cuối mọi suite có đụng tới tiền: `await assertMoneyInvariants(prisma, tenantId)`.
- * Hàm trả danh sách vi phạm rồi `expect` rỗng, nên một suite hỏng báo đủ mọi bất biến vi phạm, không chỉ cái đầu tiên.
- * Phạm vi hiện tại (Phase 1-4: khoản tiền, dòng sổ thu chi, trạng thái thanh toán, sổ SePay); các Phase sau thêm bất biến cho nhật ký doanh thu, công nợ nhà cung cấp tại đây.
- */
-/** Kiểm nào có thể bỏ qua. Suite dựng dữ liệu thẳng vào bảng (cọc là một dòng Payment không có dòng sổ, trạng thái thanh toán đặt tay) bỏ hai kiểm phụ thuộc vào việc code đã ghi; các suite dựng bằng route / service (order-journey, smoke, order-cancel…) chạy đủ. */
+/** Kiểm các bất biến của sổ tiền; gọi ở cuối mọi suite đụng tới tiền. */
+/** Các kiểm có thể bỏ qua cho suite dựng dữ liệu thẳng vào bảng. */
 export interface InvariantOptions {
   skip?: readonly (
     | 'PAID_HAS_CASH_FLOW'
@@ -28,7 +24,7 @@ export async function moneyViolations(
   const out: string[] = [];
   const skip = new Set(options.skip ?? []);
 
-  // 1. Dòng sổ thu chi của đơn gắn đúng một khoản, `CashFlow.amount = Payment.amount`. Dòng đơn quầy cũ (trước Phase 3, không có Payment) được miễn bởi CHECK NOT VALID.
+  // 1. Dòng thu chi của đơn gắn đúng một khoản, cùng số tiền.
   const mismatched = await prisma.$queryRaw<{ id: string }[]>`
     SELECT c.id FROM cash_flows c JOIN payments p ON p.id = c.payment_id
     WHERE c.tenant_id = ${tenantId} AND c.amount <> p.amount`;
@@ -45,7 +41,7 @@ export async function moneyViolations(
   for (const row of badFund)
     out.push(`cash_flow ${row.id} has an inconsistent fund`);
 
-  // 2. Mỗi khoản PAID có tiền thật có đúng một dòng sổ, trừ tiền mặt BALANCE shipper còn giữ (REMITTANCE PENDING) và khoản CHANNEL (sàn thu hộ).
+  // 2. Mỗi khoản PAID có đúng một dòng sổ (trừ tiền shipper đang giữ và khoản CHANNEL).
   const unbooked = skip.has('PAID_HAS_CASH_FLOW')
     ? []
     : await prisma.$queryRaw<{ id: string }[]>`
@@ -57,7 +53,7 @@ export async function moneyViolations(
   for (const row of unbooked)
     out.push(`payment ${row.id} is PAID but has no cash flow`);
 
-  // 3. `orders.payment_status` bằng quy tắc suy ra (từ Phase 3 đơn quầy cũng có dòng Payment, nên kiểm cả đơn quầy).
+  // 3. `orders.payment_status` khớp quy tắc suy ra.
   const orders = skip.has('ORDER_STATUS_DERIVED')
     ? []
     : await prisma.order.findMany({
@@ -80,7 +76,7 @@ export async function moneyViolations(
     }
   }
 
-  // 5. Sổ SePay: mọi dòng tiền về đều có kết cục hợp lệ. Đã chốt (SETTLED*) thì có khoản PAID đúng số tiền thực về; không chốt được (REJECTED / UNMATCHED) thì tiền vẫn vào sổ thu chi đúng một dòng UNALLOCATED_RECEIPT cùng số tiền (quyết định 2026-11-11, D2).
+  // 5. Sổ SePay: dòng đã chốt có khoản PAID, dòng không chốt có đúng một dòng tiền chưa phân bổ.
   if (!skip.has('SEPAY_LEDGER')) {
     const unsettled = await prisma.$queryRaw<{ id: string }[]>`
       SELECT s.id FROM sepay_transactions s
@@ -110,7 +106,7 @@ export async function moneyViolations(
       );
   }
 
-  // 5b. Sổ SePay nền tảng (Phase 5): giao dịch ACTIVATED thì hoá đơn đã PAID với số tiền thực nhận; hoá đơn PAID có đúng một giao dịch ACTIVATED; giao dịch chưa kích hoạt thì hoá đơn không PAID bởi chính nó.
+  // 5b. Sổ SePay nền tảng: ACTIVATED thì hoá đơn PAID đúng số tiền.
   const activatedUnpaid = await prisma.$queryRaw<{ id: string }[]>`
     SELECT t.id FROM platform_sepay_transactions t
     LEFT JOIN subscription_invoices i ON i.id = t.subscription_invoice_id
@@ -128,7 +124,7 @@ export async function moneyViolations(
   for (const row of doubleActivated)
     out.push(`invoice ${row.id} was activated by more than one transfer`);
 
-  // 5c. Hoàn tiền (Phase 6): mỗi khoản REFUND PAID trỏ về một khoản đã nhận và có người làm (người bấm hoàn / huỷ / trả hàng).
+  // 5c. Mỗi khoản REFUND trỏ về khoản đã nhận và có người làm.
   const refunds = await prisma.$queryRaw<{ id: string }[]>`
     SELECT p.id FROM payments p
     WHERE p.tenant_id = ${tenantId} AND p.kind = 'REFUND' AND p.status = 'PAID'
@@ -143,7 +139,7 @@ export async function moneyViolations(
   if (noCompletedAt > 0)
     out.push(`${noCompletedAt} COMPLETED orders lack completed_at`);
 
-  // 6b-8 (Phase 7). Nhật ký doanh thu: đơn COMPLETED có đúng một SALE; RETURN chỉ có ở đơn đã có SALE; Σ dòng = số của bút toán (hàng và giá vốn); Σ dòng hoá đơn = tổng hoá đơn.
+  // 6b-8. Sổ doanh thu: đơn COMPLETED có đúng một SALE, tổng dòng khớp bút toán và hoá đơn.
   if (!skip.has('SALES_JOURNAL')) {
     const noSale = await prisma.$queryRaw<{ code: string }[]>`
       SELECT o.code FROM orders o
@@ -178,7 +174,7 @@ export async function moneyViolations(
       out.push(`invoice ${row.id} lines do not add up to its total`);
   }
 
-  // 9 (Phase 9). Công nợ nhà cung cấp: outstanding_debt = Σ sổ; dư sau mỗi dòng bằng tổng lũy kế; mỗi lần trả nợ gắn một dòng thu chi SUPPLIER_PAYMENT cùng số tiền.
+  // 9. Công nợ NCC = tổng sổ công nợ; mỗi lần trả nợ có dòng thu chi tương ứng.
   if (!skip.has('SUPPLIER_DEBT')) {
     const drift = await prisma.$queryRaw<{ id: string }[]>`
       SELECT s.id FROM suppliers s

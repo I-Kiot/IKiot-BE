@@ -95,13 +95,7 @@ export interface CustomizableLine {
   isCustom: boolean;
 }
 
-/**
- * Dòng may theo số đo (A-4, contract §2 `PUT /orders/:id/items/:itemId/customization`).
- * Lần đầu, dòng chuyển sang một ProductItem riêng (cùng sản phẩm, giá và gói của danh mục; kích thước, chi tiết, bản vẽ đã thỏa thuận)
- * để hàng may đo được nhập kho, đóng gói, giao, trả như một SKU. Không đụng hàng giữ cho SKU danh mục (từ 2026-10-04 đã không giữ hàng nữa).
- * Bản ghi `OrderItemCustomization` là thỏa thuận với khách; ProductItem là bản ghi đó theo cách danh mục hiểu.
- * Lô của hàng may đo không gắn vào dòng (`InventoryLot.orderItemId` để trống) nên hàng bị hủy hoặc trả là tồn kho thường ngay.
- */
+/** Lưu thông số may đo của dòng đơn; lần đầu tạo SKU riêng cho dòng. */
 @Injectable()
 export class OrderCustomizationService {
   constructor(
@@ -170,11 +164,11 @@ export class OrderCustomizationService {
     this.assertCustomizable(line.lineType);
     await this.assertNotLocked(line.id);
 
-    // Dòng chuyển sang SKU riêng chưa có tồn, nên dòng của nó trên danh sách sản xuất có thể thành thiếu (B-3).
+    // Dòng chuyển sang SKU riêng chưa có tồn.
     const shortage = await this.shortages.snapshot(tenantId, [line]);
 
     await this.prisma.$transaction(async (tx) => {
-      // Chiếm đơn ở CONFIRMED (cập nhật updatedAt): đóng gói xen giữa thì bên đó thắng trọn, và lần sửa A-8 đọc trước đó bị từ chối.
+      // Chiếm đơn ở CONFIRMED để tránh chạy đua với đóng gói.
       const claimed = await tx.order.updateMany({
         where: { id: orderId, tenantId, status: OrderStatus.CONFIRMED },
         data: { updatedAt: new Date() },
@@ -213,10 +207,7 @@ export class OrderCustomizationService {
     }
   }
 
-  /**
-   * Ghi customization trong transaction của bên gọi: route này, hoặc lúc tạo đơn tay khi dòng gửi kèm thông số.
-   * Lần đầu dòng có ProductItem riêng; các lần sau ghi đè kích thước, chi tiết, bản vẽ của item đó.
-   */
+  /** Ghi thông số may đo trong transaction của bên gọi. */
   async apply(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -261,8 +252,7 @@ export class OrderCustomizationService {
         where: { productItemId: item.id },
         orderBy: { position: 'asc' },
       });
-      // SKU và mã hàng riêng (cả hai duy nhất trong tenant), vẫn đọc ra được SKU danh mục nó được làm từ.
-      // Mã hàng từng chép nguyên của gốc; từ 2026-11-06 mã hàng cũng là unique nên lấy bằng SKU.
+      // Sinh SKU và mã hàng riêng cho hàng may đo.
       const customCode = generateReference(
         `${item.sku ?? item.productCode}-C`,
         3,
@@ -335,7 +325,7 @@ export class OrderCustomizationService {
         where: { id: line.id },
         data: { productItemId: custom.id, sku: custom.sku, isCustom: true },
       });
-      // Yêu cầu sản xuất đang soạn của dòng này giờ đổi sang hàng may đo; yêu cầu đã gửi thì dòng đã bị khóa từ trước.
+      // Chuyển dòng YCSX nháp sang SKU may đo.
       await tx.productionRequestItem.updateMany({
         where: {
           orderItemId: line.id,
@@ -426,11 +416,7 @@ export class OrderCustomizationService {
     });
   }
 
-  /**
-   * Giá trị gốc của từng thuộc tính khách đổi (2026-10-16), để biết "đổi gì so với bản mẫu". Lần đầu đọc từ SKU mẫu;
-   * dòng đã có SKU custom thì giữ giá gốc chụp trước đó (SKU custom đã mang giá khách đổi). Thuộc tính
-   * không thuộc sản phẩm của dòng là lỗi.
-   */
+  /** Giá trị gốc của từng thuộc tính khách đổi. */
   private async baseAttributeValues(
     tx: Prisma.TransactionClient,
     item: { id: string; productId: string },

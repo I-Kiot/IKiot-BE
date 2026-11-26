@@ -15,7 +15,7 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** Một số đo hoặc tùy chọn đã thỏa thuận ("Chiều cao lưng tựa: 95 cm"). Có `attributeId` thì đổi thuộc tính đó của sản phẩm (2026-10-16); không có thì chỉ là ghi chú tự do. */
+/** Một thông số đã thoả thuận; có `attributeId` thì đổi thuộc tính đó của sản phẩm. */
 export class OrderItemSpecDto {
   @IsOptional()
   @IsUUID()
@@ -37,10 +37,7 @@ export class OrderItemSpecDto {
   unit?: string;
 }
 
-/**
- * Thông số đã thỏa thuận cho một dòng (contract §2). Gửi nguyên khối mỗi lần `PUT …/customization`,
- * nên trường bỏ trống sẽ bị xóa: đây là bản ghi việc xưởng phải làm, không phải bản vá.
- */
+/** Thông số đã thoả thuận của một dòng, gửi nguyên khối mỗi lần. */
 export class OrderItemCustomizationDto {
   @IsOptional()
   @Type(() => Number)

@@ -10,7 +10,7 @@ export class QueryCategoryDto extends PaginationQueryDto {
   )
   search?: string;
 
-  /** Lọc theo cha. Chuỗi `parentId=null` nghĩa là chỉ lấy cấp gốc (API cũ hỗ trợ, bộ chọn danh mục đang dựa vào); bỏ trống thì không lọc. */
+  /** Lọc theo cha; `null` là chỉ cấp gốc. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     value === 'null' ? null : value,

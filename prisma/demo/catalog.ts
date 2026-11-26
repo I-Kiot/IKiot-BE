@@ -1,10 +1,4 @@
-/**
- * Hàng thật của hai shop mẫu, chép từ trang bán hàng công khai (2026-11-15):
- * - Nội thất IGM: igm.vn (giá niêm yết trên trang danh mục).
- * - 360 Boutique: sosanhgia.vn (trang tổng hợp gian hàng Shopee "360 Boutique."; 360.com.vn không truy cập được). Giá làm tròn tới nghìn.
- * Biến thể đánh dấu `assumed` là đoán (trang danh mục không ghi màu / size): xem docs/demo-data/anh-san-pham.md.
- * Giá vốn là ước tính (khoảng 60% giá bán với nội thất, 45% với thời trang): trang bán hàng không công bố.
- */
+/** Hàng mẫu của hai shop demo, lấy từ trang bán hàng công khai; giá vốn là ước tính. */
 
 export interface DemoVariant {
   sku: string;
@@ -303,7 +297,7 @@ export const IGM_COMBOS: DemoCombo[] = [
   },
 ];
 
-// ---------------------------------------------------------------- 360 Boutique
+// ─── 360 Boutique ───
 
 const SOSANHGIA = 'https://sosanhgia.vn';
 

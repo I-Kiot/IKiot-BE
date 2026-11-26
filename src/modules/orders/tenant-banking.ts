@@ -3,10 +3,7 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { isSepayLinked } from '../tenants/tenant-select';
 
-// Tài khoản ngân hàng của shop cho thanh toán SePay / VietQR: một chỗ duy nhất cho cả bán tại quầy
-// (OrderService) lẫn thu tiền khi giao (ShipmentDeliveryService). Là hàm thuần, không phải service, vì
-// module orders đã import module shipments – đặt trong một service của orders thì shipments không gọi
-// ngược lại được.
+// Tài khoản ngân hàng của shop cho SePay / VietQR.
 
 export interface TenantBanking {
   bankingBankName: string | null;
@@ -14,7 +11,7 @@ export interface TenantBanking {
   bankingAccountName: string | null;
 }
 
-/** Trước khi phát QR: có tài khoản nhận tiền, và đã liên kết SePay - nếu không khách chuyển được tiền nhưng không webhook nào báo về, đơn nằm chờ mãi. */
+/** Kiểm shop có tài khoản nhận và đã liên kết SePay trước khi phát QR. */
 export async function requireTenantBanking(
   prisma: Pick<PrismaService, 'tenant'>,
   tenantId: string,
@@ -62,7 +59,7 @@ export function transferContent(
     : paymentReference;
 }
 
-/** Link ảnh VietQR: khách quét là chuyển đúng số tiền, nội dung là mã thanh toán để webhook SePay nhận ra. */
+/** Link ảnh VietQR theo số tiền và mã thanh toán. */
 export function buildSepayQrUrl(
   banking: TenantBanking,
   amount: number,

@@ -2,7 +2,7 @@ import { LocationType } from '../../common/constants/location-type';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { can } from '../../common/utils/permission';
 
-/** Người gọi được đọc loại địa điểm nào: mọi nơi trong tenant, hay chỉ nơi được phân công (`null` = không được phân công loại này). */
+/** Phạm vi đọc địa điểm của người gọi. */
 export type LocationReadScope =
   { scope: 'ALL' } | { scope: 'OWN'; ownLocationId: string | null };
 
@@ -16,10 +16,7 @@ function postingOfType(user: AuthUser, type: LocationType): string | null {
   return user.warehouseId;
 }
 
-/**
- * Tài khoản xem được chi nhánh / kho nào: `read` (và owner / admin) xem cả tenant; `read_own` chỉ xem nơi được phân công.
- * Có cả hai quyền thì coi như `OWN` (hẹp hơn).
- */
+/** Chi nhánh / kho người gọi được xem. */
 export function locationReadScope(
   user: AuthUser,
   type: LocationType,

@@ -14,13 +14,9 @@ import {
   upperFirst,
 } from '../../common/realtime/change-ref';
 
-/**
- * Nội dung feed `entity:changed` của đơn hàng. Câu chỉ gồm tên người làm, động từ và mã đơn - không bao giờ có tiền, tên khách hay số điện thoại, vì cả room tenant nhận được (xem CLAUDE.md "Realtime").
- */
+/** Nội dung feed `entity:changed` của đơn hàng. */
 
-/**
- * Ba hình dạng body của route đơn: `OrderDetail` (đa số route sửa), `{ order, … }` (collect / hand-over / cancel / POS) và chi tiết shipment (`ship`, có `order: { id, code }`). Mã đơn lấy từ cái nào có.
- */
+/** Lấy mã đơn từ các dạng body khác nhau của route đơn. */
 export function orderTarget({
   body,
   params,

@@ -24,7 +24,7 @@ export class BankingDto {
   accountName: string;
 }
 
-/** Ba ô ngân hàng trong `PUT /tenant/me`: được bỏ trống cả ba, nhưng điền thì phải đủ cả ba (kiểm tra ở `classifyBankingInput`). */
+/** Ba ô ngân hàng, điền thì phải đủ. */
 export class OptionalBankingDto {
   @IsOptional()
   @IsString()
@@ -39,7 +39,7 @@ export class OptionalBankingDto {
   accountName?: string | null;
 }
 
-/** `PUT /tenant/me`: shop tự sửa hồ sơ. Cố ý không có `status`: bản cũ truyền thẳng body, nên shop đang SUSPENDED có thể tự chuyển về ACTIVE. */
+/** Body shop tự sửa hồ sơ. */
 export class UpdateMyTenantDto {
   @IsOptional()
   @IsString()

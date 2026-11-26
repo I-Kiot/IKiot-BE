@@ -10,10 +10,7 @@ import { InvoiceReadService } from './../src/modules/invoices/invoices-read.serv
 import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Các nơi gọi primitive lô của InventoryService có từ trước hành trình đơn hàng (nhập, chuyển kho,
-// kiểm kho, quầy), chạy qua service thật trên Postgres (docker compose up -d). Mỗi bước kiểm tồn,
-// các lô phía sau và sổ kho. smoke.e2e-spec.ts cũng phủ các route này, nhưng test này là phần chứng
-// minh các đường tồn kho vẫn giữ Σ lot.remaining = stock. Tự tạo tenant riêng và xóa sau khi chạy.
+// Kiểm các đường tồn kho cũ vẫn giữ tổng lô = stock (Postgres thật).
 describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -139,7 +136,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
     });
   });
 
-  // Dọn dẹp không được bỏ qua app.close(): AppModule đang giữ cron, Redis và Socket.IO; nếu lỗi ở đây jest sẽ chờ mãi.
+  // Luôn gọi app.close() khi dọn.
   afterAll(async () => {
     try {
       await cleanup();

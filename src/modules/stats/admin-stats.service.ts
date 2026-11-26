@@ -16,7 +16,7 @@ import type { DateRange } from './stats-math';
 
 const PAID = 'PAID';
 
-/** Port từ `AdminStatsService`, dashboard của operator trên mọi tenant. Doanh thu ở đây là tiền shop trả iKiot cho gói, không phải tiền shop thu tại quầy: hai sổ và hai tài khoản ngân hàng khác nhau. */
+/** Thống kê cho admin nền tảng; doanh thu là tiền gói shop trả. */
 @Injectable()
 export class AdminStatsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -91,7 +91,7 @@ export class AdminStatsService {
     const subscriptionStatus = this.countBy(subscriptionsByStatus, 'status');
     const tickets = this.countBy(ticketsByStatus, 'status');
 
-    // Loại gói dùng thử khỏi mẫu số có chủ ý: shop còn trong thời gian dùng thử chưa có cơ hội chuyển đổi, đếm vào sẽ làm tỉ lệ tụt mỗi lần marketing chạy.
+    // Bỏ gói dùng thử khỏi mẫu số tỉ lệ chuyển đổi.
     const paying =
       (subscriptionStatus.ACTIVE ?? 0) + (subscriptionStatus.PAST_DUE ?? 0);
     const decided =
@@ -147,7 +147,7 @@ export class AdminStatsService {
     };
   }
 
-  /** Doanh thu nền tảng tính theo lúc hoá đơn được thanh toán, không phải lúc xuất - hoá đơn xuất tháng 3 và thanh toán tháng 4 là tiền của tháng 4. */
+  /** Doanh thu nền tảng tính theo lúc hoá đơn được thanh toán. */
   private async paidRevenue({ fromDate, toDate }: DateRange) {
     const result = await this.prisma.subscriptionInvoice.aggregate({
       where: { status: PAID, paidAt: { gte: fromDate, lte: toDate } },

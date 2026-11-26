@@ -7,7 +7,7 @@ import {
   validateEnv,
 } from './env';
 
-/** Mỗi test có một bản sao `process.env` sạch; nếu không, test đầu tiên set biến sẽ quyết định các test sau. */
+/** Mỗi test dùng bản sao `process.env` sạch. */
 const ORIGINAL = process.env;
 
 beforeEach(() => {

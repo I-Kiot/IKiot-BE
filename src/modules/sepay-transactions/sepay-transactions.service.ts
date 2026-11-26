@@ -84,10 +84,7 @@ export class SepayTransactionService {
     return paginate(rows.map(toResponse), total, query.page, query.limit);
   }
 
-  /**
-   * Đánh dấu một giao dịch đã xử lý, một lần (`resolved_at IS NULL` là lệnh chiếm). Chỉ bốn cột xử lý được ghi; số tiền, kết cục, đơn của dòng sổ không bao giờ bị sửa.
-   * `REFUNDED_MANUALLY` còn ghi dòng chi `UNALLOCATED_REFUND` (cùng số với dòng thu `UNALLOCATED_RECEIPT` của giao dịch), để sổ thu chi khớp sao kê sau khi chủ hoàn tiền ngoài hệ thống. Giao dịch không có dòng thu đó (vd. đã chốt cho đơn, phần dư hoàn bằng route hoàn tiền của đơn) thì từ chối: không có gì để hoàn ở đây.
-   */
+  /** Đánh dấu giao dịch đã xử lý; hoàn tay thì ghi dòng chi tương ứng. */
   async resolve(
     user: AuthUser,
     tenantId: string,

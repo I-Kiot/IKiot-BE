@@ -1,5 +1,4 @@
-// Quy tắc thuần cho nội dung hoá đơn, tách khỏi service để unit-test không cần DB (cùng kiểu với pricing-engine.ts).
-// Số học nằm ở `orders/sales-math.ts` (`keptLineValues`, `sliceValue`): hoá đơn, nhật ký doanh thu và gợi ý hoàn tiền là MỘT quy tắc.
+// Quy tắc nội dung hoá đơn, dạng hàm thuần.
 import { toDong, type MoneyLike } from '../../common/utils/money';
 import {
   keptLineValues,
@@ -17,10 +16,7 @@ export interface InvoiceLineAmounts<T extends SaleItemInput> {
   discount: number;
 }
 
-/**
- * Dòng của hoá đơn BÁN. Hàng trả về trước khi xuất hoá đơn (trả một phần khi đơn còn đang giao) được trừ luôn tại đây, không xuất rồi điều chỉnh sau.
- * `amount` là giá trị thực sau giảm giá cả đơn (chia theo tỉ lệ bằng `allocateProportional`), nên Σ dòng + phí ship = tổng hoá đơn đến từng đồng.
- */
+/** Dòng của hoá đơn bán, đã trừ hàng trả trước khi xuất. */
 export function saleLines<T extends SaleItemInput>(
   order: NetLineOrder,
   lines: readonly T[],
@@ -40,7 +36,7 @@ export function saleLines<T extends SaleItemInput>(
   });
 }
 
-/** Tổng hoá đơn BÁN = Σ giá trị dòng còn lại + phí ship thu của khách (phí ship không hoàn khi trả hàng). */
+/** Tổng hoá đơn bán = tổng dòng + phí ship. */
 export function saleTotal(
   lines: readonly { amount: number }[],
   shippingFee: MoneyLike,

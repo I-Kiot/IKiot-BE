@@ -50,9 +50,7 @@ import { OrderPaymentStatus } from './../src/common/constants/order-status';
 import { PaymentKind } from './../src/common/constants/payment-method';
 import { assertMoneyInvariants } from './helpers/money-invariants';
 
-/**
- * Hoàn hàng (D-5) trên Postgres thật: tạo đơn hoàn → nhận hàng → kiểm từng dòng. GOOD cộng lại tồn bán được, DAMAGED thành lô hỏng (`isSellable = false`) tại nơi xuất, ngoài tồn bán được; vượt số lượng, đơn chưa trừ kho, người không có quyền đều bị chặn. `ship` (C-2) chưa có route nên test tự trừ tồn bằng `shipLockedStock`. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm hoàn hàng: GOOD vào tồn, DAMAGED thành lô hỏng (Postgres thật). */
 describe('/order-returns – OrderReturnService', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;
@@ -481,7 +479,7 @@ describe('/order-returns – OrderReturnService', () => {
     ).rejects.toMatchObject({
       response: { code: ErrorCode.ORDER_RETURN_CONDITION_REQUIRED },
     });
-    // The transaction rolled back: still waiting to be inspected, nothing returned.
+    // Rollback: vẫn chờ kiểm, chưa trả gì.
     expect(
       (
         await prisma.orderReturn.findUniqueOrThrow({
@@ -708,7 +706,7 @@ describe('/order-returns – OrderReturnService', () => {
       });
       expect(flow).toMatchObject({ fund: 'DRAWER', locationId: branchId });
 
-      // The suggestion now reflects what is still held; refund 0 writes no money.
+      // Gợi ý theo số còn giữ; hoàn 0 không ghi tiền.
       const second = await received(orderId, lineId, 1);
       expect(
         (await returns.findOne(owner, tenantId, second.id)).refundSuggestion,
@@ -763,7 +761,7 @@ describe('/order-returns – OrderReturnService', () => {
       ).rejects.toMatchObject({
         response: { code: ErrorCode.ORDER_REFUND_EXCEEDS_PAID },
       });
-      // Nothing is held, so no refund is needed.
+      // Không còn giữ tiền nên không cần hoàn.
       await returns.inspect(owner, tenantId, other.id, {
         items: [
           { orderItemId: unpaid.lineId, condition: ReturnCondition.GOOD },
@@ -796,7 +794,7 @@ describe('/order-returns – OrderReturnService', () => {
       const order = await orderOf(kept.orderId);
       expect(order.paymentStatus).toBe(OrderPaymentStatus.PARTIALLY_PAID);
       expect(order.status).toBe(OrderStatus.RETURNED);
-      // Trả trước khi hoàn thành: không có SALE để đảo; tiền cọc shop giữ là thu nhập khác (D3). Đơn đã hoàn hết cọc thì không có gì.
+      // Trả trước khi hoàn tất: cọc giữ lại là thu nhập khác.
       const keptJournal = await prisma.salesJournalEntry.findMany({
         where: { orderId: kept.orderId },
       });

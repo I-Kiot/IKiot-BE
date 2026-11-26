@@ -23,7 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Nhân viên, nằm ở `/users`, giữ các sub-path của vòng đời tài khoản. Không có `GET /staff/roles` cũ: role là row do tenant định nghĩa, dùng `GET /roles`. Tất cả dùng `users:update` thay vì `staff:update`: hai resource cho cùng một việc sẽ khiến quyền cấp ở chỗ này và kiểm tra ở chỗ khác. */
+/** Controller nhân viên ở `/users`, dùng quyền `users:*`. */
 @ApiTags('users')
 @ApiBearerAuth('bearer')
 @Controller('users')

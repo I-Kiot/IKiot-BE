@@ -22,7 +22,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** `POST /admin/notifications`: operator gửi email tới chủ shop. `category` giữ dạng free text như model cũ vì được in thẳng vào tiêu đề email, và admin console là client duy nhất. */
+/** Body gửi email thông báo tới chủ shop. */
 export class ComposeAnnouncementDto {
   @IsString()
   @trim()
@@ -47,7 +47,7 @@ export class ComposeAnnouncementDto {
   })
   targetType: string;
 
-  /** Chỉ đọc và lưu khi `targetType` là `SELECTION`, để announcement `ALL` không giữ danh sách tenant gây hiểu nhầm. Danh sách rỗng vẫn được lưu, nhưng không gửi cho ai. */
+  /** Danh sách tenant, chỉ dùng khi `targetType` là `SELECTION`. */
   @ValidateIf(
     (dto: ComposeAnnouncementDto) =>
       dto.targetType === AnnouncementTarget.SELECTION,

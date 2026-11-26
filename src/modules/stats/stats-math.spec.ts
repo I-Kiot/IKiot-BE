@@ -93,7 +93,7 @@ describe('changePct', () => {
     expect(changePct(50, 200)).toBe(-75);
   });
 
-  // Không phải 0 cũng không phải Infinity: "từ không lên có" không có % trung thực, còn 0 hiển thị là "đi ngang", ngược với thực tế.
+  // "Từ không lên có" trả null.
   it('answers null when the previous period was zero', () => {
     expect(changePct(5_000_000, 0)).toBeNull();
     expect(changePct(0, 0)).toBeNull();

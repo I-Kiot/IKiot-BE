@@ -21,7 +21,7 @@ interface StoredSession {
   issuedAt: number;
 }
 
-/** Refresh token lưu trong Redis, mỗi token một key `refresh:<userId>:<jti>`; xoá key để thu hồi, SCAN để đăng xuất mọi nơi. Redis lỗi thì coi như không có key, refresh thất bại: không cấp phiên mà không thu hồi được. */
+/** Refresh token lưu trong Redis theo `refresh:<userId>:<jti>`. */
 @Injectable()
 export class RefreshTokenService {
   private readonly logger = new Logger(RefreshTokenService.name);
@@ -58,7 +58,7 @@ export class RefreshTokenService {
       REFRESH_TOKEN_TTL_SECONDS,
     );
     if (!stored) {
-      // Trả token không thu hồi được còn tệ hơn không trả: access token vẫn dùng được nên user vẫn đăng nhập, chỉ không refresh được.
+      // Không trả token nếu không lưu được để thu hồi.
       this.logger.warn(
         'Refresh token was not stored (Redis unavailable) - session will not be refreshable',
       );
@@ -66,7 +66,7 @@ export class RefreshTokenService {
     return token;
   }
 
-  /** Xoay vòng refresh token: kiểm tra, thu hồi token đã gửi, cấp cặp mới. Dùng lại token này sẽ thất bại. */
+  /** Xoay vòng refresh token: thu hồi token cũ, cấp cặp mới. */
   async rotate(
     token: string,
     userAgent?: string,
@@ -103,7 +103,7 @@ export class RefreshTokenService {
     await this.redis.del(this.key(userId, payload.jti));
   }
 
-  /** Kết thúc mọi phiên của user trên cả HTTP và Socket.IO. Socket.IO được ngắt ngay đây vì caller nào cũng quên, khiến tài khoản đã khoá vẫn nhận live feed của shop. */
+  /** Kết thúc mọi phiên của user, cả HTTP lẫn Socket.IO. */
   async revokeAllFor(userId: string): Promise<void> {
     const keys = await this.redis.keysMatching(`refresh:${userId}:*`);
     await this.redis.del(...keys);
@@ -122,7 +122,7 @@ export class RefreshTokenService {
         message: 'Invalid refresh token',
       });
     }
-    // Access và refresh token chỉ khác secret khi có REFRESH_TOKEN_SECRET, nên check này chặn việc dùng access token làm refresh token.
+    // Chặn dùng access token làm refresh token.
     if (payload.type !== 'refresh' || !payload.jti || !payload.sub) {
       throw new UnauthorizedException({
         code: ErrorCode.REFRESH_TOKEN_INVALID,

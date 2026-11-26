@@ -18,20 +18,14 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/**
- * Chỉ owner được định nghĩa role, và việc này cố ý nằm ngoài catalog quyền: nếu “sửa quyền” là một quyền có thể cấp, role có thể tự cấp nó và leo thang không giới hạn. `OwnerOrAdminGuard` gắn ở từng route chứ không ở class, vì **đọc danh sách khác với sửa**, và có một route cần điều kiện lỏng hơn.
- */
+/** Chỉ chủ shop quản lý role. */
 @ApiTags('roles')
 @ApiBearerAuth('bearer')
 @Controller('roles')
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 
-  /**
-   * Danh sách role của shop, cho người tuyển hoặc đổi role nhân viên.
-   *
-   * **Không chỉ owner.** `POST /users` cần `roleId`: manager có `users:create` mà không đọc được danh sách thì không tuyển được ai. `users:update` cũng vậy vì đó là cách chuyển nhân viên sang role khác. Xem tên role không phải là sửa: route chỉ trả role nào tồn tại; đổi thì vẫn cần owner.
-   */
+  /** Danh sách role, cho cả người có quyền tuyển / sửa nhân viên. */
   @Permissions('users', 'create', 'update')
   @Get()
   findAll(@CurrentUser() user: AuthUser) {

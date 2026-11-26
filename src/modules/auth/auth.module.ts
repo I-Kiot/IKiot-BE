@@ -21,7 +21,7 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
     EmailModule,
     // JwtStrategy kiểm tra quyền trưởng ca ở mỗi request.
     WorkingScheduleModule,
-    /** Dùng registerAsync để factory chạy sau khi ConfigModule đọc .env (register() đồng bộ sẽ ký bằng secret rỗng). Key lấy từ accessTokenSecret() để signer và JwtStrategy không lệch nhau. */
+    /** JwtModule đăng ký async để đọc secret sau khi nạp `.env`. */
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -33,7 +33,7 @@ import { WorkingScheduleModule } from '../working-schedules/working-schedules.mo
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, OtpService, RefreshTokenService],
-  // Export RefreshTokenService để users thu hồi phiên của nhân viên khi khoá/xoá: một điểm thu hồi duy nhất.
+  // Xuất RefreshTokenService để thu hồi phiên khi khoá/xoá nhân viên.
   exports: [AuthService, RefreshTokenService],
 })
 export class AuthModule {}

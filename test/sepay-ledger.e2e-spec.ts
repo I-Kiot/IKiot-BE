@@ -49,10 +49,7 @@ const ACCOUNT = '0987000111';
 const WEBHOOK_KEY = 'ledger-webhook-key';
 const SHARED_KEY = 'ledger-shared-key';
 
-/**
- * Phase 3-4 của sổ tiền (Postgres thật): đơn quầy có Payment (FULL / CHANGE / QR), một đường chốt SePay chung cho quầy và thu khi giao, chuyển thiếu là khoản trả một phần, trả dư ghi lại,
- * mọi giao dịch SePay đều vào sổ (không mã, mã lạ, không có id, không có shop) và tiền chưa gắn đơn vào sổ thu chi, nộp tiền shipper cho đơn đã RETURNED, cùng route xử lý sổ.
- */
+/** Kiểm sổ SePay: đơn quầy có Payment, chốt chung, chuyển thiếu, trả dư, tiền chưa gắn đơn (Postgres thật). */
 describe('POS payments + SePay ledger', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -782,7 +779,7 @@ describe('POS payments + SePay ledger', () => {
         pendingRemittance: 0,
       });
 
-      // More than the excess is refused and writes nothing.
+      // Hoàn quá phần dư bị từ chối.
       await expect(
         excessRefunds.refundExcess(owner, tenantId, order.id, {
           amount: 600,
@@ -793,7 +790,7 @@ describe('POS payments + SePay ledger', () => {
       });
       expect(await flowsOf(order.id)).toHaveLength(1);
 
-      // A partial refund leaves the exception open.
+      // Hoàn một phần thì còn mở.
       await excessRefunds.refundExcess(owner, tenantId, order.id, {
         amount: 200,
         method: 'BANK_TRANSFER',
@@ -803,7 +800,7 @@ describe('POS payments + SePay ledger', () => {
         (await ledger({ sepayTransactionId: txId }))[0].resolvedAt,
       ).toBeNull();
 
-      // The rest closes it.
+      // Hoàn phần còn lại thì đóng.
       await excessRefunds.refundExcess(owner, tenantId, order.id, {
         amount: 300,
         method: 'BANK_TRANSFER',
@@ -845,7 +842,7 @@ describe('POS payments + SePay ledger', () => {
       });
       expect(events[1].actorId).toBe(ownerId);
 
-      // Nothing is overpaid any more.
+      // Không còn dư.
       await expect(
         excessRefunds.refundExcess(owner, tenantId, order.id, {
           amount: 1,

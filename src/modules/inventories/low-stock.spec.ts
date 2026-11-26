@@ -6,7 +6,7 @@ const line = (stock: number, minStock: number, lockedStock = 0) => ({
   minStock,
 });
 
-// Luật này quyết định điện thoại quản lý có rung không; lỗi đáng sợ là cảnh báo mỗi lần bán khi tồn đã thấp, khiến kênh bị tắt từ ngày đầu.
+// Chỉ cảnh báo khi vừa vượt ngưỡng.
 describe('crossedLowStock', () => {
   it('fires on the step that lands exactly on the threshold', () => {
     expect(crossedLowStock(line(5, 5), -1)).not.toBeNull();

@@ -18,7 +18,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Năm route ở các path `/ai` cũ, được gate bằng catalog resource `ai_chat` thay vì các role cố định mà router cũ dùng. */
+/** Controller trợ lý AI, quyền `ai_chat`. */
 @ApiTags('ai')
 @ApiBearerAuth('bearer')
 @Controller('ai')

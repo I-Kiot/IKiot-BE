@@ -1,6 +1,6 @@
-/** `sales_journal_entries.entry_type` (CHECK `sales_journal_entries_type_check`). */
+/** Loại bút toán sổ bán hàng. */
 export const SalesJournalEntryType = {
-  /** Một lần cho mỗi đơn, lúc đơn COMPLETED (chỉ mục duy nhất một phần `sales_journal_one_sale`). Số dương. */
+  /** Ghi một lần mỗi đơn khi đơn COMPLETED. */
   SALE: 'SALE',
   /** Hàng trả sau khi đã có SALE: số ÂM, ghi vào kỳ lúc trả hàng, không sửa kỳ cũ. */
   RETURN: 'RETURN',
@@ -24,7 +24,7 @@ export const SalesJournalSource = {
   ORDER_CANCEL: 'ORDER_CANCEL',
   POS_CANCEL: 'POS_CANCEL',
   RETURN_KEPT: 'RETURN_KEPT',
-  /** Chủ shop quyết định giữ tiền treo (`POST /orders/:id/settle-held` KEEP): ghi ngày quyết định, không lùi ngày. */
+  /** Chủ shop giữ tiền treo, ghi theo ngày quyết định. */
   HELD_DECISION: 'HELD_DECISION',
 } as const;
 

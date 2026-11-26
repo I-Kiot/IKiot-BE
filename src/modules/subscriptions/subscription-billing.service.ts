@@ -67,7 +67,7 @@ export interface SepayWebhookResult {
   message?: string;
 }
 
-/** Phần thu tiền của SubscriptionService cũ: xuất hoá đơn nâng cấp/gia hạn, và biến callback “tiền đã về” của SePay thành gói được kích hoạt. Tách riêng vì trạng thái gói, hạn mức, hoá đơn và webhook hầu như không dính nhau. */
+/** Thu tiền gói: xuất hoá đơn và kích hoạt gói khi SePay báo tiền về. */
 @Injectable()
 export class SubscriptionBillingService {
   private readonly logger = new Logger(SubscriptionBillingService.name);
@@ -133,7 +133,7 @@ export class SubscriptionBillingService {
     return this.createPlanInvoice(currentSubscription, currentPlan);
   }
 
-  /** SePay gọi khi tiền về tài khoản ngân hàng của iKiot. Mọi kết quả, trừ API key sai, đều trả về bình thường để controller luôn trả 200 và SePay không retry vào lỗi của ta; key sai là bên gọi lạ nên trả 401 thật. */
+  /** Xử lý webhook SePay cho gói; chỉ API key sai trả 401. */
   async handleSepayWebhook(
     apiKey: string,
     payload: SepayWebhookPayload,
@@ -172,7 +172,7 @@ export class SubscriptionBillingService {
     const transfer = sepayTransferFromPayload({ ...payload });
     const reference = this.sepay.extractReference(payload.content ?? '');
 
-    // Một lần chạy lại: lệnh chiếm hoá đơn thua (có giao dịch khác kịp chốt) cuốn cả dòng sổ, rồi quyết định lại trên hoá đơn đã đổi.
+    // Thua lệnh chiếm thì chạy lại một lần.
     let result: PlatformSettlement | null = null;
     for (let attempt = 0; attempt < 2 && !result; attempt++) {
       try {
@@ -208,10 +208,7 @@ export class SubscriptionBillingService {
     return { success: true, message: PLATFORM_OUTCOME_MESSAGE[result.outcome] };
   }
 
-  /**
-   * Một transaction cho mọi kết cục: đọc hoá đơn (mọi trạng thái), quyết định, chèn dòng sổ (`ON CONFLICT DO NOTHING` theo `dedupe_key`: trùng thì không làm gì thêm), rồi CHIẾM hoá đơn `PENDING -> PAID` trước khi động tới gói.
-   * Thứ tự này là chốt chặn chống webhook gọi hai lần hay hai giao dịch cho cùng một hoá đơn: chỉ một bên chiếm được, bên kia nhận `INVOICE_NOT_PENDING` (sau khi chạy lại) và nằm trong sổ để admin xử lý.
-   */
+  /** Một transaction: ghi sổ, chiếm hoá đơn PENDING → PAID rồi kích hoạt gói. */
   private async settleInTransaction(
     tx: Prisma.TransactionClient,
     transfer: SepayTransfer,
@@ -318,7 +315,7 @@ export class SubscriptionBillingService {
             fromPlanId: oldPlanId,
             toPlanId: plan.id,
             changedAt: billingStart,
-            // Kích hoạt do webhook không có người thao tác. Bản cũ ghi tenantId vào đây, dễ bị đọc nhầm thành "người đổi".
+            // Kích hoạt do webhook không có người thao tác.
             changedById: null,
             note: isRenewal
               ? `Renewed ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`

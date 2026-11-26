@@ -1,8 +1,6 @@
 import { shiftMinutes } from '../shift-templates/shift-time';
 
-/**
- * Đổi “mẫu ca này, vào ngày này” thành khoảng thời gian thật. `08:00` của mẫu là 08:00 giờ Việt Nam, không phải giờ máy chủ. Offset +07:00 cố định đúng cho VN (không DST từ 1975) nhưng sai nói chung; giữ lại vì đổi cách tính sẽ làm thay đổi ý nghĩa mọi `startAt` đã lưu.
- */
+/** Đổi mẫu ca + ngày thành khoảng thời gian thật theo giờ Việt Nam. */
 const VN_OFFSET_MINUTES = 7 * 60;
 
 export function localDateText(value: Date | string): string {
@@ -15,7 +13,7 @@ export function workDateOf(value: Date | string): Date {
   return new Date(`${localDateText(value)}T00:00:00.000Z`);
 }
 
-/** Ca có giờ kết thúc trước giờ bắt đầu là ca qua nửa đêm (22:00–06:00), không phải lỗi; vì vậy `ShiftTemplateDto` cho phép `endTime < startTime`. Đổi một quy tắc mà không đổi quy tắc kia sẽ ra ca có độ dài âm. */
+/** Ca có giờ kết thúc trước giờ bắt đầu là ca qua đêm. */
 export function shiftInterval(
   workDate: Date | string,
   template: { startTime: Date | null; endTime: Date | null },

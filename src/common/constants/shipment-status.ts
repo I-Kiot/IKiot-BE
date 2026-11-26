@@ -16,26 +16,19 @@ export type ShipmentStatus =
 export const SHIPMENT_STATUSES: readonly string[] =
   Object.values(ShipmentStatus);
 
-/**
- * Không trạng thái nào đưa chuyến giao ra khỏi nhóm này. FAILED cố ý không có: hàng vẫn ở shipper và có thể giao lại (-> DELIVERED) cho tới khi shop xác nhận đã nhận về (-> RETURNED).
- */
+/** Chuyến giao chưa kết thúc; FAILED vẫn giao lại được. */
 export const FINAL_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.DELIVERED,
   ShipmentStatus.RETURNED,
   ShipmentStatus.CANCELLED,
 ];
 
-/**
- * Chỉ đổi được tài xế khi hàng còn ở shop, tức shipper chưa xác nhận đã lấy hàng.
- * PICKED_UP cố ý không có (2026-11-11): từ lúc đó hàng đã nằm trong tay shipper và sự kiện PICKED_UP ghi tên người
- * đó - đổi người lúc này sẽ giao hàng (và tiền cần thu) cho người chưa từng cầm nó, còn nhật trình thì ghi một người
- * khác. Muốn đổi thật thì huỷ chuyến này rồi tạo chuyến mới.
- */
+/** Chỉ đổi tài xế khi shipper chưa lấy hàng. */
 export const DRIVER_CHANGEABLE_STATUSES: readonly string[] = [
   ShipmentStatus.CREATED,
 ];
 
-/** INTERNAL: shipper của shop xác nhận bằng ảnh minh chứng. EXTERNAL: đơn vị vận chuyển (hoặc logistics của sàn) báo DELIVERED; khi chưa có API vận chuyển thì nhân viên đánh dấu tay. */
+/** Kiểu giao: shipper nội bộ xác nhận bằng ảnh, đơn vị ngoài báo đã giao. */
 export const CarrierType = {
   INTERNAL: 'INTERNAL',
   EXTERNAL: 'EXTERNAL',

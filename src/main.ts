@@ -1,7 +1,7 @@
 // QUAN TRỌNG: `instrument.ts` (Sentry) phải được import ở dòng đầu tiên, trước mọi import khác.
 import './instrument';
 
-// Import đầu tiên có chủ đích: `validateEnv()` chạy trước khi ConfigModule đọc `.env`; dotenv không ghi đè biến môi trường thật.
+// Import đầu tiên để kiểm biến môi trường trước khi đọc `.env`.
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
@@ -13,21 +13,21 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { corsOrigins, validateEnv } from './common/config/env';
 
 async function bootstrap() {
-  // Deploy thiếu JWT_SECRET phải lỗi ngay tại đây, không phải ở lần đăng nhập đầu tiên sau khi load balancer đã chuyển traffic.
+  // Thiếu secret thì dừng ngay lúc khởi động.
   validateEnv();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // PrismaService và RedisService implement OnModuleDestroy; thiếu dòng này Nest không lắng nghe SIGTERM mà mỗi lần deploy đều gửi.
+  // Lắng nghe SIGTERM để đóng Prisma và Redis.
   app.enableShutdownHooks();
 
-  // Express bỏ qua X-Forwarded-For nếu chưa bảo tin proxy, mà AuditInterceptor ghi đúng header này. TRUST_PROXY là số hop; không đặt nghĩa là không có proxy.
+  // TRUST_PROXY là số proxy để lấy đúng IP từ X-Forwarded-For.
   const trustProxy = process.env.TRUST_PROXY?.trim();
   app.set('trust proxy', trustProxy ? Number(trustProxy) : false);
 
   app.use(
     helmet({
-      // Swagger UI ở /docs được inline nên CSP mặc định sẽ chặn; các directive này là riêng cho helmet + Swagger.
+      // CSP cho Swagger UI.
       contentSecurityPolicy: {
         directives: {
           defaultSrc: [`'self'`],
@@ -61,7 +61,7 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
-  // Mount cả hai đường dẫn vì iKiotMS-BE luôn phục vụ docs ở /api-docs; việc chặn công khai là quyết định riêng, không thuộc phần port.
+  // Phục vụ docs ở cả /docs và /api-docs.
   SwaggerModule.setup('api-docs', app, document);
 
   await app.listen(process.env.PORT ?? 3000);

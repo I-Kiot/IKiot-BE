@@ -1,7 +1,4 @@
-/**
- * Đọc body thô của handler (chưa bọc envelope) mà không dùng chuỗi `as`: một type guard ở biên (coding rule 14).
- * Mọi hàm ở đây đều "mềm": body sai hình dạng cho `null` / `[]` chứ không ném, vì không có gì ở đây được phép làm hỏng request đã thành công.
- */
+/** Đọc body thô của handler an toàn, sai dạng thì trả null / [] chứ không ném. */
 export function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null && !Array.isArray(x);
 }
@@ -31,7 +28,7 @@ export function readString(x: unknown, key: string): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** Duyệt `path` (khoá object; gặp mảng thì lấy từng phần tử) và gom các chuỗi ở cuối: `readIdList(body, ['items', 'orderItem', 'orderId'])`. */
+/** Gom các chuỗi id theo đường dẫn khoá trong body. */
 export function readIdList(x: unknown, path: readonly string[]): string[] {
   let level: unknown[] = [x];
   for (const key of path) {

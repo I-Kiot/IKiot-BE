@@ -5,22 +5,11 @@ import {
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { OrderableLine } from './production-orderable';
 
-// Vòng đời yêu cầu sản xuất dưới dạng hàm thuần, là nơi duy nhất quyết mọi đổi trạng thái (contract §3); test trong production-request-rules.spec.ts.
-//
-//   DRAFT ──SENT──▶ SENT ──receive──▶ PARTIALLY_RECEIVED ──receive──▶ COMPLETED
-//     │               │                       │
-//     └──CANCELLED◀───┘                       └──đóng thiếu (bằng tay, kèm lý do)──▶ COMPLETED
-//        (chỉ khi chưa nhận gì)
-//
-// Đóng thiếu có vì xưởng giao 8/10 rồi dừng sẽ khiến yêu cầu mở mãi, 2 cái còn lại vẫn bị tính "đang đặt" trên danh sách sản xuất,
-// nên thiếu đáng lẽ phải hiện thì vẫn bị ẩn. Khi đã đóng, phần còn lại thôi được tính và danh sách hiện lại SKU đó thiếu, sẵn để đặt chỗ khác.
+// Vòng đời YCSX: nháp → gửi → nhận một phần → hoàn tất, hoặc huỷ / đóng thiếu.
 
 export type RuleViolation = { code: ErrorCode; message: string };
 
-/**
- * Trạng thái do người dùng đặt tay. Trả lý do bị từ chối hoặc null. Yêu cầu đã giao hàng không được huỷ: tồn đã nhập theo nó, huỷ sẽ mất dấu nguồn hàng; thay vào đó đóng thiếu, giữ các phiếu nhận và bỏ phần chưa về.
- * Xưởng đã xác nhận đang làm (2026-11-16) thì shop không huỷ được nữa: xưởng đang bỏ công, chỉ xưởng huỷ được (`cancelledByWorkshop`).
- */
+/** Kiểm đổi trạng thái tay, trả lý do từ chối hoặc null. */
 export function manualTransitionViolation(
   from: string,
   to: string,
@@ -95,7 +84,7 @@ export function statusAfterReceipt(
     : ProductionRequestStatus.PARTIALLY_RECEIVED;
 }
 
-/** Mã YCSX kế tiếp sau mã cao nhất của shop: `YCSX000123` → `YCSX000124`. Mã luôn do server tạo nên khớp mẫu; mã khác bị bỏ qua chứ không tin. */
+/** Mã YCSX kế tiếp. */
 export const PRODUCTION_REQUEST_CODE_PREFIX = 'YCSX';
 
 export function nextProductionRequestCode(
@@ -109,10 +98,7 @@ export function nextProductionRequestCode(
   return `${PRODUCTION_REQUEST_CODE_PREFIX}${String(current + step).padStart(6, '0')}`;
 }
 
-/**
- * Phần dòng đơn còn cần làm: hàng may đo thì cả dòng (`isCustom` không lấy từ kệ), hàng chuẩn thì số thiếu hiện tại của `stockCheck`.
- * null = không biết (dòng không có stockCheck: không còn chờ giao, thiếu kho nguồn...), nơi gọi bỏ qua kiểm tra dòng đó.
- */
+/** Phần dòng đơn còn cần làm, null nếu không biết. */
 export function remainingNeedOf(
   line: { isCustom: boolean; quantity: number },
   shortQuantity: number | null,
@@ -127,15 +113,11 @@ export interface ProductionExcess {
   alreadyOpen: number;
   requested: number;
   orderable: number;
-  /** LINE: vượt phần còn cần của chính dòng; POOL: các dòng của một yêu cầu cộng lại vượt số thiếu chung của (địa điểm, SKU). */
+  /** Loại vượt: vượt dòng (LINE) hay vượt số thiếu chung (POOL). */
   scope: 'LINE' | 'POOL';
 }
 
-/**
- * Đặt xưởng không được vượt phần còn đặt được (`orderableLinesOf`): mỗi dòng đơn <= `orderable` của nó, và các dòng của một yêu cầu
- * cùng (địa điểm, SKU) cộng lại <= số thiếu chung. `requested` cộng theo dòng đơn; dòng không có trong `lines` hoặc `orderable` null thì bỏ qua.
- * Trả chỗ vượt đầu tiên hoặc null.
- */
+/** Kiểm số đặt xưởng không vượt phần còn đặt được. */
 export function productionExcessOf(
   requested: readonly { orderItemId: string | null; quantity: number }[],
   lines: ReadonlyMap<

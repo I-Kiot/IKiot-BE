@@ -31,7 +31,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  /** Kiểm tra số điện thoại / tên shop còn trống, cho form đăng ký. Public vì được hỏi trước khi có tài khoản. */
+  /** Kiểm số điện thoại / tên shop còn trống cho form đăng ký. */
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('check-availability')

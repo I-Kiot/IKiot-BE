@@ -21,7 +21,7 @@ import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Không có prefix ở cấp class: route trộn `/subscription/*` với `/webhook/sepay`, như router cũ. Mua, nâng cấp, gia hạn tiêu tiền của tenant nên cần `subscriptions:manage`; trước 2026-08-20 các route này không có @Permissions nên mọi nhân viên đều bắt đầu nâng cấp trả phí được.
+// Controller gói dịch vụ; mua, nâng cấp, gia hạn cần `subscriptions:manage`.
 @ApiTags('subscriptions')
 @Controller()
 export class SubscriptionController {
@@ -48,7 +48,7 @@ export class SubscriptionController {
     return this.subscriptionService.checkTrialStatus(requireTenantId(user));
   }
 
-  /** Gói hiện tại, cho màn billing. `status` trả lời "còn hiệu lực và còn bao lâu"; route này trả lời "gói nào, với điều khoản gì". */
+  /** Gói hiện tại cho màn billing. */
   @ApiBearerAuth('bearer')
   @Permissions('subscriptions', 'read')
   @Get('subscription/current')
@@ -106,7 +106,7 @@ export class SubscriptionController {
     return { message: `Successfully upgraded to ${dto.planCode}`, data };
   }
 
-  // SePay gọi khi tiền về tài khoản của iKiot. Luôn trả 200 để SePay không retry vào lỗi của ta, trừ API key sai: service ném 401.
+  // Webhook SePay cho gói, luôn trả 200 trừ API key sai.
   @RawResponse()
   @Public()
   @HttpCode(HttpStatus.OK)

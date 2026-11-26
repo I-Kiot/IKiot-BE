@@ -47,12 +47,7 @@ export interface ImportResult {
   data: { productCount: number; itemCount: number; productIds: string[] };
 }
 
-/**
- * Nhập hàng hoá từ Excel. Cả file đúng mới tạo, sai một dòng là không tạo gì: một nửa danh mục
- * đã vào, nửa kia không, thì người dùng phải tự dò xem dòng nào đã có để khỏi nhập trùng.
- * Việc tạo đi qua `ProductService.createMany` - cùng đường với form "Thêm hàng hóa", nên quota,
- * mã tự sinh, SKU trùng, danh mục/thương hiệu/NCC đều được kiểm tra lại ở đó.
- */
+/** Nhập hàng hoá từ Excel: cả file đúng mới tạo, đi qua `ProductService.createMany`. */
 @Injectable()
 export class ProductImportService {
   constructor(
@@ -60,7 +55,7 @@ export class ProductImportService {
     private readonly products: ProductService,
   ) {}
 
-  // ─── Template ──────────────────────────────────────────────────────────────
+  // ─── File mẫu ───
 
   /** Template theo cửa hàng: dropdown danh mục, thương hiệu, NCC lấy từ dữ liệu hiện có. */
   async buildTemplate(tenantId: string): Promise<Buffer> {
@@ -271,8 +266,7 @@ export class ProductImportService {
       }
     }
 
-    // Hai cột tên dễ bị hiểu là "điền một trong hai": thực ra mỗi dòng luôn tạo một mặt hàng, và
-    // "Tên hàng hóa" chỉ quyết định mặt hàng đó thuộc hàng hóa nào.
+    // Mỗi dòng tạo một mặt hàng; "Tên hàng hóa" quyết định nó thuộc hàng hoá nào.
     row++;
     sheet.mergeCells(row, 1, row, 6);
     sheet.getCell(row, 1).value =
@@ -367,7 +361,7 @@ export class ProductImportService {
     }
   }
 
-  // ─── Import ────────────────────────────────────────────────────────────────
+  // ─── Nhập ───
 
   async import(
     tenantId: string,
@@ -380,8 +374,7 @@ export class ProductImportService {
     const { products, errors } = parseImportRows(rows, lookups);
     if (errors.length > 0) throw this.rowsInvalid(errors);
 
-    // Lưới an toàn: bộ đọc đã kiểm hết, nhưng DTO của form là luật gốc - một luật thêm vào DTO
-    // sau này phải chặn được cả file import mà không ai nhớ sửa bộ đọc.
+    // Kiểm lại bằng DTO của form.
     const dtoErrors: ImportError[] = [];
     for (const product of products) {
       const instance = plainToInstance(CreateProductDto, product.dto);

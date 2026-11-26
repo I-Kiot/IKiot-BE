@@ -1,6 +1,6 @@
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Mọi cột Tenant trừ `bankingSepayWebhookApiKey`: key là bí mật dùng chung để định danh shop với webhook thanh toán, ai có key có thể chốt đơn của shop. Prisma không có `select: false`, nên liệt kê cột an toàn thay vì loại trừ key; cột thêm sau này sẽ bị ẩn tới khi được thêm vào đây. */
+/** Select Tenant không có key webhook. */
 export const TENANT_SELECT = {
   id: true,
   name: true,
@@ -17,7 +17,7 @@ export const TENANT_SELECT = {
   updatedAt: true,
 } as const satisfies Prisma.TenantSelect;
 
-/** Liên kết qua webhook key riêng của shop, hoặc qua việc sync thấy tài khoản trên SePay của nền tảng. Quy tắc đứng sau mọi `hasSepayKey`. */
+/** Shop đã liên kết SePay chưa. */
 export function isSepayLinked(tenant: {
   bankingSepayWebhookApiKey: string | null;
   bankingSepayLinkedAt: Date | null;
@@ -33,7 +33,7 @@ export interface FlatTenantBanking {
   bankingAccountName?: string | null;
 }
 
-/** Gom ba cột `banking*` phẳng thành object `banking` lồng. Chiều ghi vốn đã lồng; chiều đọc trả phẳng là lý do màn cài đặt đọc `tenant.banking.bankName` ra `undefined`. Cùng cách với `withNestedProfile` của nhân viên. */
+/** Gom cột `banking*` thành object `banking`. */
 export function withNestedBanking<T extends FlatTenantBanking>(
   tenant: T,
 ): Omit<T, keyof FlatTenantBanking> & {

@@ -36,7 +36,7 @@ export class ProductionLineAttributeDto {
   value: string;
 }
 
-/** Một dòng: SKU và số lượng cần làm. `orderItemId` gắn dòng với dòng đơn nó làm cho: thực tế bắt buộc với hàng tuỳ chỉnh (danh sách sản xuất truyền vào), không bắt buộc với hàng chuẩn. */
+/** Một dòng YCSX: SKU, số lượng, dòng đơn nó làm cho (nếu có). */
 export class ProductionRequestLineDto {
   @IsUUID()
   productItemId: string;
@@ -54,7 +54,7 @@ export class ProductionRequestLineDto {
   @IsString()
   note?: string;
 
-  /** Thuộc tính khác với SKU gốc (2026-10-16). Dòng khi đó dành cho SKU có đúng các giá trị này: SKU anh em có sẵn, hoặc SKU mới sao từ SKU gốc. Không dùng cho dòng làm cho đơn. */
+  /** Giá trị thuộc tính khác SKU gốc; không dùng cho dòng làm cho đơn. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -196,12 +196,12 @@ export class QueryProductionListDto extends PaginationQueryDto {
   @Transform(trim)
   search?: string;
 
-  /** Chỉ một SKU – thông báo thiếu hàng dẫn tới đây (`production-request.templates.ts`). Thu hẹp thêm `search` khi gửi cả hai. */
+  /** Lọc theo một SKU. */
   @IsOptional()
   @IsUUID()
   productItemId?: string;
 
-  /** Chỉ dòng còn thiếu sau tồn và mọi yêu cầu đang mở. Mặc định false: đặt được mọi thứ, dòng thiếu lên trước. */
+  /** Chỉ dòng còn thiếu. */
   @BooleanQuery()
   onlyShort?: boolean;
 
@@ -221,7 +221,7 @@ export class ProductionDeliveryLineDto {
   quantity: number;
 }
 
-/** Nhân viên xưởng viết. Không đụng tồn: địa điểm nhận đếm hàng và xác nhận (`POST /production-deliveries/:id/receive`). `code`, `status` và người do server quyết. */
+/** Body phiếu giao của xưởng; không đụng tồn. */
 export class CreateProductionDeliveryDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'Phiếu giao phải có ít nhất một mặt hàng' })
@@ -242,7 +242,7 @@ export class CancelProductionDeliveryDto {
   reason: string;
 }
 
-/** Xưởng huỷ một YCSX: bắt buộc lý do - ghi vào ghi chú YCSX và báo cho shop, là dấu vết duy nhất vì sao hàng không về. */
+/** Lý do xưởng huỷ YCSX, bắt buộc. */
 export class CancelProductionRequestByWorkshopDto {
   @IsString()
   @Transform(trim)

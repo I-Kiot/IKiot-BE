@@ -6,11 +6,7 @@ import {
 } from '../../common/constants/payment-method';
 import { toDong, type MoneyLike } from '../../common/utils/money';
 
-/**
- * MỘT quy tắc duy nhất cho `orders.payment_status`: suy ra từ các dòng `Payment` PAID và tổng đơn. Không nơi nào tự đặt trạng thái thanh toán; ghi một khoản tiền xong thì gọi `syncOrderPaymentStatus`.
- * Thuần (không đọc DB, không DI) để `pickupAmountDue`, `amountStillDueOf`, `depositHeld`, `resolveRefund` và chỗ thu tiền lúc giao đều là lớp mỏng trên cùng hàm này.
- * Mọi số là số nguyên đồng (`toDong`), không so sánh số thực.
- */
+/** Quy tắc suy ra trạng thái thanh toán của đơn từ các khoản PAID. */
 
 export interface PaymentRow {
   kind: string;
@@ -90,10 +86,7 @@ export function derivePaymentStatus(
   };
 }
 
-/**
- * Các khoản của đơn như quy tắc nhìn thấy: dòng Payment thật, cộng một khoản cọc PAID giả khi đơn có `depositAmount` mà không có dòng Payment cọc nào (đơn lập trước khi cọc có Payment, dữ liệu mẫu). Đơn mới luôn có dòng cọc thật nên nhánh này không chạy.
- * Một chỗ duy nhất cho khoản giả đó: `syncOrderPaymentStatus` và `amountStillDueOf` cùng đi qua đây nên không thể lệch nhau.
- */
+/** Các khoản của đơn, thêm khoản cọc giả cho đơn cũ chưa có dòng cọc. */
 export function paymentRowsOf(order: {
   depositAmount: MoneyLike;
   payments: readonly PaymentRow[];
@@ -114,11 +107,7 @@ export function paymentRowsOf(order: {
   return rows;
 }
 
-/**
- * Đọc các khoản của đơn và tổng đơn TRONG transaction, suy ra trạng thái thanh toán, ghi vào `orders.payment_status` nếu khác, rồi trả các số đã suy ra.
- * Gọi sau MỌI lần ghi / đổi một `Payment` (và khi tổng đơn đổi); lệnh chiếm trạng thái đơn chỉ còn ghi `status` / `updatedAt`. Không ghi khi không đổi để không làm nhảy `updatedAt` vô cớ.
- * Đơn quầy chưa có dòng Payment (tới Phase 3) không được gọi hàm này: nó sẽ đọc ra UNPAID.
- */
+/** Tính lại và ghi trạng thái thanh toán của đơn. */
 export async function syncOrderPaymentStatus(
   tx: Prisma.TransactionClient,
   orderId: string,

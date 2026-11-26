@@ -29,9 +29,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { ShipmentChanges } from './shipments.change-template';
 
-/**
- * Lấy hàng & giao hàng (contract §4). Route dưới đây **cố ý không có `@Permissions`**: guard chạy trước khi biết đơn / shipment của ai, nên quyền kiểm trong service: `assertOrderStepAccess` (bước của đơn), `visibleWhere` (xem), `deliveryActorAccess` (lấy hàng / giao xong / thu tiền / tạo lại mã QR).
- */
+/** Controller giao hàng; quyền kiểm trong service. */
 @ApiTags('shipments')
 @ApiBearerAuth('bearer')
 @Controller('shipments')
@@ -41,32 +39,32 @@ export class ShipmentController {
     private readonly delivery: ShipmentDeliveryService,
   ) {}
 
-  /** C-2 + C-8: "Giao cho vận chuyển". EXTERNAL: đơn PACKED → PICKED_UP ngay. INTERNAL: chỉ gán shipper (shipment CREATED), đơn vẫn PACKED tới khi shipper `pick-up`. */
+  /** Giao cho vận chuyển: ĐVVC ngoài thì PICKED_UP ngay, nội bộ thì chỉ gán shipper. */
   @Post()
   @EmitsChange(ShipmentChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateShipmentDto) {
     return this.service.create(user, requireTenantId(user), dto);
   }
 
-  /** C-3: danh sách shipment người gọi được xem – chủ shop, người phụ trách đơn, shipper, hoặc `shipments:read` tại kho xuất / chi nhánh bán. */
+  /** Danh sách lần giao người gọi được xem. */
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryShipmentDto) {
     return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  /** C-9: người làm shipper được cho một đơn (ô chọn shipper). Phải khai báo TRÊN `GET :id`, nếu không "drivers" bị hiểu là một id. */
+  /** Người làm shipper được cho một đơn. */
   @Get('drivers')
   listDrivers(@CurrentUser() user: AuthUser, @Query() query: QueryDriversDto) {
     return this.service.listDrivers(user, requireTenantId(user), query.orderId);
   }
 
-  /** C-5: các lần giao chưa kết thúc mà người gọi là shipper. Phải khai báo TRÊN `GET :id`, như `drivers`. */
+  /** Các lần giao đang mở của người gọi. */
   @Get('mine')
   listMine(@CurrentUser() user: AuthUser) {
     return this.delivery.listMine(user, requireTenantId(user));
   }
 
-  /** Lịch sử giao của tôi: mọi trạng thái, lọc theo ngày giao, kèm số liệu từng trạng thái và tiền đã thu. Phải khai báo TRÊN `GET :id`. */
+  /** Lịch sử giao của tôi. */
   @Get('mine/history')
   listMyHistory(
     @CurrentUser() user: AuthUser,
@@ -75,7 +73,7 @@ export class ShipmentController {
     return this.delivery.listMyHistory(user, requireTenantId(user), query);
   }
 
-  /** Shipper xác nhận đã lấy hàng (chốt 2026-10-15): shipment CREATED → PICKED_UP, đơn PACKED → PICKED_UP. Shipper, người phụ trách đơn, chủ shop. */
+  /** Shipper xác nhận đã lấy hàng. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pick-up')
   @EmitsChange(ShipmentChanges.pickedUp)
@@ -87,7 +85,7 @@ export class ShipmentController {
     return this.service.pickUp(user, requireTenantId(user), id, dto);
   }
 
-  /** C-5: giao thành công – ảnh bằng chứng + thu tiền (tiền mặt / QR / đã cọc đủ). Shipper, người phụ trách đơn, chủ shop. */
+  /** Giao thành công: ảnh và thu tiền. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/deliver')
   @EmitsChange(ShipmentChanges.delivered)
@@ -111,7 +109,7 @@ export class ShipmentController {
     return this.delivery.payCash(user, requireTenantId(user), id, dto);
   }
 
-  /** Mã QR đã hết hạn mà khách vẫn muốn chuyển khoản: tạo lại khoản QR mới (mã mới, hạn mới). Còn hạn thì trả nguyên chi tiết. Cùng nhóm người như `deliver`. */
+  /** Tạo lại mã QR đã hết hạn. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/reissue-qr')
   @EmitsChange(ShipmentChanges.qrReissued)
@@ -131,7 +129,7 @@ export class ShipmentController {
     return this.service.findOne(user, requireTenantId(user), id);
   }
 
-  /** C-3: ghi nhật trình "Đang đi giao" – chủ shop, người phụ trách, shipper, hoặc `shipments:update` tại kho của fulfillment. */
+  /** Ghi nhật trình "Đang đi giao". */
   @Post(':id/events')
   @EmitsChange(ShipmentChanges.eventAdded)
   addEvent(

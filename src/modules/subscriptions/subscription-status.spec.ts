@@ -22,7 +22,7 @@ function term(overrides: {
   };
 }
 
-// Bộ quy tắc này từng có hai bản (lười ở service, theo lô ở cron) và đã lệch nhau, nên đáng ghim hành vi của hàm duy nhất hiện nay.
+// Kiểm quy tắc trạng thái gói.
 describe('nextSubscriptionStatus', () => {
   it('leaves a trial alone until its end date passes', () => {
     expect(

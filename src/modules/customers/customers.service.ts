@@ -25,7 +25,7 @@ function normalizePhone(phone?: string | null): string | undefined {
   return digits.length > 0 ? digits : undefined;
 }
 
-/** Port thật từ CustomerService. Xoá là xoá mềm (`isDeleted`) vì đơn hàng và log khuyến mãi trỏ tới dòng này, mỗi giao dịch phải truy ngược được; mọi lần đọc đều lọc bỏ. */
+/** Service khách hàng; xoá là xoá mềm. */
 @Injectable()
 export class CustomerService {
   constructor(private readonly prisma: PrismaService) {}
@@ -52,7 +52,7 @@ export class CustomerService {
     });
   }
 
-  /** Khách cho form đơn nhập tay. Một số điện thoại là một khách đang hoạt động: số đã có trả về khách đó, không ghi đè tên và địa chỉ (đơn mang thông tin người nhận riêng); chưa có thì tạo mới như `POST /customers`. */
+  /** Khách cho đơn nhập tay: SĐT đã có thì dùng khách đó, chưa có thì tạo. */
   async findOrCreateForOrder(
     tenantId: string,
     input: { name: string; phone?: string; address?: string },
@@ -73,7 +73,7 @@ export class CustomerService {
     return created.id;
   }
 
-  /** Danh sách khách, mỗi dòng kèm lịch sử đơn qua relation (không gom trên bộ nhớ như bản cũ), chỉ lấy 10 đơn gần nhất để khách mua nhiều không làm chậm trang. */
+  /** Danh sách khách kèm 10 đơn gần nhất. */
   async findAll(tenantId: string, query: QueryCustomerDto) {
     const where: Prisma.CustomerWhereInput = { tenantId, isDeleted: false };
 
@@ -180,7 +180,7 @@ export class CustomerService {
     return { success: true };
   }
 
-  /** Xoá mềm hàng loạt, lọc theo tenant ngay trong câu lệnh: id của tenant khác sẽ không khớp, và số trả về là số khách thuộc tenant này. */
+  /** Xoá mềm nhiều khách, lọc theo tenant. */
   async removeMany(tenantId: string, ids: string[]) {
     const result = await this.prisma.customer.updateMany({
       where: { tenantId, id: { in: ids }, isDeleted: false },
@@ -201,7 +201,7 @@ export class CustomerService {
     return customer;
   }
 
-  /** Một số điện thoại, một khách: POS tra khách theo SĐT nên hai dòng trùng số sẽ làm tra cứu mơ hồ. Dòng đã xoá mềm không tính. */
+  /** Một SĐT một khách. */
   private async assertPhoneIsFree(
     tenantId: string,
     phone: string,
@@ -224,7 +224,7 @@ export class CustomerService {
     }
   }
 
-  /** `KH000001`, `KH000002`, ... - số kế tiếp sau mã lớn nhất đã sinh trong tenant. Mã nhập tay có dạng khác bị bỏ qua; nếu trùng (hoặc có insert đồng thời) thì unique index chặn và thử số tiếp theo. */
+  /** Sinh mã khách `KH000001` kế tiếp. */
   private async nextCustomerCode(tenantId: string): Promise<string> {
     const rows = await this.prisma.customer.findMany({
       where: { tenantId, customerCode: { startsWith: CODE_PREFIX } },
@@ -249,7 +249,7 @@ export class CustomerService {
     });
   }
 
-  /** Mã khách là thứ nhân viên gõ để tìm khách, nên `@@unique([tenantId, customerCode])` ép tính duy nhất (cột nullable nên khách nào cũng có thể không có mã); check này chạy trước chỉ để báo đúng mã bị trùng. */
+  /** Mã khách không được trùng. */
   private async assertCodeIsFree(
     tenantId: string,
     customerCode: string,

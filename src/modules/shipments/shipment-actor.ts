@@ -11,15 +11,13 @@ import {
   type OrderStepAccess,
 } from '../orders/order-handler';
 
-// Kiểm người thao tác trên lần giao đang trên đường, dùng chung cho nhật trình / giao không thành (ShipmentService, C-3)
-// và giao xong / thu tiền (ShipmentDeliveryService, C-5).
+// Kiểm người thao tác trên lần giao đang trên đường.
 
-/** Lần giao đang trên đường (đơn đã SHIPPING): chỉ lúc này mới ghi nhật trình, báo thất bại, hay giao xong. */
+/** Điều kiện lần giao đang trên đường. */
 export const ON_THE_ROAD_STATUSES: readonly string[] = [
   ShipmentStatus.IN_TRANSIT,
   ShipmentStatus.OUT_FOR_DELIVERY,
-  // Lần giao thất bại vẫn đang trên đường (hàng chưa về shop): shipper còn ghi nhật trình mới hoặc giao lại.
-  // Chỉ khi shop xác nhận hàng đã hoàn về thì mới kết thúc.
+  // Lần giao thất bại vẫn tính là đang trên đường.
   ShipmentStatus.FAILED,
 ];
 
@@ -51,9 +49,7 @@ export function trackingActorAccess(
   });
 }
 
-/**
- * Ai được xác nhận lấy hàng / giao xong / thu tiền (C-5): shipper của lần giao, người phụ trách đơn, chủ shop. Không có đường “có quyền trong role”: người khác không xác nhận hộ việc khách đã nhận hàng và trả tiền.
- */
+/** Ai được xác nhận lấy hàng, giao xong, thu tiền. */
 export function deliveryActorAccess(
   user: AuthUser,
   shipment: ShipmentActorFacts,
@@ -80,9 +76,7 @@ export function deliveryActorAccess(
   });
 }
 
-/**
- * Điều kiện ghi khi lần giao đang trên đường: lần giao vẫn đang đi, đơn vẫn SHIPPING, và người được nhờ vẫn là người phụ trách / shipper lúc ghi. Hai người cùng bấm (hoặc đổi shipper đúng lúc bấm) thì câu ghi không khớp dòng nào.
- */
+/** Điều kiện ghi khi lần giao đang trên đường. */
 export function onTheRoadWhere(
   shipmentId: string,
   access: ShipmentActorAccess,

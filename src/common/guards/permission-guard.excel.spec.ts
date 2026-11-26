@@ -14,7 +14,7 @@ const user = (systemRole: string, permissions: string[] = []): AuthUser =>
     permissions: new Set(permissions),
   }) as unknown as AuthUser;
 
-// Excel sheet "Common" - can (UTC017-UTC023).
+// Sheet Excel "Common" - can (UTC017-UTC023).
 describe('Excel sheet Common - can', () => {
   it('UTC017: platform admin is always allowed', () => {
     expect(can(user(SystemRole.ADMIN), 'orders', 'delete')).toBe(true);
@@ -43,7 +43,7 @@ describe('Excel sheet Common - can', () => {
   });
 });
 
-// Excel sheet "Common" - PermissionsGuard.canActivate (UTC024-UTC029).
+// Sheet Excel "Common" - PermissionsGuard.canActivate (UTC024-UTC029).
 describe('Excel sheet Common - canActivate', () => {
   const guard = new PermissionsGuard(new Reflector());
 

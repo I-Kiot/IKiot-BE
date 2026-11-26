@@ -1,19 +1,4 @@
-// Dữ liệu thử màn Đóng hàng (dev only).
-//
-// Chạy SAU chuỗi seed của tài liệu test (docs/tai-khoan-test-hanh-trinh.md):
-//
-//   npx prisma db seed
-//   npx tsx prisma/seed-account-role.ts
-//   npx tsx prisma/seed-furniture-test.ts
-//   npx tsx prisma/seed-c6-pack.ts
-//
-// Tạo trong shop "Nội thất Demo" (chủ shop 0981189856):
-//   - kho riêng "Kho test đóng gói (C-6)" với tồn riêng (nhập bằng openLot, nên stock = Σ lô và có dòng
-//     sổ kho). Kho riêng để các đơn ở đây không ăn vào tồn CN Hà Nội mà kịch bản K1–K11 dựa vào;
-//   - 2 kiện khai báo cho sofa SOFA-MILAN-L (để thấy 1 đơn vị sinh 2 thùng) - áp cho SKU ở mọi nơi;
-//   - 6 đơn CONFIRMED mã C6-TEST-01…06, mỗi đơn là một kịch bản (xem SCENARIOS), mỗi đơn kèm hoá đơn
-//     PENDING như đơn thật (InvoiceService.ensurePending).
-// Idempotent: kho tìm theo tên, tồn chỉ nhập khi SKU chưa có dòng tồn ở kho đó, đơn trùng mã thì bỏ qua.
+// Dữ liệu thử màn Đóng hàng (dev): kho riêng, kiện khai báo, 6 đơn CONFIRMED.
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '../generated/prisma/client';
@@ -31,7 +16,7 @@ import { OrderStatus } from '../src/common/constants/order-status';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
-// openLot và ensurePending chỉ dùng transaction client được truyền vào - không cần Nest, không gửi thông báo.
+// Chỉ dùng transaction client truyền vào.
 const inventory = new InventoryService(
   prisma as unknown as PrismaService,
   {} as NotificationService,

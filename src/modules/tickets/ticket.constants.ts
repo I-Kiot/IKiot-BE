@@ -1,4 +1,4 @@
-/** Port từ enum của model Ticket. `RESOLVED` giữ lại dù không route nào set: giá trị này có trong dữ liệu production và admin UI lọc theo nó, bỏ đi là đổi schema. */
+/** Trạng thái ticket. */
 export const TicketStatus = {
   OPEN: 'OPEN',
   IN_PROGRESS: 'IN_PROGRESS',

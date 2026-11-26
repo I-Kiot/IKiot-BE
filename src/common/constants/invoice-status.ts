@@ -1,4 +1,4 @@
-/** `Invoice.status`. PENDING tới khi đơn COMPLETED; CANCELLED chỉ từ PENDING (hoá đơn ISSUED được sửa bằng ADJUSTMENT, không bao giờ huỷ ngược). */
+/** Trạng thái hoá đơn: PENDING tới khi đơn COMPLETED, chỉ huỷ được khi còn PENDING. */
 export const InvoiceStatus = {
   PENDING: 'PENDING',
   ISSUED: 'ISSUED',

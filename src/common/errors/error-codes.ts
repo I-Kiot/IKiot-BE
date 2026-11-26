@@ -1,8 +1,4 @@
-/**
- * Mã lỗi ổn định của API. Client KHÔNG được rẽ nhánh theo `message`, vì câu chữ có thể đổi. Mọi `HttpException` phải mang `code` làm key đầu của body; mỗi mã là một key riêng, nên dùng mã chưa khai báo sẽ lỗi biên dịch.
- *
- * Chỉ THÊM mã, không đổi tên: đổi tên là breaking change với client.
- */
+/** Mã lỗi ổn định của API; client rẽ nhánh theo mã, chỉ thêm mã mới, không đổi tên. */
 export const ErrorCode = {
   ACCOUNT_HAS_NO_BRANCH: 'ACCOUNT_HAS_NO_BRANCH',
   ACCOUNT_HAS_NO_LOCATION: 'ACCOUNT_HAS_NO_LOCATION',
@@ -154,15 +150,15 @@ export const ErrorCode = {
   INVENTORY_NOT_FOUND: 'INVENTORY_NOT_FOUND',
   /** Gỡ món khỏi địa điểm khi còn hàng, kể cả hàng hỏng. */
   INVENTORY_STILL_HAS_STOCK: 'INVENTORY_STILL_HAS_STOCK',
-  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
+  /** @deprecated Không còn dùng (đã bỏ giữ hàng), giữ vì mã không được xoá. */
   INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
-  /** Tổng lot tại địa điểm không khớp số đang xuất: Σ remaining đã lệch khỏi `stock`. Lỗi dữ liệu, không phải lỗi người dùng. */
+  /** Tổng lô tại địa điểm lệch với `stock`: lỗi dữ liệu. */
   INVENTORY_LOT_SHORTAGE: 'INVENTORY_LOT_SHORTAGE',
-  /** Xuất hoặc nhả nhiều hơn số đang khoá cho đơn tại địa điểm đó (từ 2026-10-04): đơn chưa được đóng gói ở đó, hoặc khoá đã xuất/nhả rồi. */
+  /** Xuất hoặc nhả nhiều hơn số đang khoá cho đơn tại địa điểm. */
   INVENTORY_LOCK_MISMATCH: 'INVENTORY_LOCK_MISMATCH',
   /** Hàng đặt riêng chưa có lot được tạo cho dòng đơn ở địa điểm này. */
   INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
-  /** @deprecated Bỏ kho hàng hỏng riêng (2026-11-26), hàng hỏng là lô `isSellable = false`. Giữ lại vì mã chỉ được thêm, không xoá. */
+  /** @deprecated Không còn dùng (bỏ kho hàng hỏng riêng), giữ vì mã không được xoá. */
   LOCATION_NOT_SELLABLE: 'LOCATION_NOT_SELLABLE',
   /** @deprecated Bỏ `damagedLocationId` (2026-11-26). Giữ lại vì mã chỉ được thêm, không xoá. */
   LOCATION_DAMAGED_INVALID: 'LOCATION_DAMAGED_INVALID',
@@ -172,9 +168,9 @@ export const ErrorCode = {
   INSUFFICIENT_DAMAGED_STOCK: 'INSUFFICIENT_DAMAGED_STOCK',
   /** Nhân viên chỉ đánh dấu hỏng / sửa / huỷ hàng tại nơi mình làm việc. */
   INVENTORY_LOCATION_DENIED: 'INVENTORY_LOCATION_DENIED',
-  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
+  /** @deprecated Không còn dùng (đã bỏ giữ hàng), giữ vì mã không được xoá. */
   RESERVATION_NOT_ACTIVE: 'RESERVATION_NOT_ACTIVE',
-  /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
+  /** @deprecated Không còn dùng (đã bỏ giữ hàng), giữ vì mã không được xoá. */
   RESERVATION_NOT_FOUND: 'RESERVATION_NOT_FOUND',
 
   IMPORT_PRICE_ABOVE_RETAIL: 'IMPORT_PRICE_ABOVE_RETAIL',
@@ -243,7 +239,7 @@ export const ErrorCode = {
   /** Mọi đơn sau DRAFT / PENDING_CONFIRMATION phải có người phụ trách. */
   ORDER_ASSIGNEE_REQUIRED: 'ORDER_ASSIGNEE_REQUIRED',
   ORDER_ASSIGNEE_INVALID: 'ORDER_ASSIGNEE_INVALID',
-  /** Nhân viên phụ trách đơn phải làm việc tại địa điểm bán của đơn, không thì họ không xem được đơn. Chủ shop không bị giới hạn. */
+  /** Người phụ trách đơn phải làm việc tại địa điểm bán của đơn. */
   ORDER_ASSIGNEE_WRONG_LOCATION: 'ORDER_ASSIGNEE_WRONG_LOCATION',
   /** Đã đóng gói và bàn giao - đường quay lại duy nhất là OrderReturn. */
   ORDER_CANCEL_NOT_ALLOWED: 'ORDER_CANCEL_NOT_ALLOWED',
@@ -268,7 +264,7 @@ export const ErrorCode = {
   PRODUCTION_REQUEST_NOT_FOUND: 'PRODUCTION_REQUEST_NOT_FOUND',
   PRODUCTION_REQUEST_STATUS_INVALID: 'PRODUCTION_REQUEST_STATUS_INVALID',
   SUPPLIER_NOT_WORKSHOP: 'SUPPLIER_NOT_WORKSHOP',
-  /** `type` của nhà cung cấp không đổi được khi đã có yêu cầu sản xuất hoặc phiếu nhập gắn với họ - chứng từ sẽ không còn khớp luồng đã tạo ra nó. */
+  /** Không đổi loại nhà cung cấp khi đã có YCSX hoặc phiếu nhập. */
   SUPPLIER_TYPE_LOCKED: 'SUPPLIER_TYPE_LOCKED',
   /** Cùng một SKU (cùng dòng đơn) xuất hiện hai lần trong một yêu cầu. */
   PRODUCTION_REQUEST_DUPLICATE_ITEM: 'PRODUCTION_REQUEST_DUPLICATE_ITEM',
@@ -314,10 +310,10 @@ export const ErrorCode = {
   PRODUCTION_DELIVERY_CODE_UNAVAILABLE: 'PRODUCTION_DELIVERY_CODE_UNAVAILABLE',
 
   FULFILLMENT_ALREADY_EXISTS: 'FULFILLMENT_ALREADY_EXISTS',
-  /** Không còn được ném: đóng gói nay trả ORDER_STEP_DENIED, lỗi chung của mọi bước hành trình. Giữ lại vì mã chỉ được thêm. */
+  /** Không còn dùng, đóng gói trả ORDER_STEP_DENIED; giữ vì mã không được xoá. */
   FULFILLMENT_LOCATION_DENIED: 'FULFILLMENT_LOCATION_DENIED',
   FULFILLMENT_NOT_FOUND: 'FULFILLMENT_NOT_FOUND',
-  /** Không còn được ném: tách thành FULFILLMENT_MULTIPLE_SOURCES / _LINE_NO_SOURCE / _NOTHING_TO_PACK để client biết phải làm gì. Giữ lại vì mã chỉ được thêm. */
+  /** Không còn dùng, đã tách thành các mã FULFILLMENT_* riêng; giữ vì mã không được xoá. */
   FULFILLMENT_ORDER_NOT_READY: 'FULFILLMENT_ORDER_NOT_READY',
   /** Các dòng của đơn xuất từ nhiều hơn một địa điểm - chuyển hàng về một chỗ trước khi đóng gói. */
   FULFILLMENT_MULTIPLE_SOURCES: 'FULFILLMENT_MULTIPLE_SOURCES',
@@ -416,19 +412,19 @@ export const ErrorCode = {
   IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST:
     'IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST',
   SHIPMENT_DRIVER_REQUIRED: 'SHIPMENT_DRIVER_REQUIRED',
-  /** Tài xế được chỉ định không phải chủ shop, người phụ trách đơn, hoặc nhân viên đang hoạt động có quyền `shipments:deliver`. */
+  /** Tài xế không hợp lệ: phải là chủ shop, người phụ trách đơn hoặc nhân viên có quyền giao hàng. */
   SHIPMENT_DRIVER_INVALID: 'SHIPMENT_DRIVER_INVALID',
   /** Chuyến giao bên ngoài (đơn vị vận chuyển thứ ba) không có tài xế của shop. */
   SHIPMENT_DRIVER_NOT_ALLOWED: 'SHIPMENT_DRIVER_NOT_ALLOWED',
-  /** Các bước hành trình (đóng gói, bàn giao, đổi tài xế, giao) mở cho chủ shop, người phụ trách đơn, hoặc người có quyền của bước đó tại địa điểm đó; ngoài ra bị từ chối. */
+  /** Không có quyền làm bước hành trình này tại địa điểm này. */
   ORDER_STEP_DENIED: 'ORDER_STEP_DENIED',
   SHIPMENT_ORDER_NOT_PACKED: 'SHIPMENT_ORDER_NOT_PACKED',
   SHIPMENT_ORDER_NOT_SHIPPING: 'SHIPMENT_ORDER_NOT_SHIPPING',
-  /** Xác nhận đã giao chỉ dành cho shipper nội bộ; giao qua đơn vị vận chuyển ngoài được báo tự động (C-4, sau này). */
+  /** Chỉ shipper nội bộ được xác nhận đã giao. */
   SHIPMENT_DELIVER_INTERNAL_ONLY: 'SHIPMENT_DELIVER_INTERNAL_ONLY',
-  /** Đơn đã có chuyến giao chưa kết thúc (đang chờ lấy hoặc đang trên đường) - bàn giao chỉ làm một chuyến mỗi lần; tải lại. Được bảo vệ bởi partial index `shipments_one_open_per_order`. */
+  /** Đơn đã có chuyến giao đang mở. */
   SHIPMENT_ALREADY_OPEN: 'SHIPMENT_ALREADY_OPEN',
-  /** "Khách trả tiền mặt" chỉ áp dụng khi còn số dư QR đang chờ chuyển khoản; không còn, hoặc tiền vừa về. */
+  /** Không còn khoản QR đang chờ để đổi sang tiền mặt. */
   ORDER_QR_PAYMENT_NOT_PENDING: 'ORDER_QR_PAYMENT_NOT_PENDING',
 
   /** Đơn đang giữ tiền cọc: người huỷ phải nói rõ hoàn lại bao nhiêu (0 = shop giữ lại). */
@@ -446,26 +442,26 @@ export const ErrorCode = {
   /** Giá trị thuộc tính được sửa trỏ tới một thuộc tính không có trên sản phẩm của SKU. */
   PRODUCT_ATTRIBUTE_NOT_FOUND: 'PRODUCT_ATTRIBUTE_NOT_FOUND',
   PRODUCT_ATTRIBUTE_VALUE_REQUIRED: 'PRODUCT_ATTRIBUTE_VALUE_REQUIRED',
-  /** Dòng sản xuất làm cho một dòng đơn không đổi được thuộc tính hay giá - dòng đơn đã quyết định sẽ làm gì. */
+  /** Dòng YCSX làm cho đơn không đổi được thuộc tính hay giá. */
   PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER:
     'PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER',
 
-  /** Thành phần combo không hợp lệ: rỗng, trùng nhau, chứa chính nó, vòng lặp, lồng quá `MAX_COMBO_DEPTH`, thành phần đã ngừng bán, hoặc gắn vào biến thể không phải COMBO. */
+  /** Thành phần combo không hợp lệ. */
   PRODUCT_COMBO_INVALID: 'PRODUCT_COMBO_INVALID',
   /** Biến thể (hoặc biến thể của sản phẩm) là thành phần của một combo vẫn đang bán; gỡ khỏi combo trước. */
   PRODUCT_ITEM_IN_COMBO: 'PRODUCT_ITEM_IN_COMBO',
 
   // ─── Nhập hàng hoá từ Excel ──────────────────────────────────────────────────
-  /** File tải lên không phải .xlsx đọc được, quá lớn, quá nhiều dòng, hoặc thiếu cột bắt buộc của file mẫu. `errors` liệt kê `{ row, column, message }`. */
+  /** File nhập không đọc được, quá lớn hoặc thiếu cột bắt buộc. */
   PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
-  /** Một hoặc nhiều dòng của file nhập không hợp lệ; không có gì được tạo. `errors` liệt kê `{ row, column, message }` bằng tiếng Việt để hiển thị. */
+  /** Có dòng không hợp lệ trong file nhập, không tạo gì. */
   PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
   /** Thành phần combo thuộc sản phẩm đã ngừng bán (khi lưu, hoặc khi bật lại combo). Thông báo nêu SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** Biến thể COMBO hoặc SERVICE bị đưa vào chứng từ kho hay địa điểm: chỉ PRODUCT mới giữ kho. */
   PRODUCT_ITEM_NOT_STOCKABLE: 'PRODUCT_ITEM_NOT_STOCKABLE',
 
-  /** `itemType` của biến thể khác `productType` của sản phẩm - mọi SKU của một sản phẩm đều mang loại của sản phẩm đó. */
+  /** Loại SKU khác loại sản phẩm. */
   PRODUCT_ITEM_TYPE_MISMATCH: 'PRODUCT_ITEM_TYPE_MISMATCH',
 
   TENANT_BANKING_ACCOUNT_TAKEN: 'TENANT_BANKING_ACCOUNT_TAKEN',
@@ -491,31 +487,31 @@ export const ErrorCode = {
   ORDER_PICKUP_ALREADY_COLLECTED: 'ORDER_PICKUP_ALREADY_COLLECTED',
   /** Tạo nhân viên không chọn chi nhánh, kho hay xưởng nào. */
   STAFF_WORKPLACE_REQUIRED: 'STAFF_WORKPLACE_REQUIRED',
-  /** Mã QR SePay đã hết hạn (15 phút từ lúc phát): không phát lại mã cũ. Chỉ `sepayQrView(..., 'issue')` / `assertQrPayable` ném; `errors.expiresAt` là hạn đã qua. Thu tiền mặt hoặc tạo mã mới. */
+  /** Mã QR SePay đã hết hạn, cần thu tiền mặt hoặc tạo mã mới. */
   QR_PAYMENT_EXPIRED: 'QR_PAYMENT_EXPIRED',
-  /** Đơn quầy đang chờ SePay không chuyển COMPLETED bằng PATCH status (đó là chốt đơn không có tiền): dùng `POST /orders/:id/pay-offline`. */
+  /** Đơn quầy chờ SePay không chốt bằng PATCH status, dùng `pay-offline`. */
   ORDER_USE_PAY_OFFLINE: 'ORDER_USE_PAY_OFFLINE',
-  /** Đơn đã có khoản thu (FULL / BALANCE) nên tổng tiền, phí giao, cọc và các dòng không sửa được nữa: huỷ rồi tạo lại, hay trả hàng. */
+  /** Đơn đã có khoản thu nên không sửa tiền và dòng hàng được nữa. */
   ORDER_EDIT_LOCKED_BY_PAYMENT: 'ORDER_EDIT_LOCKED_BY_PAYMENT',
   /** Tổng đơn mới thấp hơn số tiền shop đang giữ của đơn. Kèm `paid` và `grandTotal` ở thân lỗi. */
   ORDER_TOTAL_BELOW_PAID: 'ORDER_TOTAL_BELOW_PAID',
-  /** Phiếu kho vừa bị người khác đổi trạng thái (mở, chốt, xuất, nhận, duyệt, huỷ) giữa lúc đọc và ghi: tải lại. */
+  /** Phiếu kho vừa bị người khác đổi trạng thái, cần tải lại. */
   STOCK_MOVEMENT_CONFLICT: 'STOCK_MOVEMENT_CONFLICT',
 
   /** Không có giao dịch SePay đó trong shop (hoặc là của shop khác). */
   SEPAY_TRANSACTION_NOT_FOUND: 'SEPAY_TRANSACTION_NOT_FOUND',
   /** Giao dịch SePay đã được xử lý (`resolved_at` đã có): mỗi giao dịch chỉ xử lý một lần. */
   SEPAY_TRANSACTION_ALREADY_RESOLVED: 'SEPAY_TRANSACTION_ALREADY_RESOLVED',
-  /** `REFUNDED_MANUALLY` chỉ cho giao dịch đã ghi sổ thu chi `UNALLOCATED_RECEIPT` (tiền về không gắn được đơn): phần trả dư của đơn đã chốt hoàn bằng route hoàn tiền của đơn. */
+  /** Chỉ hoàn thủ công cho giao dịch tiền chưa phân bổ. */
   SEPAY_TRANSACTION_NOT_REFUNDABLE: 'SEPAY_TRANSACTION_NOT_REFUNDABLE',
 
-  /** Số hoàn vượt số tiền shop đang giữ của đơn (đã thu trừ hoàn trừ thối), hoặc vượt phần khách trả dư ở `refund-excess`. Thân lỗi có `held` / `max`. */
+  /** Số hoàn vượt số tiền shop đang giữ của đơn. */
   ORDER_REFUND_EXCEEDS_PAID: 'ORDER_REFUND_EXCEEDS_PAID',
-  /** Kiểm hàng trả của đơn đang giữ tiền phải nói rõ số hoàn (0 = shop giữ lại), vì mặc định nào cũng là chuyển tiền của khách mà chưa hỏi. */
+  /** Kiểm hàng trả của đơn đang giữ tiền phải nêu số hoàn. */
   ORDER_RETURN_REFUND_REQUIRED: 'ORDER_RETURN_REFUND_REQUIRED',
-  /** `POST /orders/:id/settle-held`: đơn không có tiền treo chưa quyết định (đơn chưa kết thúc, đã ghi thu nhập khác, hoặc đã hoàn / giữ hết). Cũng là kết quả của bấm lần hai. */
+  /** Đơn không có tiền treo cần quyết định. */
   ORDER_NO_HELD_MONEY: 'ORDER_NO_HELD_MONEY',
-  /** Đặt xưởng cho một dòng đơn vượt phần dòng đó còn thiếu (đã trừ số còn chờ ở các YCSX mở khác). Thân lỗi có `orderItemId`, `need`, `alreadyOpen`, `requested`. */
+  /** Số đặt xưởng vượt phần dòng đơn còn thiếu. */
   PRODUCTION_EXCEEDS_ORDER_SHORTAGE: 'PRODUCTION_EXCEEDS_ORDER_SHORTAGE',
 } as const;
 

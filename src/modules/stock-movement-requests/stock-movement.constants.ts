@@ -1,4 +1,4 @@
-/** Mục đích phiếu: `IMPORT` (từ NCC, loại duy nhất có công nợ), `EXPORT` (giữa địa điểm của mình), `RETURN` (chuyển ngược về kho, tách riêng để báo cáo), `ADJUST` (kiểm kê chỉnh số tại một địa điểm). */
+/** Loại phiếu kho: nhập, xuất, trả, kiểm kê. */
 export const MovementType = {
   IMPORT: 'IMPORT',
   EXPORT: 'EXPORT',
@@ -10,7 +10,7 @@ export type MovementType = (typeof MovementType)[keyof typeof MovementType];
 
 export const MOVEMENT_TYPES: readonly string[] = Object.values(MovementType);
 
-/** Vòng đời phiếu. `DRAFT → OPENING → CLOSED → IN_TRANSIT → RECEIVED` là luồng chuyển; IMPORT và ADJUST bắt đầu ở `PENDING` (không có gì để soạn), ADJUST kết thúc ở `COMPLETED` (không có gì về). */
+/** Trạng thái phiếu kho. */
 export const MovementStatus = {
   DRAFT: 'DRAFT',
   PENDING: 'PENDING',
@@ -28,7 +28,7 @@ export type MovementStatus =
 export const MOVEMENT_STATUSES: readonly string[] =
   Object.values(MovementStatus);
 
-/** Trạng thái phiếu còn chạm tới món của nó; `ProductService` dùng để từ chối ngừng sản phẩm đang nằm trong phiếu dở. */
+/** Trạng thái phiếu còn dở. */
 export const OPEN_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.DRAFT,
   MovementStatus.PENDING,

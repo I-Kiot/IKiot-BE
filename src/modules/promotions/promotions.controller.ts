@@ -24,7 +24,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Port từ PromotionController - cùng chín route và permission. `/candidates`, `/calculate`, `/apply` dùng POST vì mang theo giỏ hàng; chỉ `/apply` ghi dữ liệu. */
+/** Controller khuyến mãi. */
 @ApiTags('promotions')
 @ApiBearerAuth('bearer')
 @Controller('promotions')
@@ -43,7 +43,7 @@ export class PromotionController {
     return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  // Ba route giỏ hàng khai báo trên `:id`: là POST nên không thể thực sự trùng với `:id`, nhưng gom lại cho dễ đọc.
+  // Các route giỏ hàng.
 
   /** Liệt kê mọi ứng viên cho giỏ này, đủ hoặc không đủ điều kiện, kèm lý do. */
   @Permissions('promotions', 'calculate')

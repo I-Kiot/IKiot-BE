@@ -2,7 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { SubscriptionInvoiceService } from './subscription-invoices.service';
 import { SupplierService } from '../suppliers/suppliers.service';
 
-// Excel sheet "SubscriptionInvoices" - listAll (UTC004-UTC005).
+// Sheet Excel "SubscriptionInvoices" - listAll (UTC004-UTC005).
 describe('Excel sheet SubscriptionInvoices - listAll', () => {
   let prisma: { subscriptionInvoice: { findMany: jest.Mock } };
   let service: SubscriptionInvoiceService;
@@ -35,7 +35,7 @@ describe('Excel sheet SubscriptionInvoices - listAll', () => {
   });
 });
 
-// Excel sheet "Suppliers" - update (UTC015-UTC016).
+// Sheet Excel "Suppliers" - update (UTC015-UTC016).
 describe('Excel sheet Suppliers - update', () => {
   let prisma: any;
   let service: SupplierService;

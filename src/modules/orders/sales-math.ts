@@ -6,10 +6,7 @@ import {
 } from '../../common/utils/money';
 import { OrderLineType } from '../../common/constants/order-status';
 
-/**
- * Số học doanh thu của một đơn (thuần, không đọc DB). Phase 6 chỉ cần `netLineValues` cho gợi ý số hoàn khi kiểm hàng trả;
- * Phase 7 (nhật ký doanh thu, hoá đơn) dùng cùng hàm này, để hoá đơn, nhật ký và gợi ý hoàn tiền là MỘT quy tắc.
- */
+/** Số học doanh thu của một đơn. */
 
 export interface NetLineInput {
   id: string;
@@ -22,10 +19,7 @@ export interface NetLineOrder {
   discountValue: MoneyLike;
 }
 
-/**
- * Giá trị thực của từng dòng sau giảm giá cả đơn: `lineTotal` (đã trừ giảm giá dòng / khuyến mãi) trừ phần giảm tay cả đơn (`discountType = ORDER`), chia theo tỉ lệ `lineTotal` giữa các dòng cấp trên bằng `allocateProportional` (các phần cộng lại đúng bằng số giảm).
- * Món trong combo (`COMBO_COMPONENT`) không có giá riêng: giá nằm ở dòng COMBO cha, nên chúng mang 0. Giá trị một dòng không âm.
- */
+/** Giá trị thực của từng dòng sau khi chia giảm giá cả đơn. */
 export function netLineValues(
   order: NetLineOrder,
   lines: readonly NetLineInput[],
@@ -72,10 +66,7 @@ export interface EntryAmounts {
   lines: SaleLineAmounts[];
 }
 
-/**
- * Phần giá trị còn lại của mỗi dòng sau hàng đã trả, CÙNG quy tắc với hoá đơn và gợi ý hoàn tiền: giá trị thực của dòng (`netLineValues`) trừ phần của số đã trả (`sliceValue` luỹ kế).
- * Hàng trả trước khi đơn hoàn thành (trả một phần khi đang giao) nằm ở đây nên SALE ghi sau đó đã là số còn lại.
- */
+/** Giá trị còn lại của mỗi dòng sau hàng đã trả. */
 export function keptLineValues(
   order: NetLineOrder,
   items: readonly SaleItemInput[],
@@ -104,10 +95,7 @@ export function keptLineValues(
   return out;
 }
 
-/**
- * Số của bút toán SALE (ghi một lần khi đơn COMPLETED): hàng thực bán sau hàng đã trả, cộng phí ship thu của khách, giá vốn lấy từ sổ lô (`cogsByItem`, dương, đã ròng sau hàng trả về kho).
- * Σ `lines.amount` = `goods` và Σ `lines.cogs` = `cogs` (bất biến 8). Dòng hết số lượng không ghi.
- */
+/** Số liệu bút toán SALE. */
 export function saleEntryAmounts(input: {
   order: NetLineOrder & { shippingFee: MoneyLike };
   items: readonly SaleItemInput[];
@@ -138,11 +126,7 @@ export function saleEntryAmounts(input: {
   };
 }
 
-/**
- * Số của bút toán RETURN (âm): mỗi dòng trả lấy lát giá trị `sliceValue(net, số lượng dòng, đã trả trước lần này, số trả lần này)` nên các lần trả cộng lại đúng bằng giá trị dòng.
- * `items[].returnedQuantity` là số đã trả SAU lần này (kiểm hàng đã tăng nó); đơn quầy trả cả đơn truyền số trả = số còn lại. Phí ship không hoàn.
- * `returnCogsByItem`: giá vốn của đúng các dòng sổ RETURN_* của lần này, DƯƠNG (số hàng về × giá lô); bút toán ghi âm.
- */
+/** Số liệu bút toán RETURN. */
 export function returnEntryAmounts(input: {
   order: NetLineOrder;
   items: readonly SaleItemInput[];

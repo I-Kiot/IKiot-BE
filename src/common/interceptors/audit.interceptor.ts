@@ -34,7 +34,7 @@ interface ResolvedActor {
 
 type AuthedRequest = Request & { user?: AuthUser };
 
-// Port từ auditMiddleware.js của iKiotMS-BE, khác ở hai điểm: mọi actor trừ CUSTOMER đều được ghi log, và nội dung mô tả riêng từng route nằm ở các provider @AuditTemplate() chứ không ở đây.
+// Ghi nhật ký hoạt động cho mọi actor trừ CUSTOMER, mô tả lấy từ @AuditTemplate().
 @Injectable()
 export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   private readonly logger = new Logger(AuditInterceptor.name);
@@ -46,7 +46,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     private readonly reflector: Reflector,
   ) {}
 
-  /** Thu thập một lần lúc khởi động: provider @AuditTemplate() tự đăng ký chỉ bằng việc tồn tại, nên không có danh sách trong AppModule phải cập nhật. */
+  /** Thu thập các provider @AuditTemplate() một lần lúc khởi động. */
   onModuleInit(): void {
     this.descriptors = this.discovery
       .getProviders({ metadataKey: AuditTemplate.KEY })
@@ -118,7 +118,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     });
   }
 
-  /** `request.ip` đã đúng (Express chỉ lấy từ X-Forwarded-For khi bật `trust proxy`); đọc thẳng header sẽ cho client tự giả IP trong audit. */
+  /** Lấy IP từ `request.ip`, không đọc thẳng header để tránh giả IP. */
   private resolveIp(request: Request): string {
     const raw = request.ip ?? request.socket?.remoteAddress ?? '';
     if (!raw) return '127.0.0.1';
@@ -160,7 +160,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     };
   }
 
-  /** Kiểm tra runtime duy nhất giữa body không kiểu và AuditableLoginResponse; `satisfies` trong AuthService giữ hai bên không lệch nhau. */
+  /** Kiểm tra body đăng nhập có đúng dạng AuditableLoginResponse. */
   private isLoginResponse(body: unknown): body is AuditableLoginResponse {
     if (!body || typeof body !== 'object' || !('user' in body)) return false;
     const user = body.user;

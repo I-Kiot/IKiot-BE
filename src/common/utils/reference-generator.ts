@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-// Một bộ sinh cho mọi mã tham chiếu, tiền tố lấy từ REFERENCE_PREFIX. 5 byte ngẫu nhiên giữ va chạm không đáng kể so với unique index toàn cục, nên đừng giảm byteLength nếu không có lý do.
+// Sinh mã tham chiếu ngẫu nhiên theo tiền tố.
 export function generateReference(prefix: string, byteLength = 5): string {
   return prefix + randomBytes(byteLength).toString('hex').toUpperCase();
 }

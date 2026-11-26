@@ -15,7 +15,7 @@ import type {
 } from './dto/announcement.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Console thông báo của operator. Đọc cùng bảng `notifications` với inbox shop, phân biệt bằng `tenantId` và `recipientId` đều null. `notifySystem()` là nơi duy nhất ghi feed này; announcement có type riêng, không bao giờ vào feed. */
+/** Thông báo cho admin: outbox email và feed sự kiện hệ thống. */
 @Injectable()
 export class AdminNotificationService {
   private readonly logger = new Logger(AdminNotificationService.name);
@@ -42,7 +42,7 @@ export class AdminNotificationService {
     return paginate(rows, total, page, limit);
   }
 
-  /** Bản JS cũ là handler duy nhất trong 5 cái thiếu filter, nên operator có thể đổi cờ đọc của mọi thông báo trong DB và đọc nội dung qua response. Filter này chặn việc đó. */
+  /** Chỉ đọc thông báo hệ thống. */
   async markSystemRead(id: string) {
     const { count } = await this.prisma.notification.updateMany({
       where: { id, ...this.systemFilter() },
@@ -83,7 +83,7 @@ export class AdminNotificationService {
     return { message: 'Đã xoá toàn bộ thông báo hệ thống', deleted: count };
   }
 
-  /** Gửi email tới nhiều chủ shop và lưu bản ghi. Gửi không chờ (fire-and-forget); row ghi trước để còn bản ghi khi gửi lỗi. `recipients` đếm chủ có email, không phải số shop được nhắm. */
+  /** Gửi email tới nhiều chủ shop và lưu bản ghi. */
   async compose(actorId: string, dto: ComposeAnnouncementDto) {
     const isSelection = dto.targetType === AnnouncementTarget.SELECTION;
     const targetTenants = isSelection ? (dto.targetTenants ?? []) : [];

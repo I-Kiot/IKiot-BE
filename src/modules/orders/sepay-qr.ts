@@ -21,12 +21,9 @@ import { CashFlowCategory } from '../../common/constants/cash-flow-category';
 import { writeUnallocatedCashFlow } from './order-cash-flow';
 import { buildSepayQrUrl, type TenantBanking } from './tenant-banking';
 
-// Hạn mã QR SePay. Hàm thường, không DI (cùng kiểu `tenant-banking.ts`): bán quầy, thu tiền khi giao, thu tại quầy, cron và webhook đều dùng chung.
-// Quy tắc cứng: mọi chỗ phát mã QR đi qua `sepayQrView` - đó là cửa duy nhất tới hàm dựng link VietQR (có spec quét source giữ điều này), và webhook luôn tính hết hạn trước khi quyết định.
+// Hạn mã QR SePay; mọi chỗ phát mã đi qua `sepayQrView`.
 
-/**
- * Mã QR sống 15 phút kể từ lúc phát. Là hằng số chứ không phải env: đếm ngược ở FE, cron và e2e phải cùng một con số, cấu hình lệch giữa các môi trường chỉ sinh ra mã "còn hạn" ở màn hình nhưng đã bị cron huỷ.
- */
+/** Mã QR sống 15 phút từ lúc phát. */
 export const SEPAY_QR_TTL_MINUTES = 15;
 const TTL_MS = SEPAY_QR_TTL_MINUTES * 60_000;
 
@@ -51,7 +48,7 @@ export function isQrExpired(qr: QrClock, now: Date = new Date()): boolean {
   return now.getTime() >= qrExpiresAt(qr).getTime();
 }
 
-/** Mã phát trước mốc này thì (chắc chắn) đã hết hạn: để cron lọc sơ trên cột `createdAt` trước khi lọc chính xác bằng `isQrExpired`. */
+/** Mốc lọc sơ mã đã hết hạn. */
 export function qrIssuedBefore(now: Date): Date {
   return new Date(now.getTime() - TTL_MS);
 }
@@ -72,10 +69,7 @@ export interface SepayQrView {
   expired: boolean;
 }
 
-/**
- * CỬA DUY NHẤT tới hàm dựng link VietQR. `issue`: đang phát mã cho người dùng, hết hạn thì ném `QR_PAYMENT_EXPIRED` (không bao giờ đưa mã chết cho khách quét).
- * `read`: mở lại mã đã có, hết hạn thì `qrUrl` là null để màn hình hiện "đã hết hạn".
- */
+/** Cửa duy nhất tạo link VietQR: `issue` ném lỗi khi hết hạn, `read` trả null. */
 export function sepayQrView(
   banking: TenantBanking | null,
   qr: QrClock & { amount: number; reference: string },
@@ -109,10 +103,7 @@ export function effectiveQrStatus(
     : payment.status;
 }
 
-/**
- * Đơn có đang chờ chính khoản QR này không: khoản còn mở, và đơn đang ở bước chờ tiền: đơn quầy thì PENDING (chờ chuyển khoản), giao tận nơi thì RECEIVED (shipper đã giao, chờ chuyển khoản),
- * khách tới lấy thì PACKED mà chưa thu đủ.
- */
+/** Đơn có đang chờ chính khoản QR này không. */
 export function isAwaitingQrTransfer(
   payment: { status: string },
   order: { status: string; fulfillmentType: string; paymentStatus: string },
@@ -134,10 +125,7 @@ export type SepayTransferDecision =
   | { action: 'SETTLE'; late: boolean; partial: boolean }
   | { action: 'REJECT'; reason: SepayRejectReason };
 
-/**
- * Bảng quyết định của webhook: không còn chờ thì từ chối (dù hết hạn hay không); còn lại chốt. Chuyển thiếu so với số mã QR yêu cầu vẫn chốt, là khoản trả một phần (`partial`, đơn chưa đủ tiền nên chưa hoàn thành);
- * muộn (`late`) nếu mã đã hết hạn nhưng đơn vẫn chờ. Trước đây chuyển thiếu bị bỏ qua (đơn giao chỉ ghi log, đơn quầy ném lỗi) nên tiền đã về mà không có dấu vết nào.
- */
+/** Quyết định của webhook: chốt, chốt thiếu, chốt muộn hay từ chối. */
 export function decideSepayTransfer(input: {
   expired: boolean;
   waiting: boolean;
@@ -153,7 +141,7 @@ export function decideSepayTransfer(input: {
   };
 }
 
-/** Một lần SePay báo tiền về, đã chuẩn hoá từ payload webhook (hay từ tham số của hàm gọi trực tiếp trong test). */
+/** Giao dịch SePay đã chuẩn hoá. */
 export interface SepayTransfer {
   /** Mã giao dịch SePay; có thể không có. */
   sepayTransactionId: string | null;
@@ -210,7 +198,7 @@ export function buildSepayTransfer(payload: TransferPayload): SepayTransfer {
   return { ...normalized, dedupeKey: sepayDedupeKey(normalized) };
 }
 
-/** Đọc payload webhook SePay (kiểu không rõ) thành một giao dịch chuẩn. `id` của SePay là số; trường sai kiểu coi như không có. */
+/** Đọc payload webhook SePay thành giao dịch chuẩn. */
 export function sepayTransferFromPayload(
   payload: Record<string, unknown>,
 ): SepayTransfer {
@@ -240,7 +228,7 @@ export interface SepayLedgerRow {
   paymentId?: string | null;
 }
 
-/** Giao dịch này đã vào sổ của shop chưa (kiểm sớm, ngoài transaction; chốt chặn thật là unique index trong `claimSepayTransaction`). */
+/** Giao dịch đã vào sổ chưa. */
 export async function sepayTransactionSeen(
   prisma: Pick<PrismaService, 'sepayTransaction'>,
   tenantId: string,
@@ -253,10 +241,7 @@ export async function sepayTransactionSeen(
   return row !== null;
 }
 
-/**
- * Ghi giao dịch vào sổ, trong transaction đang chốt tiền: trả id dòng sổ nếu đây là lần đầu thấy, `null` nếu đã có (webhook gọi lại, hoặc hai request đua nhau: request sau chờ khoá unique rồi nhận `null`).
- * `INSERT … ON CONFLICT DO NOTHING` không chỉ định đích nên bắt cả hai unique một phần (tenant + khoá, và tài khoản + khoá cho dòng không có tenant). Mọi giao dịch đều có khoá (`sepayDedupeKey`), nên không còn trường hợp "không có mã thì không ghi sổ".
- */
+/** Ghi giao dịch vào sổ SePay; null nếu đã có. */
 export async function claimSepayTransaction(
   tx: Prisma.TransactionClient,
   row: SepayLedgerRow,
@@ -276,7 +261,7 @@ export async function claimSepayTransaction(
   return rows.length === 1 ? rows[0].id : null;
 }
 
-/** Lệnh chiếm trạng thái thua trong lúc đang chốt (đơn / khoản vừa đổi): ném trong transaction để cuốn cả dòng sổ, người gọi đọc lại rồi quyết định lại. */
+/** Lỗi thua lệnh chiếm, ném để rollback cả dòng sổ. */
 export class SepayClaimLost extends Error {}
 
 export const SEPAY_DUPLICATE_MESSAGE = 'Duplicate transaction';
@@ -286,10 +271,7 @@ type SepayNotifier = Pick<
   'notify' | 'tenantOwners' | 'notifySystem'
 >;
 
-/**
- * Tiền về mà không chốt được (đơn đã huỷ / đã thu, khoản đã bị thay): ghi sổ REJECTED, không đổi đơn, ghi sổ thu chi `UNALLOCATED_RECEIPT` (tiền thật đã nằm trong tài khoản; sổ phải khớp sao kê), rồi báo chủ shop để hoàn hoặc đối soát.
- * Dòng sổ SePay và dòng thu chi cùng một transaction. Dùng chung cho đơn quầy và thu khi giao / tại quầy (`sepay-settlement.ts`). Thông báo không bao giờ ném lỗi.
- */
+/** Tiền về mà không chốt được: ghi sổ REJECTED và tiền chưa phân bổ, báo chủ shop. */
 export async function rejectLateSepayTransfer(
   prisma: Pick<PrismaService, '$transaction'>,
   notifications: SepayNotifier,
@@ -349,12 +331,7 @@ export async function rejectLateSepayTransfer(
   return { message: 'Late transfer recorded, owner notified' };
 }
 
-/**
- * Tiền về mà không gắn được đơn nào: không có mã trong nội dung, mã không khớp khoản nào, hay tài khoản nhận không thuộc shop nào. Ghi sổ UNMATCHED rồi:
- * - biết shop: ghi sổ thu chi `UNALLOCATED_RECEIPT` (không gắn nơi nào, quỹ BANK) cùng transaction, và báo chủ shop;
- * - không biết shop (`tenantId` null): không có `tenant_id` để ghi sổ thu chi, chỉ báo operator (`notifySystem`).
- * Webhook trả `success: true` cho cả hai: SePay không cần gọi lại.
- */
+/** Tiền về không gắn được đơn: ghi sổ UNMATCHED, báo chủ shop hoặc vận hành. */
 export async function recordUnmatchedTransfer(
   prisma: Pick<PrismaService, '$transaction'>,
   notifications: SepayNotifier,

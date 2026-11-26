@@ -5,9 +5,9 @@ import type {
 } from '../constants/change-feed';
 import type { PrismaService } from '../../prisma/prisma.service';
 
-/** Payload của event `entity:changed`. FE phản chiếu ở `src/types/change-feed.ts` (`EntityChangedEvent`). */
+/** Payload của `entity:changed`, FE phản chiếu ở `src/types/change-feed.ts`. */
 export interface EntityChangedPayload {
-  /** Một cho mỗi request HTTP / mỗi lần phát tường minh; FE dùng để không hiện hai toast cho cùng một sự kiện. */
+  /** Id sự kiện, FE dùng để không hiện hai toast. */
   eventId: string;
   action: ChangeAction;
   /** Chủ thể đứng đầu. `ids: []` nghĩa là "có dòng đổi nhưng không biết dòng nào". */
@@ -20,7 +20,7 @@ export interface EntityChangedPayload {
   } | null;
   actor: { id: string | null; name: string };
   source: ChangeSource;
-  /** Câu tiếng Việt hoàn chỉnh, FE hiện nguyên văn. Chỉ gồm tên người làm, động từ và mã chứng từ - không bao giờ có tiền / tên khách / số điện thoại, vì cả room tenant nhận được. */
+  /** Câu hiển thị: chỉ tên người làm, động từ và mã chứng từ, không có tiền hay thông tin khách. */
   summary: string;
   /** True = chỉ tải lại dữ liệu, không hiện toast. */
   quiet: boolean;

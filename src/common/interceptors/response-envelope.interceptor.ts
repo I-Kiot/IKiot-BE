@@ -17,7 +17,7 @@ export interface ResponseEnvelope {
   [key: string]: unknown;
 }
 
-/** Bọc response thành envelope `{ success, message?, data }`. Nếu body đã có `data`/`success` thì spread để `paginate()` giữ phẳng. Phải đứng trước AuditInterceptor vì nó chạy sau trên đường ra. */
+/** Bọc response thành `{ success, message?, data }`; body đã có `data` thì spread để giữ phẳng. */
 @Injectable()
 export class ResponseEnvelopeInterceptor implements NestInterceptor<
   unknown,
@@ -51,7 +51,7 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor<
     return { success: true, data: body } satisfies ResponseEnvelope;
   }
 
-  /** Body này đã mang dạng envelope chưa? Chỉ object thuần - Date hay Prisma Decimal sẽ mất prototype khi spread. */
+  /** Body đã là envelope chưa (chỉ xét object thuần). */
   private isMergeable(body: unknown): body is Record<string, unknown> {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
       return false;

@@ -11,22 +11,19 @@ export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 
 export const PAYMENT_METHODS: readonly string[] = Object.values(PaymentMethod);
 
-/** `Payment.kind`: loại khoản thanh toán. Một đơn có thể có nhiều khoản (hợp đồng §2): DEPOSIT khi nhận cọc, BALANCE khi giao; FULL là thanh toán một lần, REFUND là tiền trả lại khách. */
+/** Loại khoản thanh toán: cọc, phần còn lại, trả một lần, hoàn tiền. */
 export const PaymentKind = {
   FULL: 'FULL',
   DEPOSIT: 'DEPOSIT',
   BALANCE: 'BALANCE',
   REFUND: 'REFUND',
-  /** Tiền thối khi bán tại quầy: tiền ra cho khách, trỏ về khoản FULL của lần bán (ghi từ Phase 3). Tính vào số tiền ra như hoàn tiền (xem payment-status.ts). */
+  /** Tiền thối khi bán tại quầy, tính như tiền ra. */
   CHANGE: 'CHANGE',
 } as const;
 
 export type PaymentKind = (typeof PaymentKind)[keyof typeof PaymentKind];
 
-/**
- * `Payment.status` - trạng thái riêng của một khoản, không phải `paymentStatus` của đơn (đơn suy ra từ các khoản này).
- * EXPIRED do cron đặt cho khoản QR SePay đã quá hạn (`sepay-qr-expiry.cron.ts`); giữa lúc hết hạn và lượt cron kế tiếp khoản vẫn là PENDING, nên chỗ nào cần biết "còn hạn không" phải dùng `isQrExpired`, không đọc status.
- */
+/** Trạng thái riêng của một khoản thanh toán; kiểm hạn QR dùng `isQrExpired`, không đọc status. */
 export const PaymentRecordStatus = {
   PENDING: 'PENDING',
   PAID: 'PAID',
@@ -38,22 +35,22 @@ export const PaymentRecordStatus = {
 export type PaymentRecordStatus =
   (typeof PaymentRecordStatus)[keyof typeof PaymentRecordStatus];
 
-/** Khoản QR còn "mở": chưa thu, chưa huỷ. Hết hạn rồi vẫn là mở (tiền về muộn vẫn chốt được, và phải huỷ khi đổi sang tiền mặt hay phát lại mã). */
+/** Khoản QR còn mở: chưa thu, chưa huỷ, kể cả đã hết hạn. */
 export const OPEN_QR_PAYMENT_STATUSES: readonly string[] = [
   PaymentRecordStatus.PENDING,
   PaymentRecordStatus.EXPIRED,
 ];
 
-/** `sepay_transactions.outcome`: kết cục của một giao dịch SePay đã nhận (CHECK `sepay_transactions_outcome_check`). */
+/** Kết quả xử lý một giao dịch SePay đã nhận. */
 export const SepayTransactionOutcome = {
   SETTLED: 'SETTLED',
   /** Chốt được dù mã QR đã hết hạn, vì đơn / khoản vẫn đang chờ đúng khoản tiền này. */
   SETTLED_LATE: 'SETTLED_LATE',
-  /** Chuyển thiếu so với số mã QR yêu cầu: khoản thành PAID với số tiền thực nhận, đơn chưa đủ tiền nên chưa chốt (PARTIALLY_PAID). */
+  /** Chuyển thiếu: khoản PAID theo số thực nhận, đơn chưa chốt. */
   SETTLED_PARTIAL: 'SETTLED_PARTIAL',
-  /** Tiền đã về nhưng không chốt được vì đơn / khoản không còn chờ: không đổi đơn, ghi sổ thu chi `UNALLOCATED_RECEIPT`, báo chủ shop hoàn / đối soát. */
+  /** Tiền về nhưng đơn không còn chờ: ghi tiền chưa phân bổ, báo chủ shop. */
   REJECTED: 'REJECTED',
-  /** Tiền đã về nhưng không gắn được đơn nào (không có mã, mã lạ, tài khoản không thuộc shop nào): ghi sổ thu chi `UNALLOCATED_RECEIPT` (trừ khi không biết shop), báo chủ shop. */
+  /** Tiền về nhưng không gắn được đơn: ghi tiền chưa phân bổ, báo chủ shop. */
   UNMATCHED: 'UNMATCHED',
 } as const;
 
@@ -81,9 +78,9 @@ export const SepayRejectReason = {
 export type SepayRejectReason =
   (typeof SepayRejectReason)[keyof typeof SepayRejectReason];
 
-/** `sepay_transactions.resolution`: cách chủ shop xử lý xong một giao dịch SePay chưa chốt (CHECK `sepay_transactions_resolution_check`). */
+/** Cách chủ shop xử lý giao dịch SePay chưa chốt. */
 export const SepayResolution = {
-  /** Đã hoàn tiền ngoài hệ thống; ghi sổ thu chi `UNALLOCATED_REFUND` nếu khoản đó đã vào sổ là `UNALLOCATED_RECEIPT`. */
+  /** Đã hoàn tiền ngoài hệ thống, ghi chi nếu trước đó đã ghi thu chưa phân bổ. */
   REFUNDED_MANUALLY: 'REFUNDED_MANUALLY',
   /** Đã đối chiếu thủ công với một đơn / khoản; không ghi thêm gì (tiền đã nằm trong sổ). */
   MATCHED_MANUALLY: 'MATCHED_MANUALLY',
@@ -97,9 +94,7 @@ export type SepayResolution =
 export const SEPAY_RESOLUTIONS: readonly string[] =
   Object.values(SepayResolution);
 
-/**
- * Cách shipper thu số tiền còn phải thu khi giao (`POST /shipments/:id/deliver`). Khác `PaymentMethod` vì đây là lựa chọn trên màn hình: `BANK_TRANSFER_QR` ghi thành khoản SEPAY chờ webhook, `NONE` là đã cọc đủ, không ghi khoản nào.
- */
+/** Cách shipper thu số còn lại khi giao: tiền mặt, QR, hoặc không thu. */
 export const DeliveryCollectionMethod = {
   CASH: 'CASH',
   BANK_TRANSFER_QR: 'BANK_TRANSFER_QR',
@@ -119,11 +114,11 @@ export const DEPOSIT_METHODS: readonly string[] = [
   PaymentMethod.BANK_TRANSFER,
 ];
 
-/** Cách thu số còn lại khi khách tới lấy hàng tại quầy (`POST /orders/:id/pickup/collect`). Không có `NONE`: đã đủ tiền thì không cần thu. */
+/** Cách thu số còn lại khi khách lấy hàng tại quầy. */
 export const PICKUP_COLLECTION_METHODS: readonly string[] = [
   DeliveryCollectionMethod.CASH,
   DeliveryCollectionMethod.BANK_TRANSFER_QR,
 ];
 
-/** Cách hoàn tiền cho khách khi kiểm hàng trả / hoàn phần trả dư: tiền mặt (ra khỏi quỹ chi nhánh bán đơn) hoặc chuyển khoản. SePay chỉ báo tiền vào nên không phải một cách hoàn. */
+/** Cách hoàn tiền cho khách: tiền mặt hoặc chuyển khoản. */
 export const REFUND_METHODS = ['CASH', 'BANK_TRANSFER'] as const;

@@ -28,7 +28,7 @@ interface StoredMessage {
   createdAt: string;
 }
 
-/** Hội thoại với trợ lý, port từ AIService: transcript là cột jsonb đọc nguyên khối, chỉ chứa `{ role, parts }`; mọi truy vấn lọc theo cả tenant và user. */
+/** Hội thoại với trợ lý AI, lọc theo tenant và user. */
 @Injectable()
 export class AIChatHistoryService {
   private readonly logger = new Logger(AIChatHistoryService.name);
@@ -43,7 +43,7 @@ export class AIChatHistoryService {
     const tenantId = requireTenantId(user);
 
     if (!this.agent.isConfigured()) {
-      // Trả 503 chứ không trả câu fallback thân thiện: API key chưa set là lỗi của operator; giấu trong bong bóng chat thì lỗi sẽ không ai sửa.
+      // Trả 503 khi thiếu API key.
       throw new ServiceUnavailableException({
         code: ErrorCode.AI_NOT_CONFIGURED,
         message: 'The AI assistant is not configured on this server',
@@ -75,7 +75,7 @@ export class AIChatHistoryService {
         `Answered in ${result.steps} step(s) on route ${result.route}`,
       );
     } catch (error) {
-      // Transcript luôn được lưu, kể cả khi lỗi: câu hỏi không có câu trả lời đi kèm trông như chưa từng được gửi.
+      // Luôn lưu hội thoại, kể cả khi lỗi.
       this.logger.error(
         'Chat execution failed',
         error instanceof Error ? error.stack : error,

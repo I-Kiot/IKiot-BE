@@ -1,4 +1,4 @@
-/** Loại tài khoản tổng quát. ADMIN và TENANT_OWNER luôn full quyền và không bao giờ là dòng trong Role; STAFF giữ một Role do tenant định nghĩa; CUSTOMER cố định và tối thiểu. */
+/** Loại tài khoản: ADMIN và TENANT_OWNER full quyền, STAFF theo role, CUSTOMER tối thiểu. */
 export const SystemRole = {
   ADMIN: 'ADMIN',
   TENANT_OWNER: 'TENANT_OWNER',
@@ -20,19 +20,15 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   'brands:read',
   'schedules:read_own',
   'cash_drawers:read_own',
-  // Chi nhánh / kho được gán cho nhân viên. Thiếu quyền này, role không có chi nhánh để chọn trên form đơn và switcher không có tên để hiện.
+  // Đọc chi nhánh / kho được gán, cần cho form đơn và bộ chọn địa điểm.
   'branches:read_own',
   'warehouses:read_own',
-  // Tìm và thêm khách. Ai bán hàng cũng cần cả hai; role thiếu một trong hai sẽ thấy trang khách trả 403. Sửa và xoá cấp riêng.
+  // Tìm và thêm khách, ai bán hàng cũng cần.
   'customers:read',
   'customers:create',
 ]);
 
-/**
- * Quyền tự cấp cho nhân viên xưởng (STAFF có `users.workshop_id`), không đi qua Role (2026-11-26).
- * `production:deliver` chỉ dùng cho các route `/workshop/*`, mà các route đó đòi tài khoản gắn xưởng, nên cấp theo role
- * không có ích gì cho người khác; gắn xưởng trong hồ sơ nhân viên là đủ.
- */
+/** Quyền tự cấp cho nhân viên gắn xưởng, không qua role. */
 export const WORKSHOP_STAFF_PERMISSIONS: ReadonlySet<string> = new Set([
   'production:deliver',
 ]);

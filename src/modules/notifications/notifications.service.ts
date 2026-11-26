@@ -14,7 +14,7 @@ export interface NotifyInput extends NotificationContent {
   referenceId?: string;
 }
 
-// Port từ notificationService.js (fan-out) và module notification (inbox API) của iKiotMS-BE, gộp vào đây. Nội dung thông báo mới đặt trong `templates/*.templates.ts`, không viết inline.
+// Service thông báo: hộp thư, socket, push.
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -25,7 +25,7 @@ export class NotificationService {
     private readonly push: PushService,
   ) {}
 
-  // Không bao giờ throw: lỗi thông báo không được làm hỏng transaction đã gọi. Ba kênh: row Notification (inbox, badge), Socket.IO cho tab đang mở, FCM cho tab đã đóng. Push được await: notify() chạy sau commit nên chỉ làm chậm response, không giữ lock.
+  // Gửi thông báo qua hộp thư, Socket.IO và FCM; không bao giờ ném lỗi.
   async notify(input: NotifyInput): Promise<{ notified: number }> {
     try {
       const ids = [
@@ -35,7 +35,7 @@ export class NotificationService {
       ];
       if (ids.length === 0) return { notified: 0 };
 
-      // Insert độc lập, cố ý không dùng transaction: một người nhận lỗi không rollback thông báo của những người khác.
+      // Mỗi người nhận một insert riêng.
       const docs = await Promise.all(
         ids.map((recipientId) =>
           this.prisma.notification.create({
@@ -78,7 +78,7 @@ export class NotificationService {
     }
   }
 
-  /** Thông báo cho operator: cùng bảng, `tenantId` và `recipientId` đều null, phát tới room Socket.IO `admin`. Không throw, như `notify()`. */
+  /** Thông báo hệ thống cho admin, không ném lỗi. */
   async notifySystem(
     content: NotificationContent & { referenceId?: string },
   ): Promise<void> {
@@ -124,7 +124,7 @@ export class NotificationService {
     }
   }
 
-  /** Người cần báo khi có sự kiện tại một location. Vai trò BRANCH_MANAGER/WAREHOUSE_MANAGER cũ đã bỏ, nên đọc `managerId` của location, không có thì fallback về chủ tenant. Bản cũ trả về rỗng nên cảnh báo tồn thấp không ai nhận. */
+  /** Người cần báo tại một địa điểm: quản lý, không có thì chủ shop. */
   async managersOfLocation(args: {
     tenantId: string;
     /** Id của Location, cũng là id của Branch hoặc Warehouse tương ứng. */
@@ -137,11 +137,7 @@ export class NotificationService {
     return byLocation.get(args.locationId) ?? [];
   }
 
-  /**
-   * `managersOfLocation` cho nhiều địa điểm cùng lúc, theo cùng một quy tắc (manager còn hoạt động của địa điểm, không
-   * có thì chủ tenant), trong ba truy vấn bất kể bao nhiêu địa điểm - cho cron quét nhiều tenant. Bản đơn lẻ gọi qua
-   * đây, nên quy tắc chỉ có một chỗ. Khoá của map là `locationId`; lỗi tra cứu trả map rỗng, không throw.
-   */
+  /** Quản lý của nhiều địa điểm cùng lúc. */
   async managersOfLocations(
     pairs: { tenantId: string; locationId: string }[],
   ): Promise<Map<string, string[]>> {
@@ -296,7 +292,7 @@ export class NotificationService {
   }
 
   async registerDeviceToken(userId: string, token: string, userAgent?: string) {
-    // Gỡ token khỏi mọi tài khoản đang giữ nó trước, để token đã chuyển sang login mới không còn đăng ký với login cũ.
+    // Gỡ token khỏi tài khoản cũ trước.
     await this.prisma.userFcmToken.deleteMany({ where: { token } });
     await this.prisma.userFcmToken.create({
       data: { userId, token, userAgent },

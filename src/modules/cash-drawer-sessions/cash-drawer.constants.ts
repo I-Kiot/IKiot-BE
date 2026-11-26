@@ -11,7 +11,7 @@ export type CashDrawerStatus =
 export const CASH_DRAWER_STATUSES: readonly string[] =
   Object.values(CashDrawerStatus);
 
-/** Sổ ca được ghi khi thu ngân nhận két (START) và trả lại (END). END có `nextStaffId` là bàn giao; END không có ai là thứ khiến session chốt được. */
+/** Loại sổ ca: START nhận két, END trả két. */
 export const ShiftLogType = {
   START: 'START',
   END: 'END',
@@ -21,5 +21,5 @@ export type ShiftLogType = (typeof ShiftLogType)[keyof typeof ShiftLogType];
 
 export const SHIFT_LOG_TYPES: readonly string[] = Object.values(ShiftLogType);
 
-/** Két thuộc ngày nào là câu hỏi theo lịch địa phương của shop, không phải UTC. Alias này chỉ cho biết `VIETNAM_TIMEZONE` nghĩa là gì ở đây, vì `businessDate` nhận múi giờ làm tham số. */
+/** Múi giờ dùng để tính ngày của két. */
 export const BUSINESS_TIMEZONE = VIETNAM_TIMEZONE;

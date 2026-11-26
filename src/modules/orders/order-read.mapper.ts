@@ -24,8 +24,7 @@ import {
 /** YCSX còn mở theo id dòng đơn; dòng không có trong map là chưa đặt xưởng. */
 export type LineProductionMap = ReadonlyMap<string, OrderLineProduction>;
 
-// Dòng DB -> `OrderListItem` / `OrderDetail` của contract (A-9). Mọi trường POS đang đọc từ hai route này (src/types/order.ts bên FE)
-// được giữ nguyên tên và kiểu; các trường hành trình được thêm bên cạnh. Tiền trả về là number (contract §0).
+// Đổi dữ liệu DB thành `OrderListItem` / `OrderDetail`.
 
 type Decimalish = { toString(): string };
 
@@ -37,7 +36,7 @@ function numOrNull(value: Decimalish | null): number | null {
   return value === null ? null : Number(value);
 }
 
-/** Cột `@db.Date` thành `YYYY-MM-DD`. Postgres trả DATE dưới dạng nửa đêm UTC nên lấy ngày UTC là ngày đã lưu. */
+/** Đổi cột Date thành `YYYY-MM-DD`. */
 function dateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
 }
@@ -55,7 +54,7 @@ export interface UserRef {
   phoneNumber: string;
 }
 
-/** `UserRef` của contract. Tên đầy đủ đọc họ trước (`lastName firstName`, "Phạm Thị Lan") như màn hình nhân viên; tài khoản chưa có tên thì hiện số điện thoại. */
+/** Tham chiếu người dùng: id và tên đầy đủ (họ trước). */
 export function toUserRef(user: UserRow | null): UserRef | null {
   if (!user) return null;
   return {
@@ -88,11 +87,7 @@ const DELIVERED_ORDER_STATUSES: readonly string[] = [
   OrderStatus.RETURNED,
 ];
 
-/**
- * `collection`: số đã thu khi giao (Payment BALANCE của đơn), null cho tới khi giao. Đơn cọc đủ không có dòng BALANCE nên sau giao là `method: 'NONE'`.
- *
- * `method`: `Payment.method` của khoản shipper thu QR (SEPAY hoặc BANK_TRANSFER, contract §8) chưa chốt, nên mọi khoản không tiền mặt đọc là `BANK_TRANSFER_QR`.
- */
+/** Số đã thu khi giao, null tới khi giao. */
 export function collectionOf(
   order: Pick<OrderListRow, 'status' | 'shippedAt' | 'payments'>,
   amountDue: number,
@@ -131,7 +126,7 @@ export function collectionOf(
 type ListLineRow = OrderListRow['items'][number];
 type DetailLineRow = OrderDetailRow['items'][number];
 
-/** Một dòng trong danh sách: đủ mọi cột POS đọc, tiền là number, thêm `stockCheck` và `isManufacturable`. */
+/** Một dòng hàng trong danh sách đơn. */
 function toLine(
   item: ListLineRow,
   stockChecks: Map<string, StockCheck>,
@@ -147,7 +142,7 @@ function toLine(
     productItem,
     ...rest
   } = item;
-  // `product` chỉ để đọc cờ; `productItem` trả ra giữ đúng dạng cũ `{ id, sku, productName }` mà POS đang đọc.
+  // Giữ dạng `productItem` cũ mà POS đang đọc.
   const { product, ...productItemRef } = productItem;
   return {
     ...rest,
@@ -188,7 +183,7 @@ function toCustomization(customization: DetailLineRow['customization']) {
   };
 }
 
-/** Một dòng trong chi tiết: như dòng danh sách (đã có `isManufacturable`), thêm kho xuất và thông số may đo. */
+/** Một dòng hàng trong chi tiết đơn, thêm kho xuất và thông số may đo. */
 function toDetailLine(
   item: DetailLineRow,
   stockChecks: Map<string, StockCheck>,
@@ -204,7 +199,7 @@ function toDetailLine(
   };
 }
 
-/** Trường cấp đơn chung cho cả hai dạng. Bỏ `payments` và `items` (do từng dạng thay thế) và `channelPayload` (đơn Shopee gốc, chỉ để đồng bộ lại). */
+/** Trường cấp đơn chung cho danh sách và chi tiết. */
 function toOrderBase(row: OrderListRow) {
   const {
     branch,
@@ -265,10 +260,7 @@ function toOrderBase(row: OrderListRow) {
   };
 }
 
-/**
- * `OrderListItem` của contract cộng thêm các dòng: contract bỏ dòng khỏi danh sách, nhưng danh sách hóa đơn của POS
- * mở rộng dòng ngay tại chỗ từ cùng response này nên vẫn giữ.
- */
+/** Một đơn trong danh sách, kèm các dòng hàng. */
 export function toOrderListItem(
   row: OrderListRow,
   stockChecks: Map<string, StockCheck>,
@@ -282,7 +274,7 @@ export function toOrderListItem(
     driver: toUserRef(row.shipments[0]?.driver ?? null),
     // Giao thất bại thì đơn vẫn ở SHIPPING (hàng còn ngoài kho); trường này để danh sách hiển thị điều đó.
     latestShipmentStatus: row.shipments[0]?.status ?? null,
-    // Lần giao mới nhất, để ô chọn shipper ở danh sách gọi được `PATCH /shipments/:id/driver` (2026-11-08).
+    // Lần giao mới nhất, cho ô chọn shipper ở danh sách.
     latestShipment: row.shipments[0]
       ? {
           id: row.shipments[0].id,
@@ -305,10 +297,7 @@ export interface SummaryPaymentRow {
   remittanceStatus: string;
 }
 
-/**
- * `paymentSummary` của chi tiết đơn: mọi số từ MỘT quy tắc (`derivePaymentStatus`), nên khớp `orders.payment_status` và các route thu / hoàn.
- * `received` / `refunded` / `net` / `due` / `overpaidBy` là số nguyên đồng; `pendingRemittance` là tiền mặt shipper đã thu mà chủ chưa xác nhận nhận (đang ở tay shipper, chưa vào sổ thu chi).
- */
+/** Tóm tắt thanh toán của đơn, tính từ `derivePaymentStatus`. */
 export function paymentSummaryOf(
   order: {
     status: string;
@@ -349,7 +338,7 @@ export function paymentSummaryOf(
     due: derived.due,
     overpaidBy: derived.overpaidBy,
     pendingRemittance,
-    /** Tiền shop đang giữ của đơn đã kết thúc mà chưa hoàn, chưa ghi thu nhập khác (`held-undecided.ts`). Quyết định bằng `POST /orders/:id/settle-held`. */
+    /** Tiền treo của đơn đã kết thúc. */
     heldUndecided: heldUndecidedOf({
       status: order.status,
       hasSale: journalTypes.includes(SalesJournalEntryType.SALE),

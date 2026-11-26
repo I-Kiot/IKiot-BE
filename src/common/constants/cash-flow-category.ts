@@ -1,11 +1,7 @@
 import { FlowType } from '../../modules/stats/stats.constants';
 import { PaymentMethod } from './payment-method';
 
-/**
- * `cash_flows.category`: tiền này là gì (CHECK `cash_flows_category_check`). Mỗi dòng sổ thu chi có đúng một loại, và hướng thu / chi suy ra từ loại
- * (CHECK `cash_flows_category_direction`), nên không có dòng "thu" nào mang loại chi.
- * Thêm loại = migration mới tạo lại hai CHECK đó cộng một mục ở đây; `cash-flow-category.spec.ts` đọc migration để chặn lệch.
- */
+/** `cash_flows.category`: loại tiền, quyết định hướng thu/chi; thêm loại cần migration tạo lại CHECK. */
 export const CashFlowCategory = {
   /** Khách trả tiền cho đơn: cọc, thu tại quầy, thu khi giao, QR về, nộp tiền của shipper. */
   ORDER_PAYMENT: 'ORDER_PAYMENT',
@@ -33,19 +29,14 @@ export const INCOME_CASH_FLOW_CATEGORIES: readonly CashFlowCategory[] = [
   CashFlowCategory.UNALLOCATED_RECEIPT,
 ];
 
-/** Hướng của dòng sổ suy ra từ loại: nơi gọi không tự chọn hướng, nên không ghi được dòng chi mang loại thu. */
+/** Suy ra hướng thu/chi từ loại dòng tiền. */
 export function flowTypeOf(category: CashFlowCategory): FlowType {
   return INCOME_CASH_FLOW_CATEGORIES.includes(category)
     ? FlowType.INCOME
     : FlowType.EXPENSE;
 }
 
-/**
- * `cash_flows.fund`: tiền nằm ở đâu (CHECK `cash_flows_fund_check`). Đối soát két (`cash-drawer-sessions`) chỉ đếm tiền mặt `DRAWER`.
- * - `DRAWER`: tiền mặt qua két của một chi nhánh (quầy). Bắt buộc có `locationId` và là tiền mặt (CHECK).
- * - `OWNER`: tiền mặt đã giao thẳng chủ shop, không qua két nào: shipper nộp lại, trả nhà cung cấp bằng tiền mặt. `locationId` của dòng OWNER chỉ để quy về chi nhánh, không vào két.
- * - `BANK`: mọi phương thức không phải tiền mặt (SePay, chuyển khoản, ví, thẻ).
- */
+/** `cash_flows.fund`: tiền nằm ở két chi nhánh (DRAWER), tay chủ shop (OWNER) hay ngân hàng (BANK). */
 export const CashFlowFund = {
   DRAWER: 'DRAWER',
   OWNER: 'OWNER',
@@ -56,9 +47,7 @@ export type CashFlowFund = (typeof CashFlowFund)[keyof typeof CashFlowFund];
 
 export const CASH_FLOW_FUNDS: readonly string[] = Object.values(CashFlowFund);
 
-/**
- * Quỹ của một dòng tiền: một hàm duy nhất, không nơi nào tự chọn quỹ. Không phải tiền mặt thì là `BANK`; tiền mặt vào két trừ khi `toOwner` (tiền đã giao thẳng cho chủ).
- */
+/** Chọn quỹ cho dòng tiền: không phải tiền mặt là BANK, tiền mặt vào két trừ khi giao thẳng chủ. */
 export function fundOf(
   method: string | null | undefined,
   opts: { toOwner?: boolean } = {},

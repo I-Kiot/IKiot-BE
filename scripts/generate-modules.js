@@ -1,12 +1,4 @@
-// One-off codegen script: reads prisma/schema.prisma and scaffolds a NestJS
-// module (module/controller/service/dto) for every top-level model, wired to
-// PrismaService with basic CRUD. Child/join tables (managed as nested writes
-// within their parent's service, not their own routes) are excluded via
-// CHILD_MODELS below; modules already ported by hand are excluded via PORTED_MODELS.
-// Run with `node scripts/generate-modules.js`, then `pnpm run lint` to format the
-// output. It OVERWRITES every file it generates, so any hand-edit to a still-generated
-// module is lost - either fold the change into the templates here, or add that model to
-// PORTED_MODELS once it stops being generated code.
+// Sinh module CRUD NestJS từ prisma/schema.prisma; GHI ĐÈ file đã sinh, bỏ qua model trong PORTED_MODELS.
 
 const fs = require('fs');
 const path = require('path');
@@ -51,7 +43,7 @@ function parseFields(body) {
     const fm = line.match(/^(\w+)\s+([A-Za-z0-9_]+)(\[\])?(\?)?\s*(.*)$/);
     if (!fm) continue;
     const [, fieldName, baseType, isArray, isOptional] = fm;
-    if (!SCALAR_TYPES.has(baseType)) continue; // relation field, skip
+    if (!SCALAR_TYPES.has(baseType)) continue; // field quan hệ, bỏ qua
     if (line.includes('@relation(')) continue;
     fields.push({ name: fieldName, type: baseType, array: !!isArray, optional: !!isOptional });
   }
@@ -101,9 +93,7 @@ function buildDtoField(f) {
   return { code, imports: importSet };
 }
 
-// Modules whose business logic has since been ported by hand. Re-running this script must
-// never touch them - everything it writes is plain CRUD and would silently destroy the
-// real implementation. Move a model in here the moment its module stops being generated.
+// Các model đã viết tay, script không được đụng tới.
 const PORTED_MODELS = new Set([
   'User', 'Role', 'RolePermission', 'PermissionCatalog',
   'Plan', 'Subscription', 'SubscriptionInvoice',
@@ -111,20 +101,17 @@ const PORTED_MODELS = new Set([
   'Branch', 'Warehouse', 'Supplier', 'Brand', 'Category',
   'Product', 'ProductItem', 'Inventory', 'StockMovementRequest',
   'Order', 'Promotion', 'PromotionLog', 'Customer', 'CashDrawerSession',
-  // Hand-edited down to read-only - the generator would put POST/PATCH/DELETE back.
+  // Đã sửa tay thành chỉ đọc.
   'CashFlow',
   'Holiday', 'ShiftTemplate', 'WorkingSchedule',
   'Ticket', 'AIChatHistory',
-  // Order journey (2026-10-02): written by hand from the start, never generated.
+  // Hành trình đơn, viết tay từ đầu.
   'ProductionRequest', 'Fulfillment', 'Shipment', 'OrderReturn', 'SalesChannel',
   // Sổ SePay (2026-11-11): đọc + xử lý tay, viết tay từ đầu (modules/sepay-transactions).
   'SepayTransaction',
 ]);
 
-// Fields the server fills in from the authenticated user instead of accepting from the
-// client - the actor of the write. They are dropped from the create DTO and set in the
-// service. `userId` is only in here for models where it means "who did this" (verified
-// against iKiotMS-BE's controllers).
+// Các trường server điền từ user đăng nhập, bỏ khỏi DTO tạo.
 const ACTOR_FIELD = {
   CashFlow: 'createdById',
   PromotionLog: 'createdById',
@@ -135,14 +122,7 @@ const ACTOR_FIELD = {
   Ticket: 'userId',
 };
 
-// Which PermissionCatalog resource each module's routes are gated by. Every pair used here
-// must exist in prisma/seed.ts's CATALOG - RolePermission has a real FK into it, so a
-// resource/action a role can never be granted is a route nobody but ADMIN/TENANT_OWNER can
-// reach. Several modules deliberately share one resource rather than getting their own:
-// product variants are part of managing products, shift templates part of scheduling, and
-// promotion logs part of promotions. Where iKiotMS-BE gated nothing at all (customers,
-// tickets, products, ai chat - those routes only had verifyJwt), the resource is new; see
-// the "added for the NestJS port" block in the seed's CATALOG.
+// Resource quyền của từng module; phải có trong CATALOG của seed.
 const RESOURCE = {
   Tenant: 'tenants',
   Branch: 'branches',
@@ -184,22 +164,22 @@ for (const model of models) {
   const tableName = parseTableName(model.body);
   if (!tableName) continue;
   const kebab = toKebab(tableName);
-  const pascal = toPascalFromKebab(kebab); // e.g. leave-requests -> LeaveRequests -> singularize below
-  const singularPascal = model.name; // authoritative singular name from the schema itself
+  const pascal = toPascalFromKebab(kebab); // VD leave-requests -> LeaveRequests -> đổi số ít bên dưới
+  const singularPascal = model.name; // tên số ít lấy từ schema
   const clientProp = toClientProp(model.name);
   const allFields = parseFields(model.body).filter((f) => !['id', 'createdAt', 'updatedAt'].includes(f.name));
   const hasTenant = allFields.some((f) => f.name === 'tenantId');
   const actorField = ACTOR_FIELD[model.name] && allFields.some((f) => f.name === ACTOR_FIELD[model.name])
     ? ACTOR_FIELD[model.name]
     : null;
-  // tenantId and the actor field come from the JWT-backed request user, never the body.
+  // tenantId và người thao tác lấy từ user đăng nhập.
   const fields = allFields.filter((f) => f.name !== 'tenantId' && f.name !== actorField);
 
   const dir = path.join(ROOT, 'src', 'modules', kebab);
   const dtoDir = path.join(dir, 'dto');
   fs.mkdirSync(dtoDir, { recursive: true });
 
-  // ---- create DTO ----
+  // ---- DTO tạo ----
   const allImports = new Set();
   const dtoFieldsCode = fields.map((f) => {
     const { code, imports } = buildDtoField(f);
@@ -215,7 +195,7 @@ ${dtoFieldsCode || '  // no client-settable scalar fields on this model'}
 `;
   fs.writeFileSync(path.join(dtoDir, `create-${kebab}.dto.ts`), createDtoContent.replace(/^import \{ \} from 'class-validator';\n\n/, ''));
 
-  // ---- update DTO ----
+  // ---- DTO sửa ----
   const updateDtoName = `Update${singularPascal}Dto`;
   const updateDtoContent = `import { PartialType } from '@nestjs/swagger';
 import { ${createDtoName} } from './create-${kebab}.dto';
@@ -226,10 +206,7 @@ export class ${updateDtoName} extends PartialType(${createDtoName}) {}
 
   // ---- service ----
   const serviceName = `${singularPascal}Service`;
-  // Reads take `tenantId | undefined` - undefined only ever reaches here from an ADMIN
-  // asking across every tenant (see common/utils/tenant-scope.ts), so it means "no filter".
-  // update/remove re-use findOne first so a row outside the caller's tenant 404s rather
-  // than being written by id alone; Prisma can't express that in a single `where`.
+  // Đọc theo `tenantId`, undefined là mọi tenant (ADMIN); update/remove gọi findOne trước để kiểm tenant.
   const scopeArg = hasTenant ? 'tenantId: string | undefined, ' : '';
   const scopeWhere = hasTenant ? '...(tenantId ? { tenantId } : {}), ' : '';
   const createArgs = [
@@ -283,9 +260,7 @@ export class ${serviceName} {
 
   // ---- controller ----
   const controllerName = `${singularPascal}Controller`;
-  // Everything the caller's identity already implies (tenant, actor) is read off the
-  // request user, so it stays out of the params/query/body entirely. `?tenantId=` survives
-  // only as an ADMIN-only override - resolveTenantScope 403s anyone else who sends it.
+  // Tenant và người thao tác lấy từ user đăng nhập; `?tenantId=` chỉ cho ADMIN.
   const adminOverride = "@Query('tenantId') tenantId?: string";
   const userParam = '@CurrentUser() user: AuthUser';
   const resource = RESOURCE[model.name];

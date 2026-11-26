@@ -38,15 +38,12 @@ function fullName(
   return `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim();
 }
 
-/**
- * Hai báo cáo đọc sổ, tách khỏi `StatsService` (vốn đã dài): `GET /stats/sales-journal` (các bút toán doanh thu nguyên bản, nền cho mọi báo cáo kế toán) và
- * `GET /stats/unreconciled` (tiền chưa khớp: tiền shipper đang giữ, giao dịch SePay chưa xử lý, đơn trả dư, tiền chưa gắn đơn, quỹ chủ, tiền mặt quầy kho, hoàn tiền mặt từ két).
- */
+/** Báo cáo sổ doanh thu và tiền chưa khớp. */
 @Injectable()
 export class StatsReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Bộ lọc của sổ doanh thu, dùng chung cho màn hình và file xuất để hai nơi không lệch nhau. Khoảng ngày lọc theo `business_date` địa phương. */
+  /** Bộ lọc sổ doanh thu dùng chung cho màn hình và file xuất. */
   private journalWhere(
     user: AuthUser,
     query: SalesJournalExportQueryDto,
@@ -65,10 +62,7 @@ export class StatsReportsService {
     };
   }
 
-  /**
-   * Toàn bộ bút toán của bộ lọc cho file xuất (không phân trang), mới nhất trước như bảng trên trang. Kèm tên khách (chụp `customer_id`, không có khoá ngoại nên đọc riêng một lần).
-   * Không giới hạn số dòng: sổ của một kỳ phải đủ, cắt bớt thì tổng cuối sổ sai.
-   */
+  /** Toàn bộ bút toán cho file xuất, không phân trang. */
   async getSalesJournalForExport(
     user: AuthUser,
     query: SalesJournalExportQueryDto,
@@ -128,7 +122,7 @@ export class StatsReportsService {
     }));
   }
 
-  /** Bút toán doanh thu kèm dòng, phân trang, mới nhất trước. `totals` cộng trên cả bộ lọc (không chỉ trang này). Khoảng ngày lọc theo `business_date` địa phương. */
+  /** Bút toán doanh thu kèm dòng, phân trang. */
   async getSalesJournal(user: AuthUser, query: SalesJournalQueryDto) {
     const where = this.journalWhere(user, query);
     const { page, limit } = query;
@@ -229,10 +223,7 @@ export class StatsReportsService {
     };
   }
 
-  /**
-   * Báo cáo "tiền chưa khớp": tình trạng tại lúc gọi (không theo kỳ). Người xem gắn một chi nhánh chỉ thấy phần của chi nhánh đó (`scope: 'BRANCH'`); những khoản không thuộc chi nhánh nào
-   * (`unallocatedBank`, giao dịch SePay chưa gắn đơn) là `null` / bị bỏ khỏi họ.
-   */
+  /** Báo cáo tiền chưa khớp tại lúc gọi. */
   async getUnreconciled(user: AuthUser, branchId?: string) {
     const scope = orderScope(user, branchId);
     const tenantId = user.tenantId;
@@ -257,7 +248,7 @@ export class StatsReportsService {
       coverage,
       heldRows,
     ] = await Promise.all([
-      // Tiền mặt shipper đã thu nhưng chưa nộp (chủ chưa xác nhận): đang nằm trong tay shipper, chưa vào quỹ nào.
+      // Tiền mặt shipper đã thu chưa nộp.
       this.prisma.$queryRaw<
         {
           collectorId: string | null;
@@ -303,7 +294,7 @@ export class StatsReportsService {
         ORDER BY 4 DESC
         LIMIT ${UNRECONCILED_LIST_LIMIT}
       `,
-      // Giao dịch SePay cần người xử lý: bị từ chối, không gắn được đơn, chuyển thiếu (chưa đủ), hoặc dư chưa hoàn; chưa `resolved`.
+      // Giao dịch SePay chưa xử lý.
       this.prisma.sepayTransaction.findMany({
         where: sepayNeedsActionWhere(tenantId, branch),
         orderBy: { createdAt: 'desc' },
@@ -315,7 +306,7 @@ export class StatsReportsService {
         _count: { _all: true },
         _sum: { amount: true, excessAmount: true },
       }),
-      // Tiền về tài khoản không gắn được đơn: đã ghi UNALLOCATED_RECEIPT (D2); trừ phần đã hoàn tay. Không thuộc chi nhánh nào.
+      // Tiền về chưa gắn đơn, trừ phần đã hoàn.
       wholeTenant
         ? this.prisma.cashFlow.groupBy({
             by: ['category'],
@@ -332,7 +323,7 @@ export class StatsReportsService {
             _count: { _all: true },
           })
         : Promise.resolve(null),
-      // Quỹ chủ (tiền mặt giao thẳng chủ: shipper nộp, trả NCC bằng tiền mặt): thu - chi theo loại, từ trước đến nay.
+      // Quỹ chủ: thu - chi từ trước đến nay.
       this.prisma.$queryRaw<
         {
           category: string;
@@ -369,7 +360,7 @@ export class StatsReportsService {
         GROUP BY 1, 2
         ORDER BY 2
       `,
-      // Hoàn tiền mặt ghi vào két của chi nhánh đơn (D5) trong khi tiền mặt của đơn không đi qua két đó (shipper nộp chủ, hoặc thu tại kho): đối soát két chi nhánh sẽ hụt đúng bằng số này.
+      // Hoàn tiền mặt từ két chi nhánh mà tiền đơn không qua két đó.
       this.prisma.$queryRaw<
         {
           locationId: string;
@@ -396,7 +387,7 @@ export class StatsReportsService {
         GROUP BY 1, 2
         ORDER BY 2
       `,
-      // Phạm vi của sổ doanh thu: đơn COMPLETED cũ (trước migration, D9 không backfill) không có bút toán nên không có mặt trong các báo cáo doanh thu.
+      // Đơn COMPLETED cũ chưa có bút toán.
       this.prisma.$queryRaw<
         { ordersWithoutJournal: number; firstJournalAt: Date | null }[]
       >`
@@ -408,7 +399,7 @@ export class StatsReportsService {
                (SELECT MIN(posted_at) FROM sales_journal_entries
                  WHERE tenant_id = ${tenantId}) AS "firstJournalAt"
       `,
-      // Đơn RETURNED / CANCELLED mà shop còn giữ tiền chưa quyết định (hoàn hay giữ): cùng quy tắc `held-undecided.ts`.
+      // Đơn đã kết thúc còn tiền treo.
       this.prisma.$queryRaw<
         {
           orderId: string;

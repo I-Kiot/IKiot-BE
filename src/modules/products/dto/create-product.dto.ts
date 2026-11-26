@@ -21,7 +21,7 @@ import {
   ProductImageDto,
 } from './product-item.dto';
 
-/** Port từ CreateProductRequestDTO. Không có `categoryName`: server tự điền từ `categoryId`, nhận từ client thì sản phẩm có thể gán nhầm danh mục. */
+/** Body tạo sản phẩm; `categoryName` do server điền. */
 export class CreateProductDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên sản phẩm không được để trống' })

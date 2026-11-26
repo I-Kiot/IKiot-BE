@@ -14,7 +14,7 @@ export class RegisterDto {
   @MinLength(6)
   password: string;
 
-  // Bắt buộc và duy nhất toàn nền tảng; mã OTP xác minh gửi tới đây, sau đó nộp qua /auth/login/verify-otp.
+  // Email bắt buộc và duy nhất, nhận mã OTP xác minh.
   @NormalizeEmail()
   email: string;
 

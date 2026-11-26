@@ -23,7 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Cùng sáu route và permission như CashDrawerController; ba route đọc nhận `cash_drawers:read` **hoặc** `read_own`. Cố ý không có PATCH/DELETE: phiên két chỉ mở, ghi log và chốt, không sửa. */
+/** Controller két tiền: mở, ghi sổ ca, chốt; không sửa/xoá. */
 @ApiTags('cash-drawer-sessions')
 @ApiBearerAuth('bearer')
 @Controller('cash-drawer-sessions')
@@ -43,14 +43,14 @@ export class CashDrawerSessionController {
     return this.service.current(user, query.branchId);
   }
 
-  /** Két còn mở từ ngày giao dịch trước, để màn két và màn bán tại quầy cảnh báo. Cùng quyền đọc với các route khác, nhưng không lọc theo `read_own`: ai ở chi nhánh cũng cần biết. Khai báo trên `:id`. */
+  /** Két còn mở từ ngày trước của chi nhánh. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('overdue')
   overdue(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
     return this.service.overdue(user, query.branchId);
   }
 
-  /** Ai nhận được két khi mở két đầu ngày - chỉ tên. Cùng quyền với `POST` (mở két), để màn mở két không phải cần `users:read`. Khai báo trên `:id` như `current`. */
+  /** Người nhận được két khi mở két đầu ngày. */
   @Permissions('cash_drawers', 'open')
   @Get('eligible-staff')
   eligibleStaff(
@@ -60,7 +60,7 @@ export class CashDrawerSessionController {
     return this.service.eligibleStaff(user, query.branchId);
   }
 
-  /** Báo cáo chênh lệch - những ngày nào không khớp. Khai báo trên `:id` vì cả hai đều một đoạn, và chịu cùng phạm vi `read`/`read_own`, nên không bao giờ lộ phiên mà caller không mở được. */
+  /** Báo cáo chênh lệch két theo ngày. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('reconciliation')
   report(@CurrentUser() user: AuthUser, @Query() query: QueryCashVarianceDto) {
@@ -82,7 +82,7 @@ export class CashDrawerSessionController {
     return this.service.findOne(user, id);
   }
 
-  /** Số đã đếm của một phiên so với tiền sổ quỹ ghi nhận, theo từng ca: phép trừ mà shift log luôn ngầm định nhưng chưa từng được thực hiện. */
+  /** Số đã đếm của một phiên so với sổ quỹ, theo từng ca. */
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get(':id/reconciliation')
   reconcile(
@@ -92,7 +92,7 @@ export class CashDrawerSessionController {
     return this.service.reconcile(user, id);
   }
 
-  /** Ai nhận được bàn giao của phiên này - chỉ tên, chỉ cho người đang giữ két. Cùng quyền với shift log, nơi danh sách được dùng. */
+  /** Người nhận được bàn giao của phiên này. */
   @Permissions('cash_drawers', 'report')
   @Get(':id/handover-candidates')
   handoverCandidates(

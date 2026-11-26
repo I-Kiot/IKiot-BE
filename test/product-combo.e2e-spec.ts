@@ -12,9 +12,7 @@ import {
   ProductType,
 } from './../src/common/constants/product-status';
 
-/**
- * Khai báo combo trong danh mục trên Postgres thật: tạo combo, combo lồng combo, sửa thành phần, và các lỗi chặn (vòng lặp, khác tenant, xoá / ngừng món đang nằm trong combo). Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm khai báo combo và các lỗi chặn (Postgres thật). */
 describe('ProductService – combo components', () => {
   let prisma: PrismaService;
   let products: ProductService;
@@ -85,7 +83,7 @@ describe('ProductService – combo components', () => {
         { id: foreignProductId, tenantId: otherTenantId, name: 'Ghế lạ' },
       ],
     });
-    // Cùng tiền tố + một chữ cái quyết định thứ tự, nên thứ tự SKU giống nhau ở mọi collation của Postgres.
+    // SKU cùng tiền tố + một chữ cái để thứ tự giống nhau mọi collation.
     const run = tenantId.slice(0, 8).toUpperCase();
     const skus = {
       [tableId]: `PC${run}-A`,

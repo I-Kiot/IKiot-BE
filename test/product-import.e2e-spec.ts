@@ -15,10 +15,7 @@ import {
 import { SubscriptionService } from './../src/modules/subscriptions/subscriptions.service';
 import { ErrorCode } from './../src/common/errors/error-codes';
 
-/**
- * Nhập hàng hoá từ Excel (2026-10-20) trên Postgres thật: tải template của cửa hàng, điền vào đúng
- * file đó, nhập - rồi đọc bảng ra kiểm. Một file có lỗi thì không tạo gì. Tự tạo tenant, tự dọn.
- */
+/** Kiểm nhập hàng hoá từ Excel (Postgres thật). */
 describe('ProductImportService', () => {
   let prisma: PrismaService;
   let importer: ProductImportService;
@@ -246,7 +243,7 @@ describe('ProductImportService', () => {
     const file = await filledTemplate([
       { name: `Ghế ${tag}`, retailPrice: 100, costPrice: 50 },
       { name: `Tủ ${tag}`, retailPrice: 'abc', costPrice: 50 },
-      // Re-importing an existing product, and an SKU that is already taken.
+      // Nhập lại sản phẩm đã có và SKU đã dùng.
       { name: `Bàn sồi ${tag}`, retailPrice: 1, costPrice: 1 },
       { name: `Kệ ${tag}`, sku: `BS-NAU-${tag}`, retailPrice: 1, costPrice: 1 },
     ]);

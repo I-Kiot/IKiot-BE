@@ -20,14 +20,14 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Port từ module chi nhánh của iKiotMS-BE. Tenant luôn lấy từ token, không có `?tenantId=` như các module port tay khác.
+// Controller chi nhánh, tenant lấy từ token.
 @ApiTags('branches')
 @ApiBearerAuth('bearer')
 @Controller('branches')
 export class BranchController {
   constructor(private readonly service: BranchService) {}
 
-  // `read_own` có trong mọi tài khoản STAFF và chỉ tới nơi của họ; LocationService thu hẹp (`locationReadScope`).
+  // `read_own` chỉ thấy nơi của mình.
   @Permissions('branches', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách chi nhánh (phân trang, tìm kiếm)' })

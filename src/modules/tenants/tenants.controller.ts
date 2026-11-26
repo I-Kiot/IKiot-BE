@@ -18,7 +18,7 @@ import { UpdateTenantDto } from './dto/update-tenants.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 
-// CRUD sinh tự động, chưa phải port thật. Chỉ admin nền tảng, và phải là guard chứ không phải `@Permissions`: `Tenant` không có `tenantId` để lọc, còn PermissionsGuard bỏ qua TENANT_OWNER, nên chỉ `@Permissions('tenants', …)` thì chủ shop nào cũng sửa được shop khác. Decorator giữ để cặp quyền có route trong scripts/check-permissions.js; guard mới là thứ chặn.
+// CRUD tenant cho admin nền tảng.
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)

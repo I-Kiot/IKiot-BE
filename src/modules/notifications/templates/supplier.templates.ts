@@ -14,7 +14,7 @@ export const SupplierNotificationTemplates = {
     link: '/suppliers',
   }),
 
-  /** Chỉ gửi một lần, ở phiếu nhập làm công nợ NCC vượt ngưỡng cảnh báo; gửi cho chủ, không gửi người nhận hàng. */
+  /** Công nợ NCC vượt ngưỡng cảnh báo. */
   creditLimitWarning: (
     supplierName: string,
     outstandingDebt: number,

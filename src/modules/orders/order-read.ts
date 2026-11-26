@@ -5,9 +5,7 @@ import {
 } from '../../common/dto/location-ref.dto';
 import { PaymentKind } from './order-read.constants';
 
-// Dữ liệu `GET /orders` và `GET /orders/:id` đọc (A-9, contract §2). Cả hai là tập cha của include của quầy trong orders.service.ts:
-// POS vẫn liệt kê và mở đơn qua hai route này, đọc `items`, `user`, `appliedPromotions` từ đó, nên không được bỏ bất cứ thứ gì nó đang nhận;
-// các trường hành trình được thêm bên cạnh.
+// Include cho đọc đơn; giữ mọi trường POS đang dùng.
 
 export const USER_REF_SELECT = {
   select: {
@@ -18,7 +16,7 @@ export const USER_REF_SELECT = {
   },
 } as const satisfies Prisma.UserDefaultArgs;
 
-/** Số tiền shipper thu khi giao và đã về tay chủ chưa, `collection` được dựng từ đây. Mỗi đơn tối đa một dòng; nếu lần thất bại trước để lại dòng cũ thì lấy dòng mới nhất. */
+/** Khoản shipper thu khi giao, lấy dòng mới nhất. */
 const BALANCE_PAYMENT_INCLUDE = {
   where: { kind: PaymentKind.BALANCE },
   orderBy: { createdAt: 'desc' },
@@ -29,11 +27,7 @@ const BALANCE_PAYMENT_INCLUDE = {
   },
 } as const satisfies Prisma.Order$paymentsArgs;
 
-/**
- * SKU của một dòng đơn, dùng chung cho danh sách và chi tiết.
- * Kèm `isManufacturable` của sản phẩm: danh sách hiện cột "Có thể sản xuất", và nút "Tạo YCSX" chỉ điền sẵn dòng thiếu
- * mà xưởng làm được (BE từ chối cả YCSX nếu có dòng không làm được).
- */
+/** SKU của dòng đơn, kèm cờ sản xuất được. */
 const LINE_PRODUCT_ITEM_SELECT = {
   select: {
     id: true,
@@ -43,7 +37,7 @@ const LINE_PRODUCT_ITEM_SELECT = {
   },
 } as const satisfies Prisma.ProductItemDefaultArgs;
 
-/** Một dòng danh sách đơn. Giữ mọi dòng hàng: danh sách hóa đơn của POS mở rộng chúng tại chỗ, và `stockSummary` là `stockCheck` của dòng tệ nhất nên vẫn cần các dòng. */
+/** Một dòng danh sách đơn kèm các dòng hàng. */
 export const ORDER_LIST_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
   branch: BRANCH_NAME_SELECT,

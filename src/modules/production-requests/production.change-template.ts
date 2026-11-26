@@ -15,7 +15,7 @@ import {
   readString,
 } from '../../common/realtime/change-ref';
 
-/** Nội dung feed `entity:changed` của yêu cầu sản xuất (YCSX) và phiếu giao của xưởng. Chỉ tên người làm + động từ + mã chứng từ. */
+/** Nội dung feed `entity:changed` của YCSX và phiếu giao. */
 
 /** Đơn nằm trong YCSX (qua `items[].orderItem.orderId`); `toResponse` luôn trả các dòng. */
 function ordersOf(body: unknown): string[] {
@@ -38,10 +38,7 @@ export function productionRequestTarget({
   };
 }
 
-/**
- * Phiếu giao của xưởng: `{ id, code, productionRequest: { id, code } }`. Hủy / từ chối phiếu làm số "đang giao" trên dòng đơn đổi
- * mà body không có đơn, nên tra các đơn của YCSX một lần (như `packTarget`) để trang đơn đang mở tự đọc lại.
- */
+/** Phiếu giao: tra các đơn của YCSX để trang đơn tự tải lại. */
 export async function deliveryTarget({
   body,
   params,
@@ -70,7 +67,7 @@ export async function deliveryTarget({
   };
 }
 
-/** Nhận phiếu giao trả một YCSX (+ `stockMovementId`), còn `:id` là phiếu giao; mã trong câu là mã YCSX. */
+/** Nhận phiếu giao: mã trong câu là mã YCSX. */
 export function deliveryReceiveTarget({
   body,
   params,

@@ -38,15 +38,9 @@ import {
   type SepayTransfer,
 } from './sepay-qr';
 
-/**
- * Một đường chốt tiền SePay duy nhất cho đơn quầy lẫn thu khi giao / tại quầy (Phase 3-4, 2026-11-11). Trước đây `OrderService.completeSepayOrder` và `ShipmentDeliveryService.settleSepayBalance` mỗi bên tự chép các bước
- * (chiếm khoản, ghi dòng tiền, đổi đơn, sự kiện) và đã lệch nhau: một bên ném lỗi khi thiếu tiền, bên kia chỉ ghi log. Hàm thường, không DI (cùng kiểu `sepay-qr.ts`).
- *
- * Mỗi lần gọi: sổ SePay (chống lặp) → khoá đơn → chiếm khoản → dòng thu chi → suy ra trạng thái thanh toán → (nếu `nextStatusAfterPayment` cho phép) chiếm đơn COMPLETED + hoá đơn → sự kiện QR_PAID. Mọi thứ trong MỘT transaction,
- * thứ tự khoá sổ → đơn → khoản. Thua lệnh chiếm thì cuốn cả transaction (cả dòng sổ) và quyết định lại một lần, có thể ra từ chối.
- */
+/** Đường chốt tiền SePay chung cho đơn quầy, thu khi giao và thu tại quầy. */
 
-/** Đơn quầy (`TAKEAWAY`) hay đơn có giao / khách tới lấy: hai bên tra khoản theo cùng mã nhưng chỉ nhận khoản của loại đơn của mình. */
+/** Loại đơn của khoản: đơn quầy hay đơn giao / lấy tại quầy. */
 export type SepayScope = 'POS' | 'DELIVERY';
 
 export interface SepayDeps {
@@ -133,7 +127,7 @@ function findTarget(
 
 type Target = NonNullable<Awaited<ReturnType<typeof findTarget>>>;
 
-/** Lý do từ chối khi khoản không còn chờ được: đọc theo khoản rồi tới đơn, để chủ shop biết phải làm gì với số tiền. */
+/** Lý do từ chối khi khoản không còn chờ. */
 function rejectReasonOf(payment: Target): SepayRejectReason {
   if (payment.status === PaymentRecordStatus.PAID)
     return SepayRejectReason.ALREADY_PAID;
@@ -267,7 +261,7 @@ async function settleInTransaction(
     paymentId: payment.id,
   });
   if (!ledgerId) return { kind: 'DUPLICATE' };
-  // Khoá đơn sau dòng sổ (thứ tự khoá: sổ → đơn → các khoản), rồi đọc lại đơn: bước chờ có còn đúng không.
+  // Khoá đơn sau dòng sổ rồi đọc lại.
   await lockOrder(tx, tenantId, orderId);
   const fresh = await tx.order.findUniqueOrThrow({
     where: { id: orderId },
@@ -284,8 +278,7 @@ async function settleInTransaction(
   });
   if (!isAwaitingQrTransfer(payment, fresh)) throw new SepayClaimLost();
 
-  // Chỉ từ khoản còn mở (PENDING hay EXPIRED): webhook lặp lại, hay "khách trả tiền mặt" / mã mới vừa thắng thì không ghi gì.
-  // `amount` là tiền thực về (khớp dòng sổ thu chi); số mã QR đã yêu cầu giữ ở `requestedAmount`.
+  // Chiếm khoản còn mở, ghi số tiền thực về.
   const paid = await tx.payment.updateMany({
     where: {
       id: payment.id,
@@ -319,7 +312,7 @@ async function settleInTransaction(
     description: `SePay đơn ${fresh.code}`,
   });
 
-  // Trạng thái thanh toán suy ra từ các khoản (không đặt tay); từ đó mới biết đơn đã đủ tiền để đi tiếp chưa.
+  // Suy ra trạng thái thanh toán từ các khoản.
   const derived = await syncOrderPaymentStatus(tx, orderId);
   const pendingRemittance =
     (await tx.payment.count({
@@ -336,14 +329,14 @@ async function settleInTransaction(
       where: { id: orderId, tenantId, status: fresh.status },
       data: {
         ...completedData(now),
-        // Đơn quầy lưu mã giao dịch trên đơn như trước (đơn trả lời "đã trả chưa", dòng thu chi là thứ đối soát với sao kê).
+        // Lưu mã giao dịch trên đơn quầy.
         ...(scope === 'POS'
           ? { sepayTransactionId: transfer.sepayTransactionId }
           : {}),
       },
     });
     if (claimed.count !== 1) throw new SepayClaimLost();
-    // Hàng đã rời kho trước khi tới bước thu tiền này (đơn quầy trừ lúc bán, đơn giao trừ lúc xuất): ghi SALE.
+    // Ghi bút toán SALE.
     await postSale(tx, {
       orderId,
       actor: { id: null },
@@ -352,7 +345,7 @@ async function settleInTransaction(
     });
   }
   if (derived.overpaidBy > 0) {
-    // Cột này chỉ ghi ở đây, trong transaction đã chèn dòng sổ: dòng sổ không bị sửa về sau (trừ bốn cột xử lý tay).
+    // Ghi id dòng sổ trên khoản thanh toán.
     await tx.sepayTransaction.update({
       where: { id: ledgerId },
       data: { excessAmount: derived.overpaidBy },
@@ -411,10 +404,7 @@ async function settleInTransaction(
   };
 }
 
-/**
- * Đơn quầy lập trước Phase 3 không có dòng `Payment`: khoản chờ của nó là chính đơn, không còn nơi để chốt. Tiền vẫn về nên ghi sổ REJECTED (+ dòng thu chi chưa gắn đơn) và báo chủ shop; không có đơn quầy nào mang mã này thì không phải của ta.
- * Chỉ dữ liệu mẫu có loại đơn này.
- */
+/** Đơn quầy cũ không có dòng Payment: ghi REJECTED và báo chủ shop. */
 async function rejectLegacyPosSale(
   deps: SepayDeps,
   input: { tenantId: string; reference: string; transfer: SepayTransfer },
@@ -451,10 +441,7 @@ async function rejectLegacyPosSale(
     : { kind: 'REJECTED', message: rejected.message };
 }
 
-/**
- * Thông báo sau commit cho một khoản đã chốt (không bao giờ ném lỗi): người lên đơn + quản lý (đơn quầy) hay người phụ trách (đơn giao / khách tới lấy).
- * Còn thiếu tiền thì báo "chuyển thiếu, còn X"; trả dư thì báo chủ shop (quyết định 5: hoàn phần dư là việc của chủ).
- */
+/** Báo sau commit cho khoản đã chốt; chuyển thiếu hoặc trả dư cũng báo. */
 export async function notifySettled(
   deps: Pick<SepayDeps, 'notifications'>,
   settled: SepaySettled,

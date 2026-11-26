@@ -14,14 +14,7 @@ import {
   type DemoProduct,
 } from './catalog';
 
-/**
- * Dữ liệu mẫu cho hai shop: "Nội thất IGM" và "360 Boutique". Chỉ dựng phần khung để tự thao tác tiếp trên màn hình: chi nhánh / kho, role, nhân viên (có tài khoản đăng nhập), danh mục, thương hiệu, nhà cung cấp và hàng hóa (kèm combo).
- * Không tạo khách hàng, phiếu nhập / chuyển kho, đơn hàng, doanh thu hay thu chi: tồn kho bằng 0, sổ sách trống.
- *
- * Mọi thứ đi qua route thật của API bằng tài khoản chủ shop, nên dữ liệu đúng như tạo trên màn hình.
- *
- * Chạy (DB local đã `prisma migrate reset` + `prisma db seed`): `pnpm run seed:demo`. Không chạy lại hai lần trên cùng DB: số điện thoại chủ shop đã có thì dừng.
- */
+/** Dữ liệu mẫu hai shop (khung, không có đơn hay tồn), tạo qua API thật. Chạy: `pnpm run seed:demo`. */
 jest.setTimeout(30 * 60_000);
 
 const PASSWORD = 'password123';
@@ -74,7 +67,7 @@ function vnTime(daysAgo: number, hour: number, minute: number): Date {
   );
 }
 
-// ---------------------------------------------------------------- API
+// ─── API ───
 
 class Api {
   constructor(private readonly app: INestApplication<App>) {}
@@ -101,7 +94,7 @@ class Api {
     return (res.body?.data ?? res.body) as T;
   }
 
-  /** Đăng nhập; tài khoản chưa xác minh email thì đổi challenge lấy token bằng DEV_BYPASS (chỉ chạy ngoài production). */
+  /** Đăng nhập; chưa xác minh email thì dùng DEV_BYPASS (ngoài production). */
   async login(identifier: string): Promise<string> {
     const data = await this.call<{
       accessToken?: string;
@@ -619,7 +612,7 @@ const IGM: ShopDef = {
   combos: IGM_COMBOS,
 };
 
-// ---------------------------------------------------------------- 360 Boutique
+// ─── 360 Boutique ───
 
 const B360: ShopDef = {
   tenantName: '360 Boutique',

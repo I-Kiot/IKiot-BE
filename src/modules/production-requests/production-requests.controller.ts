@@ -27,7 +27,7 @@ import { ProductionRequestService } from './production-requests.service';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { ProductionChanges } from './production.change-template';
 
-/** Yêu cầu sản xuất (YCSX) gửi NCC loại WORKSHOP, theo dõi bằng tay. Nhận hàng là quyền riêng `production:receive` vì đó là lúc tồn tăng. Mọi route nhận cả `AuthUser`: nơi người gọi làm việc quyết định họ được chạm gì. */
+/** Controller YCSX gửi xưởng. */
 @ApiTags('production-requests')
 @ApiBearerAuth('bearer')
 @Controller('production-requests')
@@ -117,7 +117,7 @@ export class ProductionRequestController {
   }
 }
 
-/** "Danh sách cần sản xuất": tính lại mỗi lần đọc từ đơn đang mở, tồn kho và yêu cầu sản xuất đang mở; không có bảng phía sau (contract §3). */
+/** Danh sách cần sản xuất. */
 @ApiTags('production-list')
 @ApiBearerAuth('bearer')
 @Controller('production-list')

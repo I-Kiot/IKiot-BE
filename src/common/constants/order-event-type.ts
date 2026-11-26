@@ -1,7 +1,4 @@
-/**
- * Loại sự kiện trong nhật ký thao tác trên đơn (`order_events.type`). Thêm một loại = migration mới tạo lại CHECK `order_events_type_check`;
- * `order-event-type.spec.ts` đọc migration cuối cùng định nghĩa CHECK đó và fail nếu danh sách lệch với file này.
- */
+/** Loại sự kiện nhật ký đơn; thêm loại cần migration tạo lại CHECK `order_events_type_check`. */
 export const OrderEventType = {
   CREATED: 'CREATED',
   EDITED: 'EDITED',
@@ -34,9 +31,9 @@ export const OrderEventType = {
   /** Xưởng xác nhận đang làm YCSX có dòng của đơn (từ đó chỉ xưởng huỷ được YCSX). */
   PRODUCTION_STARTED: 'PRODUCTION_STARTED',
   PRODUCTION_RECEIVED: 'PRODUCTION_RECEIVED',
-  /** Tiền trả lại khách ngoài huỷ đơn: khi kiểm hàng trả, trả hàng đơn quầy, hoàn phần khách chuyển dư. Huỷ đơn mang số hoàn trong sự kiện CANCELLED. */
+  /** Hoàn tiền cho khách ngoài trường hợp huỷ đơn. */
   REFUNDED: 'REFUNDED',
-  /** Chủ shop quyết định giữ tiền treo của đơn đã kết thúc (RETURNED / CANCELLED chưa quyết định): ghi OTHER_INCOME. Hoàn tiền thì dùng REFUNDED. */
+  /** Chủ shop giữ lại tiền treo của đơn đã kết thúc. */
   HELD_KEPT: 'HELD_KEPT',
 } as const;
 
@@ -46,7 +43,7 @@ export type OrderEventType =
 export const ORDER_EVENT_TYPES: readonly string[] =
   Object.values(OrderEventType);
 
-/** `order_events.source`: ai gây ra sự kiện. SYSTEM là tác vụ nền: hiện chỉ cron QR hết hạn (`sepay-qr-expiry.cron.ts`) tự huỷ đơn quầy. */
+/** Ai gây ra sự kiện; SYSTEM là tác vụ nền như cron QR hết hạn. */
 export const OrderEventSource = {
   USER: 'USER',
   SYSTEM: 'SYSTEM',

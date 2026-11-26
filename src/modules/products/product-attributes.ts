@@ -2,8 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Thuộc tính định nghĩa ở Product (`ProductAttribute`), SKU giữ giá trị qua `ProductItemDetail.attributeId`.
-// Mọi ghi giá trị đi qua `writeItemDetails` để một tên luôn trỏ về đúng một dòng thuộc tính.
+// Thuộc tính định nghĩa ở sản phẩm, SKU giữ giá trị; mọi ghi đi qua `writeItemDetails`.
 
 export type DetailInput = { name?: string | null; value?: string | null };
 export type AttributeInput = {
@@ -42,7 +41,7 @@ export function sameValues(
   return true;
 }
 
-/** Thay toàn bộ thuộc tính sản phẩm: giữ dòng theo `id`, thêm dòng mới, xoá dòng vắng mặt kèm giá trị trên các SKU. */
+/** Thay toàn bộ thuộc tính của sản phẩm. */
 export async function replaceAttributes(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -132,7 +131,7 @@ export async function upsertAttributeUnits(
   }
 }
 
-/** Ghi lại toàn bộ giá trị thuộc tính của một SKU. Tên mới thì thêm thuộc tính cho sản phẩm (đứng cuối). */
+/** Ghi lại giá trị thuộc tính của một SKU. */
 export async function writeItemDetails(
   tx: Prisma.TransactionClient,
   tenantId: string,

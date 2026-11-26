@@ -20,7 +20,7 @@ export class ChatDto {
   @MaxLength(4000)
   message: string;
 
-  /** Không gửi hoặc gửi id hội thoại của người khác thì mở thread mới, cố ý không trả 404: tab trình duyệt cũ chỉ tốn một thread mới, không phải một hộp thoại lỗi. */
+  /** Id hội thoại không có hoặc của người khác thì mở hội thoại mới. */
   @IsOptional()
   @IsUUID()
   conversationId?: string;

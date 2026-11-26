@@ -15,10 +15,7 @@ export class DamagedStockDto {
   @Min(1, { message: 'quantity phải lớn hơn 0' })
   quantity: number;
 
-  /**
-   * Chỉ cho đánh dấu hỏng: chiếc may riêng cho dòng đơn này (lô `orderItemId`). Bỏ trống = hàng dùng chung trên kệ.
-   * Sửa xong / huỷ bỏ qua trường này (rút mọi lô hỏng theo FIFO).
-   */
+  /** Chiếc may riêng cho dòng đơn này; bỏ trống là hàng dùng chung. */
   @IsOptional()
   @IsUUID()
   orderItemId?: string;

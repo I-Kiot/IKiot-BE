@@ -1,6 +1,6 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Copy cho ticket hỗ trợ. Hai phía cố ý không thông báo đối xứng: operator làm việc trong admin console nên system notification là đủ; chủ shop đã tắt máy nên cần thông báo đến inbox/push. */
+/** Nội dung thông báo ticket hỗ trợ. */
 export const TicketNotificationTemplates = {
   /** Gửi cho operator của nền tảng: một shop vừa mở một luồng hỗ trợ. */
   created: (

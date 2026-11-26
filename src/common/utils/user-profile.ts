@@ -1,4 +1,4 @@
-/** Thông tin cá nhân nhân viên: lưu phẳng trong các cột `profile_*` nhưng trả về lồng nhau, vì dashboard đọc `user.profile.firstName`. Chỉ phía đọc. */
+/** Trả thông tin cá nhân nhân viên dạng lồng trong `profile`. */
 
 /** Các cột phẳng được map. Kiểu structural nên select nào có đủ các cột này đều khớp. */
 export interface FlatUserProfile {
@@ -56,7 +56,7 @@ export function withNestedProfile<T extends FlatUserProfile>(
   };
 }
 
-/** Tên người để hiển thị: "họ tên" (như màn hình nhân viên, "Phạm Thị Lan"), chưa có tên thì số điện thoại. Một bản duy nhất của quy tắc đó. */
+/** Tên hiển thị: họ tên, chưa có thì số điện thoại. */
 export function personName(row: {
   profileLastName?: string | null;
   profileFirstName?: string | null;

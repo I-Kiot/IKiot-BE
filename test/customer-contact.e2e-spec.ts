@@ -5,9 +5,7 @@ import { PrismaModule } from './../src/prisma/prisma.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { CustomerService } from './../src/modules/customers/customers.service';
 
-/**
- * Liên hệ của khách trên Postgres thật: email được lưu (trước đây DTO không có trường này nên bị bỏ), PATCH xoá được email và SĐT đã lưu. Tự tạo một tenant riêng và dọn sạch.
- */
+/** Kiểm lưu và xoá email, SĐT của khách (Postgres thật). */
 describe('Customer contact details – CustomerService', () => {
   let prisma: PrismaService;
   let customers: CustomerService;

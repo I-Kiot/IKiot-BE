@@ -19,10 +19,7 @@ export type ResolvedVariant = {
   created: boolean;
 };
 
-/**
- * Tìm SKU đúng bộ thuộc tính khi đổi thuộc tính: giữ SKU gốc, dùng SKU anh em cùng bộ, hoặc tạo mới.
- * Đúng một SKU cho mỗi hàng làm ra, nếu không tồn kho lệch với kệ. `retailPrice` cần `products:update`.
- */
+/** Tìm hoặc tạo SKU đúng bộ thuộc tính khi đổi thuộc tính. */
 @Injectable()
 export class ProductVariantService {
   constructor(private readonly prisma: PrismaService) {}
@@ -137,8 +134,7 @@ export class ProductVariantService {
   ): Promise<string> {
     const freeDetails = base.details.filter((detail) => !detail.attributeId);
     return this.prisma.$transaction(async (tx) => {
-      // SKU = mã hàng = SKU gốc + "-V<n>", n là số nhỏ nhất chưa là SKU hay mã hàng của mặt hàng nào
-      // (hai @@unique theo tenant là chốt chặn thật). Mã hàng từng chép nguyên của gốc - nay phải duy nhất.
+      // SKU mới = SKU gốc + "-V<n>" chưa dùng.
       const stem = base.sku ?? base.productCode;
       const prefix = `${stem}-V`;
       const taken = await tx.productItem.findMany({

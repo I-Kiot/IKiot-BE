@@ -57,15 +57,10 @@ import type { Prisma } from '../../../generated/prisma/client';
 import { OrderEventType } from '../../common/constants/order-event-type';
 import { recordOrderEvent, userActor } from './order-events';
 
-// `cancelData` / `cancelCounterQr` nằm trong `payment-cancel.ts` (đơn quầy cũng dùng, mà `orders.service.ts` không import được file này vì vòng phụ thuộc); xuất lại ở đây cho các nơi đã import từ đây.
+// Xuất lại các hàm huỷ khoản từ `payment-cancel.ts`.
 export { cancelData, cancelCounterQr } from './payment-cancel';
 
-/**
- * Đơn khách tới lấy (STORE_PICKUP): đóng gói xong thì đơn nằm ở PACKED chờ khách, không có shipment.
- * - `collect`: thu số còn lại tại quầy (tiền mặt ghi luôn, QR chờ webhook SePay).
- * - `handOver`: đã thu đủ thì giao hàng cho khách: trừ tồn, PACKED → COMPLETED, xuất hoá đơn.
- * Bước thu tiền và giao dùng chung quyền với “Bắt đầu vận chuyển” (`OrderStepPermission.SHIP`): chủ shop, người có `orders:ship` tại kho xuất.
- */
+/** Đơn khách tới lấy: thu số còn lại tại quầy và giao hàng cho khách. */
 @Injectable()
 export class OrderPickupService {
   constructor(
@@ -75,7 +70,7 @@ export class OrderPickupService {
     private readonly invoices: InvoiceService,
   ) {}
 
-  /** Nạp đơn cùng fulfillment đã đóng gói; chặn đơn không phải khách tới lấy, chưa sẵn sàng, hay người gọi không có quyền. */
+  /** Nạp đơn đã đóng gói và kiểm có giao cho khách được không. */
   private async loadPickupOrder(user: AuthUser, tenantId: string, id: string) {
     const order = await this.prisma.order.findFirst({
       where: { id, tenantId },
@@ -144,11 +139,7 @@ export class OrderPickupService {
     return { order, fulfillment, access };
   }
 
-  /**
-   * Thu số còn lại của đơn đang chờ khách. Số tiền do server tính (tổng đơn trừ mọi khoản đã thu), không nhận từ client.
-   * Tiền mặt ghi luôn là đã thu tại quầy (không có bước nộp lại như shipper); QR dựng khoản SEPAY chờ webhook và trả `qrUrl`.
-   * Gọi lại với QR khi khoản chờ còn đúng số tiền VÀ còn hạn thì dùng lại khoản đó, để mã QR khách đang quét không đổi. Hết hạn thì huỷ khoản cũ và phát mã mới (không bao giờ trả mã đã hết hạn).
-   */
+  /** Thu số còn lại của đơn chờ khách: tiền mặt ghi luôn, QR chờ webhook. */
   async collect(
     user: AuthUser,
     tenantId: string,
@@ -160,7 +151,7 @@ export class OrderPickupService {
       tenantId,
       id,
     );
-    // Tiền mặt thu tại quầy vào két của nơi xuất hàng (kho đóng gói), không phải chi nhánh bán đơn (quyết định 2026-11-11).
+    // Tiền mặt vào két của nơi xuất hàng.
     const cashLocationId = fulfillment?.locationId ?? order.branchId;
     const amountDue = pickupAmountDue(order.grandTotal, order.payments);
     if (amountDue === 0) {
@@ -175,7 +166,7 @@ export class OrderPickupService {
 
     if (dto.method === DeliveryCollectionMethod.CASH) {
       await this.prisma.$transaction(async (tx) => {
-        // Khoá đơn trước, rồi đọc lại các khoản: hai lần bấm "thu tiền mặt" cùng lúc xếp hàng ở đây, lần sau thấy đã đủ tiền.
+        // Khoá đơn rồi đọc lại các khoản.
         await this.lockPickupOrder(tx, tenantId, id);
         const fresh = await tx.payment.findMany({
           where: { orderId: id, tenantId },
@@ -195,7 +186,7 @@ export class OrderPickupService {
         }
         // Khách trả tiền mặt thay vì quét QR: huỷ khoản QR đang chờ, nếu tiền vừa về thì dừng.
         await cancelCounterQr(tx, openCounterQr(fresh), user.userId, now);
-        // Lệnh chiếm: còn chờ khách, chưa đủ tiền, và không ai đổi đơn kể từ lúc đọc. `updatedAt` ghi tường minh để câu UPDATE là một lệnh chiếm thật (data rỗng không làm nhảy @updatedAt).
+        // Chiếm đơn: còn chờ khách, chưa đủ tiền, chưa ai đổi.
         const claimed = await tx.order.updateMany({
           where: {
             id,
@@ -273,7 +264,7 @@ export class OrderPickupService {
       expiresAt = newQrExpiresAt(now);
       createdAt = now;
       await this.prisma.$transaction(async (tx) => {
-        // Huỷ cả khoản đã hết hạn lẫn khoản sai số tiền; số khoản huỷ được phải khớp số khoản đọc ra, nếu không có khoản vừa đổi trạng thái (tiền vừa về) thì dừng.
+        // Huỷ các khoản QR cũ; số huỷ được phải khớp số đã đọc.
         await this.lockPickupOrder(tx, tenantId, id);
         const cancelled = await tx.payment.updateMany({
           where: {
@@ -307,7 +298,7 @@ export class OrderPickupService {
         });
       });
     }
-    // Mã chỉ phát qua sepayQrView (cửa duy nhất tới link VietQR); vừa tạo hay dùng lại đều đã kiểm còn hạn.
+    // Lấy link QR qua `sepayQrView`.
     const view = sepayQrView(
       banking,
       { amount: amountDue, reference: reference!, expiresAt, createdAt },
@@ -340,11 +331,7 @@ export class OrderPickupService {
     }
   }
 
-  /**
-   * Giao hàng cho khách tại quầy, khi đã thu đủ. Một transaction: đơn PACKED → COMPLETED, hàng khoá rời kho (rút theo lô,
-   * ghi sổ SALE kèm dòng đơn nên hoàn hàng sau này tra được), dòng đơn SHIPPED, fulfillment HANDED_OVER, hoá đơn phát hành.
-   * Còn tiền chưa thu thì từ chối (`ORDER_PICKUP_BALANCE_DUE`); khoản QR đang chờ chưa tính là đã thu.
-   */
+  /** Giao hàng cho khách tại quầy khi đã thu đủ: trừ tồn, hoàn tất đơn, xuất hoá đơn. */
   async handOver(
     user: AuthUser,
     tenantId: string,
@@ -408,7 +395,7 @@ export class OrderPickupService {
         });
       }
 
-      // Một UPDATE có điều kiện cho mỗi dòng (locked_stock ≥ quantity) là chốt chặn, nên không gom được thành một query.
+      // Trừ hàng khoá từng dòng có điều kiện.
       for (const item of fulfillment.items) {
         await this.inventory.shipLockedStock(tx, {
           tenantId,

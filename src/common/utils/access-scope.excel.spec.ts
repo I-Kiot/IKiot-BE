@@ -16,7 +16,7 @@ const user = (over: Partial<AuthUser>): AuthUser =>
 const admin = user({ systemRole: SystemRole.ADMIN, tenantId: null });
 const owner = user({ systemRole: SystemRole.TENANT_OWNER });
 
-/** Runs `fn`, expects it to throw `type` carrying the error `code` (and `message` when given). */
+/** Chạy `fn` và kiểm tra nó ném lỗi `type` với `code` (và `message` nếu có). */
 function expectThrows(
   fn: () => unknown,
   type: new (...args: never[]) => Error,
@@ -38,7 +38,7 @@ function expectThrows(
   if (message) expect(body.message).toBe(message);
 }
 
-// Excel sheet "Common" - resolveTenantScope (UTC001-UTC006).
+// Sheet Excel "Common" - resolveTenantScope (UTC001-UTC006).
 describe('Excel sheet Common - resolveTenantScope', () => {
   it('UTC001: platform admin without a requested tenant sees every tenant', () => {
     expect(resolveTenantScope(admin, undefined)).toBeUndefined();
@@ -70,7 +70,7 @@ describe('Excel sheet Common - resolveTenantScope', () => {
   });
 });
 
-// Excel sheet "Common" - requireTenantId (UTC007-UTC009).
+// Sheet Excel "Common" - requireTenantId (UTC007-UTC009).
 describe('Excel sheet Common - requireTenantId', () => {
   it('UTC007: platform admin must name a tenant for a write', () => {
     expectThrows(
@@ -88,7 +88,7 @@ describe('Excel sheet Common - requireTenantId', () => {
   });
 });
 
-// Excel sheet "Common" - narrowToScope (UTC010-UTC013).
+// Sheet Excel "Common" - narrowToScope (UTC010-UTC013).
 describe('Excel sheet Common - narrowToScope', () => {
   it('UTC010: no requested filter keeps the server scope', () => {
     expect(narrowToScope('b1', undefined, 'denied')).toBe('b1');
@@ -109,7 +109,7 @@ describe('Excel sheet Common - narrowToScope', () => {
   });
 });
 
-// Excel sheet "Common" - narrowStaffScope (UTC014-UTC016).
+// Sheet Excel "Common" - narrowStaffScope (UTC014-UTC016).
 describe('Excel sheet Common - narrowStaffScope', () => {
   const messages = { own: 'own-denied', location: 'location-denied' };
   it('UTC014: a query that repeats the scope is accepted', () => {

@@ -12,7 +12,7 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
-  /** Gửi người phụ trách đơn, quản lý kho xuất và chủ shop: ai trong số đó cũng có thể xác nhận Đang vận chuyển. */
+  /** Hàng đã được shipper lấy, chờ xác nhận vận chuyển. */
   pickedUp: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_PICKED_UP',
     title: 'Shipper đã lấy hàng',
@@ -20,7 +20,7 @@ export const ShipmentNotificationTemplates = {
     link: link(shipmentId),
   }),
 
-  /** Gửi người phụ trách đơn và chủ shop. Hàng vẫn ở shipper: có thể giao lại, hoặc xác nhận hoàn về shop. */
+  /** Giao không thành. */
   failed: (shipmentId: string, orderCode: string): NotificationContent => ({
     type: 'SHIPMENT_FAILED',
     title: 'Giao hàng không thành',

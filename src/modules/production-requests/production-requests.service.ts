@@ -139,7 +139,7 @@ export const DETAIL_INCLUDE = {
           orderId: true,
           isCustom: true,
           order: { select: { code: true } },
-          // Thứ khách đặt riêng cho dòng đơn (2026-10-16): xưởng đọc ngay trên YCSX - đổi gì so với mẫu, ảnh, ghi chú.
+          // Yêu cầu riêng của khách cho dòng đơn.
           customization: {
             select: {
               note: true,
@@ -203,7 +203,7 @@ export type RequestRow = Prisma.ProductionRequestGetPayload<{
   include: typeof DETAIL_INCLUDE;
 }>;
 
-/** Phiếu giao xưởng đang được xác nhận qua `receiveGoods`: các dòng và số xưởng báo đã gửi trên từng dòng. */
+/** Phiếu giao đang được xác nhận qua `receiveGoods`. */
 export interface DeliveryClaim {
   id: string;
   code: string;
@@ -229,7 +229,7 @@ interface PreparedLine {
   note: string | null;
 }
 
-/** Các đơn có dòng nằm trong yêu cầu, mỗi đơn một lần; dòng không gắn đơn (hàng làm để bán chung) bị bỏ qua. */
+/** Các đơn có dòng trong YCSX. */
 export function orderIdsOf(
   items: readonly { orderItem: { orderId: string } | null }[],
 ): string[] {
@@ -252,9 +252,7 @@ export function productionRef(request: { id: string; code: string }) {
 /** Số lần thử lại tạo mã YCSX mới khi có create đồng thời lấy mất mã vừa tính. */
 const CODE_ATTEMPTS = 5;
 
-/**
- * Yêu cầu sản xuất (YCSX): danh sách gửi xưởng qua điện thoại, không tự gửi hay tự làm gì. `receive` là chỗ duy nhất hàng xưởng vào kho: tạo phiếu nhập WORKSHOP, mở một lot cho mỗi dòng đạt và một lot hỏng (DEFECT, `isSellable = false`) cùng nơi nhận cho phần còn lại, rồi ghi công nợ xưởng, trong một transaction. Quyền tới địa điểm dùng `canActAt`.
- */
+/** Service YCSX; `receive` là chỗ duy nhất hàng xưởng vào kho. */
 @Injectable()
 export class ProductionRequestService {
   constructor(
@@ -338,8 +336,7 @@ export class ProductionRequestService {
       items: { create: lines },
     } satisfies Omit<Prisma.ProductionRequestUncheckedCreateInput, 'code'>;
 
-    // Mã là số kế tiếp sau số cao nhất của shop; `@@unique([tenantId, code])` mới là chốt giữ nó duy nhất, nên create đồng thời
-    // lấy mất số của mình sẽ được thử lại với số kế tiếp, thay vì trả 409 mà không ai xử lý được.
+    // Thử lại với mã kế tiếp khi trùng mã.
     const latest = await this.prisma.productionRequest.findFirst({
       where: { tenantId, code: { startsWith: PRODUCTION_REQUEST_CODE_PREFIX } },
       orderBy: { code: 'desc' },
@@ -381,7 +378,7 @@ export class ProductionRequestService {
     if (dto.locationId && dto.locationId !== request.locationId) {
       await this.requireReceivingLocation(user, tenantId, dto.locationId);
     }
-    // Sửa nháp là gửi lại toàn bộ dòng, nên SKU đã có trên nháp này được giữ dù sản phẩm vừa bị tắt isManufacturable.
+    // Sửa nháp giữ SKU đã có dù sản phẩm vừa tắt sản xuất.
     const skusAlreadyOnRequest = new Set(
       request.items.map((item) => item.productItemId),
     );
@@ -430,7 +427,7 @@ export class ProductionRequestService {
     return this.toResponse(updated);
   }
 
-  /** "Thêm vào yêu cầu" từ danh sách sản xuất. Cùng SKU cùng dòng đơn thì cộng vào dòng sẵn có, không tạo dòng thứ hai. */
+  /** Thêm dòng vào YCSX từ danh sách sản xuất. */
   async addItem(user: AuthUser, id: string, dto: ProductionRequestLineDto) {
     const tenantId = requireTenantId(user);
     const request = await this.findRow(tenantId, id);
@@ -486,10 +483,7 @@ export class ProductionRequestService {
     return this.changeStatus(user, request, dto, { byWorkshop: false });
   }
 
-  /**
-   * Lõi đổi trạng thái tay, dùng chung cho shop (`updateStatus`) và xưởng huỷ yêu cầu (`ProductionDeliveryService.cancelRequest`, 2026-11-16).
-   * Quyền tới yêu cầu là việc của người gọi; `byWorkshop` chỉ quyết luật huỷ: YCSX xưởng đã xác nhận đang làm thì chỉ xưởng huỷ được.
-   */
+  /** Lõi đổi trạng thái tay, dùng chung cho shop và xưởng. */
   async changeStatus(
     user: AuthUser,
     request: RequestRow,
@@ -499,8 +493,7 @@ export class ProductionRequestService {
     const tenantId = request.tenantId;
     const id = request.id;
 
-    // Phiếu giao còn chờ nghĩa là hàng có thể đang đứng ở cửa: huỷ hoặc đóng thiếu lúc này sẽ khiến phiếu không nhận được.
-    // Kiểm sớm để báo ngay; trong transaction còn kiểm lại sau khi khoá dòng.
+    // Còn phiếu giao chờ nhận thì không huỷ / đóng thiếu.
     if (
       (dto.status === ProductionRequestStatus.CANCELLED ||
         dto.status === ProductionRequestStatus.COMPLETED) &&
@@ -537,8 +530,7 @@ export class ProductionRequestService {
       });
     }
 
-    // Huỷ hoặc đóng thiếu làm mất phần còn đang chờ, nên các dòng trên danh sách sản xuất có thể thành thiếu lại:
-    // chụp snapshot ngay, báo địa điểm sau khi ghi (quy tắc B-3).
+    // Chụp trạng thái thiếu trước khi ghi.
     const releases =
       dto.status === ProductionRequestStatus.CANCELLED ||
       dto.status === ProductionRequestStatus.COMPLETED;
@@ -553,13 +545,12 @@ export class ProductionRequestService {
     const closingShort = dto.status === ProductionRequestStatus.COMPLETED;
     const reason = dto.note?.trim();
     const now = new Date();
-    // Có điều kiện theo trạng thái đã xét, để hai lần bấm (hoặc một lần nhận chen giữa) không cùng qua được.
-    // Shop huỷ còn cần "xưởng chưa nhận làm": xưởng xác nhận (hay lập phiếu giao) chen vào giữa lúc đọc và lúc ghi thì huỷ không ghi được gì.
+    // Ghi có điều kiện theo trạng thái đã đọc.
     const shopCancelling =
       dto.status === ProductionRequestStatus.CANCELLED && !actor.byWorkshop;
     const moved = await this.prisma.$transaction(async (tx) => {
       if (releases) {
-        // Khoá dòng như lúc xưởng lập phiếu giao, rồi đếm lại phiếu chờ: một phiếu không chen được vào giữa lúc kiểm và lúc ghi.
+        // Khoá dòng rồi đếm lại phiếu chờ.
         await tx.$queryRaw`SELECT id FROM production_requests WHERE id = ${id} FOR UPDATE`;
         const pendingDeliveries = await tx.productionDelivery.count({
           where: {
@@ -586,7 +577,7 @@ export class ProductionRequestService {
           sentAt: dto.status === ProductionRequestStatus.SENT ? now : undefined,
           statusUpdatedById: user.userId,
           statusUpdatedAt: now,
-          // Lý do đóng thiếu / xưởng huỷ được ghi vào ghi chú có nhãn, vì đó là dấu vết duy nhất về lý do hàng đã đặt không về.
+          // Ghi lý do vào ghi chú.
           note: reason
             ? [request.note, this.labelledReason(reason, closingShort, actor)]
                 .filter(Boolean)
@@ -657,11 +648,7 @@ export class ProductionRequestService {
     return this.receiveGoods(user, request, dto, null);
   }
 
-  /**
-   * Điểm duy nhất hàng xưởng vào kho. Có `delivery` thì lần nhận xác nhận phiếu giao đó: mọi dòng phải có trên phiếu,
-   * không quá số xưởng báo đã gửi, và phiếu được khoá trong cùng transaction để hai người cùng xác nhận không thể cùng nhận.
-   * Quyền tới địa điểm là việc của người gọi.
-   */
+  /** Nhận hàng xưởng vào kho; có `delivery` thì xác nhận phiếu giao đó. */
   async receiveGoods(
     user: AuthUser,
     request: RequestRow,
@@ -859,7 +846,7 @@ export class ProductionRequestService {
             createdById: user.userId,
           };
           if (p.good > 0) {
-            // Tồn chỉ tăng ở đây (hành trình Bước 4). Hàng tuỳ chỉnh gắn với dòng đơn của nó, nên đơn khác không lấy được.
+            // Tăng tồn; hàng làm riêng gắn với dòng đơn của nó.
             await this.inventory.openLot(tx, {
               ...lot,
               locationId: request.locationId,
@@ -948,7 +935,7 @@ export class ProductionRequestService {
       request.supplierId,
       creditWarning,
     );
-    // Không kiểm tồn thấp: hàng về chỉ làm tồn tăng nên không thể vượt ngưỡng (contract §3 bước 5 có nêu, nhưng quy tắc bắt cạnh không bao giờ bắn khi tăng).
+    // Không kiểm tồn thấp khi hàng về.
     await this.notifyWaitingOrders(tenantId, request, priced, user.userId);
     if (delivery) {
       const recipients = await this.workshopStaffOf(
@@ -978,12 +965,12 @@ export class ProductionRequestService {
     return { ...this.toResponse(received), stockMovementId: movementId };
   }
 
-  /** Dòng phải trỏ tới SKU thật, sản xuất được của shop này (sản phẩm có `isManufacturable`), tối đa một lần cho mỗi (SKU, dòng đơn). Dòng gắn dòng đơn phải khớp SKU của dòng đó, và đơn còn chờ giao. Một query cho SKU, một cho dòng đơn (coding rule 19). */
+  /** Kiểm các dòng YCSX hợp lệ. */
   private async prepareLines(
     tenantId: string,
     lines: ProductionRequestLineDto[],
     skusAlreadyOnRequest: ReadonlySet<string> = new Set(),
-    /** Đang sửa YCSX này: các dòng sẵn có của nó sắp bị thay nên không tính vào số "đang chờ hàng" của dòng đơn. */
+    /** Bỏ các dòng hiện có của YCSX đang sửa. */
     excludeRequestId?: string,
   ): Promise<PreparedLine[]> {
     if (lines.length === 0) {
@@ -1076,7 +1063,7 @@ export class ProductionRequestService {
         ((line.attributeValues ?? []).length > 0 ||
           line.retailPrice !== undefined)
       ) {
-        // Checked here, before the shortage guard, so a malformed line is told what is wrong with it first.
+        // Báo lỗi dòng trước khi kiểm số thiếu.
         throw new BadRequestException({
           code: ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER,
           message:
@@ -1110,11 +1097,7 @@ export class ProductionRequestService {
     return prepared;
   }
 
-  /**
-   * Đặt xưởng cho dòng đơn không được vượt phần còn đặt được (`orderableLinesOf`, cùng phép tính với nút "Tạo YCSX" trên đơn):
-   * mỗi dòng <= min(phần dòng còn cần trừ phần YCSX gắn riêng đã nhận, số thiếu chung của (địa điểm, SKU)), và các dòng của một
-   * yêu cầu cùng (địa điểm, SKU) cộng lại <= số thiếu chung. Dòng không tính được thì bỏ qua. `excludeRequestId` = YCSX nháp đang sửa.
-   */
+  /** Kiểm số đặt xưởng cho dòng đơn không vượt phần còn đặt được. */
   private async assertWithinOrderShortage(
     tenantId: string,
     prepared: PreparedLine[],
@@ -1177,10 +1160,7 @@ export class ProductionRequestService {
     });
   }
 
-  /**
-   * Dòng đổi thuộc tính hoặc giá (2026-10-16): chuyển dòng sang SKU đúng bộ thuộc tính (`ProductVariantService`), có thể tạo SKU mới.
-   * Chạy sau `prepareLines`, nên SKU gốc đã được kiểm trước khi tạo gì. Dòng làm cho dòng đơn thì không được đổi: thứ được làm do dòng đơn quyết định.
-   */
+  /** Chuyển dòng đổi thuộc tính sang SKU đúng bộ thuộc tính. */
   private async applyVariants(
     user: AuthUser,
     tenantId: string,
@@ -1209,7 +1189,7 @@ export class ProductionRequestService {
     return result;
   }
 
-  /** Xưởng giao tới đâu: một địa điểm đang hoạt động của shop này, và người thao tác được làm việc tại đó. */
+  /** Kiểm địa điểm nhận hàng. */
   private async requireReceivingLocation(
     user: AuthUser,
     tenantId: string,
@@ -1229,7 +1209,7 @@ export class ProductionRequestService {
     return location;
   }
 
-  /** Người phụ trách các đơn đang chờ hàng vừa về (cùng địa điểm, chưa giao) được báo là có thể đóng gói. Một query cho mọi SKU về. */
+  /** Báo người phụ trách các đơn đang chờ hàng vừa về. */
   private async notifyWaitingOrders(
     tenantId: string,
     request: RequestRow,
@@ -1363,7 +1343,7 @@ export class ProductionRequestService {
     return value ? new Date(`${value}T00:00:00.000Z`) : null;
   }
 
-  /** P2002 trên chỉ mục mã – va chạm duy nhất mà `create` thử lại. Lỗi khác là lỗi thật, đi tới AllExceptionsFilter như thường. */
+  /** Lỗi trùng mã YCSX. */
   private isCodeCollision(error: unknown): boolean {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1371,7 +1351,7 @@ export class ProductionRequestService {
     );
   }
 
-  /** Hình dạng `ProductionRequest` theo contract: NCC và địa điểm nêu một lần, người lồng vào, các lần nhận (phiếu nhập WORKSHOP) gom từ các dòng. */
+  /** Đổi YCSX sang dạng response. */
   toResponse(request: RequestRow) {
     const {
       supplierId,

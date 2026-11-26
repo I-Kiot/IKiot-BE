@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 
-/** Những gì server cần trước khi nhận traffic - lỗi ngay lúc boot, không đợi tới request đầu tiên cần giá trị. */
+/** Biến môi trường bắt buộc, thiếu thì dừng ngay lúc khởi động. */
 const REQUIRED = [['DATABASE_URL', 'Postgres connection string']] as const;
 
-/** Khoá access token: ACCESS_TOKEN_SECRET rồi tới JWT_SECRET (thứ tự ưu tiên của iKiotMS-BE). Resolve một lần để signer và verifier không lệch nhau. */
+/** Khoá access token: ưu tiên ACCESS_TOKEN_SECRET rồi tới JWT_SECRET. */
 export function accessTokenSecret(): string {
   return (
     process.env.ACCESS_TOKEN_SECRET?.trim() ||
@@ -42,7 +42,7 @@ const OPTIONAL = [
   ['SEPAY_API_KEY', 'shops are never marked as linked to SePay automatically'],
 ] as const;
 
-/** Origin trình duyệt được phép gọi qua HTTP và Socket.IO: `CORS_ORIGIN` (phân cách bằng dấu phẩy), không có thì `FRONTEND_URL`, không có nữa thì `true` (chỉ dev). */
+/** Origin được gọi API và Socket.IO: `CORS_ORIGIN`, rồi `FRONTEND_URL`, không có thì `true` (dev). */
 export function corsOrigins(): string[] | true {
   const configured =
     process.env.CORS_ORIGIN?.trim() || process.env.FRONTEND_URL?.trim();

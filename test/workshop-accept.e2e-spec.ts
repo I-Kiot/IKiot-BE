@@ -10,8 +10,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Xưởng xác nhận đang làm YCSX (2026-11-16) trên Postgres thật: đã nhận làm thì shop không huỷ được mà chỉ xưởng huỷ được,
-// lập phiếu giao tự tính là nhận làm, và hai bên bấm cùng lúc chỉ một bên thắng. Tự tạo tenant riêng và xoá sau khi chạy.
+// Kiểm xưởng xác nhận đang làm YCSX (Postgres thật).
 describe('workshop accepts a production request', () => {
   let app: INestApplication;
   let prisma: PrismaService;

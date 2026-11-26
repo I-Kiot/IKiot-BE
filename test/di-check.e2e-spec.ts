@@ -11,14 +11,14 @@ import { InventoryService } from './../src/modules/inventories/inventories.servi
 import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
 import { UserService } from './../src/modules/users/users.service';
 
-// Biên dịch toàn bộ đồ thị DI mà không gọi init(), không cần database. Bắt lỗi nối dây mà type-check không thấy: provider chưa export từ module, thiếu DiscoveryModule, hoặc service được inject nhưng chưa đăng ký.
+// Biên dịch toàn bộ đồ thị DI để bắt lỗi nối provider, không cần DB.
 describe('AppModule DI graph', () => {
   it('resolves every rewired provider', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
-    // Không resolve được APP_* theo token từ testing module đã compile, nên wiring của interceptor được kiểm ở test discovery bên dưới.
+    // Wiring interceptor kiểm ở test discovery bên dưới.
     expect(
       moduleRef.get(SubscriptionBillingService, { strict: false }),
     ).toBeDefined();
@@ -32,7 +32,7 @@ describe('AppModule DI graph', () => {
     expect(moduleRef.get(UserService, { strict: false })).toBeDefined();
   });
 
-  // Mục đích của @AuditTemplate(): module nghiệp vụ tự đăng ký descriptor, AppModule không cần liệt kê. Nếu discovery trả rỗng, audit sẽ âm thầm rơi về mô tả chung thay vì báo lỗi.
+  // Kiểm các @AuditTemplate() được tự dò thấy.
   it('discovers every @AuditTemplate() descriptor', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],

@@ -9,7 +9,7 @@ const listLink = (locationId: string | null, productItemId: string) => {
 
 /** Nội dung thông báo sản xuất / xưởng (hành trình GĐ1 – Bước 4). */
 export const ProductionRequestNotificationTemplates = {
-  /** Chỉ gửi khi dòng vừa chuyển từ đủ hàng sang thiếu (`crossedShortage`, edge-triggered), không gửi lặp lại. Gửi cho người phụ trách location đó. */
+  /** Báo khi dòng vừa chuyển sang thiếu. */
   shortageDetected: (args: {
     label: string;
     locationName: string | null;
@@ -90,7 +90,7 @@ export const ProductionRequestNotificationTemplates = {
     link: `/exchange/imports?source=WORKSHOP`,
   }),
 
-  /** Xưởng huỷ YCSX; gửi người tạo YCSX và chủ shop. Phần hàng còn đặt thôi được tính, danh sách cần sản xuất hiện lại chỗ thiếu. */
+  /** Xưởng huỷ YCSX. */
   workshopCancelled: (args: {
     requestCode: string;
     workshopName: string;
