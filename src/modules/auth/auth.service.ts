@@ -24,7 +24,9 @@ import { UpdateMeDto } from './dto/update-me.dto';
 import { ForgotPasswordDto, ResendOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import { CheckAvailabilityDto, ResetPasswordDto } from './dto/session.dto';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
-import { OtpPurpose, OtpService } from './otp.service';
+import { maskEmail, OtpPurpose, OtpService } from './otp.service';
+import { decoySubjectId } from './forgot-password-decoy';
+import { accessTokenSecret } from '../../common/config/env';
 import { RefreshTokenService } from './refresh-token.service';
 import { FirebaseService } from '../../common/firebase/firebase.service';
 import { ErrorCode } from '../../common/errors/error-codes';
@@ -94,6 +96,7 @@ export class AuthService {
       type?: string;
       purpose?: string;
       jti?: string;
+      to?: unknown;
     };
     try {
       payload = this.jwt.verify(token);
@@ -111,7 +114,12 @@ export class AuthService {
       (expected && purpose !== expected)
     )
       throw this.invalidChallenge();
-    return { userId: payload.sub, purpose, jti: payload.jti };
+    return {
+      userId: payload.sub,
+      purpose,
+      jti: payload.jti,
+      sentTo: typeof payload.to === 'string' ? payload.to : undefined,
+    };
   }
 
   /** Mỗi challenge chỉ đổi được một lần, kể cả khi mã là DEV_BYPASS. */
@@ -292,6 +300,19 @@ export class AuthService {
       where: { id: challenge.userId },
       select: { id: true, email: true, status: true, emailVerifiedAt: true },
     });
+    // Gửi lại cho challenge mồi: không gửi gì nhưng cùng cooldown và câu trả lời, để gửi lại cũng không lộ email có tài khoản.
+    if (
+      !user &&
+      challenge.purpose === OtpPurpose.RESET_PASSWORD &&
+      challenge.sentTo
+    )
+      return this.otp.sendDecoy(
+        challenge.purpose,
+        challenge.userId,
+        challenge.sentTo,
+        challenge.jti,
+        'reject',
+      );
     if (!user || !user.email || INACTIVE_USER_STATUSES.has(user.status))
       throw this.invalidChallenge();
     if (challenge.purpose === OtpPurpose.VERIFY_EMAIL && user.emailVerifiedAt)
@@ -525,16 +546,60 @@ export class AuthService {
     return user;
   }
 
+  /** Challenge quên mật khẩu (thật hoặc mồi) mang `to` là email đã che, để "gửi lại" của mồi trả đúng `sentTo` mà không cần lưu thêm. */
+  private async issueResetChallenge(
+    subjectId: string,
+    email: string,
+    real: boolean,
+  ) {
+    const purpose = OtpPurpose.RESET_PASSWORD;
+    const jti = randomUUID();
+    const delivery = real
+      ? await this.otp.send(purpose, { id: subjectId, email }, jti, 'rebind')
+      : await this.otp.sendDecoy(
+          purpose,
+          subjectId,
+          maskEmail(email),
+          jti,
+          'rebind',
+        );
+    const challengeToken = this.jwt.sign(
+      {
+        sub: subjectId,
+        type: OTP_CHALLENGE_TOKEN_TYPE,
+        purpose,
+        jti,
+        to: delivery.sentTo,
+      },
+      { expiresIn: CHALLENGE_TTL_SECONDS },
+    );
+    return { requiresOtp: true as const, challengeToken, ...delivery };
+  }
+
+  /** Email không có tài khoản hợp lệ nhận challenge mồi để không lộ email nào đã đăng ký (PO, 2026-11-26); số điện thoại vẫn báo lỗi rõ vì app shipper còn gửi. */
   async sendForgotPasswordOtp(dto: ForgotPasswordDto) {
-    const user = await this.resettableUser(
-      dto.identifier ?? dto.phoneNumber ?? '',
-    );
+    const identifier = (dto.identifier ?? dto.phoneNumber ?? '').trim();
+    if (identifier.includes('@')) {
+      const email = identifier.toLowerCase();
+      const user = await this.findByIdentifier(email);
+      const eligible =
+        !!user && !!user.email && !INACTIVE_USER_STATUSES.has(user.status);
+      const challenge = eligible
+        ? await this.issueResetChallenge(user.id, user.email!, true)
+        : await this.issueResetChallenge(
+            decoySubjectId(email, accessTokenSecret()),
+            email,
+            false,
+          );
+      return {
+        ...challenge,
+        message: 'Nếu email đã đăng ký, mã OTP đã được gửi tới email này.',
+      };
+    }
+
+    const user = await this.resettableUser(identifier);
     if (!user.email) throw this.emailMissing();
-    const challenge = await this.issueChallenge(
-      { id: user.id, email: user.email },
-      OtpPurpose.RESET_PASSWORD,
-      'rebind',
-    );
+    const challenge = await this.issueResetChallenge(user.id, user.email, true);
     return { ...challenge, message: 'Đã gửi mã OTP tới email của bạn.' };
   }
 
@@ -553,8 +618,17 @@ export class AuthService {
         emailVerifiedAt: true,
       },
     });
-    if (!user || INACTIVE_USER_STATUSES.has(user.status))
+    if (!user) {
+      // Mồi vẫn chạy kiểm mã thật để lỗi và số lần thử giống hệt tài khoản thật; không ai biết mã nên chỉ DEV_BYPASS mới qua được tới throw.
+      await this.otp.verify(
+        OtpPurpose.RESET_PASSWORD,
+        challenge.userId,
+        challenge.jti,
+        dto.otpCode,
+      );
       throw this.invalidChallenge();
+    }
+    if (INACTIVE_USER_STATUSES.has(user.status)) throw this.invalidChallenge();
 
     await this.otp.verify(
       OtpPurpose.RESET_PASSWORD,
