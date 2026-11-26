@@ -115,14 +115,17 @@ export class CashflowQueryDto extends StatsQueryDto {
   fund?: string;
 }
 
-export class CashflowListQueryDto extends CashflowQueryDto {
+/** Bộ lọc của Sổ thu chi, dùng chung cho danh sách và file xuất. */
+export class CashflowExportQueryDto extends CashflowQueryDto {
   @IsOptional()
   @upper()
   @IsIn(PAYMENT_METHODS, {
     message: `paymentMethod phải là ${PAYMENT_METHODS.join(', ')}`,
   })
   paymentMethod?: string;
+}
 
+export class CashflowListQueryDto extends CashflowExportQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()

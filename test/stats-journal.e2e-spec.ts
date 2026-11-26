@@ -387,7 +387,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
       expect(byAssignee.staff).toEqual([
         {
           userId: driverId,
-          staffName: 'Tài Xế',
+          staffName: 'Xế Tài',
           revenue: 600,
           orderCount: 1,
           aov: 600,
@@ -407,7 +407,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
           limit: 50,
         }),
       );
-      expect(ofDriver.staffName).toBe('Tài Xế');
+      expect(ofDriver.staffName).toBe('Xế Tài');
       expect(ofDriver.summary).toEqual({
         revenue: 600,
         orderCount: 1,
@@ -768,7 +768,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
       expect(report.shipperCash.amount).toBe(700);
       expect(report.shipperCash.items[0]).toMatchObject({
         collectorId: driverId,
-        collectorName: 'Tài Xế',
+        collectorName: 'Xế Tài',
         orderCount: 1,
         amount: 700,
       });

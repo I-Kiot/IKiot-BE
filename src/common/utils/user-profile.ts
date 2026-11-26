@@ -56,16 +56,27 @@ export function withNestedProfile<T extends FlatUserProfile>(
   };
 }
 
+/** Họ tên kiểu Việt ("Ngô Văn Tài"); chưa có phần nào thì null. */
+export function profileFullName(
+  row: {
+    profileLastName?: string | null;
+    profileFirstName?: string | null;
+  } | null,
+): string | null {
+  if (!row) return null;
+  return (
+    [row.profileLastName, row.profileFirstName]
+      .filter((part) => part && part.trim())
+      .join(' ')
+      .trim() || null
+  );
+}
+
 /** Tên hiển thị: họ tên, chưa có thì số điện thoại. */
 export function personName(row: {
   profileLastName?: string | null;
   profileFirstName?: string | null;
   phoneNumber: string;
 }): string {
-  return (
-    [row.profileLastName, row.profileFirstName]
-      .filter((part) => part && part.trim())
-      .join(' ')
-      .trim() || row.phoneNumber
-  );
+  return profileFullName(row) ?? row.phoneNumber;
 }

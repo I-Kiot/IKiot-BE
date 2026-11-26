@@ -18,6 +18,7 @@ import {
   HELD_UNDECIDED_ORDER_SQL,
 } from '../orders/held-undecided';
 import { orderScope } from './stats-scope';
+import { profileFullName } from '../../common/utils/user-profile';
 import { SalesJournalEntryType } from '../../common/constants/sales-journal';
 import {
   averageOrderValue,
@@ -34,16 +35,8 @@ import {
 /** Số dòng chi tiết mỗi danh sách của báo cáo đối soát; tổng và số đếm tính trên tất cả. */
 const UNRECONCILED_LIST_LIMIT = 50;
 
-/** Cùng cách ghép tên như `StatsService`: chưa có tên thì `null`. */
-function fullName(
-  user: {
-    profileFirstName: string | null;
-    profileLastName: string | null;
-  } | null,
-): string | null {
-  if (!user?.profileFirstName) return null;
-  return `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim();
-}
+// Họ tên ghép một kiểu với mọi màn khác ("Ngô Văn Tài"), qua `profileFullName`.
+const fullName = profileFullName;
 
 /** Báo cáo sổ doanh thu và tiền chưa khớp. */
 @Injectable()

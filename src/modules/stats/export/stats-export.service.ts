@@ -3,7 +3,7 @@ import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { AuthUser } from '../../../common/types/auth-user.type';
 import { VIETNAM_TIMEZONE } from '../../../common/constants/timezone';
-import { StatsService } from '../stats.service';
+import { CASHFLOW_EXPORT_LIMIT, StatsService } from '../stats.service';
 import { StatsReportsService } from '../stats-reports.service';
 import {
   businessDatesOf,
@@ -14,6 +14,7 @@ import {
 } from '../stats-math';
 import { GroupBy, TopProductsSort } from '../stats.constants';
 import {
+  CashflowExportQueryDto,
   CashflowQueryDto,
   InventoryStatsQueryDto,
   ReportExportQueryDto,
@@ -256,6 +257,83 @@ export class StatsExportService {
     return {
       buffer: await toBuffer(workbook),
       filename: `so-doanh-thu_${period.from}_${period.to}.xlsx`,
+    };
+  }
+
+  // ---------------------------------------------------------------- Sổ thu chi
+
+  /** Xuất Sổ thu chi: mọi dòng khớp bộ lọc đang xem, cùng cột với bảng trên trang. */
+  async cashflow(
+    user: AuthUser,
+    query: CashflowExportQueryDto,
+  ): Promise<ExportedFile> {
+    const [rows, place] = await Promise.all([
+      this.stats.getCashflowForExport(user, query),
+      this.placeLabel(user, query.branchId ?? query.warehouseId),
+    ]);
+    const period = businessDatesOf(query.range());
+    const periodLine = `Từ ngày ${formatDateVi(period.from)} đến ngày ${formatDateVi(period.to)} - ${place}`;
+    const workbook = newWorkbook();
+
+    const sheet = new ReportSheet(
+      workbook.addWorksheet('Sổ thu chi'),
+      [17, 18, 8, 26, 14, 16, 22, 24, 40, 20, 16, 16],
+    );
+    sheet.title('Sổ thu chi', [periodLine]);
+    sheet.tableHeader(
+      [
+        'Thời gian',
+        'Mã chứng từ',
+        'Loại',
+        'Khoản mục',
+        'Quỹ',
+        'Phương thức',
+        'Nơi',
+        'Nhà cung cấp',
+        'Diễn giải',
+        'Người ghi',
+        'Thu',
+        'Chi',
+      ],
+      [10, 11],
+    );
+    for (const row of rows) {
+      const income = row.flowType === 'INCOME';
+      sheet.dataRow([
+        dateTimeVi(row.createdAt),
+        row.paymentReference ?? '-',
+        income ? 'Thu' : 'Chi',
+        cashFlowCategoryLabel(row.category) || '-',
+        fundLabel(row.fund) || '-',
+        paymentMethodLabel(row.paymentMethod) || '-',
+        row.locationName ?? '-',
+        row.supplierName ?? '-',
+        row.description ?? '-',
+        row.createdByName ?? '-',
+        income ? row.amount : null,
+        income ? null : row.amount,
+      ]);
+    }
+    if (rows.length === 0) sheet.emptyRow('Không có dữ liệu');
+    const income = sumOf(rows, (r) => (r.flowType === 'INCOME' ? r.amount : 0));
+    const expense = sumOf(rows, (r) =>
+      r.flowType === 'INCOME' ? 0 : r.amount,
+    );
+    const blanks = Array<null>(9).fill(null);
+    sheet.dataRow(['Tổng cộng', ...blanks, income, expense], { strong: true });
+    sheet.dataRow(['Chênh lệch thu chi', ...blanks, income - expense, null], {
+      strong: true,
+    });
+    if (rows.length >= CASHFLOW_EXPORT_LIMIT) {
+      sheet.blank();
+      sheet.note(
+        `File chỉ có ${CASHFLOW_EXPORT_LIMIT} dòng mới nhất; thu hẹp kỳ hoặc bộ lọc để xuất đủ.`,
+      );
+    }
+
+    return {
+      buffer: await toBuffer(workbook),
+      filename: `so-thu-chi_${period.from}_${period.to}.xlsx`,
     };
   }
 
