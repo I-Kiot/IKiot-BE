@@ -72,7 +72,7 @@ export class InspectOrderReturnItemDto {
   })
   condition?: string;
 
-  /** Chỉ cho GOOD: hàng được đưa về đâu. Mặc định là nơi hàng xuất, nơi này phải bán được. */
+  /** Hàng được đưa về đâu, cả GOOD lẫn DAMAGED. Mặc định là nơi hàng xuất. DAMAGED thành lô hỏng tại đó. */
   @IsOptional()
   @IsUUID()
   locationId?: string;

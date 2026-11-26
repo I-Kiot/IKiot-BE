@@ -28,7 +28,6 @@ describe('F-1 order journey, end to end over HTTP', () => {
   let tenantId = '';
   let branchId = '';
   let warehouseId = '';
-  let damagedId = '';
   let workshopId = '';
   let sofaId = '';
   let customerId = '';
@@ -48,6 +47,19 @@ describe('F-1 order journey, end to end over HTTP', () => {
       where: { tenantId, locationId, productItemId: sofaId },
       select: { stock: true, lockedStock: true },
     });
+  // Hàng hỏng (2026-11-26): lô isSellable = false tại chính kho, ngoài stock.
+  const damagedAt = async (locationId: string) =>
+    (
+      await prisma.inventoryLot.aggregate({
+        where: {
+          tenantId,
+          locationId,
+          productItemId: sofaId,
+          isSellable: false,
+        },
+        _sum: { remainingQuantity: true },
+      })
+    )._sum.remainingQuantity ?? 0;
   const shortRow = async () => {
     const list = await http()
       .get('/production-list')
@@ -142,7 +154,6 @@ describe('F-1 order journey, end to end over HTTP', () => {
       where: { tenantId: t },
       data: {
         managerId: null,
-        damagedLocationId: null,
         defaultFulfillmentLocationId: null,
       },
     });
@@ -155,7 +166,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     await prisma.tenant.deleteMany({ where: { id: t } });
   }
 
-  it('sets up a shop: branch, warehouse with a damaged-goods warehouse, a workshop, a sofa, a customer', async () => {
+  it('sets up a shop: branch, warehouse, a workshop, a sofa, a customer', async () => {
     const registered = await http()
       .post('/auth/register')
       .send({
@@ -181,28 +192,12 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send()
       .expect(201);
-    // Gói dùng thử chỉ cho một kho; hành trình cần thêm kho hàng hỏng bên cạnh kho chính.
-    await prisma.subscription.updateMany({
-      where: { tenantId },
-      data: { quotaSnapshotMaxWarehouses: 5 },
-    });
 
     branchId = (
       await http()
         .post('/branches')
         .set(auth())
         .send({ name: 'CN Quận 1', phoneNumber: [`091${RUN}`] })
-        .expect(201)
-    ).body.data.id;
-    damagedId = (
-      await http()
-        .post('/warehouses')
-        .set(auth())
-        .send({
-          name: 'Kho hàng hỏng',
-          phoneNumber: [`092${RUN}`],
-          isSellable: false,
-        })
         .expect(201)
     ).body.data.id;
     warehouseId = (
@@ -212,7 +207,6 @@ describe('F-1 order journey, end to end over HTTP', () => {
         .send({
           name: 'Kho tổng',
           phoneNumber: [`093${RUN}`],
-          damagedLocationId: damagedId,
         })
         .expect(201)
     ).body.data.id;
@@ -340,7 +334,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     });
   });
 
-  it('receives the workshop delivery: good pieces on the shelf, the defect in the damaged-goods warehouse', async () => {
+  it('receives the workshop delivery: good pieces on the shelf, the defect as a damaged lot in the same warehouse', async () => {
     const requestItems = (
       await http()
         .get(`/production-requests/${requestId}`)
@@ -373,7 +367,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     expect(received.body.data.receipts).toHaveLength(1);
 
     expect(await stockAt(warehouseId)).toEqual({ stock: 2, lockedStock: 0 });
-    expect((await stockAt(damagedId))?.stock).toBe(1);
+    expect(await damagedAt(warehouseId)).toBe(1);
     expect((await order()).items[0].stockCheck.status).toBe('ENOUGH');
   });
 
@@ -482,7 +476,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
     saleBefore = JSON.parse(JSON.stringify(sale)) as Record<string, unknown>;
   });
 
-  it('takes back a damaged piece into the damaged-goods warehouse', async () => {
+  it('takes back a damaged piece as a damaged lot where it shipped from', async () => {
     const created = await http()
       .post('/order-returns')
       .set(auth())
@@ -529,7 +523,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
         .paymentStatus,
     ).toBe('PARTIALLY_REFUNDED');
 
-    expect((await stockAt(damagedId))?.stock).toBe(2);
+    expect(await damagedAt(warehouseId)).toBe(2);
     expect(await stockAt(warehouseId)).toEqual({ stock: 0, lockedStock: 0 });
     // Trả một phần: đơn vẫn hoàn thành.
     expect((await order()).status).toBe('COMPLETED');

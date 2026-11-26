@@ -253,7 +253,7 @@ export function productionRef(request: { id: string; code: string }) {
 const CODE_ATTEMPTS = 5;
 
 /**
- * Yêu cầu sản xuất (YCSX): danh sách gửi xưởng qua điện thoại, không tự gửi hay tự làm gì. `receive` là chỗ duy nhất hàng xưởng vào kho: tạo phiếu nhập WORKSHOP, mở một lot cho mỗi dòng đạt và một lot DEFECT cho phần còn lại, rồi ghi công nợ xưởng, trong một transaction. Quyền tới địa điểm dùng `canActAt`.
+ * Yêu cầu sản xuất (YCSX): danh sách gửi xưởng qua điện thoại, không tự gửi hay tự làm gì. `receive` là chỗ duy nhất hàng xưởng vào kho: tạo phiếu nhập WORKSHOP, mở một lot cho mỗi dòng đạt và một lot hỏng (DEFECT, `isSellable = false`) cùng nơi nhận cho phần còn lại, rồi ghi công nợ xưởng, trong một transaction. Quyền tới địa điểm dùng `canActAt`.
  */
 @Injectable()
 export class ProductionRequestService {
@@ -728,18 +728,8 @@ export class ProductionRequestService {
       });
     }
 
-    const defectTotal = arriving.reduce(
-      (sum, entry) => sum + (entry.defectQuantity ?? 0),
-      0,
-    );
-    const defectLocationId =
-      defectTotal > 0
-        ? await this.resolveDefectLocation(
-            tenantId,
-            request,
-            dto.defectLocationId,
-          )
-        : null;
+    // Hàng lỗi nằm lại nơi nhận, thành lô hỏng ngoài `stock` (2026-11-26), không còn kho hàng hỏng riêng.
+    const defectLocationId = request.locationId;
 
     const priced = arriving.map((entry) => {
       const line = lineById.get(entry.productionRequestItemId)!;
@@ -883,8 +873,9 @@ export class ProductionRequestService {
           if (p.defect > 0) {
             await this.inventory.openLot(tx, {
               ...lot,
-              locationId: defectLocationId!,
+              locationId: defectLocationId,
               quantity: p.defect,
+              isSellable: false,
               ledger: { ...ledger, type: InventoryTxType.DEFECT },
             });
           }
@@ -1218,7 +1209,7 @@ export class ProductionRequestService {
     return result;
   }
 
-  /** Xưởng giao tới đâu: một địa điểm đang hoạt động, bán được, của shop này, và người thao tác được làm việc tại đó. */
+  /** Xưởng giao tới đâu: một địa điểm đang hoạt động của shop này, và người thao tác được làm việc tại đó. */
   private async requireReceivingLocation(
     user: AuthUser,
     tenantId: string,
@@ -1226,7 +1217,7 @@ export class ProductionRequestService {
   ) {
     const location = await this.prisma.location.findFirst({
       where: { id: locationId, tenantId },
-      select: { id: true, type: true, status: true, isSellable: true },
+      select: { id: true, type: true, status: true },
     });
     if (!location || location.status === LocationStatus.DELETED) {
       throw new NotFoundException({
@@ -1234,56 +1225,8 @@ export class ProductionRequestService {
         message: 'Location not found',
       });
     }
-    if (!location.isSellable) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_NOT_SELLABLE,
-        message:
-          'A workshop cannot deliver to a damaged-goods location; choose a branch or warehouse that sells',
-      });
-    }
     if (!canActAt(user, location)) throw this.locationDenied();
     return location;
-  }
-
-  /** Hàng lỗi về địa điểm được chỉ định, nếu không thì về kho hàng hỏng của địa điểm nhận; dù thế nào cũng phải là kho của shop này và không bán được. */
-  private async resolveDefectLocation(
-    tenantId: string,
-    request: RequestRow,
-    requested: string | undefined,
-  ): Promise<string> {
-    let targetId = requested;
-    if (!targetId) {
-      const receiving = await this.prisma.location.findFirst({
-        where: { id: request.locationId, tenantId },
-        select: { damagedLocationId: true },
-      });
-      targetId = receiving?.damagedLocationId ?? undefined;
-    }
-    if (!targetId) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_DAMAGED_REQUIRED,
-        message:
-          'The receiving location has no damaged-goods location; name one (defectLocationId) to put the defective units in',
-      });
-    }
-    const target = await this.prisma.location.findFirst({
-      where: { id: targetId, tenantId },
-      select: { isSellable: true },
-    });
-    if (!target) {
-      throw new NotFoundException({
-        code: ErrorCode.LOCATION_NOT_FOUND,
-        message: 'Location not found',
-      });
-    }
-    if (target.isSellable) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_DAMAGED_INVALID,
-        message:
-          'Defective units must go to a damaged-goods (non-sellable) location',
-      });
-    }
-    return targetId;
   }
 
   /** Người phụ trách các đơn đang chờ hàng vừa về (cùng địa điểm, chưa giao) được báo là có thể đóng gói. Một query cho mọi SKU về. */

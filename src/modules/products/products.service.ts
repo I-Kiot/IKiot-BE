@@ -57,6 +57,22 @@ import {
 /** Tiền tố mã sản phẩm tự cấp (`SP000001`, ...). */
 const CODE_PREFIX = 'SP';
 
+/** Lô hỏng còn hàng (2026-11-26): nằm ngoài `stock`, chỉ để báo số hỏng và filter "Có hàng hỏng". */
+const damagedLotWhere = {
+  isSellable: false,
+  remainingQuantity: { gt: 0 },
+} as const satisfies Prisma.InventoryLotWhereInput;
+
+/** Cùng phép lọc như `locationWhere`, viết cho bảng lô. */
+function lotLocationWhere(
+  query: LocationRefQueryDto,
+): Prisma.InventoryLotWhereInput {
+  return {
+    ...(query.locationId ? { locationId: query.locationId } : {}),
+    ...(query.locationType ? { location: { type: query.locationType } } : {}),
+  };
+}
+
 /** DTO phiên bản khi `allocateItemCodes` đã điền đủ hai mã và chuẩn hoá mã vạch (trống = null). */
 type ItemWithCodes = Omit<CreateProductItemDto, 'barcode'> & {
   productCode: string;
@@ -156,6 +172,12 @@ type ItemRow = Prisma.ProductItemGetPayload<{ include: typeof ITEM_INCLUDE }>;
 export interface StockDetail {
   inventoryId: string;
   stock: number;
+  /** Trên kệ (`stock − lockedStock`): phần đánh dấu hỏng được. */
+  shelf: number;
+  /** Hàng hỏng tại đây (lô `isSellable = false`), ngoài `stock` (2026-11-26). */
+  damagedQuantity: number;
+  /** Chiếc may riêng còn bán được tại đây, theo dòng đơn - để chọn đúng chiếc khi đánh dấu hỏng. */
+  customUnits: { orderItemId: string; orderCode: string; quantity: number }[];
   location: LocationRef;
 }
 
@@ -308,6 +330,19 @@ export class ProductService {
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
+    if (query.hasDamaged) {
+      where.AND = [
+        {
+          productItems: {
+            some: {
+              inventoryLots: {
+                some: { ...damagedLotWhere, ...lotLocationWhere(query) },
+              },
+            },
+          },
+        },
+      ];
+    }
 
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
@@ -338,6 +373,11 @@ export class ProductService {
       query,
     );
     for (const [productId, total] of comboSets) totals.set(productId, total);
+    const damaged = await this.damagedByProduct(
+      tenantId,
+      rows.map((row) => row.id),
+      query,
+    );
 
     const data = rows.map(({ brand, ...product }) => {
       const total = totals.get(product.id);
@@ -346,6 +386,8 @@ export class ProductService {
         brandName: brand?.name ?? null,
         totalStock: total?.here ?? 0,
         totalStockAllLocations: total?.allLocations ?? 0,
+        // Hàng hỏng nằm ngoài totalStock (lô `isSellable = false`), báo riêng theo cùng phạm vi địa điểm.
+        damagedStock: damaged.get(product.id) ?? 0,
       };
     });
 
@@ -1259,6 +1301,49 @@ export class ProductService {
       },
     });
 
+    // Lô hỏng và lô may riêng còn hàng của các dòng này, một query; chỉ dùng cho `details` (nơi đang xem).
+    const lots = await this.prisma.inventoryLot.findMany({
+      where: {
+        tenantId,
+        productItemId: { in: itemIds },
+        remainingQuantity: { gt: 0 },
+        OR: [{ isSellable: false }, { orderItemId: { not: null } }],
+      },
+      select: {
+        locationId: true,
+        productItemId: true,
+        isSellable: true,
+        orderItemId: true,
+        remainingQuantity: true,
+        orderItem: { select: { order: { select: { code: true } } } },
+      },
+    });
+    const pairKey = (locationId: string, productItemId: string) =>
+      `${locationId}:${productItemId}`;
+    const damagedAt = new Map<string, number>();
+    const customAt = new Map<
+      string,
+      Map<string, StockDetail['customUnits'][number]>
+    >();
+    for (const lot of lots) {
+      const k = pairKey(lot.locationId, lot.productItemId);
+      if (!lot.isSellable) {
+        damagedAt.set(k, (damagedAt.get(k) ?? 0) + lot.remainingQuantity);
+      } else if (lot.orderItemId) {
+        const units =
+          customAt.get(k) ??
+          new Map<string, StockDetail['customUnits'][number]>();
+        const unit = units.get(lot.orderItemId) ?? {
+          orderItemId: lot.orderItemId,
+          orderCode: lot.orderItem?.order.code ?? '',
+          quantity: 0,
+        };
+        unit.quantity += lot.remainingQuantity;
+        units.set(lot.orderItemId, unit);
+        customAt.set(k, units);
+      }
+    }
+
     for (const row of rows) {
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
@@ -1269,10 +1354,14 @@ export class ProductService {
       entry.allLocations += row.stock;
       entry.availableAllLocations += shelfOf(row);
       if (here(row)) {
+        const k = pairKey(row.locationId, row.productItemId);
         entry.available += shelfOf(row);
         entry.details.push({
           inventoryId: row.id,
           stock: row.stock,
+          shelf: shelfOf(row),
+          damagedQuantity: damagedAt.get(k) ?? 0,
+          customUnits: [...(customAt.get(k)?.values() ?? [])],
           location: row.location,
         });
       }
@@ -1377,6 +1466,33 @@ export class ProductService {
       totals.set(productId, entry);
     }
     return totals;
+  }
+
+  /** Số hàng hỏng của từng sản phẩm tại địa điểm đang chọn (hoặc toàn chuỗi), cộng từ lô hỏng còn hàng. */
+  private async damagedByProduct(
+    tenantId: string,
+    productIds: string[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, number>> {
+    const byProduct = new Map<string, number>();
+    if (productIds.length === 0) return byProduct;
+    const lots = await this.prisma.inventoryLot.findMany({
+      where: {
+        tenantId,
+        ...damagedLotWhere,
+        ...lotLocationWhere(location),
+        productItem: { productId: { in: productIds } },
+      },
+      select: {
+        remainingQuantity: true,
+        productItem: { select: { productId: true } },
+      },
+    });
+    for (const lot of lots) {
+      const id = lot.productItem.productId;
+      byProduct.set(id, (byProduct.get(id) ?? 0) + lot.remainingQuantity);
+    }
+    return byProduct;
   }
 
   /** Ba số tồn của một phiên bản (combo thì lấy từ số bộ). Đây là bản duy nhất của phép tính; món và thành phần combo báo cùng cách. */

@@ -29,7 +29,6 @@ describe('production list, production requests and workshop receipts', () => {
   const staffId = randomUUID();
   const branchId = randomUUID();
   const warehouseId = randomUUID();
-  const damagedId = randomUUID();
   const workshopId = randomUUID();
   const goodsSupplierId = randomUUID();
   const customerId = randomUUID();
@@ -88,11 +87,30 @@ describe('production list, production requests and workshop receipts', () => {
       where: { tenantId, locationId, productItemId: cabinetId },
     });
     const lots = await prisma.inventoryLot.aggregate({
-      where: { tenantId, locationId, productItemId: cabinetId },
+      where: {
+        tenantId,
+        locationId,
+        productItemId: cabinetId,
+        isSellable: true,
+      },
       _sum: { remainingQuantity: true },
     });
     expect(lots._sum.remainingQuantity ?? 0).toBe(row?.stock ?? 0);
     return row?.stock ?? 0;
+  }
+
+  /** Hàng hỏng (2026-11-26): lô `isSellable = false` tại địa điểm, ngoài stock. */
+  async function damagedAt(locationId: string) {
+    const lots = await prisma.inventoryLot.aggregate({
+      where: {
+        tenantId,
+        locationId,
+        productItemId: cabinetId,
+        isSellable: false,
+      },
+      _sum: { remainingQuantity: true },
+    });
+    return lots._sum.remainingQuantity ?? 0;
   }
 
   const listRows = async (
@@ -138,20 +156,10 @@ describe('production list, production requests and workshop receipts', () => {
     });
     await prisma.location.create({
       data: {
-        id: damagedId,
-        tenantId,
-        name: 'Kho hỏng',
-        type: 'WAREHOUSE',
-        isSellable: false,
-      },
-    });
-    await prisma.location.create({
-      data: {
         id: branchId,
         tenantId,
         name: 'Chi nhánh',
         type: 'BRANCH',
-        damagedLocationId: damagedId,
       },
     });
     await prisma.location.create({
@@ -161,10 +169,7 @@ describe('production list, production requests and workshop receipts', () => {
       data: { id: branchId, tenantId, locationId: branchId },
     });
     await prisma.warehouse.createMany({
-      data: [
-        { id: warehouseId, tenantId, locationId: warehouseId },
-        { id: damagedId, tenantId, locationId: damagedId },
-      ],
+      data: [{ id: warehouseId, tenantId, locationId: warehouseId }],
     });
     await prisma.supplier.createMany({
       data: [
@@ -291,10 +296,6 @@ describe('production list, production requests and workshop receipts', () => {
     await prisma.product.deleteMany({ where });
     await prisma.branch.deleteMany({ where });
     await prisma.warehouse.deleteMany({ where });
-    await prisma.location.updateMany({
-      where,
-      data: { damagedLocationId: null },
-    });
     await prisma.location.deleteMany({ where });
     await prisma.user.deleteMany({ where });
     await prisma.tenant.deleteMany({ where: { id: tenantId } });
@@ -342,14 +343,13 @@ describe('production list, production requests and workshop receipts', () => {
           row.productItemId === cabinetId && row.location?.id === warehouseId,
       ),
     ).toMatchObject({ demandQuantity: 0, shortQuantity: 0 });
-    // Combo được đặt qua các thành phần; kho hàng hỏng không bao giờ nhận giao hàng.
+    // Combo được đặt qua các thành phần.
     expect(rows.some((row) => row.productItemId === comboId)).toBe(false);
     // Chỉ mua từ nhà cung cấp: không có gì để đặt từ xưởng nên không hiện trong danh mục.
     expect(rows.some((row) => row.productItemId === chairId)).toBe(false);
     expect(
       rows.find((row) => row.productItemId === cabinetId)?.isManufacturable,
     ).toBe(true);
-    expect(rows.some((row) => row.location?.id === damagedId)).toBe(false);
     // Dòng thiếu đứng trước.
     expect(rows[0]).toMatchObject({
       productItemId: cabinetId,
@@ -373,7 +373,7 @@ describe('production list, production requests and workshop receipts', () => {
     expect(own.every((row) => row.location?.id === warehouseId)).toBe(true);
   });
 
-  it('refuses a goods supplier, a damaged-goods location and a combo', async () => {
+  it('refuses a goods supplier and a combo', async () => {
     const line = { productItemId: cabinetId, quantity: 1 };
     expect(
       await codeOf(
@@ -384,15 +384,6 @@ describe('production list, production requests and workshop receipts', () => {
         }),
       ),
     ).toBe(ErrorCode.SUPPLIER_NOT_WORKSHOP);
-    expect(
-      await codeOf(
-        requests.create(owner, {
-          supplierId: workshopId,
-          locationId: damagedId,
-          items: [line],
-        }),
-      ),
-    ).toBe(ErrorCode.LOCATION_NOT_SELLABLE);
     expect(
       await codeOf(
         requests.create(owner, {
@@ -526,7 +517,7 @@ describe('production list, production requests and workshop receipts', () => {
     ).toBe(ErrorCode.PRODUCTION_REQUEST_LOCATION_DENIED);
   });
 
-  it('receives 2 (1 defective): stock +1 at the branch, +1 at the damaged location, one WORKSHOP import, debt for the good one', async () => {
+  it('receives 2 (1 defective): stock +1 at the branch, +1 damaged lot at the same branch, one WORKSHOP import, debt for the good one', async () => {
     const received = await requests.receive(owner, requestId, {
       items: [
         {
@@ -542,7 +533,7 @@ describe('production list, production requests and workshop receipts', () => {
     expect(received.receipts).toHaveLength(1);
 
     expect(await stockAt(branchId)).toBe(1);
-    expect(await stockAt(damagedId)).toBe(1);
+    expect(await damagedAt(branchId)).toBe(1);
 
     const movement = await prisma.stockMovementRequest.findUniqueOrThrow({
       where: { id: received.stockMovementId },
@@ -560,7 +551,7 @@ describe('production list, production requests and workshop receipts', () => {
       productionRequestItemId: lineId,
       receivedQuantity: 2,
       defectQuantity: 1,
-      defectLocationId: damagedId,
+      defectLocationId: branchId,
     });
 
     const lots = await prisma.inventoryLot.findMany({

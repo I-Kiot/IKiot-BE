@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -21,15 +22,26 @@ import { AddProductToLocationDto } from './dto/add-product-to-location.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
+  InventoryRefType,
   InventoryTxType,
-  type InventoryRefType,
   type LotSourceType,
 } from '../../common/constants/inventory-ledger';
+import { canActAt } from '../../common/utils/location-access';
+import { requireTenantId } from '../../common/utils/tenant-scope';
+import type { AuthUser } from '../../common/types/auth-user.type';
+import type { DamagedStockDto } from './dto/damaged-stock.dto';
+
+const DAMAGED_TX_TYPE = {
+  mark: InventoryTxType.MARK_DAMAGED,
+  repair: InventoryTxType.REPAIRED,
+  writeOff: InventoryTxType.WRITE_OFF,
+} as const;
 import {
   averageUnitCost,
   planDraw,
   planReturn,
   runningBalances,
+  type LotSlice,
 } from './lot-allocation';
 import { assertHoldsStock } from './stockable';
 
@@ -93,10 +105,26 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** `location` đã là `{ id, type, name }` chung (LOCATION_SELECT), nên bỏ `locationId`. `stock` là tổng, `actualStock` là phần còn trên kệ, tính lúc đọc, không lưu. */
-  private toResponse(row: InventoryRow) {
+  /**
+   * `location` đã là `{ id, type, name }` chung (LOCATION_SELECT), nên bỏ `locationId`. `stock` là tổng hàng bán được,
+   * `actualStock` là phần còn trên kệ, `damagedQuantity` là hàng hỏng tại đó (ngoài `stock`); hai số sau tính lúc đọc, không lưu.
+   */
+  private toResponse(row: InventoryRow, damagedQuantity = 0) {
     const { locationId, ...rest } = row;
-    return { ...rest, actualStock: actualStockOf(row) };
+    return { ...rest, actualStock: actualStockOf(row), damagedQuantity };
+  }
+
+  private async withDamaged(tenantId: string, rows: InventoryRow[]) {
+    const damaged = await this.damagedQuantities(this.prisma, tenantId, {
+      locationIds: [...new Set(rows.map((row) => row.locationId))],
+      productItemIds: [...new Set(rows.map((row) => row.productItemId))],
+    });
+    return rows.map((row) =>
+      this.toResponse(
+        row,
+        damaged.get(`${row.locationId}:${row.productItemId}`) ?? 0,
+      ),
+    );
   }
 
   async findAll(tenantId: string, query: QueryInventoryDto) {
@@ -114,6 +142,22 @@ export class InventoryService {
           AND "min_stock" > 0
           AND "stock" - "locked_stock" <= "min_stock"`;
       where.id = { in: low.map((row) => row.id) };
+    }
+
+    if (query.hasDamaged) {
+      // Dòng tồn có lô hỏng còn hàng ở chính địa điểm đó. Dùng index một phần `inventory_lots_damaged_idx`.
+      const damaged = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT i."id" FROM "inventories" i
+        WHERE i."tenant_id" = ${tenantId}
+          AND EXISTS (
+            SELECT 1 FROM "inventory_lots" lot
+            WHERE lot."tenant_id" = i."tenant_id"
+              AND lot."location_id" = i."location_id"
+              AND lot."product_item_id" = i."product_item_id"
+              AND lot."is_sellable" = false
+              AND lot."remaining_quantity" > 0)`;
+      const ids = damaged.map((row) => row.id);
+      where.AND = [{ id: { in: ids } }];
     }
 
     if (query.search) {
@@ -137,7 +181,7 @@ export class InventoryService {
     ]);
 
     return paginate(
-      rows.map((row) => this.toResponse(row)),
+      await this.withDamaged(tenantId, rows),
       total,
       query.page,
       query.limit,
@@ -166,7 +210,7 @@ export class InventoryService {
       data: { minStock },
       include: INVENTORY_INCLUDE,
     });
-    return this.toResponse(row);
+    return (await this.withDamaged(tenantId, [row]))[0];
   }
 
   /**
@@ -213,7 +257,7 @@ export class InventoryService {
     return this.toResponse(row);
   }
 
-  /** Stop stocking a variant at a location. Refuses while any stock is left there. */
+  /** Stop stocking a variant at a location. Refuses while any stock is left there, damaged goods included. */
   async removeProductFromLocation(tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     if (existing.stock > 0) {
@@ -222,10 +266,70 @@ export class InventoryService {
         message: `Cannot remove this item from the location while ${existing.stock} in stock remain. Transfer or sell them first.`,
       });
     }
+    const damaged = (
+      await this.damagedQuantities(this.prisma, tenantId, {
+        locationIds: [existing.locationId],
+        productItemIds: [existing.productItemId],
+      })
+    ).get(`${existing.locationId}:${existing.productItemId}`);
+    if (damaged) {
+      throw new BadRequestException({
+        code: ErrorCode.INVENTORY_STILL_HAS_STOCK,
+        message: `Cannot remove this item from the location while ${damaged} damaged units remain. Repair or write them off first.`,
+      });
+    }
 
     await this.prisma.inventory.delete({ where: { id } });
     // `{ success: true }` is what iKiotMS-BE answered here and what the frontend checks.
     return { success: true };
+  }
+
+  /**
+   * Ba route hàng hỏng trên một dòng tồn (`/inventory/:id/...`). Nhân viên chỉ làm ở nơi mình làm việc (`canActAt`).
+   * Chứng từ trong sổ kho là chính dòng inventory (`INVENTORY`, id dòng), kèm người làm và lý do.
+   */
+  async changeDamaged(
+    user: AuthUser,
+    id: string,
+    action: 'mark' | 'repair' | 'writeOff',
+    dto: DamagedStockDto,
+  ) {
+    const tenantId = requireTenantId(user);
+    const row = await this.findRow(tenantId, id);
+    if (!canActAt(user, row.location)) {
+      throw new ForbiddenException({
+        code: ErrorCode.INVENTORY_LOCATION_DENIED,
+        message: 'You can only change damaged goods at your own location',
+      });
+    }
+    const args = {
+      tenantId,
+      locationId: row.locationId,
+      productItemId: row.productItemId,
+      quantity: dto.quantity,
+      label: row.productItem.sku ?? row.productItem.productName ?? id,
+      ledger: {
+        type: DAMAGED_TX_TYPE[action],
+        referenceType: InventoryRefType.INVENTORY,
+        referenceId: row.id,
+        createdById: user.userId,
+        note: dto.note ?? null,
+      },
+    };
+    const after = await this.prisma.$transaction(async (tx) => {
+      if (action === 'mark') {
+        return this.markDamaged(tx, { ...args, orderItemId: dto.orderItemId });
+      }
+      if (action === 'repair') return this.repairDamaged(tx, args);
+      return this.writeOffDamaged(tx, args);
+    });
+    // Đánh dấu hỏng làm kệ vơi như bán: có thể vừa chạm ngưỡng cảnh báo.
+    if (action === 'mark') {
+      await this.notifyLowStock([this.lowStockCrossing(after, -dto.quantity)]);
+    }
+    return (
+      await this.withDamaged(tenantId, [await this.findRow(tenantId, id)])
+    )[0];
   }
 
   // ─── Primitive tồn dùng chung cho Order / StockMovement / Fulfillment / OrderReturn ──
@@ -235,7 +339,8 @@ export class InventoryService {
   //     `shipLockedStock` khi chuyển SHIPPING (bước duy nhất hạ `stock`, có dòng sổ cái), `releaseLockedStock`
   //     nếu huỷ giữa chừng. Kệ = `stock − locked_stock`; `deductStock` và `lockStock` chỉ lấy từ kệ, không
   //     lấy hàng đã đóng cho người khác. Fulfillment ghi ai đang giữ khoá, không có bảng đặt trước.
-  //   - Tồn nằm trong lô: Σ lot.remainingQuantity = inventories.stock, luôn đúng. Mỗi thay đổi ghi dòng sổ cái
+  //   - Tồn nằm trong lô: Σ remainingQuantity của lô bán được (isSellable) = inventories.stock, luôn đúng. Lô hỏng
+  //     (isSellable = false, 2026-11-26) nằm ngoài stock; không lô nào đổi cờ, đánh dấu hỏng / sửa xong đều tách lô con. Mỗi thay đổi ghi dòng sổ cái
   //     (InventoryTransaction), một dòng cho mỗi lô bị chạm.
   //   - Mọi ghi dùng transaction của người gọi (rollback thì tồn không đổi). Điều kiện chặn thao tác bất khả thi
   //     nằm trong chính UPDATE đó, không đọc rồi mới ghi.
@@ -256,14 +361,22 @@ export class InventoryService {
       orderItemId?: string | null;
       /** FIFO key. Defaults to now. */
       receivedAt?: Date;
+      /** `false` = lô hỏng (hàng lỗi xưởng): nằm tại địa điểm nhưng không cộng vào `stock`. Mặc định `true`. */
+      isSellable?: boolean;
       ledger: LedgerRef;
     },
   ): Promise<{ inventory: Inventory; lotId: string }> {
     this.assertPositive(args.quantity);
+    const sellable = args.isSellable ?? true;
     const unitCost =
       args.unitCost ?? (await this.currentCostPrice(tx, args.productItemId));
 
-    const inventory = await this.incrementStock(tx, args, args.quantity);
+    // Lô hỏng vẫn cần dòng inventory (khoá dòng + danh sách tồn hiện số hỏng), nhưng tăng 0.
+    const inventory = await this.incrementStock(
+      tx,
+      args,
+      sellable ? args.quantity : 0,
+    );
     const lot = await tx.inventoryLot.create({
       data: {
         tenantId: args.tenantId,
@@ -278,6 +391,7 @@ export class InventoryService {
         receivedQuantity: args.quantity,
         remainingQuantity: args.quantity,
         receivedAt: args.receivedAt ?? new Date(),
+        isSellable: sellable,
       },
       select: { id: true },
     });
@@ -452,9 +566,12 @@ export class InventoryService {
         | { orderItemId: string };
       ledger: LedgerRef;
       ifNeverDrawn?: { sourceType: LotSourceType };
+      /** `false` = hàng về bị hỏng (RETURN_DAMAGED): luôn thành lô con hỏng, không cộng `stock`, không bao giờ gộp vào lô cha. */
+      isSellable?: boolean;
     },
   ): Promise<Inventory> {
     this.assertPositive(args.quantity);
+    const sellable = args.isSellable ?? true;
     const key: StockKey = {
       tenantId: args.tenantId,
       productItemId: args.productItemId,
@@ -497,6 +614,7 @@ export class InventoryService {
         ...key,
         quantity: args.quantity,
         sourceType: args.ifNeverDrawn.sourceType,
+        isSellable: sellable,
         ledger,
       });
       return inventory;
@@ -531,17 +649,27 @@ export class InventoryService {
     });
     const lotById = new Map(lots.map((lot) => [lot.id, lot]));
 
-    const inventory = await this.incrementStock(tx, key, args.quantity);
-    const balances = runningBalances(
-      inventory.stock - args.quantity,
-      slices.map((slice) => slice.quantity),
+    const inventory = await this.incrementStock(
+      tx,
+      key,
+      sellable ? args.quantity : 0,
     );
+    const balances = sellable
+      ? runningBalances(
+          inventory.stock - args.quantity,
+          slices.map((slice) => slice.quantity),
+        )
+      : slices.map(() => inventory.stock);
 
     const rows: Prisma.InventoryTransactionCreateManyInput[] = [];
     for (const [index, slice] of slices.entries()) {
       const origin = lotById.get(slice.lotId)!;
       let lotId = origin.id;
-      if (origin.locationId === args.toLocationId) {
+      // Cộng thẳng vào lô gốc chỉ khi cùng địa điểm VÀ cùng loại: hàng hỏng về không bao giờ vào lô bán được.
+      if (
+        origin.locationId === args.toLocationId &&
+        origin.isSellable === sellable
+      ) {
         await tx.inventoryLot.update({
           where: { id: origin.id },
           data: { remainingQuantity: { increment: slice.quantity } },
@@ -562,6 +690,7 @@ export class InventoryService {
             receivedQuantity: slice.quantity,
             remainingQuantity: slice.quantity,
             receivedAt: origin.receivedAt,
+            isSellable: sellable,
           },
           select: { id: true },
         });
@@ -583,6 +712,146 @@ export class InventoryService {
     return inventory;
   }
 
+  // ─── Hàng hỏng (2026-11-26): lô `isSellable = false` tại chính địa điểm, ngoài `stock` ─────────────
+
+  /**
+   * Phát hiện hỏng trên kệ: rút `quantity` từ kệ như `deductStock` (không lấy hàng đã đóng gói), rồi tách thành lô con
+   * hỏng cùng địa điểm. Không có `orderItemId`: chỉ hàng dùng chung. Có: đúng chiếc may riêng cho dòng đơn đó; lô hỏng
+   * giữ `orderItemId`, nên sửa xong vẫn về đúng đơn đó, còn trong lúc hỏng đơn đó hiện thiếu hàng ở danh sách cần sản xuất.
+   * Dòng sổ cái không mang `orderItemId`: chỉ SALE / RETURN_* mới được tính là hàng của dòng đơn đã đi.
+   */
+  async markDamaged(
+    tx: Prisma.TransactionClient,
+    args: StockKey & {
+      quantity: number;
+      label: string;
+      ledger: LedgerRef;
+      orderItemId?: string | null;
+    },
+  ): Promise<Inventory> {
+    this.assertPositive(args.quantity);
+    const ledger = { ...args.ledger, orderItemId: null };
+    const taken = await tx.$executeRaw`
+      UPDATE "inventories"
+      SET "stock" = "stock" - ${args.quantity}, "updated_at" = now()
+      WHERE "tenant_id" = ${args.tenantId}
+        AND "location_id" = ${args.locationId}
+        AND "product_item_id" = ${args.productItemId}
+        AND "stock" - "locked_stock" >= ${args.quantity}`;
+    if (taken === 0) {
+      throw new BadRequestException({
+        code: ErrorCode.INSUFFICIENT_STOCK,
+        message: `Not enough stock on the shelf to mark ${args.label} damaged: ${args.quantity} needed, ${await this.shelfOf(tx, args)} available`,
+      });
+    }
+    const inventory = await tx.inventory.findFirstOrThrow({
+      where: this.keyWhere(args),
+    });
+    const slices = await this.drawLots(
+      tx,
+      args,
+      args.quantity,
+      inventory.stock,
+      ledger,
+      { exactly: { orderItemId: args.orderItemId ?? null, label: args.label } },
+    );
+    await this.splitInto(
+      tx,
+      args,
+      slices,
+      false,
+      ledger,
+      slices.map(() => inventory.stock),
+    );
+    return inventory;
+  }
+
+  /** Hàng hỏng sửa xong: rút lô hỏng FIFO, tách thành lô con bán được (giữ giá vốn, ngày nhập), cộng lại `stock`. */
+  async repairDamaged(
+    tx: Prisma.TransactionClient,
+    args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
+  ): Promise<Inventory> {
+    this.assertPositive(args.quantity);
+    const ledger = { ...args.ledger, orderItemId: null };
+    // Khoá dòng inventory trước lô; thiếu hàng hỏng thì drawLots ném và cả transaction (kể cả phần tăng này) rollback.
+    const inventory = await this.incrementStock(tx, args, args.quantity);
+    const before = inventory.stock - args.quantity;
+    const slices = await this.drawLots(
+      tx,
+      args,
+      args.quantity,
+      before,
+      ledger,
+      { damaged: { label: args.label } },
+    );
+    await this.splitInto(
+      tx,
+      args,
+      slices,
+      true,
+      ledger,
+      runningBalances(
+        before,
+        slices.map((slice) => slice.quantity),
+      ),
+    );
+    return inventory;
+  }
+
+  /** Huỷ / thanh lý hàng hỏng: rút lô hỏng FIFO, hàng rời khỏi sổ. `stock` không đổi. */
+  async writeOffDamaged(
+    tx: Prisma.TransactionClient,
+    args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
+  ): Promise<Inventory> {
+    this.assertPositive(args.quantity);
+    const ledger = { ...args.ledger, orderItemId: null };
+    const locked = await tx.$executeRaw`
+      UPDATE "inventories" SET "updated_at" = now()
+      WHERE "tenant_id" = ${args.tenantId}
+        AND "location_id" = ${args.locationId}
+        AND "product_item_id" = ${args.productItemId}`;
+    if (locked === 0) {
+      throw new BadRequestException({
+        code: ErrorCode.INSUFFICIENT_DAMAGED_STOCK,
+        message: `No damaged stock of ${args.label} here`,
+      });
+    }
+    const inventory = await tx.inventory.findFirstOrThrow({
+      where: this.keyWhere(args),
+    });
+    await this.drawLots(tx, args, args.quantity, inventory.stock, ledger, {
+      damaged: { label: args.label },
+    });
+    return inventory;
+  }
+
+  /** Số hàng hỏng còn lại theo (địa điểm, SKU), cộng từ lô lúc đọc. Khoá map: `${locationId}:${productItemId}`. */
+  async damagedQuantities(
+    reader: Pick<Prisma.TransactionClient, 'inventoryLot'>,
+    tenantId: string,
+    where: { locationIds?: string[]; productItemIds?: string[] },
+  ): Promise<Map<string, number>> {
+    const rows = await reader.inventoryLot.groupBy({
+      by: ['locationId', 'productItemId'],
+      where: {
+        tenantId,
+        isSellable: false,
+        remainingQuantity: { gt: 0 },
+        ...(where.locationIds ? { locationId: { in: where.locationIds } } : {}),
+        ...(where.productItemIds
+          ? { productItemId: { in: where.productItemIds } }
+          : {}),
+      },
+      _sum: { remainingQuantity: true },
+    });
+    return new Map(
+      rows.map((row) => [
+        `${row.locationId}:${row.productItemId}`,
+        row._sum.remainingQuantity ?? 0,
+      ]),
+    );
+  }
+
   /** Ghi dòng sổ cái. Mọi thay đổi tồn đi qua các primitive trên; ghi trực tiếp chỉ cho dòng không đổi tồn. */
   async writeLedger(
     tx: Prisma.TransactionClient,
@@ -594,15 +863,32 @@ export class InventoryService {
 
   // ─── Primitive internals ────────────────────────────────────────────────────
 
-  /** Draw `quantity` from the lots after `inventories.stock` has already been lowered to `stockAfter`. */
+  /**
+   * Draw `quantity` from the lots after `inventories.stock` has already been lowered to `stockAfter`.
+   * Mặc định chỉ chạm lô bán được: đây là đường duy nhất hàng rời lô, nên bán / đóng gói / chuyển kho / kiểm kê không
+   * thể lấy phải hàng hỏng. `damaged` rút lô hỏng (sửa xong, huỷ): `stock` không đổi, mọi lô hỏng rút được FIFO kể cả
+   * lô may riêng, và thiếu là lỗi người dùng chứ không phải lệch dữ liệu.
+   */
   private async drawLots(
     tx: Prisma.TransactionClient,
     key: StockKey,
     quantity: number,
     stockAfter: number,
     ledger: LedgerRef,
-  ): Promise<void> {
-    const orderItemId = ledger.orderItemId ?? null;
+    options: {
+      /** Rút lô hỏng (sửa xong, huỷ) thay vì lô bán được. */
+      damaged?: { label: string };
+      /** Chỉ đúng lô của một dòng đơn (`null` = chỉ lô dùng chung), thiếu là lỗi người dùng. Đánh dấu hỏng dùng. */
+      exactly?: { orderItemId: string | null; label: string };
+    } = {},
+  ): Promise<LotSlice[]> {
+    const { damaged, exactly } = options;
+    const sellable = !damaged;
+    const orderItemId = exactly
+      ? exactly.orderItemId
+      : damaged
+        ? null
+        : (ledger.orderItemId ?? null);
     const lots = await tx.$queryRaw<
       {
         id: string;
@@ -618,7 +904,11 @@ export class InventoryService {
         AND "location_id" = ${key.locationId}
         AND "product_item_id" = ${key.productItemId}
         AND "remaining_quantity" > 0
-        AND ("order_item_id" IS NULL OR "order_item_id" = ${orderItemId}::text)
+        AND "is_sellable" = ${sellable}
+        AND (
+          CASE WHEN ${!!exactly} THEN "order_item_id" IS NOT DISTINCT FROM ${orderItemId}::text
+               ELSE (${!sellable} OR "order_item_id" IS NULL OR "order_item_id" = ${orderItemId}::text)
+          END)
       FOR UPDATE`;
 
     const slices = planDraw(
@@ -626,11 +916,28 @@ export class InventoryService {
         id: lot.id,
         remainingQuantity: lot.remaining_quantity,
         receivedAt: lot.received_at,
-        orderItemId: lot.order_item_id,
+        // Hàng hỏng không giữ cho dòng đơn nào khi rút: lô nào cũng sửa / huỷ được. `exactly` đã lọc trong SQL.
+        orderItemId: damaged || exactly ? null : lot.order_item_id,
       })),
       quantity,
-      orderItemId,
+      exactly ? null : orderItemId,
     );
+    if (!slices && exactly) {
+      const have = lots.reduce((sum, lot) => sum + lot.remaining_quantity, 0);
+      throw new BadRequestException({
+        code: ErrorCode.INSUFFICIENT_STOCK,
+        message: exactly.orderItemId
+          ? `Not enough of ${exactly.label} made for that order line here: ${quantity} needed, ${have} available`
+          : `Not enough shared stock of ${exactly.label} on the shelf: ${quantity} needed, ${have} available (the rest is made for specific orders)`,
+      });
+    }
+    if (!slices && damaged) {
+      const have = lots.reduce((sum, lot) => sum + lot.remaining_quantity, 0);
+      throw new BadRequestException({
+        code: ErrorCode.INSUFFICIENT_DAMAGED_STOCK,
+        message: `Not enough damaged stock for ${damaged.label}: ${quantity} needed, ${have} damaged here`,
+      });
+    }
     if (!slices) {
       // `inventories.stock` covered it, the lots did not: Σ lot.remaining has drifted from stock.
       throw new InternalServerErrorException({
@@ -640,10 +947,12 @@ export class InventoryService {
     }
 
     const costOf = new Map(lots.map((lot) => [lot.id, lot.unit_cost]));
-    const balances = runningBalances(
-      stockAfter + quantity,
-      slices.map((slice) => -slice.quantity),
-    );
+    const balances = sellable
+      ? runningBalances(
+          stockAfter + quantity,
+          slices.map((slice) => -slice.quantity),
+        )
+      : slices.map(() => stockAfter);
     for (const slice of slices) {
       await tx.inventoryLot.update({
         where: { id: slice.lotId },
@@ -664,6 +973,57 @@ export class InventoryService {
     if (ledger.type === InventoryTxType.SALE && orderItemId) {
       await this.refreshLineCost(tx, orderItemId);
     }
+    return slices;
+  }
+
+  /**
+   * Tách các phần vừa rút thành lô con cùng địa điểm, loại `isSellable`, giữ nguồn, giá vốn và ngày nhập của lô cha
+   * (FIFO và giá vốn không đổi qua lần hỏng / sửa). Mỗi lô con một dòng sổ cái dương.
+   */
+  private async splitInto(
+    tx: Prisma.TransactionClient,
+    key: StockKey,
+    slices: LotSlice[],
+    isSellable: boolean,
+    ledger: LedgerRef,
+    balances: number[],
+  ): Promise<void> {
+    const parents = await tx.inventoryLot.findMany({
+      where: { id: { in: slices.map((slice) => slice.lotId) } },
+    });
+    const parentById = new Map(parents.map((lot) => [lot.id, lot]));
+    const rows: Prisma.InventoryTransactionCreateManyInput[] = [];
+    for (const [index, slice] of slices.entries()) {
+      const parent = parentById.get(slice.lotId)!;
+      const child = await tx.inventoryLot.create({
+        data: {
+          tenantId: parent.tenantId,
+          locationId: parent.locationId,
+          productItemId: parent.productItemId,
+          sourceType: parent.sourceType,
+          supplierId: parent.supplierId,
+          importItemId: parent.importItemId,
+          productionRequestItemId: parent.productionRequestItemId,
+          orderItemId: parent.orderItemId,
+          parentLotId: parent.id,
+          unitCost: parent.unitCost,
+          receivedQuantity: slice.quantity,
+          remainingQuantity: slice.quantity,
+          receivedAt: parent.receivedAt,
+          isSellable,
+        },
+        select: { id: true },
+      });
+      rows.push(
+        this.ledgerRow(key, ledger, {
+          lotId: child.id,
+          quantity: slice.quantity,
+          balanceAfter: balances[index],
+          unitCost: parent.unitCost,
+        }),
+      );
+    }
+    await this.writeLedger(tx, rows);
   }
 
   /** Tăng tồn, tạo dòng nếu địa điểm chưa có món này. Cố ý dùng upsert: đọc rồi tạo thì hai phiếu nhập có thể cùng chèn và một cái chết trên unique index. */

@@ -24,7 +24,6 @@ describe('workshop staff delivery notes', () => {
   const otherWorkerId = randomUUID();
   const unlinkedId = randomUUID();
   const branchId = randomUUID();
-  const damagedId = randomUUID();
   const workshopId = randomUUID();
   const otherWorkshopId = randomUUID();
   const productId = randomUUID();
@@ -93,6 +92,20 @@ describe('workshop staff delivery notes', () => {
     return row?.stock ?? 0;
   }
 
+  /** Hàng hỏng (2026-11-26): lô `isSellable = false` tại địa điểm, ngoài stock. */
+  async function damagedAt(locationId: string) {
+    const lots = await prisma.inventoryLot.aggregate({
+      where: {
+        tenantId,
+        locationId,
+        productItemId: cabinetId,
+        isSellable: false,
+      },
+      _sum: { remainingQuantity: true },
+    });
+    return lots._sum.remainingQuantity ?? 0;
+  }
+
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -117,27 +130,14 @@ describe('workshop staff delivery notes', () => {
     });
     await prisma.location.create({
       data: {
-        id: damagedId,
-        tenantId,
-        name: 'Kho hỏng',
-        type: 'WAREHOUSE',
-        isSellable: false,
-      },
-    });
-    await prisma.location.create({
-      data: {
         id: branchId,
         tenantId,
         name: 'Chi nhánh',
         type: 'BRANCH',
-        damagedLocationId: damagedId,
       },
     });
     await prisma.branch.create({
       data: { id: branchId, tenantId, locationId: branchId },
-    });
-    await prisma.warehouse.create({
-      data: { id: damagedId, tenantId, locationId: damagedId },
     });
     await prisma.user.createMany({
       data: [
@@ -221,10 +221,6 @@ describe('workshop staff delivery notes', () => {
     await prisma.product.deleteMany({ where });
     await prisma.branch.deleteMany({ where });
     await prisma.warehouse.deleteMany({ where });
-    await prisma.location.updateMany({
-      where,
-      data: { damagedLocationId: null },
-    });
     await prisma.location.deleteMany({ where });
     await prisma.tenant.deleteMany({ where: { id: tenantId } });
   }
@@ -337,7 +333,7 @@ describe('workshop staff delivery notes', () => {
       pendingDeliveryQuantity: 0,
     });
     expect(await stockAt(branchId)).toBe(2);
-    expect(await stockAt(damagedId)).toBe(1);
+    expect(await damagedAt(branchId)).toBe(1);
 
     const note = await prisma.productionDelivery.findUniqueOrThrow({
       where: { id: firstDeliveryId },

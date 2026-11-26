@@ -14,6 +14,10 @@ export class QueryInventoryDto extends IntersectionType(
   @BooleanQuery()
   isLowStock?: boolean;
 
+  /** Chỉ dòng còn hàng hỏng (lô `isSellable = false` còn hàng) - filter "Có hàng hỏng". */
+  @BooleanQuery()
+  hasDamaged?: boolean;
+
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>

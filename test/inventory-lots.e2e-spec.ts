@@ -17,7 +17,7 @@ import {
 import { ErrorCode } from './../src/common/errors/error-codes';
 
 // Gọi primitive tồn kho của InventoryService trên Postgres thật (docker compose up -d): lô, sổ kho,
-// và bất biến mọi thao tác phải giữ - Σ lot.remaining = stock. Đóng gói khóa hàng khỏi kệ
+// và bất biến mọi thao tác phải giữ - Σ remaining của lô bán được = stock (lô hỏng nằm ngoài). Đóng gói khóa hàng khỏi kệ
 // (lockStock, locked_stock); hàng chỉ rời tồn khi đơn chuyển sang SHIPPING (shipLockedStock).
 // Tự tạo tenant riêng và xóa mọi thứ đã ghi, nên chạy lại được.
 describe('InventoryService stock primitives (lots, ledger)', () => {
@@ -27,7 +27,7 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
   const tenantId = randomUUID();
   const userId = randomUUID();
   const branchId = randomUUID();
-  const damagedId = randomUUID();
+  const otherId = randomUUID();
   const productId = randomUUID();
   const itemId = randomUUID();
   const customerId = randomUUID();
@@ -46,11 +46,13 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
   async function assertInvariants() {
     const rows = await prisma.inventory.findMany({ where: { tenantId } });
     for (const row of rows) {
+      // Chỉ lô bán được: lô hỏng (isSellable = false) nằm ngoài stock.
       const lots = await prisma.inventoryLot.aggregate({
         where: {
           tenantId,
           locationId: row.locationId,
           productItemId: row.productItemId,
+          isSellable: true,
         },
         _sum: { remainingQuantity: true },
       });
@@ -92,11 +94,10 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     });
     await prisma.location.create({
       data: {
-        id: damagedId,
+        id: otherId,
         tenantId,
-        name: 'Kho hỏng',
+        name: 'Kho 2',
         type: 'WAREHOUSE',
-        isSellable: false,
       },
     });
     await prisma.product.create({
@@ -316,14 +317,14 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
       inventory.returnDrawn(tx, {
         tenantId,
         productItemId: itemId,
-        toLocationId: damagedId,
+        toLocationId: otherId,
         quantity: 1,
         drawnBy: transfer,
         ledger: { ...transfer, type: InventoryTxType.TRANSFER_IN },
       }),
     );
     const child = await prisma.inventoryLot.findFirstOrThrow({
-      where: { tenantId, locationId: damagedId },
+      where: { tenantId, locationId: otherId },
       include: { parentLot: true },
     });
     expect(child.parentLot).not.toBeNull();
@@ -480,5 +481,309 @@ describe('InventoryService stock primitives (lots, ledger)', () => {
     await expect(
       prisma.inventory.updateMany({ where: key, data: { lockedStock: 99 } }),
     ).rejects.toThrow();
+  });
+
+  // Hàng hỏng (2026-11-26): lô isSellable = false tại chính địa điểm, ngoài stock. Ở đây chi nhánh giữ 6, chưa khoá gì.
+  describe('damaged lots', () => {
+    const damagedHere = async () =>
+      (
+        await prisma.inventoryLot.aggregate({
+          where: { ...key, isSellable: false },
+          _sum: { remainingQuantity: true },
+        })
+      )._sum.remainingQuantity ?? 0;
+    const manual = (type: InventoryTxType) => ({
+      type,
+      referenceType: InventoryRefType.INVENTORY,
+      referenceId: 'damaged-test',
+      createdById: userId,
+    });
+
+    it('marks shelf goods damaged as child lots that leave stock', async () => {
+      expect(await stockRow()).toMatchObject({ stock: 6, lockedStock: 0 });
+      await run((tx) =>
+        inventory.markDamaged(tx, {
+          ...key,
+          quantity: 2,
+          label: 'Bàn',
+          ledger: manual(InventoryTxType.MARK_DAMAGED),
+        }),
+      );
+      expect((await stockRow()).stock).toBe(4);
+      expect(await damagedHere()).toBe(2);
+
+      const children = await prisma.inventoryLot.findMany({
+        where: { ...key, isSellable: false },
+        include: { parentLot: true },
+      });
+      for (const child of children) {
+        expect(child.parentLot?.isSellable).toBe(true);
+        expect(Number(child.unitCost)).toBe(Number(child.parentLot!.unitCost));
+        expect(child.receivedAt).toEqual(child.parentLot!.receivedAt);
+      }
+      const rows = await prisma.inventoryTransaction.findMany({
+        where: { tenantId, type: InventoryTxType.MARK_DAMAGED },
+      });
+      expect(rows.reduce((sum, row) => sum + row.quantity, 0)).toBe(0);
+      // balanceAfter là stock (chỉ hàng bán được) - dòng vào lô hỏng không làm nó tăng lại.
+      expect(Math.min(...rows.map((row) => row.balanceAfter))).toBe(4);
+      expect(Math.max(...rows.map((row) => row.balanceAfter))).toBeLessThan(6);
+      await assertInvariants();
+    });
+
+    it('never sells, packs or marks more than the sellable shelf', async () => {
+      await expect(
+        run((tx) =>
+          inventory.markDamaged(tx, {
+            ...key,
+            quantity: 5,
+            label: 'Bàn',
+            ledger: manual(InventoryTxType.MARK_DAMAGED),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_STOCK },
+      });
+
+      await run((tx) =>
+        inventory.deductStock(tx, {
+          ...key,
+          quantity: 4,
+          label: 'Bàn',
+          ledger: { ...ledger(InventoryTxType.SALE), referenceId: 'sell-all' },
+        }),
+      );
+      // 2 hỏng vẫn nằm đó, nhưng kệ đã hết: không bán, không đóng gói được.
+      await expect(
+        run((tx) =>
+          inventory.deductStock(tx, {
+            ...key,
+            quantity: 1,
+            label: 'Bàn',
+            ledger: ledger(InventoryTxType.SALE),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_STOCK },
+      });
+      await expect(lock(1)).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_STOCK },
+      });
+      const sold = await prisma.inventoryTransaction.findMany({
+        where: { tenantId, referenceId: 'sell-all' },
+        include: { lot: true },
+      });
+      expect(sold.every((row) => row.lot.isSellable)).toBe(true);
+      expect(await damagedHere()).toBe(2);
+      await assertInvariants();
+    });
+
+    it('repairs damaged goods back onto the shelf with their cost and date', async () => {
+      await run((tx) =>
+        inventory.repairDamaged(tx, {
+          ...key,
+          quantity: 1,
+          label: 'Bàn',
+          ledger: manual(InventoryTxType.REPAIRED),
+        }),
+      );
+      expect((await stockRow()).stock).toBe(1);
+      expect(await damagedHere()).toBe(1);
+      const repaired = await prisma.inventoryLot.findFirstOrThrow({
+        where: { ...key, isSellable: true, parentLot: { isSellable: false } },
+        include: { parentLot: true },
+      });
+      expect(Number(repaired.unitCost)).toBe(
+        Number(repaired.parentLot!.unitCost),
+      );
+      expect(repaired.receivedAt).toEqual(repaired.parentLot!.receivedAt);
+      await assertInvariants();
+    });
+
+    it('writes off damaged goods, never more than there are', async () => {
+      await expect(
+        run((tx) =>
+          inventory.writeOffDamaged(tx, {
+            ...key,
+            quantity: 2,
+            label: 'Bàn',
+            ledger: manual(InventoryTxType.WRITE_OFF),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_DAMAGED_STOCK },
+      });
+      await run((tx) =>
+        inventory.writeOffDamaged(tx, {
+          ...key,
+          quantity: 1,
+          label: 'Bàn',
+          ledger: manual(InventoryTxType.WRITE_OFF),
+        }),
+      );
+      expect(await damagedHere()).toBe(0);
+      expect((await stockRow()).stock).toBe(1);
+      await expect(
+        run((tx) =>
+          inventory.repairDamaged(tx, {
+            ...key,
+            quantity: 1,
+            label: 'Bàn',
+            ledger: manual(InventoryTxType.REPAIRED),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_DAMAGED_STOCK },
+      });
+      // Rollback: lần sửa bị từ chối không để lại stock tăng.
+      expect((await stockRow()).stock).toBe(1);
+      await assertInvariants();
+    });
+
+    it('takes a damaged return back at the same location as a new damaged lot, never into the lot it left', async () => {
+      const line = lines[2];
+      await run((tx) =>
+        inventory.deductStock(tx, {
+          ...key,
+          quantity: 1,
+          label: 'Bàn',
+          ledger: { ...ledger(InventoryTxType.SALE), orderItemId: line },
+        }),
+      );
+
+      await run((tx) =>
+        inventory.returnDrawn(tx, {
+          tenantId,
+          productItemId: itemId,
+          toLocationId: branchId,
+          quantity: 1,
+          drawnBy: { orderItemId: line },
+          isSellable: false,
+          ledger: {
+            ...ledger(InventoryTxType.RETURN_DAMAGED),
+            referenceType: InventoryRefType.ORDER_RETURN,
+          },
+        }),
+      );
+      expect((await stockRow()).stock).toBe(0);
+      expect(await damagedHere()).toBe(1);
+      // Không lô bán được nào tăng lại: assertInvariants (Σ lô bán được = stock = 0) bắt đúng lỗi gộp vào lô cha.
+      const back = await prisma.inventoryLot.findFirstOrThrow({
+        where: {
+          ...key,
+          isSellable: false,
+          parentLot: { isSellable: true },
+          transactions: { some: { type: InventoryTxType.RETURN_DAMAGED } },
+        },
+      });
+      expect(back.remainingQuantity).toBe(1);
+      await assertInvariants();
+    });
+
+    it('opens a defect lot without touching stock', async () => {
+      await run((tx) =>
+        inventory.openLot(tx, {
+          ...key,
+          quantity: 2,
+          unitCost: 80,
+          sourceType: LotSourceType.WORKSHOP,
+          isSellable: false,
+          ledger: ledger(InventoryTxType.DEFECT),
+        }),
+      );
+      expect((await stockRow()).stock).toBe(0);
+      expect(await damagedHere()).toBe(3);
+      await assertInvariants();
+    });
+
+    it('lists the damaged count, filters by it, and refuses to drop a line that still holds damaged goods', async () => {
+      const { data } = await inventory.findAll(tenantId, {
+        page: 1,
+        limit: 20,
+        hasDamaged: true,
+      });
+      expect(data).toHaveLength(1);
+      expect(data[0]).toMatchObject({ stock: 0, damagedQuantity: 3 });
+      await expect(
+        inventory.removeProductFromLocation(tenantId, data[0].id),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INVENTORY_STILL_HAS_STOCK },
+      });
+    });
+
+    it('marks a piece made for one order damaged only when that order line is named, and it goes back to that order when repaired', async () => {
+      const line = lines[0];
+      await run((tx) =>
+        inventory.openLot(tx, {
+          ...key,
+          quantity: 1,
+          unitCost: 300,
+          sourceType: LotSourceType.WORKSHOP,
+          orderItemId: line,
+          ledger: ledger(InventoryTxType.IMPORT),
+        }),
+      );
+      expect((await stockRow()).stock).toBe(1);
+
+      // Kệ có 1 nhưng là của đơn khác: không có hàng dùng chung để đánh dấu - 400 rõ ràng, không phải 500.
+      await expect(
+        run((tx) =>
+          inventory.markDamaged(tx, {
+            ...key,
+            quantity: 1,
+            label: 'Bàn',
+            ledger: manual(InventoryTxType.MARK_DAMAGED),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ErrorCode.INSUFFICIENT_STOCK },
+      });
+      expect((await stockRow()).stock).toBe(1);
+
+      await run((tx) =>
+        inventory.markDamaged(tx, {
+          ...key,
+          quantity: 1,
+          label: 'Bàn',
+          orderItemId: line,
+          ledger: manual(InventoryTxType.MARK_DAMAGED),
+        }),
+      );
+      expect((await stockRow()).stock).toBe(0);
+      const damagedCustom = await prisma.inventoryLot.findFirstOrThrow({
+        where: { ...key, isSellable: false, orderItemId: line },
+      });
+      expect(damagedCustom.remainingQuantity).toBe(1);
+      // Sổ cái không gắn dòng đơn: lần trả hàng sau của dòng này không được coi đây là hàng đã giao.
+      expect(
+        await prisma.inventoryTransaction.count({
+          where: {
+            tenantId,
+            type: InventoryTxType.MARK_DAMAGED,
+            orderItemId: { not: null },
+          },
+        }),
+      ).toBe(0);
+
+      // Sửa xong rút lô hỏng theo FIFO: lô cũ nhất là hàng dùng chung, nên sửa 4 để chắc chạm cả chiếc may riêng.
+      await run((tx) =>
+        inventory.repairDamaged(tx, {
+          ...key,
+          quantity: 4,
+          label: 'Bàn',
+          ledger: manual(InventoryTxType.REPAIRED),
+        }),
+      );
+      const back = await prisma.inventoryLot.findFirstOrThrow({
+        where: {
+          ...key,
+          isSellable: true,
+          orderItemId: line,
+          parentLotId: damagedCustom.id,
+        },
+      });
+      expect(back.remainingQuantity).toBe(1);
+      await assertInvariants();
+    });
   });
 });

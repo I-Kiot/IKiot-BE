@@ -258,8 +258,20 @@ const CATALOG: Record<
     },
   },
   inventory: {
-    actions: ['create', 'read', 'update', 'delete', 'view_all', 'manage'],
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'view_all',
+      'manage',
+      'manage_damaged',
+    ],
     label: 'Tồn kho',
+    descriptions: {
+      manage_damaged:
+        'Đánh dấu hàng hỏng, xác nhận sửa xong và huỷ / thanh lý hàng hỏng tại nơi mình làm việc. Hàng hỏng nằm ngoài tồn bán được.',
+    },
   },
   subscriptions: {
     actions: ['read', 'update', 'manage'],

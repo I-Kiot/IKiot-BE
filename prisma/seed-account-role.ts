@@ -22,23 +22,16 @@ const OWNER_EMAIL =
   process.env.SEED_OWNER_EMAIL?.trim().toLowerCase() ||
   `${OWNER.phoneNumber}@demo.ikiot.invalid`;
 
-type LocationKey = 'DAMAGED' | 'HANOI' | 'HCM';
+type LocationKey = 'HANOI' | 'HCM';
 
 const LOCATIONS: {
   key: LocationKey;
   name: string;
   type: 'BRANCH' | 'WAREHOUSE';
-  isSellable: boolean;
 }[] = [
-  // Tạo trước để L2 trỏ được tới nó làm kho hàng hỏng.
-  {
-    key: 'DAMAGED',
-    name: 'Kho hàng hỏng',
-    type: 'WAREHOUSE',
-    isSellable: false,
-  },
-  { key: 'HANOI', name: 'CN Hà Nội', type: 'BRANCH', isSellable: true },
-  { key: 'HCM', name: 'CN Hồ Chí Minh', type: 'BRANCH', isSellable: true },
+  // Không còn kho hàng hỏng riêng (2026-11-26): hàng hỏng là lô `isSellable = false` tại chính chi nhánh.
+  { key: 'HANOI', name: 'CN Hà Nội', type: 'BRANCH' },
+  { key: 'HCM', name: 'CN Hồ Chí Minh', type: 'BRANCH' },
 ];
 
 /**
@@ -305,7 +298,6 @@ async function seedLocations(
         tenantId,
         name: loc.name,
         type: loc.type,
-        isSellable: loc.isSellable,
         ...(loc.type === 'BRANCH'
           ? { branch: specialization }
           : { warehouse: specialization }),
@@ -313,11 +305,7 @@ async function seedLocations(
     });
     ids[loc.key] = id;
   }
-  // L2 trỏ L1 làm kho hàng hỏng; L3 cũng vậy để đơn trả về có chỗ đặt hàng hỏng. defaultFulfillmentLocationId cố ý để null (file test, phần 0 mục 1: không ai đặt được nên chi nhánh tự xuất hàng).
-  await prisma.location.updateMany({
-    where: { id: { in: [ids.HANOI, ids.HCM] } },
-    data: { damagedLocationId: ids.DAMAGED },
-  });
+  // defaultFulfillmentLocationId cố ý để null (file test, phần 0 mục 1: không ai đặt được nên chi nhánh tự xuất hàng).
   return ids;
 }
 

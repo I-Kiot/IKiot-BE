@@ -15,6 +15,7 @@ import {
 } from '../../modules/production-requests/production-deliveries.controller';
 import { StockMovementController } from '../../modules/stock-movement-requests/stock-movement-requests.controller';
 import { OrderReturnController } from '../../modules/order-returns/order-returns.controller';
+import { InventoryController } from '../../modules/inventories/inventories.controller';
 import { EMITS_CHANGE_KEY } from './emits-change.decorator';
 
 type Controller = { name: string; prototype: object };
@@ -29,6 +30,7 @@ const CONTROLLERS: readonly Controller[] = [
   ProductionDeliveryController,
   StockMovementController,
   OrderReturnController,
+  InventoryController,
 ];
 
 const WRITES = new Set<RequestMethod>([
@@ -42,6 +44,12 @@ const WRITES = new Set<RequestMethod>([
 const ALLOWLIST: Readonly<Record<string, string>> = {
   'OrderController.createPosQr':
     'phát mã QR không phải một sự kiện (CLAUDE.md gốc, "Order action trail"); tiền về mới là sự kiện (ORDER_QR_PAID, phát từ webhook)',
+  'InventoryController.updateMinStock':
+    'chỉ đổi ngưỡng cảnh báo của một dòng, không đổi số lượng hàng',
+  'InventoryController.addProductToLocation':
+    'khai báo dòng tồn số 0 trước khi hàng về, không có hàng nào di chuyển',
+  'InventoryController.removeProductFromLocation':
+    'chỉ gỡ được dòng đã hết hàng (cả hàng hỏng), không có hàng nào di chuyển',
   'SepayOrderWebhookController.handle':
     'webhook @Public không có user; nó phát tường minh qua ChangeFeedService / publishChange',
 };

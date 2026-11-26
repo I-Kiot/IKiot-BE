@@ -622,3 +622,25 @@ Báo lỗi: shipper bấm "Đã lấy hàng" thì web chỉ hiện toast realtim
 - **Seed (cùng ngày)**: `prisma/seed-account-role.ts` đọc email chủ shop từ `SEED_OWNER_EMAIL` (thêm vào `.env.example`), mặc định vẫn `<sđt>@demo.ikiot.invalid`.
 
 **Đã kiểm chứng:** `tsc` (chỉ còn lỗi có sẵn trong các `*.excel.spec.ts`), eslint, e2e `order-ship`, `order-remittance`, `sepay-qr-expiry`, `sepay-ledger` (113/113) trên `ikiot_e2e`. **Chưa kiểm chứng:** chưa bấm thử trên app + web thật để thấy chuông tăng số.
+
+## 2026-11-26 - Hàng hỏng thành lô `isSellable = false` tại chỗ, bỏ kho hàng hỏng riêng
+
+**Đã làm**
+- Migration `20261126100000_damaged_lots`: thêm `inventory_lots.is_sellable`; lô ở các kho hàng hỏng cũ thành lô hỏng, `stock` / `locked_stock` của chúng về 0 (kho đó thành kho thường, rỗng); bỏ `locations.is_sellable` và `locations.damaged_location_id`; index một phần `inventory_lots_damaged_idx`; thêm quyền `inventory:manage_damaged` vào `permission_catalog`.
+- Luật mới: `stock` = Σ remaining của lô bán được. `InventoryService` là chỗ duy nhất ghi `stock`: `openLot` / `returnDrawn` nhận `isSellable` (lô hỏng không cộng `stock`, hàng hoàn hỏng luôn tách lô con, không gộp vào lô cha); `drawLots` chỉ rút lô bán được. Không lô nào đổi cờ.
+- Đánh dấu hỏng nhận `orderItemId` tuỳ chọn: bỏ trống chỉ lấy hàng dùng chung (thiếu → 400 `INSUFFICIENT_STOCK`, trước đó là 500 `INVENTORY_LOT_SHORTAGE` khi kệ chỉ còn hàng may riêng); có thì lấy đúng chiếc may riêng, lô hỏng giữ `orderItemId` nên sửa xong về lại đơn đó.
+- Ba primitive + route: `POST /inventory/:id/mark-damaged`, `/repair-damaged`, `/write-off-damaged` (`inventory:manage_damaged`, nhân viên chỉ tại nơi mình làm việc). Sổ kho `MARK_DAMAGED`, `REPAIRED`, `WRITE_OFF`, chứng từ `INVENTORY` + id dòng tồn. Mã lỗi mới `INSUFFICIENT_DAMAGED_STOCK`, `INVENTORY_LOCATION_DENIED`.
+- Nhận xưởng: phần lỗi thành lô hỏng tại nơi nhận (bỏ `defectLocationId` khỏi DTO, `resolveDefectLocation`). Kiểm hàng hoàn: `DAMAGED` về `locationId` / nơi xuất như `GOOD`.
+- Realtime: ba route phát `entity:changed` (`INVENTORY_MARKED_DAMAGED`, `INVENTORY_DAMAGED_REPAIRED`, `INVENTORY_DAMAGED_WRITTEN_OFF`, resource `inventories`, câu chỉ có người làm + SKU). `InventoryController` vào `change-feed.coverage.spec`; ba route cũ (ngưỡng, thêm / gỡ dòng) nằm trong allowlist kèm lý do.
+- Đọc: `GET /inventory` có `damagedQuantity` + `?hasDamaged=true`; `GET /products` có `damagedStock` + `?hasDamaged=true`; `/stats/inventory` tách `damagedValue`, `damagedUnits`; tuổi tồn chỉ tính lô bán được; danh sách cần sản xuất bỏ lô may riêng bị hỏng.
+- Bỏ `damaged-location.ts` (+ spec, e2e) và mọi kiểm `Location.isSellable` (đơn tay, nguồn hàng, YCSX, thống kê). Seed demo / account-role bỏ kho hàng hỏng.
+- Test: `inventory-lots` thêm 7 ca hàng hỏng (đánh dấu, không bán/đóng gói được hàng hỏng, sửa xong giữ giá vốn và ngày nhập, huỷ, hoàn hỏng cùng địa điểm không vào lô cha, lô DEFECT, filter + chặn gỡ dòng). Bất biến Σ lô = stock trong các e2e đổi thành chỉ lô bán được. `order-return`, `order-journey`, `production-requests`, `workshop-deliveries`, `order-create` sửa theo luồng mới.
+
+**Chưa kiểm chứng / còn lại**
+- Chủ dự án xác nhận chưa có dữ liệu thật trong kho hàng hỏng; trên prod cần kiểm lại trước khi deploy.
+- Ba route hàng hỏng chưa có audit template riêng. FE phải thêm 3 action mới vào `src/types/change-feed.ts`.
+- Sửa xong / huỷ rút lô hỏng theo FIFO, chưa chọn được đúng chiếc may riêng (đánh dấu hỏng thì chọn được bằng `orderItemId`).
+- e2e chạy với `MAIL_HOST=` trống: `.env` local có SMTP thật nên `POST /auth/register` trong test gửi mail thật và trả 503.
+- `GET /products/:id` (`stockDetails` từng nơi) thêm `shelf`, `damagedQuantity`, `customUnits` (chiếc may riêng còn tốt theo dòng đơn, kèm mã đơn); chưa có e2e riêng cho ba trường này.
+- FE (nhánh `feat/damaged-lots` cùng tên): bỏ ô kho hỏng ở form chi nhánh/kho và ô chọn nơi để hàng lỗi ở hai dialog nhận xưởng; danh sách hàng hoá có "Hỏng: N" dưới số tồn và lọc "Có hàng hỏng" (lọc phía client như các lọc tồn khác); sheet chi tiết phiên bản có menu từng nơi: Đánh dấu hỏng (chọn hàng thường hoặc chiếc may cho đơn X), Sửa xong, Huỷ hàng hỏng; màn hàng hoá live-refresh theo `inventories`; quyền "Xử lý hàng hỏng" trên màn Vai trò; mã lỗi mới. Chưa mở trên trình duyệt.
+

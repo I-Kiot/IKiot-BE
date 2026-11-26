@@ -50,7 +50,6 @@ describe('POST /orders – ManualOrderService.create', () => {
   const branchId = randomUUID();
   const otherBranchId = randomUUID();
   const warehouseId = randomUUID(); // kho xuất mặc định của chi nhánh
-  const damagedId = randomUUID(); // kho hàng hỏng
   const productId = randomUUID();
   const sofaId = randomUUID(); // 10.000.000
   const tableId = randomUUID(); // 2.000.000
@@ -165,13 +164,6 @@ describe('POST /orders – ManualOrderService.create', () => {
       data: [
         { id: warehouseId, tenantId, name: 'Kho tổng', type: 'WAREHOUSE' },
         {
-          id: damagedId,
-          tenantId,
-          name: 'Kho hàng hỏng',
-          type: 'WAREHOUSE',
-          isSellable: false,
-        },
-        {
           id: otherBranchId,
           tenantId,
           name: 'CN 2',
@@ -200,10 +192,7 @@ describe('POST /orders – ManualOrderService.create', () => {
       data: { locationId: branchId },
     });
     await prisma.warehouse.createMany({
-      data: [
-        { id: warehouseId, tenantId, locationId: warehouseId },
-        { id: damagedId, tenantId, locationId: damagedId },
-      ],
+      data: [{ id: warehouseId, tenantId, locationId: warehouseId }],
     });
     await prisma.product.create({
       data: { id: productId, tenantId, name: 'Nội thất' },
@@ -522,7 +511,7 @@ describe('POST /orders – ManualOrderService.create', () => {
     beforeAll(async () => {
       // Như migration: mỗi kho có một dòng `branches` cùng id.
       await prisma.branch.createMany({
-        data: [warehouseId, damagedId].map((id) => ({
+        data: [warehouseId].map((id) => ({
           id,
           tenantId,
           locationId: id,
@@ -555,14 +544,6 @@ describe('POST /orders – ManualOrderService.create', () => {
       expect(order.id).toBeDefined();
     });
 
-    it('refuses the damaged-goods warehouse as the place of sale', async () => {
-      await expect(
-        create(base({ branchId: damagedId, assigneeId: ownerId })),
-      ).rejects.toMatchObject({
-        response: { code: ErrorCode.LOCATION_NOT_SELLABLE },
-      });
-    });
-
     it('lets staff posted at a warehouse sell there, and only there', async () => {
       const staff = {
         ...owner,
@@ -584,11 +565,10 @@ describe('POST /orders – ManualOrderService.create', () => {
     });
   });
 
-  it('offers the branch and the warehouses as a source, never the damaged-goods one', async () => {
+  it('offers the branch and the warehouses as a source', async () => {
     const locations = await manual.listSourceLocations(tenantId);
     const ids = locations.map((location) => location.id);
     expect(ids).toEqual(expect.arrayContaining([branchId, warehouseId]));
-    expect(ids).not.toContain(damagedId);
   });
 
   it('ships every line from the source the seller picked, over the default warehouse', async () => {
@@ -603,20 +583,6 @@ describe('POST /orders – ManualOrderService.create', () => {
       where: { orderId: order.id },
     });
     expect(line.sourceLocationId).toBe(branchId);
-  });
-
-  it('refuses to ship from a damaged-goods warehouse', async () => {
-    await expect(
-      create(
-        base({
-          items: [
-            { productItemId: sofaId, quantity: 1, sourceLocationId: damagedId },
-          ],
-        }),
-      ),
-    ).rejects.toMatchObject({
-      response: { code: ErrorCode.LOCATION_NOT_SELLABLE },
-    });
   });
 
   it('refuses a ship-from location of another tenant', async () => {
