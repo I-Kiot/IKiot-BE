@@ -576,8 +576,25 @@ describe('stats on the sales journal + reconciliation reports', () => {
       const flow = await stats.getCashflow(user(), query(StatsQueryDto, day));
       expect(flow.byFund).toEqual(
         expect.arrayContaining([
-          { fund: 'DRAWER', income: 1500, expense: 500, count: 2, net: 1000 },
-          { fund: 'BANK', income: 1000, expense: 0, count: 1, net: 1000 },
+          // Chuyển quỹ (két ↔ chủ) tách riêng, không nằm trong income / expense.
+          {
+            fund: 'DRAWER',
+            income: 1500,
+            expense: 500,
+            transferIn: 0,
+            transferOut: 0,
+            count: 2,
+            net: 1000,
+          },
+          {
+            fund: 'BANK',
+            income: 1000,
+            expense: 0,
+            transferIn: 0,
+            transferOut: 0,
+            count: 1,
+            net: 1000,
+          },
         ]),
       );
       expect(flow.byCategory.map((c) => [c.category, c.fund, c.total])).toEqual(

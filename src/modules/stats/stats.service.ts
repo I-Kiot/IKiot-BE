@@ -1,3 +1,4 @@
+import { isTransferCategory } from '../../common/constants/cash-flow-category';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -808,63 +809,87 @@ export class StatsService {
   }
 
   async getCashflow(user: AuthUser, query: CashflowQueryDto) {
-    const rows = await this.prisma.cashFlow.groupBy({
-      by: ['flowType'],
-      where: this.cashflowWhere(user, query),
-      _sum: { amount: true },
-      _count: { _all: true },
-    });
-    // Thu chi chia theo loại và quỹ.
+    // Một lần groupBy; mọi tổng suy ra trong bộ nhớ để chuyển quỹ chỉ bị loại ở một chỗ.
     const detail = await this.prisma.cashFlow.groupBy({
       by: ['fund', 'category', 'flowType'],
       where: this.cashflowWhere(user, query),
       _sum: { amount: true },
       _count: { _all: true },
     });
+    const rows = detail.map((row) => ({
+      fund: row.fund,
+      category: row.category,
+      flowType: row.flowType,
+      total: Number(row._sum.amount ?? 0),
+      count: row._count._all,
+    }));
+    // Chuyển quỹ đổi số dư từng quỹ, không đổi tổng tiền của shop: không phải thu chi.
+    const flows = rows.filter((row) => !isTransferCategory(row.category));
+
     const byFund = new Map<
       string,
-      { fund: string; income: number; expense: number; count: number }
+      {
+        fund: string;
+        income: number;
+        expense: number;
+        transferIn: number;
+        transferOut: number;
+        count: number;
+      }
     >();
-    for (const row of detail) {
+    for (const row of rows) {
       const entry = byFund.get(row.fund) ?? {
         fund: row.fund,
         income: 0,
         expense: 0,
+        transferIn: 0,
+        transferOut: 0,
         count: 0,
       };
-      const amount = Number(row._sum.amount ?? 0);
-      if (row.flowType === FlowType.INCOME) entry.income += amount;
-      else entry.expense += amount;
-      entry.count += row._count._all;
+      const isIncome = row.flowType === FlowType.INCOME;
+      if (isTransferCategory(row.category)) {
+        if (isIncome) entry.transferIn += row.total;
+        else entry.transferOut += row.total;
+      } else if (isIncome) entry.income += row.total;
+      else entry.expense += row.total;
+      entry.count += row.count;
       byFund.set(row.fund, entry);
     }
 
+    const byType = [FlowType.INCOME, FlowType.EXPENSE]
+      .map((flowType) => {
+        const matching = flows.filter((row) => row.flowType === flowType);
+        return {
+          flowType,
+          total: matching.reduce((sum, row) => sum + row.total, 0),
+          count: matching.reduce((sum, row) => sum + row.count, 0),
+        };
+      })
+      .filter((row) => row.count > 0);
     const totalOf = (flowType: string) =>
-      Number(rows.find((row) => row.flowType === flowType)?._sum.amount ?? 0);
+      byType.find((row) => row.flowType === flowType)?.total ?? 0;
     const income = totalOf(FlowType.INCOME);
     const expense = totalOf(FlowType.EXPENSE);
+    const transferred = rows
+      .filter((row) => isTransferCategory(row.category))
+      .reduce(
+        (sum, row) =>
+          row.flowType === FlowType.INCOME ? sum + row.total : sum,
+        0,
+      );
 
     return {
       income,
       expense,
       net: income - expense,
-      byType: rows.map((row) => ({
-        flowType: row.flowType,
-        total: Number(row._sum.amount ?? 0),
-        count: row._count._all,
-      })),
-      byCategory: detail
-        .map((row) => ({
-          category: row.category,
-          fund: row.fund,
-          flowType: row.flowType,
-          total: Number(row._sum.amount ?? 0),
-          count: row._count._all,
-        }))
-        .sort((a, b) => b.total - a.total),
+      // Tổng đã chuyển giữa các quỹ trong kỳ (một vế), không nằm trong income / expense.
+      transferred,
+      byType,
+      byCategory: flows.sort((a, b) => b.total - a.total),
       byFund: [...byFund.values()].map((f) => ({
         ...f,
-        net: f.income - f.expense,
+        // Số dư quỹ thay đổi bao nhiêu trong kỳ, tính cả tiền chuyển đến / đi.
+        net: f.income - f.expense + f.transferIn - f.transferOut,
       })),
     };
   }

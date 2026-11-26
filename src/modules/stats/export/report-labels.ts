@@ -39,6 +39,10 @@ const CASH_FLOW_CATEGORY_LABELS: Record<string, string> = {
   [CashFlowCategory.SUPPLIER_PAYMENT]: 'Trả nhà cung cấp',
   [CashFlowCategory.UNALLOCATED_RECEIPT]: 'Tiền về chưa gắn đơn',
   [CashFlowCategory.UNALLOCATED_REFUND]: 'Hoàn tiền chưa gắn đơn',
+  [CashFlowCategory.FUND_TRANSFER_IN]: 'Chuyển quỹ (nhận)',
+  [CashFlowCategory.FUND_TRANSFER_OUT]: 'Chuyển quỹ (chuyển đi)',
+  [CashFlowCategory.DRAWER_SURPLUS]: 'Thừa két',
+  [CashFlowCategory.DRAWER_SHORTAGE]: 'Thiếu két',
 };
 
 const FUND_LABELS: Record<string, string> = {

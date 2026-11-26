@@ -1,3 +1,4 @@
+import { isTransferCategory } from '../../../common/constants/cash-flow-category';
 import { Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -302,7 +303,12 @@ export class StatsExportService {
       sheet.dataRow([
         dateTimeVi(row.createdAt),
         row.paymentReference ?? '-',
-        income ? 'Thu' : 'Chi',
+        // Chuyển quỹ (két ↔ chủ) chỉ đổi chỗ tiền: liệt kê như trên màn, không phải thu / chi.
+        isTransferCategory(row.category)
+          ? 'Chuyển quỹ'
+          : income
+            ? 'Thu'
+            : 'Chi',
         cashFlowCategoryLabel(row.category) || '-',
         fundLabel(row.fund) || '-',
         paymentMethodLabel(row.paymentMethod) || '-',
@@ -315,15 +321,30 @@ export class StatsExportService {
       ]);
     }
     if (rows.length === 0) sheet.emptyRow('Không có dữ liệu');
-    const income = sumOf(rows, (r) => (r.flowType === 'INCOME' ? r.amount : 0));
-    const expense = sumOf(rows, (r) =>
+    // Tổng như thẻ Tiền vào / Tiền ra trên màn: không tính chuyển quỹ (xem `StatsService.getCashflow`).
+    const flows = rows.filter((r) => !isTransferCategory(r.category));
+    const income = sumOf(flows, (r) =>
+      r.flowType === 'INCOME' ? r.amount : 0,
+    );
+    const expense = sumOf(flows, (r) =>
       r.flowType === 'INCOME' ? 0 : r.amount,
+    );
+    const transferred = sumOf(rows, (r) =>
+      isTransferCategory(r.category) && r.flowType === 'INCOME' ? r.amount : 0,
     );
     const blanks = Array<null>(9).fill(null);
     sheet.dataRow(['Tổng cộng', ...blanks, income, expense], { strong: true });
     sheet.dataRow(['Chênh lệch thu chi', ...blanks, income - expense, null], {
       strong: true,
     });
+    if (transferred > 0) {
+      sheet.dataRow([
+        'Chuyển quỹ (không tính vào thu chi)',
+        ...blanks,
+        transferred,
+        null,
+      ]);
+    }
     if (rows.length >= CASHFLOW_EXPORT_LIMIT) {
       sheet.blank();
       sheet.note(

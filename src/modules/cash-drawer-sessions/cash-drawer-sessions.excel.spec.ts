@@ -4,6 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { CashDrawerSessionService } from './cash-drawer-sessions.service';
+import { businessDate } from './business-date';
 
 const bodyOf = (error: unknown) =>
   (error as ConflictException).getResponse() as {
@@ -55,7 +56,8 @@ describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
     tenantId: 'T1',
     branchId: 'BR-01',
     status: 'OPEN',
-    businessDate: '2026-11-10',
+    // Hôm nay: một ngày đã qua là két quá hạn, chặn bàn giao trước các kiểm tra mà sheet này nhắm tới.
+    businessDate: businessDate(),
     openingAmount: 500000,
     finalLogAmount: null,
     finalLogManagerId: null,
@@ -98,6 +100,11 @@ describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
       },
       $transaction: jest.fn().mockImplementation((fn) => fn(tx)),
     };
+    // Mở và chốt két chạy trong transaction: tạo phiên qua cùng mock, phiên trước không có, sổ quỹ ghi vào mock.
+    tx.cashDrawerSession.create = prisma.cashDrawerSession.create;
+    tx.cashDrawerSession.findFirst = jest.fn().mockResolvedValue(null);
+    tx.cashFlow = { createMany: jest.fn().mockResolvedValue({ count: 0 }) };
+    tx.$queryRaw = jest.fn().mockResolvedValue([]);
     service = new CashDrawerSessionService(prisma);
   });
 
@@ -234,7 +241,7 @@ describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
       service.finalize(owner, 'D1', {
         finalAmount: 900000,
         note: 'ok',
-      } as never);
+      });
 
     it('UTC028: a closed session cannot be finalized again', async () => {
       given({ status: 'CLOSED' });
@@ -257,7 +264,7 @@ describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
     });
     it('UTC030: a session closed by another request meanwhile is refused', async () => {
       given({ shiftLogs: [log('START', 'S1'), log('END', 'S1', null)] });
-      prisma.cashDrawerSession.updateMany.mockResolvedValue({ count: 0 });
+      tx.cashDrawerSession.updateMany.mockResolvedValue({ count: 0 });
       await expectRejects(
         finalize(),
         ConflictException,
@@ -280,14 +287,14 @@ describe('Excel sheet CashDrawer - CashDrawerSessionService', () => {
           }),
         );
       const res = await finalize();
-      expect(prisma.cashDrawerSession.updateMany.mock.calls[0][0].data).toEqual(
-        {
-          status: 'CLOSED',
-          finalLogAmount: 900000,
-          finalLogManagerId: 'U9',
-          finalLogNote: 'ok',
-        },
-      );
+      expect(tx.cashDrawerSession.updateMany.mock.calls[0][0].data).toEqual({
+        status: 'CLOSED',
+        finalLogAmount: 900000,
+        finalLogManagerId: 'U9',
+        finalLogNote: 'ok',
+        withdrawnAmount: 0,
+        closedAt: expect.any(Date),
+      });
       expect(res.status).toBe('CLOSED');
     });
   });

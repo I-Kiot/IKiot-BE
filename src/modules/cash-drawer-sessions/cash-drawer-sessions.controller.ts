@@ -8,8 +8,10 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  StreamableFile,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiProduces, ApiTags } from '@nestjs/swagger';
+import { XLSX_MIME } from '../products/import/product-import.service';
 import { CashDrawerSessionService } from './cash-drawer-sessions.service';
 import {
   CurrentCashDrawerDto,
@@ -17,6 +19,7 @@ import {
   OpenCashDrawerDto,
   QueryCashDrawerDto,
   QueryCashVarianceDto,
+  ReopenCashDrawerDto,
   SubmitShiftLogDto,
 } from './dto/cash-drawer.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -36,6 +39,13 @@ export class CashDrawerSessionController {
     return this.service.open(user, dto);
   }
 
+  /** Két hôm nay của chi nhánh: đang mở, hôm nay đã chốt, hay chưa mở. Màn "Hôm nay" dựa vào đây. */
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get('today')
+  today(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
+    return this.service.today(user, query.branchId);
+  }
+
   // `current` khai báo trên `:id` - cả hai đều một đoạn, nên route cố định phải đứng trước.
   @Permissions('cash_drawers', 'read', 'read_own')
   @Get('current')
@@ -48,6 +58,16 @@ export class CashDrawerSessionController {
   @Get('overdue')
   overdue(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
     return this.service.overdue(user, query.branchId);
+  }
+
+  /** Tiền lẻ phiên trước để lại, để điền sẵn tiền đầu ca khi mở két. */
+  @Permissions('cash_drawers', 'open')
+  @Get('opening-hint')
+  openingHint(
+    @CurrentUser() user: AuthUser,
+    @Query() query: CurrentCashDrawerDto,
+  ) {
+    return this.service.openingHint(user, query.branchId);
   }
 
   /** Người nhận được két khi mở két đầu ngày. */
@@ -65,6 +85,31 @@ export class CashDrawerSessionController {
   @Get('reconciliation')
   report(@CurrentUser() user: AuthUser, @Query() query: QueryCashVarianceDto) {
     return this.service.report(user, query);
+  }
+
+  /** Chênh lệch gộp theo thu ngân trong kỳ, cùng bộ lọc với màn Lịch sử két. */
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get('reconciliation/by-cashier')
+  cashierReport(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryCashVarianceDto,
+  ) {
+    return this.service.cashierReport(user, query);
+  }
+
+  /** Báo cáo chênh lệch dạng Excel, cùng bộ lọc với màn Lịch sử két. */
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get('reconciliation/export')
+  @ApiProduces(XLSX_MIME)
+  async exportReport(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryCashVarianceDto,
+  ) {
+    const { buffer, filename } = await this.service.exportReport(user, query);
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @Permissions('cash_drawers', 'read', 'read_own')
@@ -112,6 +157,18 @@ export class CashDrawerSessionController {
     @Body() dto: SubmitShiftLogDto,
   ) {
     return this.service.submitShiftLog(user, id, dto);
+  }
+
+  /** Mở lại két chốt nhầm trong ngày; cùng quyền với chốt két. */
+  @Permissions('cash_drawers', 'finalize')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/reopen')
+  reopen(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReopenCashDrawerDto,
+  ) {
+    return this.service.reopen(user, id, dto);
   }
 
   @Permissions('cash_drawers', 'finalize')

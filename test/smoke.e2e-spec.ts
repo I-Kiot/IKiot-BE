@@ -116,6 +116,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     });
     if (!tenant) return;
     const t = tenant.id;
+    // Dòng sổ két tự ghi trỏ vào phiên: xoá trước phiên.
+    await prisma.cashFlow.deleteMany({
+      where: { tenantId: t, cashDrawerSessionId: { not: null } },
+    });
     await prisma.cashDrawerShiftLog.deleteMany({
       where: { session: { tenantId: t } },
     });
@@ -2535,8 +2539,25 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(opened.body.data.status).toBe('OPEN');
     expect(opened.body.data.openingAmount).toBe(2_000_000);
     expect(opened.body.data.currentStaff.id).toBe(staffId);
+    // Phiên đầu tiên của chi nhánh: cả tiền đầu ca là chủ đưa vào két (chuyển quỹ, không phải thu chi).
+    const openingRows = await prisma.cashFlow.findMany({
+      where: { cashDrawerSessionId: sessionId },
+      select: { category: true, fund: true, flowType: true, amount: true },
+      orderBy: { category: 'asc' },
+    });
+    expect(
+      openingRows.map((r) => [
+        r.category,
+        r.fund,
+        r.flowType,
+        Number(r.amount),
+      ]),
+    ).toEqual([
+      ['FUND_TRANSFER_IN', 'DRAWER', 'INCOME', 2_000_000],
+      ['FUND_TRANSFER_OUT', 'OWNER', 'EXPENSE', 2_000_000],
+    ]);
     note(
-      `POST /cash-drawer-sessions: OPEN, float ${opened.body.data.openingAmount}, held by staff 1 OK`,
+      `POST /cash-drawer-sessions: OPEN, float ${opened.body.data.openingAmount}, held by staff 1, float booked as owner -> drawer transfer OK`,
     );
 
     await http()
@@ -2678,13 +2699,88 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     note('cashier 2 worked a shift and closed it out OK');
 
+    // Rút quá số đếm được bị từ chối, phiên vẫn mở.
+    const overdraw = await http()
+      .post(`/cash-drawer-sessions/${sessionId}/finalize`)
+      .set(auth())
+      .send({ finalAmount: 3_100_000, withdrawAmount: 3_100_001 })
+      .expect(400);
+    expect(overdraw.body.code).toBe('CASH_DRAWER_WITHDRAW_EXCEEDS_COUNT');
+
     const finalized = await http()
       .post(`/cash-drawer-sessions/${sessionId}/finalize`)
       .set(auth())
-      .send({ finalAmount: 3_100_000, note: 'Khớp' })
+      .send({ finalAmount: 3_100_000, withdrawAmount: 2_100_000, note: 'Khớp' })
       .expect(200);
     expect(finalized.body.data.status).toBe('CLOSED');
     expect(finalized.body.data.finalLog.amount).toBe(3_100_000);
+    expect(finalized.body.data.finalLog.withdrawnAmount).toBe(2_100_000);
+    expect(finalized.body.data.finalLog.keptAmount).toBe(1_000_000);
+
+    // Chốt: thừa / thiếu đúng bằng chênh lệch của báo cáo đối soát, rồi chuyển quỹ Két -> Chủ số đã rút.
+    const recon = (
+      await http()
+        .get(`/cash-drawer-sessions/${sessionId}/reconciliation`)
+        .set(auth())
+        .expect(200)
+    ).body.data;
+    const closingRows = await prisma.cashFlow.findMany({
+      where: {
+        cashDrawerSessionId: sessionId,
+        category: { notIn: ['FUND_TRANSFER_IN', 'FUND_TRANSFER_OUT'] },
+      },
+      select: { category: true, amount: true },
+    });
+    expect(closingRows.map((r) => [r.category, Number(r.amount)])).toEqual(
+      recon.variance === 0
+        ? []
+        : [
+            [
+              recon.variance > 0 ? 'DRAWER_SURPLUS' : 'DRAWER_SHORTAGE',
+              Math.abs(recon.variance),
+            ],
+          ],
+    );
+    const withdrawRows = await prisma.cashFlow.findMany({
+      where: {
+        cashDrawerSessionId: sessionId,
+        description: { startsWith: 'Chốt két' },
+        category: { in: ['FUND_TRANSFER_IN', 'FUND_TRANSFER_OUT'] },
+      },
+      select: { category: true, fund: true, amount: true },
+      orderBy: { category: 'asc' },
+    });
+    expect(
+      withdrawRows.map((r) => [r.category, r.fund, Number(r.amount)]),
+    ).toEqual([
+      ['FUND_TRANSFER_IN', 'OWNER', 2_100_000],
+      ['FUND_TRANSFER_OUT', 'DRAWER', 2_100_000],
+    ]);
+    // Số dư quỹ Két của chi nhánh trên sổ = tiền đang để lại trong két.
+    const { createdAt: openedAt } =
+      await prisma.cashDrawerSession.findUniqueOrThrow({
+        where: { id: sessionId },
+        select: { createdAt: true },
+      });
+    // Từ lúc mở phiên: các bước trước đã bán tiền mặt ở chi nhánh này khi chưa có két.
+    const drawerBalance = await prisma.cashFlow.findMany({
+      where: {
+        tenantId,
+        locationId: branchId,
+        fund: 'DRAWER',
+        createdAt: { gte: openedAt },
+      },
+      select: { flowType: true, amount: true },
+    });
+    const balance = drawerBalance.reduce(
+      (sum, r) =>
+        sum + (r.flowType === 'INCOME' ? Number(r.amount) : -Number(r.amount)),
+      0,
+    );
+    expect(balance).toBe(1_000_000);
+    note(
+      `finalize books variance ${recon.variance} and a 2.1M drawer -> owner transfer; drawer fund balance = 1M left in the drawer OK`,
+    );
     expect(finalized.body.data.shiftLogs).toHaveLength(4);
     note(
       `finalize: CLOSED, final count ${finalized.body.data.finalLog.amount}, ${finalized.body.data.shiftLogs.length} shift logs OK`,
@@ -2729,6 +2825,9 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         tenantId,
         locationId: branchId,
         paymentMethod: 'CASH',
+        fund: 'DRAWER',
+        // Dòng két tự ghi khi mở / chốt không phải giao dịch trong phiên.
+        cashDrawerSessionId: null,
         createdAt: { gte: dayStart, lt: dayEnd },
       },
       select: { flowType: true, amount: true },
@@ -3656,10 +3755,26 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .get('/stats/cashflow?flow=ORD')
       .set(auth())
       .expect(200);
-    expect(salesOnly.body.data.income).toBe(cash.body.data.income);
+    // Thừa / thiếu két (các phiên két ở trên) là thu chi thật nhưng không thuộc đơn nào.
+    const drawerVariance = (category: string) =>
+      (cash.body.data.byCategory as { category: string; total: number }[])
+        .filter((row) => row.category === category)
+        .reduce((sum, row) => sum + row.total, 0);
+    expect(salesOnly.body.data.income).toBe(
+      cash.body.data.income - drawerVariance('DRAWER_SURPLUS'),
+    );
     expect(salesOnly.body.data.expense).toBeGreaterThan(0);
-    // Dòng chi: hoàn đơn và hai khoản trả nợ NCC.
-    expect(cash.body.data.expense - salesOnly.body.data.expense).toBe(150_000);
+    // Dòng chi: hoàn đơn và hai khoản trả nợ NCC, cộng thiếu két.
+    expect(cash.body.data.expense - salesOnly.body.data.expense).toBe(
+      150_000 + drawerVariance('DRAWER_SHORTAGE'),
+    );
+    // Chuyển quỹ không nằm trong thu chi.
+    expect(
+      (cash.body.data.byCategory as { category: string }[]).some((row) =>
+        row.category.startsWith('FUND_TRANSFER'),
+      ),
+    ).toBe(false);
+    expect(cash.body.data.transferred).toBeGreaterThan(0);
     note('GET /stats/cashflow: flow=ORD selects the sales ledger OK');
 
     const transactions = await http()

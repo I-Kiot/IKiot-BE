@@ -718,3 +718,74 @@ Chủ dự án chốt: bước 1 chỉ nhập email; không được để lộ 
 
 **Chưa kiểm chứng / còn lại**
 - `stats-journal` e2e qua 9/9; unit `admin-stats.excel.spec` UTC027 fail sẵn trên `dev`, không liên quan. Chưa có test riêng cho file xuất Sổ thu chi (đã gọi thử trên local: 200, file xlsx).
+
+
+## 2026-11-26 - Màn "Hôm nay" của két mời mở két lần hai sau khi đã chốt
+
+**Lỗi**: màn `/cash-drawers/today` dựa vào `GET /current`, vốn chỉ tìm phiên đang mở. Chốt két xong là không còn phiên mở, màn coi như "chưa mở két" và hiện nút mở; bấm thì BE từ chối (mỗi chi nhánh một phiên một ngày) với câu "đã có ca hoặc ca đang mở".
+
+**Đã làm**
+- BE `GET /cash-drawer-sessions/today?branchId=` (`cash_drawers:read|read_own`): `OPEN` (kể cả quá hạn, kèm `overdue`, người giữ), `CLOSED_TODAY` (người chốt, giờ chốt), `NOT_OPENED`; `session` chỉ có khi người gọi được đọc phiên đó.
+- `open` báo `CASH_DRAWER_CLOSED_TODAY` (kèm `sessionId`) khi hôm nay chi nhánh đã chốt.
+- FE màn Hôm nay: một chi nhánh → đang mở thì vào phiên, đã chốt thì hiện "Hôm nay đã chốt két" + Xem phiên / Lịch sử két (không có nút mở), đang mở mà mình không được xem thì báo ai đang giữ; chỉ "chưa mở" mới có nút mở. Lưới chi nhánh của chủ: badge ĐANG MỞ / QUÊN CHỐT / ĐÃ CHỐT / CHƯA MỞ, thẻ đã chốt ghi giờ và người chốt, bấm vào xem phiên. Lỗi mở két hiện bằng mã (đã chốt hôm nay có nút Xem phiên) và tải lại trạng thái.
+- e2e `cash-drawer-ledger` kiểm cả ba trạng thái, người không giữ két (chỉ biết trạng thái, không thấy phiên), mở lại sau khi chốt bị từ chối, và ngày hôm sau mở được. Smoke + drawer + di-check 65/65 trên `ikiot_e2e`.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở màn trên trình duyệt (Chrome của phiên làm việc không vào được server local).
+- Muốn cho mở lại két trong ngày (chốt nhầm, hai ca riêng) thì phải đổi ràng buộc một phiên một ngày - chưa làm, cần chủ dự án quyết.
+
+
+## 2026-11-27 - Két tiền ghi sổ quỹ khi mở / chốt
+
+**Đã làm**
+- Trước đây mở / giao ca / chốt két chỉ ghi vào `cash_drawer_sessions`, không báo cáo nào thấy: thiếu két chỉ nằm ở ghi chú, quỹ Két trên sổ cộng dồn mãi. Mô hình chốt với chủ dự án theo thực tế: chủ đưa tiền lẻ / rút tiền về là chuyển quỹ (không phải thu chi), chênh lệch khi đếm là thừa / thiếu két (thu chi thật).
+- Migration `20261127090000_drawer_fund_transfers`: 4 loại sổ quỹ mới `FUND_TRANSFER_IN/OUT`, `DRAWER_SURPLUS/SHORTAGE` (tạo lại CHECK loại + hướng), `cash_flows.cash_drawer_session_id`, `cash_drawer_sessions.withdrawn_amount`, CHECK dòng két tự ghi phải là tiền mặt, quỹ Két/Chủ, có phiên.
+- `drawer-cash-flow.ts` (writer thứ ba được phép ghi sổ quỹ): mở két so với số phiên trước để lại (nhiều hơn = chủ đưa thêm, ít hơn = thiếu két qua đêm); chốt két ghi thừa / thiếu theo đúng số dự kiến của báo cáo đối soát, rồi chuyển quỹ Két → Chủ số đã rút. Đối soát két bỏ qua các dòng này.
+- `POST /:id/finalize` nhận `withdrawAmount` (≤ số đếm, mã lỗi `CASH_DRAWER_WITHDRAW_EXCEEDS_COUNT`); `finalLog` có `withdrawnAmount`, `keptAmount`. Route mới `GET /cash-drawer-sessions/opening-hint?branchId=` (`cash_drawers:open`).
+- `/stats/cashflow`: chuyển quỹ không vào `income/expense/byCategory/byType`; thêm `transferred`; `byFund` thêm `transferIn/transferOut`, `net` = thay đổi số dư quỹ. Nhãn export Excel cho 4 loại mới.
+- FE: màn Dòng tiền (cột Loại "Chuyển quỹ" màu xám, bảng Theo quỹ thêm cột Chuyển quỹ / Thay đổi, dòng Tổng ghi chú số đã chuyển quỹ, nhãn 4 loại mới); mở két điền sẵn số phiên trước để lại và nói trước sổ sẽ ghi gì; chốt két hiện số theo sổ, thừa / thiếu ngay khi nhập, ô "Số tiền chủ rút về" và số để lại; lịch sử ca hiện thừa / thiếu và số rút / để lại.
+- Test: `drawer-cash-flow.spec.ts` (9), `cash-flow-category.spec` cập nhật; e2e mới `cash-drawer-ledger.e2e-spec.ts` (kịch bản 1 ngày + thiếu qua đêm, kiểm số dư quỹ Két = tiền trong két); smoke kiểm dòng sổ khi mở / chốt, dọn dòng két trước phiên, và phần thống kê dòng tiền trừ thừa / thiếu két. Smoke + e2e mới 61/61 trên `ikiot_e2e` (chạy với `MAIL_HOST=`). Unit: các `*.excel.spec.ts` vẫn lỗi sẵn như trước (64 so với 65 trước khi sửa); `cash-drawer-sessions.excel.spec` sửa mock `$transaction` cho mở / chốt.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa áp migration lên `ikiot_db` local, chưa mở màn Dòng tiền / Két trên trình duyệt.
+- Phiên chốt trước migration có `withdrawn_amount` null: phiên mở đầu tiên sau deploy ghi cả tiền đầu ca là chủ đưa vào két.
+- Chưa có rút tiền giữa ca, nộp tiền quỹ Chủ vào ngân hàng; chưa có màn số dư quỹ từ trước tới nay (bảng Theo quỹ chỉ là thay đổi trong kỳ).
+- Đếm thừa lúc mở két luôn được hiểu là chủ đưa thêm, không có lựa chọn "thừa không rõ nguồn".
+
+
+## 2026-11-27 - Màn Lịch sử két (giai đoạn 1)
+
+**Đã làm**
+- BE: báo cáo `GET /cash-drawer-sessions/reconciliation` thêm `withdrawnAmount`, `keptAmount` mỗi phiên và `shortfallSessions`, `withdrawn`, `overdueSessions` ở totals. Route mới `GET /cash-drawer-sessions/reconciliation/export` (.xlsx, cùng bộ lọc, không phân trang, quyền `cash_drawers:read|read_own`). Trang và file dùng chung `reportRows`.
+- FE `/cash-drawers/history` (thay trang "đang phát triển"): 4 thẻ (số phiên / đang mở / quên chốt, tổng thiếu, tổng thừa, chủ đã rút), lọc chi nhánh (ẩn kho), khoảng ngày, trạng thái, "chỉ phiên có chênh lệch"; bảng mỗi phiên một dòng (đầu ca, thu / chi TM, theo sổ, đếm được, chênh lệch, chủ rút, để lại, trạng thái) có dòng tổng; bấm một dòng mở bảng theo từng ca (`/:id/reconciliation`), khoản không qua két, link sang Sổ thu chi của ngày và chi tiết phiên; nút Xuất Excel.
+- Test: e2e `cash-drawer-ledger` thêm ca báo cáo + file Excel (5/5 trên `ikiot_e2e`).
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở màn trên trình duyệt (Chrome của phiên làm việc không vào được localhost).
+- Lọc "Quên chốt" chưa có ở BE nên bộ lọc trạng thái chỉ có Đang mở / Đã chốt; phiên quên chốt có badge riêng.
+- Giai đoạn 2: bảng gộp theo thu ngân (cần API mới).
+
+
+## 2026-11-27 - Lịch sử két giai đoạn 2: theo thu ngân
+
+**Đã làm**
+- BE `GET /cash-drawer-sessions/reconciliation/by-cashier` (cùng bộ lọc chi nhánh / kỳ / trạng thái, `cash_drawers:read|read_own`): chạy lại `reconcileSession` cho mọi phiên trong kỳ (một query tiền mặt), `summarizeByCashier` (`cashier-summary.ts`, thuần, 3 unit test) gộp các đoạn SHIFT theo người giữ két: số ca, số ngày, thu / chi TM, số ca và tổng thiếu, số ca và tổng thừa, chênh lệch ròng, ca đang giữ. Lệch ở đoạn không ai giữ (mở két, giữa hai ca, quản lý đếm chốt) trả riêng ở `unattributed`. Người chỉ có `read_own` chỉ nhận dòng của mình.
+- FE Lịch sử két có hai tab "Theo phiên" / "Theo thu ngân"; tab thu ngân xếp người thiếu nhiều nhất lên đầu, thẻ riêng "Lệch không gán cho thu ngân nào". Excel và công tắc "chỉ phiên có chênh lệch" chỉ ở tab phiên.
+- e2e `cash-drawer-ledger` thêm ca thiếu 50k gán đúng thu ngân và ca `read_own` (6/6 trên `ikiot_e2e`); helper e2e cho thu ngân nhận két đúng bằng tiền đầu ca trước khi bán.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở trên trình duyệt.
+- Tải mọi dòng tiền mặt của kỳ vào bộ nhớ; kỳ một năm nhiều chi nhánh sẽ nặng.
+- Chưa có Excel cho bảng theo thu ngân.
+
+
+## 2026-11-27 - Mở lại két chốt nhầm trong ngày
+
+**Đã làm**
+- Migration `20261127100000_drawer_reopen`: `cash_drawer_sessions.reopen_count`, `last_reopened_at`, `last_reopened_by`, `last_reopen_reason`.
+- `POST /cash-drawer-sessions/:id/reopen { staffId, reason }` (`cash_drawers:finalize`): chỉ phiên CLOSED của ngày giao dịch hôm nay (`CASH_DRAWER_NOT_CLOSED`, `CASH_DRAWER_REOPEN_NOT_TODAY`). Phiên về OPEN giao cho `staffId`, xoá kết quả chốt và các dòng sổ quỹ ghi lúc chốt (thừa / thiếu, chủ rút); dòng lúc mở két giữ nguyên. Lần trả két trước khi mở lại không còn tính: người nhận START lại được, chốt phải chờ END mới.
+- FE: màn chi tiết phiên đã chốt hôm nay có nút "Mở lại két (chốt nhầm)" (hộp thoại chọn người nhận + lý do); thẻ "Hôm nay đã chốt két" có nút dẫn tới đó (`?reopen=1`); lịch sử ca hiện lần mở lại đúng chỗ theo thời gian, kèm lý do; nhận ca sau khi mở lại lấy số đếm lúc trả két.
+- Test: e2e `cash-drawer-ledger` thêm luồng chốt nhầm → mở lại → nhận ca → chốt lại (dòng sổ chốt nhầm biến mất, chốt lại ghi đúng, số dư quỹ Két = tiền để lại), chặn mở lại phiên ngày cũ / phiên đang mở. 66/66 e2e (smoke + két + di-check). Sửa luôn `cash-drawer-sessions.excel.spec.ts` (mock `businessDate` là chuỗi ngày cũ): unit két 66/66, trước đó 7 ca lỗi sẵn.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa áp migration lên `ikiot_db` (cần hỏi chủ dự án), chưa mở trên trình duyệt.
