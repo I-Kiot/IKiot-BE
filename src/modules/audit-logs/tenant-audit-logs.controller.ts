@@ -2,6 +2,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuditLogService } from './audit-logs.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
+import { QueryOrderActivityDto } from './dto/query-order-activity.dto';
 import { OwnerOrAdminGuard } from '../../common/guards/owner-or-admin.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
@@ -18,5 +19,16 @@ export class TenantAuditLogController {
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryAuditLogDto) {
     return this.service.findForTenant(requireTenantId(user), query);
+  }
+
+  @Get('order-events')
+  findOrderActivity(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryOrderActivityDto,
+  ) {
+    return this.service.findOrderActivityForTenant(
+      requireTenantId(user),
+      query,
+    );
   }
 }
