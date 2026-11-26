@@ -11,10 +11,6 @@ import { UserStatus } from '../../common/constants/user-status';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { isSameName } from '../../common/utils/same-name';
 import { LOCATION_INCLUDE } from './location.types';
-import {
-  assertCanBecomeSellable,
-  assertDamagedLocationTarget,
-} from './damaged-location';
 import type { LocationConfig, LocationRow } from './location.types';
 import { locationReadScope } from './location-read-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
@@ -36,10 +32,6 @@ export interface LocationInput {
   address?: string;
   email?: string;
   status?: string;
-  /** Chỉ kho (CreateWarehouseDto); DTO chi nhánh không có trường này. */
-  isSellable?: boolean;
-  /** `null` để xoá. */
-  damagedLocationId?: string | null;
 }
 
 /** Chi nhánh và kho dùng chung logic; phần khác nhau truyền qua `LocationConfig`.
@@ -160,13 +152,6 @@ export abstract class LocationService {
         }),
       this.config.messages.quotaLabel,
     );
-    await assertDamagedLocationTarget(
-      this.prisma,
-      tenantId,
-      null,
-      dto.damagedLocationId,
-    );
-
     // Dòng chuyên biệt dùng chung id của Location, để `branchId` / `locationId` trỏ tới bảng nào cũng được.
     // Mọi địa điểm đều có dòng `branches` vì kho cũng tạo được đơn; loại địa điểm vẫn do `type` quyết định.
     const id = randomUUID();
@@ -184,8 +169,6 @@ export abstract class LocationService {
         phoneNumber: dto.phoneNumber ?? [],
         address: dto.address,
         email: dto.email,
-        isSellable: dto.isSellable,
-        damagedLocationId: dto.damagedLocationId,
       },
       include: LOCATION_INCLUDE,
     });
@@ -201,15 +184,6 @@ export abstract class LocationService {
     if (dto.name !== undefined && !isSameName(dto.name, existing.name)) {
       await this.assertNameFree(tenantId, dto.name, id);
     }
-    await assertDamagedLocationTarget(
-      this.prisma,
-      tenantId,
-      id,
-      dto.damagedLocationId,
-    );
-    if (dto.isSellable === true && !existing.isSellable) {
-      await assertCanBecomeSellable(this.prisma, tenantId, id);
-    }
 
     const row = await this.prisma.location.update({
       where: { id },
@@ -219,8 +193,6 @@ export abstract class LocationService {
         address: dto.address,
         email: dto.email,
         status: dto.status,
-        isSellable: dto.isSellable,
-        damagedLocationId: dto.damagedLocationId,
       },
       include: LOCATION_INCLUDE,
     });

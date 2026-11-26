@@ -51,7 +51,7 @@ import { PaymentKind } from './../src/common/constants/payment-method';
 import { assertMoneyInvariants } from './helpers/money-invariants';
 
 /**
- * Hoàn hàng (D-5) trên Postgres thật: tạo đơn hoàn → nhận hàng → kiểm từng dòng. GOOD cộng lại tồn bán được, DAMAGED vào kho hàng hỏng; vượt số lượng, đơn chưa trừ kho, người không có quyền đều bị chặn. `ship` (C-2) chưa có route nên test tự trừ tồn bằng `shipLockedStock`. Tự tạo tenant riêng và dọn sạch.
+ * Hoàn hàng (D-5) trên Postgres thật: tạo đơn hoàn → nhận hàng → kiểm từng dòng. GOOD cộng lại tồn bán được, DAMAGED thành lô hỏng (`isSellable = false`) tại nơi xuất, ngoài tồn bán được; vượt số lượng, đơn chưa trừ kho, người không có quyền đều bị chặn. `ship` (C-2) chưa có route nên test tự trừ tồn bằng `shipLockedStock`. Tự tạo tenant riêng và dọn sạch.
  */
 describe('/order-returns – OrderReturnService', () => {
   let prisma: PrismaService;
@@ -68,7 +68,6 @@ describe('/order-returns – OrderReturnService', () => {
   const staffId = randomUUID();
   const branchId = randomUUID();
   const warehouseId = randomUUID();
-  const damagedId = randomUUID();
   const productId = randomUUID();
   const sofaId = randomUUID();
   const customerId = randomUUID();
@@ -96,6 +95,18 @@ describe('/order-returns – OrderReturnService', () => {
         where: { tenantId, locationId, productItemId: sofaId },
       })
     )?.stock ?? 0;
+  const damagedAt = async (locationId: string) =>
+    (
+      await prisma.inventoryLot.aggregate({
+        where: {
+          tenantId,
+          locationId,
+          productItemId: sofaId,
+          isSellable: false,
+        },
+        _sum: { remainingQuantity: true },
+      })
+    )._sum.remainingQuantity ?? 0;
 
   /** Đơn đã giao: đóng gói rồi trừ kho như `ship` sẽ làm (sổ SALE kèm dòng đơn). */
   const shippedOrder = async (quantity = 2, assigneeId = ownerId) => {
@@ -262,20 +273,10 @@ describe('/order-returns – OrderReturnService', () => {
     }
     await prisma.location.create({
       data: {
-        id: damagedId,
-        tenantId,
-        name: 'Kho hỏng',
-        type: 'WAREHOUSE',
-        isSellable: false,
-      },
-    });
-    await prisma.location.create({
-      data: {
         id: warehouseId,
         tenantId,
         name: 'Kho',
         type: 'WAREHOUSE',
-        damagedLocationId: damagedId,
       },
     });
     await prisma.location.create({
@@ -295,7 +296,7 @@ describe('/order-returns – OrderReturnService', () => {
       where: { id: staffId },
       data: { locationId: branchId },
     });
-    for (const id of [warehouseId, damagedId]) {
+    for (const id of [warehouseId]) {
       await prisma.warehouse.create({
         data: { id, tenantId, locationId: id },
       });
@@ -360,7 +361,7 @@ describe('/order-returns – OrderReturnService', () => {
     await prisma.warehouse.deleteMany({ where: { tenantId } });
     await prisma.location.updateMany({
       where: { tenantId },
-      data: { defaultFulfillmentLocationId: null, damagedLocationId: null },
+      data: { defaultFulfillmentLocationId: null },
     });
     await prisma.location.deleteMany({ where: { tenantId } });
     await prisma.user.deleteMany({ where: { tenantId } });
@@ -434,8 +435,9 @@ describe('/order-returns – OrderReturnService', () => {
     });
   });
 
-  it('sends damaged goods to the damaged-goods warehouse and leaves the order un-RETURNED on a partial return', async () => {
+  it('keeps damaged goods where they shipped from as a damaged lot, and leaves the order un-RETURNED on a partial return', async () => {
     const before = await stockAt(warehouseId);
+    const damagedBefore = await damagedAt(warehouseId);
     const { orderId, lineId } = await shippedOrder(3);
     const created = await open(orderId, lineId, 1);
     await returns.receive(owner, tenantId, created.id);
@@ -444,11 +446,11 @@ describe('/order-returns – OrderReturnService', () => {
     });
 
     expect(await stockAt(warehouseId)).toBe(before - 3); // Không phải tồn bán được
-    expect(await stockAt(damagedId)).toBe(1);
+    expect(await damagedAt(warehouseId)).toBe(damagedBefore + 1);
     const row = await prisma.orderReturnItem.findFirstOrThrow({
       where: { returnId: created.id },
     });
-    expect(row.locationId).toBe(damagedId);
+    expect(row.locationId).toBe(warehouseId);
     expect(
       await prisma.inventoryTransaction.count({
         where: {
@@ -468,7 +470,7 @@ describe('/order-returns – OrderReturnService', () => {
     ).toBe(1);
   });
 
-  it('refuses to inspect a line without a condition, and a DAMAGED line when no damaged-goods warehouse is set', async () => {
+  it('refuses to inspect a line without a condition', async () => {
     const { orderId, lineId } = await shippedOrder(1);
     const created = await open(orderId, lineId, 1);
     await returns.receive(owner, tenantId, created.id);
@@ -479,25 +481,6 @@ describe('/order-returns – OrderReturnService', () => {
     ).rejects.toMatchObject({
       response: { code: ErrorCode.ORDER_RETURN_CONDITION_REQUIRED },
     });
-
-    await prisma.location.update({
-      where: { id: warehouseId },
-      data: { damagedLocationId: null },
-    });
-    try {
-      await expect(
-        returns.inspect(owner, tenantId, created.id, {
-          items: [{ orderItemId: lineId, condition: ReturnCondition.DAMAGED }],
-        }),
-      ).rejects.toMatchObject({
-        response: { code: ErrorCode.LOCATION_DAMAGED_REQUIRED },
-      });
-    } finally {
-      await prisma.location.update({
-        where: { id: warehouseId },
-        data: { damagedLocationId: damagedId },
-      });
-    }
     // The transaction rolled back: still waiting to be inspected, nothing returned.
     expect(
       (
@@ -512,23 +495,22 @@ describe('/order-returns – OrderReturnService', () => {
     ).toBe(0);
   });
 
-  it('refuses a GOOD return into a damaged-goods location', async () => {
+  it('puts a damaged return at the location the inspector names, still out of stock', async () => {
+    const branchStock = await stockAt(branchId);
     const { orderId, lineId } = await shippedOrder(1);
     const created = await open(orderId, lineId, 1);
     await returns.receive(owner, tenantId, created.id);
-    await expect(
-      returns.inspect(owner, tenantId, created.id, {
-        items: [
-          {
-            orderItemId: lineId,
-            condition: ReturnCondition.GOOD,
-            locationId: damagedId,
-          },
-        ],
-      }),
-    ).rejects.toMatchObject({
-      response: { code: ErrorCode.LOCATION_NOT_SELLABLE },
+    await returns.inspect(owner, tenantId, created.id, {
+      items: [
+        {
+          orderItemId: lineId,
+          condition: ReturnCondition.DAMAGED,
+          locationId: branchId,
+        },
+      ],
     });
+    expect(await stockAt(branchId)).toBe(branchStock);
+    expect(await damagedAt(branchId)).toBe(1);
   });
 
   it('refuses an order whose goods have not left stock, and more than was sold', async () => {

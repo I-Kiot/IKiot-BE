@@ -24,7 +24,7 @@ export type OrderReturnReason =
 export const ORDER_RETURN_REASONS: readonly string[] =
   Object.values(OrderReturnReason);
 
-/** Đặt theo từng dòng khi kiểm tra. GOOD về địa điểm bán được; DAMAGED về kho hàng hỏng của địa điểm đó (`Location.damagedLocationId`, `isSellable = false`). */
+/** Đặt theo từng dòng khi kiểm tra. Cả hai về cùng địa điểm (mặc định nơi xuất hàng): GOOD vào lô bán được, DAMAGED thành lô hỏng (`InventoryLot.isSellable = false`) ngoài `stock`. */
 export const ReturnCondition = {
   GOOD: 'GOOD',
   DAMAGED: 'DAMAGED',

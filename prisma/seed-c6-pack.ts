@@ -103,22 +103,32 @@ async function main() {
     where: { phoneNumber: OWNER_PHONE, systemRole: 'TENANT_OWNER' },
   });
   if (!owner?.tenantId) {
-    throw new Error(`Chưa có chủ shop ${OWNER_PHONE} - chạy seed-account-role.ts trước.`);
+    throw new Error(
+      `Chưa có chủ shop ${OWNER_PHONE} - chạy seed-account-role.ts trước.`,
+    );
   }
   const tenantId = owner.tenantId;
 
-  const branch = await prisma.location.findFirst({ where: { tenantId, name: BRANCH_NAME } });
-  if (!branch) throw new Error(`Chưa có "${BRANCH_NAME}" - chạy seed-account-role.ts trước.`);
+  const branch = await prisma.location.findFirst({
+    where: { tenantId, name: BRANCH_NAME },
+  });
+  if (!branch)
+    throw new Error(
+      `Chưa có "${BRANCH_NAME}" - chạy seed-account-role.ts trước.`,
+    );
   const warehouse = await ensureWarehouse(tenantId);
 
-  const skus = [...new Set(SCENARIOS.flatMap((s) => s.lines.map((l) => l.sku)))];
+  const skus = [
+    ...new Set(SCENARIOS.flatMap((s) => s.lines.map((l) => l.sku))),
+  ];
   const items = await prisma.productItem.findMany({
     where: { tenantId, sku: { in: skus } },
     select: { id: true, sku: true, productName: true, retailPrice: true },
   });
   const bySku = new Map(items.map((i) => [i.sku, i]));
   const missing = skus.filter((s) => !bySku.has(s));
-  if (missing.length) throw new Error(`Không tìm thấy SKU: ${missing.join(', ')}`);
+  if (missing.length)
+    throw new Error(`Không tìm thấy SKU: ${missing.join(', ')}`);
 
   // Tồn kho ở kho riêng C-6 - chỉ nhập khi SKU chưa có dòng tồn ở đó.
   for (const [sku, quantity] of Object.entries(STOCK)) {
@@ -127,7 +137,9 @@ async function main() {
       where: { tenantId, locationId: warehouse.id, productItemId: item.id },
     });
     if (existing) {
-      console.log(`Tồn ${sku}: đã có (stock ${existing.stock}, khoá ${existing.lockedStock}) - giữ nguyên.`);
+      console.log(
+        `Tồn ${sku}: đã có (stock ${existing.stock}, khoá ${existing.lockedStock}) - giữ nguyên.`,
+      );
       continue;
     }
     await prisma.$transaction((tx) =>
@@ -150,7 +162,11 @@ async function main() {
   }
 
   const sofa = bySku.get(TWO_PACKAGE_SKU)!;
-  if ((await prisma.productPackage.count({ where: { productItemId: sofa.id } })) === 0) {
+  if (
+    (await prisma.productPackage.count({
+      where: { productItemId: sofa.id },
+    })) === 0
+  ) {
     await prisma.productPackage.createMany({
       data: [
         { productItemId: sofa.id, position: 1 },
@@ -161,11 +177,15 @@ async function main() {
   }
 
   const customer =
-    (await prisma.customer.findFirst({ where: { tenantId, name: CUSTOMER_NAME } })) ??
+    (await prisma.customer.findFirst({
+      where: { tenantId, name: CUSTOMER_NAME },
+    })) ??
     (await prisma.customer.create({ data: { tenantId, name: CUSTOMER_NAME } }));
 
   for (const scenario of SCENARIOS) {
-    if (await prisma.order.findFirst({ where: { tenantId, code: scenario.code } })) {
+    if (
+      await prisma.order.findFirst({ where: { tenantId, code: scenario.code } })
+    ) {
       console.log(`${scenario.code}: đã có - bỏ qua.`);
       continue;
     }
@@ -223,8 +243,6 @@ async function ensureWarehouse(tenantId: string) {
       tenantId,
       name: WAREHOUSE_NAME,
       type: 'WAREHOUSE',
-      // Đơn chỉ được xuất từ nơi bán được (manual-order.service) - kho này là nguồn của các đơn C-6.
-      isSellable: true,
       warehouse: { create: { id, tenantId } },
     },
   });

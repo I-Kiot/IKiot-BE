@@ -32,6 +32,7 @@ import {
   STOCKED_LINE_TYPES,
 } from '../../common/constants/order-status';
 import { ShipmentStatus } from '../../common/constants/shipment-status';
+import { LocationStatus } from '../../common/constants/location-status';
 import {
   OrderReturnStatus,
   ReturnCondition,
@@ -693,7 +694,6 @@ export class OrderReturnService {
         const toLocationId = await this.destination(
           tx,
           tenantId,
-          condition,
           verdict.locationId,
           origin,
           label,
@@ -717,6 +717,8 @@ export class OrderReturnService {
           },
           // Bán trước khi hàng có lot: không có gì để lần ngược, nên hoàn thành một lot mới.
           ifNeverDrawn: { sourceType: LotSourceType.OPENING },
+          // Hỏng: lô con hỏng tại nơi nhận, không cộng `stock`, không gộp vào lô cha bán được.
+          isSellable: condition === ReturnCondition.GOOD,
         });
 
         // Có điều kiện theo số lượng: hai đơn hoàn chốt cùng dòng không thể đẩy số hoàn vượt số đã bán.
@@ -964,31 +966,17 @@ export class OrderReturnService {
     return item?.sourceLocationId ?? null;
   }
 
-  /** GOOD → kho được chỉ định (hoặc kho xuất), kho đó phải bán được. DAMAGED → kho hàng hỏng của kho xuất. */
+  /**
+   * Hàng về đâu: địa điểm được chỉ định, mặc định nơi đã xuất hàng. Cả GOOD lẫn DAMAGED về cùng một chỗ (2026-11-26):
+   * hàng hỏng thành lô `isSellable = false` tại đó thay vì sang kho hàng hỏng riêng.
+   */
   private async destination(
     tx: Prisma.TransactionClient,
     tenantId: string,
-    condition: ReturnCondition,
     requested: string | undefined,
     origin: string | null,
     label: string,
   ): Promise<string> {
-    if (condition === ReturnCondition.DAMAGED) {
-      const from = origin
-        ? await tx.location.findFirst({
-            where: { id: origin, tenantId },
-            select: { damagedLocationId: true },
-          })
-        : null;
-      if (!from?.damagedLocationId) {
-        throw new ConflictException({
-          code: ErrorCode.LOCATION_DAMAGED_REQUIRED,
-          message: `${label} came back damaged but the location it shipped from has no damaged-goods warehouse set`,
-        });
-      }
-      return from.damagedLocationId;
-    }
-
     const locationId = requested ?? origin;
     if (!locationId) {
       throw new BadRequestException({
@@ -997,20 +985,18 @@ export class OrderReturnService {
       });
     }
     const target = await tx.location.findFirst({
-      where: { id: locationId, tenantId },
-      select: { isSellable: true },
+      where: {
+        id: locationId,
+        tenantId,
+        status: { not: LocationStatus.DELETED },
+      },
+      select: { id: true },
     });
     if (!target)
       throw new NotFoundException({
         code: ErrorCode.LOCATION_NOT_FOUND,
         message: 'Location not found',
       });
-    if (!target.isSellable) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_NOT_SELLABLE,
-        message: `${label} came back in good condition; a damaged-goods location cannot take it`,
-      });
-    }
     return locationId;
   }
 

@@ -153,8 +153,6 @@ interface ShopDef {
     name: string;
     address: string;
     phone: string;
-    sellable?: boolean;
-    damaged?: string;
   }[];
   roles: RoleDef[];
   staff: StaffDef[];
@@ -213,9 +211,6 @@ async function setupShop(
       phoneNumber: [loc.phone],
       address: loc.address,
     };
-    if (loc.kind === 'warehouse' && loc.sellable === false)
-      body.isSellable = false;
-    if (loc.damaged) body.damagedLocationId = locations[loc.damaged];
     const row = await api.call(
       ownerToken,
       'post',
@@ -353,20 +348,11 @@ const IGM: ShopDef = {
   taxNumber: '0109123456',
   locations: [
     {
-      key: 'DAMAGED',
-      kind: 'warehouse',
-      name: 'Kho hàng lỗi',
-      address: 'Ngõ 99 Định Công, Hoàng Mai, Hà Nội',
-      phone: '0912000090',
-      sellable: false,
-    },
-    {
       key: 'WH_HN',
       kind: 'warehouse',
       name: 'Kho tổng Hà Nội',
       address: 'KCN Thạch Thất - Quốc Oai, Hà Nội',
       phone: '0912000091',
-      damaged: 'DAMAGED',
     },
     {
       key: 'WH_HCM',
@@ -374,7 +360,6 @@ const IGM: ShopDef = {
       name: 'Kho Hồ Chí Minh',
       address: '120 Kinh Dương Vương, Bình Tân, TP. Hồ Chí Minh',
       phone: '0912000092',
-      damaged: 'DAMAGED',
     },
     {
       key: 'TX',
@@ -382,7 +367,6 @@ const IGM: ShopDef = {
       name: 'Showroom Thanh Xuân',
       address: '248 Phố Vọng, Phương Liệt, Thanh Xuân, Hà Nội',
       phone: '0912000093',
-      damaged: 'DAMAGED',
     },
     {
       key: 'CG',
@@ -390,7 +374,6 @@ const IGM: ShopDef = {
       name: 'Showroom Cầu Giấy',
       address: '16B20 ngõ 1 Nghĩa Tân, Cầu Giấy, Hà Nội',
       phone: '0912000094',
-      damaged: 'DAMAGED',
     },
     {
       key: 'Q11',
@@ -398,7 +381,6 @@ const IGM: ShopDef = {
       name: 'Showroom Quận 11',
       address: '3B hẻm 152/54 Lạc Long Quân, Quận 11, TP. Hồ Chí Minh',
       phone: '0912000095',
-      damaged: 'DAMAGED',
     },
   ],
   roles: [
@@ -646,20 +628,11 @@ const B360: ShopDef = {
   taxNumber: '0106789123',
   locations: [
     {
-      key: 'DAMAGED',
-      kind: 'warehouse',
-      name: 'Kho hàng lỗi',
-      address: '15 ngõ 36 Định Công, Hoàng Mai, Hà Nội',
-      phone: '0936000090',
-      sellable: false,
-    },
-    {
       key: 'WH',
       kind: 'warehouse',
       name: 'Kho tổng 360',
       address: '27 Phan Trọng Tuệ, Thanh Trì, Hà Nội',
       phone: '0936000091',
-      damaged: 'DAMAGED',
     },
     {
       key: 'TH',
@@ -667,7 +640,6 @@ const B360: ShopDef = {
       name: '360 Thái Hà',
       address: '82 Thái Hà, Đống Đa, Hà Nội',
       phone: '0936000092',
-      damaged: 'DAMAGED',
     },
     {
       key: 'DCV',
@@ -675,7 +647,6 @@ const B360: ShopDef = {
       name: '360 Đại Cồ Việt',
       address: '45 Đại Cồ Việt, Hai Bà Trưng, Hà Nội',
       phone: '0936000093',
-      damaged: 'DAMAGED',
     },
     {
       key: 'CG',
@@ -683,7 +654,6 @@ const B360: ShopDef = {
       name: '360 Cầu Giấy',
       address: '168 Cầu Giấy, Cầu Giấy, Hà Nội',
       phone: '0936000094',
-      damaged: 'DAMAGED',
     },
   ],
   roles: [

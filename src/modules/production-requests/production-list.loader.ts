@@ -149,6 +149,8 @@ export async function loadProductionState(
               ...pairWhere,
               orderItemId: { not: null },
               remainingQuantity: { gt: 0 },
+              // Lô may riêng bị hỏng không phủ được đơn: đơn đó vẫn phải vào danh sách cần sản xuất.
+              isSellable: true,
             },
             select: {
               locationId: true,

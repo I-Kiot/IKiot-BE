@@ -142,7 +142,7 @@ export class ManualOrderService {
       select: {
         id: true,
         location: {
-          select: { defaultFulfillmentLocationId: true, isSellable: true },
+          select: { defaultFulfillmentLocationId: true },
         },
       },
     });
@@ -151,13 +151,6 @@ export class ManualOrderService {
         code: ErrorCode.BRANCH_NOT_FOUND,
         message: 'Branch not found',
       });
-    // Chi nhánh và kho đều bán được, trừ kho hàng hỏng.
-    if (!branch.location.isSellable) {
-      throw new BadRequestException({
-        code: ErrorCode.LOCATION_NOT_SELLABLE,
-        message: 'This location holds stock that is not for sale',
-      });
-    }
 
     await this.assertAssignee(tenantId, dto.assigneeId, dto.branchId);
     if (dto.customerId)
@@ -390,12 +383,12 @@ export class ManualOrderService {
   }
 
   /**
-   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động, trừ kho hàng hỏng. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
+   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động. Hàng hỏng là lô riêng nên không cần loại địa điểm nào. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
    * nên danh sách địa điểm thường trả rỗng với họ. Chỉ trả tên và loại. Cùng quy tắc với `assertSourceLocations`.
    */
   listSourceLocations(tenantId: string) {
     return this.prisma.location.findMany({
-      where: { tenantId, status: LocationStatus.ACTIVE, isSellable: true },
+      where: { tenantId, status: LocationStatus.ACTIVE },
       select: {
         id: true,
         type: true,
@@ -406,7 +399,7 @@ export class ManualOrderService {
     });
   }
 
-  /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant và có hàng bán được; kho hàng hỏng không bao giờ giao cho khách. */
+  /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant. Hàng hỏng không bao giờ giao vì `drawLots` chỉ rút lô bán được. */
   async assertSourceLocations(
     tenantId: string,
     items: readonly { sourceLocationId?: string }[],
@@ -421,7 +414,7 @@ export class ManualOrderService {
     if (ids.length === 0) return;
     const found = await this.prisma.location.findMany({
       where: { tenantId, id: { in: ids } },
-      select: { id: true, status: true, isSellable: true },
+      select: { id: true, status: true },
     });
     const byId = new Map(found.map((location) => [location.id, location]));
     for (const id of ids) {
@@ -430,12 +423,6 @@ export class ManualOrderService {
         throw new BadRequestException({
           code: ErrorCode.ORDER_SOURCE_LOCATION_INVALID,
           message: `Location ${id} cannot ship this order`,
-        });
-      }
-      if (!location.isSellable) {
-        throw new BadRequestException({
-          code: ErrorCode.LOCATION_NOT_SELLABLE,
-          message: `Location ${id} holds stock that is not for sale`,
         });
       }
     }

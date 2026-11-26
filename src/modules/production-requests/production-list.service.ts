@@ -165,7 +165,6 @@ export class ProductionListService {
       this.prisma.location.findMany({
         where: {
           tenantId,
-          isSellable: true,
           status: { not: LocationStatus.DELETED },
           ...(locationIds ? { id: { in: locationIds } } : {}),
         },

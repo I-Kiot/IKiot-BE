@@ -5,7 +5,6 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  IsUUID,
 } from 'class-validator';
 import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
@@ -30,9 +29,4 @@ export class CreateBranchDto {
   @IsOptional()
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
-
-  /** D-4: hàng hỏng / lỗi của chi nhánh này về đâu, một kho không bán được. `null` để xoá. */
-  @IsOptional()
-  @IsUUID('all', { message: 'damagedLocationId không hợp lệ' })
-  damagedLocationId?: string | null;
 }

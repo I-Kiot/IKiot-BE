@@ -179,11 +179,6 @@ export class ReceiveProductionDto {
   @Type(() => ReceiveProductionLineDto)
   items: ReceiveProductionLineDto[];
 
-  /** Hàng lỗi về đâu; mặc định là kho hàng hỏng của địa điểm nhận. */
-  @IsOptional()
-  @IsUUID()
-  defectLocationId?: string;
-
   @IsOptional()
   @IsString()
   note?: string;

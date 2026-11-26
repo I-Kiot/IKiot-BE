@@ -1,12 +1,10 @@
 import {
   ArrayNotEmpty,
   IsArray,
-  IsBoolean,
   IsEmail,
   IsNotEmpty,
   IsOptional,
   IsString,
-  IsUUID,
 } from 'class-validator';
 import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
@@ -30,14 +28,4 @@ export class CreateWarehouseDto {
   @IsOptional()
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
-
-  /** D-4: `false` làm kho này thành kho hàng hỏng, nơi các địa điểm khác có thể chỉ định làm `damagedLocationId`. Mặc định `true`. */
-  @IsOptional()
-  @IsBoolean({ message: 'isSellable phải là true hoặc false' })
-  isSellable?: boolean;
-
-  /** D-4: hàng hỏng của kho này về đâu, một kho không bán được khác. `null` để xoá. */
-  @IsOptional()
-  @IsUUID('all', { message: 'damagedLocationId không hợp lệ' })
-  damagedLocationId?: string | null;
 }
