@@ -24,7 +24,7 @@ import { ProductionDeliveryService } from './production-deliveries.service';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { ProductionChanges } from './production.change-template';
 
-/** Nhân viên xưởng (`users.workshop_id`): xem yêu cầu gửi tới xưởng ở mọi địa điểm và phiếu giao họ viết. Mọi route cần `production:deliver` và xưởng liên kết. */
+/** Nhân viên xưởng (`users.workshop_id`): xem yêu cầu gửi tới xưởng ở mọi địa điểm và phiếu giao họ viết. Mọi route cần `production:deliver` (tự cấp cho tài khoản gắn xưởng) và xưởng liên kết. */
 @ApiTags('workshop')
 @ApiBearerAuth('bearer')
 @Controller('workshop')

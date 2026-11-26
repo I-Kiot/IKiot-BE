@@ -6,6 +6,7 @@ import type { AuthUser } from '../../../common/types/auth-user.type';
 import {
   STAFF_BASE_PERMISSIONS,
   SystemRole,
+  WORKSHOP_STAFF_PERMISSIONS,
 } from '../../../common/constants/system-role';
 import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor.service';
@@ -86,6 +87,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       workshopId: user.workshopId,
       permissions: new Set([
         ...(user.systemRole === SystemRole.STAFF ? STAFF_BASE_PERMISSIONS : []),
+        ...(user.systemRole === SystemRole.STAFF && user.workshopId
+          ? WORKSHOP_STAFF_PERMISSIONS
+          : []),
         ...(user.role?.permissions.map((p) => `${p.resource}:${p.action}`) ??
           []),
         ...ShiftSupervisorService.keysFor(supervision),

@@ -644,3 +644,17 @@ Báo lỗi: shipper bấm "Đã lấy hàng" thì web chỉ hiện toast realtim
 - `GET /products/:id` (`stockDetails` từng nơi) thêm `shelf`, `damagedQuantity`, `customUnits` (chiếc may riêng còn tốt theo dòng đơn, kèm mã đơn); chưa có e2e riêng cho ba trường này.
 - FE (nhánh `feat/damaged-lots` cùng tên): bỏ ô kho hỏng ở form chi nhánh/kho và ô chọn nơi để hàng lỗi ở hai dialog nhận xưởng; danh sách hàng hoá có "Hỏng: N" dưới số tồn và lọc "Có hàng hỏng" (lọc phía client như các lọc tồn khác); sheet chi tiết phiên bản có menu từng nơi: Đánh dấu hỏng (chọn hàng thường hoặc chiếc may cho đơn X), Sửa xong, Huỷ hàng hỏng; màn hàng hoá live-refresh theo `inventories`; quyền "Xử lý hàng hỏng" trên màn Vai trò; mã lỗi mới. Chưa mở trên trình duyệt.
 
+
+## 2026-11-26 - `production:deliver` tự cấp cho nhân viên xưởng
+
+**Đã làm**
+- `WORKSHOP_STAFF_PERMISSIONS = { production:deliver }` (`src/common/constants/system-role.ts`): `JwtStrategy` cấp cho tài khoản STAFF có `users.workshop_id`, không qua Role. Quyền này chỉ dùng cho `/workshop/*`, mà các route đó đã đòi tài khoản gắn xưởng.
+- `AUTO_GRANTED_PERMISSIONS` = quyền nền nhân viên + quyền xưởng: `RolesService` ẩn khỏi danh mục quyền (`permissionCatalog`) và gỡ khỏi những gì role lưu. Dòng `permission_catalog` giữ nguyên.
+- Migration `20261126120000_workshop_deliver_auto_granted`: xoá các dòng `role_permissions` `production:deliver` đã cấp qua role (người không gắn xưởng giữ quyền này cũng không làm được gì).
+- Kiểm tra trước khi làm: "xưởng đang làm" đã hiện cho bên gửi YCSX (badge ở bảng YCSX, dialog chi tiết, tiến độ trên dòng đơn) và nút "Huỷ yêu cầu" đã khoá + BE chặn `PRODUCTION_REQUEST_IN_PRODUCTION`, nên không sửa.
+- FE: bỏ ô "Nhân viên xưởng / Tạo phiếu giao hàng từ xưởng" khỏi màn Vai trò và nhãn `production:deliver`; form nhân viên ghi "quyền tự có khi gắn xưởng".
+- Test: unit 708/708 (bỏ qua `*.excel.spec.ts`, đang lỗi sẵn do lệch chữ ký service), thêm `jwt.strategy.spec.ts`, `system-role.spec.ts` kiểm bộ quyền mới.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa chạy e2e, chưa áp migration lên DB nào, chưa mở màn Vai trò / trang `/workshop` trên trình duyệt.
+- Nhân viên xưởng đang đăng nhập cần gọi lại `GET /auth/me` (tải lại trang) để FE thấy quyền mới; BE kiểm lại quyền ở mỗi request nên route chạy ngay.
