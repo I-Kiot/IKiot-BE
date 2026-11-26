@@ -301,6 +301,36 @@ describe('POST /orders – ManualOrderService.create', () => {
     expect(await prisma.inventory.count({ where: { tenantId } })).toBe(0);
   });
 
+  it('credits the creator by default, or the picked sales person, and never lets it change', async () => {
+    const byDefault = await create(base());
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: byDefault.id } }))
+        .sellerId,
+    ).toBe(ownerId);
+
+    // nhân viên bán hàng không phải làm việc tại nơi bán
+    const picked = await create(base({ sellerId: staffId }));
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: picked.id } }))
+        .sellerId,
+    ).toBe(staffId);
+
+    await expect(
+      prisma.order.update({
+        where: { id: picked.id },
+        data: { sellerId: ownerId },
+      }),
+    ).rejects.toThrow(/seller_id cannot be changed/);
+
+    for (const sellerId of [inactiveId, strangerId]) {
+      const before = await orderCount();
+      await expect(create(base({ sellerId }))).rejects.toMatchObject({
+        response: { code: ErrorCode.ORDER_SELLER_INVALID },
+      });
+      expect(await orderCount()).toBe(before);
+    }
+  });
+
   it('keeps a negotiated price beside the list price and adds shipping after the order discount', async () => {
     const order = await create(
       base({

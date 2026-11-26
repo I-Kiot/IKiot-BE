@@ -131,6 +131,11 @@ export class CreateOrderDto {
   @IsUUID()
   assigneeId?: string;
 
+  /** Nhân viên bán hàng, bỏ trống là người tạo đơn; không sửa được sau khi tạo. */
+  @IsOptional()
+  @IsUUID()
+  sellerId?: string;
+
   @IsIn(JOURNEY_FULFILLMENT_TYPES, {
     message: `fulfillmentType phải là ${JOURNEY_FULFILLMENT_TYPES.join(', ')}`,
   })

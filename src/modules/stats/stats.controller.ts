@@ -13,6 +13,7 @@ import {
   InventoryStatsQueryDto,
   OrderPipelineQueryDto,
   ReportExportQueryDto,
+  RevenueByStaffEntriesQueryDto,
   RevenueByStaffQueryDto,
   RevenueByBranchQueryDto,
   SalesJournalExportQueryDto,
@@ -71,6 +72,16 @@ export class StatsController {
     @Query() query: RevenueByStaffQueryDto,
   ) {
     return this.service.getRevenueByStaff(user, query);
+  }
+
+  /** Các đơn / khoản thu tạo nên doanh thu của một nhân viên trong kỳ, phân trang. */
+  @Permissions('reports', 'read')
+  @Get('revenue-by-staff/entries')
+  revenueByStaffEntries(
+    @CurrentUser() user: AuthUser,
+    @Query() query: RevenueByStaffEntriesQueryDto,
+  ) {
+    return this.reports.getRevenueByStaffEntries(user, query);
   }
 
   /** Khai báo trước `cashflow` để route literal dài hơn khớp trước. */

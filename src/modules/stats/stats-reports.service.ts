@@ -18,10 +18,17 @@ import {
   HELD_UNDECIDED_ORDER_SQL,
 } from '../orders/held-undecided';
 import { orderScope } from './stats-scope';
-import { businessDatesOf, vietnamDateOf } from './stats-math';
-import type {
-  SalesJournalExportQueryDto,
-  SalesJournalQueryDto,
+import { SalesJournalEntryType } from '../../common/constants/sales-journal';
+import {
+  averageOrderValue,
+  businessDatesOf,
+  vietnamDateOf,
+} from './stats-math';
+import {
+  NO_STAFF_ID,
+  type RevenueByStaffEntriesQueryDto,
+  type SalesJournalExportQueryDto,
+  type SalesJournalQueryDto,
 } from './dto/stats-query.dto';
 
 /** Số dòng chi tiết mỗi danh sách của báo cáo đối soát; tổng và số đếm tính trên tất cả. */
@@ -46,7 +53,8 @@ export class StatsReportsService {
   /** Bộ lọc sổ doanh thu dùng chung cho màn hình và file xuất. */
   private journalWhere(
     user: AuthUser,
-    query: SalesJournalExportQueryDto,
+    query: Pick<SalesJournalExportQueryDto, 'branchId' | 'range'> &
+      Partial<Pick<SalesJournalExportQueryDto, 'entryType' | 'orderId'>>,
   ): Prisma.SalesJournalEntryWhereInput {
     const scope = orderScope(user, query.branchId);
     const { from, to } = businessDatesOf(query.range());
@@ -220,6 +228,178 @@ export class StatsReportsService {
         shippingCost: sum(totals._sum.shippingCost),
         channelFee: sum(totals._sum.channelFee),
       },
+    };
+  }
+
+  /** Từng bút toán (phụ trách / lên đơn) hoặc khoản thu (người thu) của một nhân viên, cùng cách tính với `getRevenueByStaff`. */
+  async getRevenueByStaffEntries(
+    user: AuthUser,
+    query: RevenueByStaffEntriesQueryDto,
+  ) {
+    const { page, limit, groupBy } = query;
+    const staffId = query.userId === NO_STAFF_ID ? null : query.userId;
+
+    const result =
+      groupBy === 'collector'
+        ? await this.collectorEntries(user, query, staffId)
+        : await this.journalEntriesOfStaff(user, query, staffId);
+
+    const staff = staffId
+      ? await this.prisma.user.findFirst({
+          where: { id: staffId },
+          select: { profileFirstName: true, profileLastName: true },
+        })
+      : null;
+    const customerIds = [
+      ...new Set(
+        result.rows.map((r) => r.customerId).filter((id): id is string => !!id),
+      ),
+    ];
+    const branchIds = [
+      ...new Set(
+        result.rows.map((r) => r.branchId).filter((id): id is string => !!id),
+      ),
+    ];
+    const [customers, locations] = await Promise.all([
+      this.prisma.customer.findMany({
+        where: { id: { in: customerIds } },
+        select: { id: true, name: true },
+      }),
+      this.prisma.location.findMany({
+        where: { id: { in: branchIds } },
+        select: { id: true, name: true },
+      }),
+    ]);
+    const customerName = new Map(customers.map((c) => [c.id, c.name]));
+    const branchName = new Map(locations.map((l) => [l.id, l.name]));
+
+    const data = result.rows.map(({ customerId, branchId, ...row }) => ({
+      ...row,
+      customerName: customerId ? (customerName.get(customerId) ?? null) : null,
+      branchName: branchId ? (branchName.get(branchId) ?? null) : null,
+    }));
+
+    return {
+      groupBy,
+      userId: staffId,
+      staffName: fullName(staff),
+      ...paginate(data, result.total, page, limit),
+      summary: {
+        revenue: result.revenue,
+        orderCount: result.orderCount,
+        aov: averageOrderValue(result.revenue, result.orderCount),
+      },
+    };
+  }
+
+  /** Bút toán sổ doanh thu tính cho nhân viên bán hàng, người phụ trách (không có thì người lên đơn) hoặc người lên đơn. */
+  private async journalEntriesOfStaff(
+    user: AuthUser,
+    query: RevenueByStaffEntriesQueryDto,
+    staffId: string | null,
+  ) {
+    const staffWhere: Prisma.SalesJournalEntryWhereInput =
+      query.groupBy === 'creator'
+        ? { creatorId: staffId }
+        : query.groupBy === 'seller'
+          ? { sellerId: staffId }
+          : staffId
+            ? {
+                OR: [
+                  { assigneeId: staffId },
+                  { assigneeId: null, creatorId: staffId },
+                ],
+              }
+            : { assigneeId: null, creatorId: null };
+    const where = { AND: [this.journalWhere(user, query), staffWhere] };
+
+    const [rows, total, sum, saleCount] = await Promise.all([
+      this.prisma.salesJournalEntry.findMany({
+        where,
+        orderBy: [
+          { businessDate: 'desc' },
+          { postedAt: 'desc' },
+          { id: 'asc' },
+        ],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: { order: { select: { code: true } } },
+      }),
+      this.prisma.salesJournalEntry.count({ where }),
+      this.prisma.salesJournalEntry.aggregate({
+        where,
+        _sum: { totalAmount: true },
+      }),
+      this.prisma.salesJournalEntry.count({
+        where: { AND: [where, { entryType: SalesJournalEntryType.SALE }] },
+      }),
+    ]);
+
+    return {
+      total,
+      revenue: Number(sum._sum.totalAmount ?? 0),
+      orderCount: saleCount,
+      rows: rows.map((row) => ({
+        id: row.id,
+        kind: row.entryType,
+        date: row.businessDate.toISOString().slice(0, 10),
+        orderId: row.orderId,
+        orderCode: row.order.code,
+        paymentMethod: null as string | null,
+        amount: Number(row.totalAmount),
+        customerId: row.customerId,
+        branchId: row.branchId,
+      })),
+    };
+  }
+
+  /** Khoản thu tiền đơn (`ORDER_PAYMENT`) theo người thu, theo ngày thu. */
+  private async collectorEntries(
+    user: AuthUser,
+    query: RevenueByStaffEntriesQueryDto,
+    staffId: string | null,
+  ) {
+    const scope = orderScope(user, query.branchId);
+    const { fromDate, toDate } = query.range();
+    const where: Prisma.CashFlowWhereInput = {
+      tenantId: user.tenantId ?? undefined,
+      category: CashFlowCategory.ORDER_PAYMENT,
+      createdAt: { gte: fromDate, lte: toDate },
+      ...(scope.branchId ? { locationId: scope.branchId } : {}),
+      payment: { is: { collectedById: staffId } },
+    };
+
+    const [rows, total, sum, orders] = await Promise.all([
+      this.prisma.cashFlow.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: { order: { select: { code: true, customerId: true } } },
+      }),
+      this.prisma.cashFlow.count({ where }),
+      this.prisma.cashFlow.aggregate({ where, _sum: { amount: true } }),
+      this.prisma.cashFlow.groupBy({
+        by: ['orderId'],
+        where: { AND: [where, { orderId: { not: null } }] },
+      }),
+    ]);
+
+    return {
+      total,
+      revenue: Number(sum._sum.amount ?? 0),
+      orderCount: orders.length,
+      rows: rows.map((row) => ({
+        id: row.id,
+        kind: 'PAYMENT',
+        date: vietnamDateOf(row.createdAt),
+        orderId: row.orderId,
+        orderCode: row.order?.code ?? null,
+        paymentMethod: row.paymentMethod,
+        amount: Number(row.amount),
+        customerId: row.order?.customerId ?? null,
+        branchId: row.locationId,
+      })),
     };
   }
 

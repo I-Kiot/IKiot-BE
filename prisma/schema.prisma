@@ -145,6 +145,7 @@ model User {
   scheduleAssignments           WorkingScheduleUser[]
   ordersCreated                 Order[]                  @relation("OrderCreatedBy")
   ordersAssigned                Order[]                  @relation("OrderAssignee")
+  ordersSold                    Order[]                  @relation("OrderSeller")
   ordersConfirmed               Order[]                  @relation("OrderConfirmedBy")
   productionRequestsCreated     ProductionRequest[]      @relation("ProductionRequestCreatedBy")
   productionRequestsUpdated     ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
@@ -1143,6 +1144,8 @@ model Order {
   user          User?     @relation("OrderCreatedBy", fields: [userId], references: [id])
   assigneeId    String?   @map("assignee_id") // người phụ trách; bắt buộc từ CONFIRMED trở đi (CHECK SQL)
   assignee      User?     @relation("OrderAssignee", fields: [assigneeId], references: [id])
+  sellerId      String?   @map("seller_id") // nhân viên bán hàng, chọn lúc tạo đơn, không sửa được; null ở đơn cũ và đơn đồng bộ từ sàn
+  seller        User?     @relation("OrderSeller", fields: [sellerId], references: [id], onDelete: Restrict)
   confirmedById String?   @map("confirmed_by") // người xác nhận đơn
   confirmedBy   User?     @relation("OrderConfirmedBy", fields: [confirmedById], references: [id])
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
@@ -1852,6 +1855,7 @@ model SalesJournalEntry {
   customerId      String? @map("customer_id")
   assigneeId      String? @map("assignee_id")
   creatorId       String? @map("creator_id")
+  sellerId        String? @map("seller_id")
   channel         String?
   fulfillmentType String? @map("fulfillment_type")
   source          String // điểm ghi (src/common/constants/sales-journal.ts)
