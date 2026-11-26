@@ -789,3 +789,20 @@ Chủ dự án chốt: bước 1 chỉ nhập email; không được để lộ 
 
 **Chưa kiểm chứng / còn lại**
 - Chưa áp migration lên `ikiot_db` (cần hỏi chủ dự án), chưa mở trên trình duyệt.
+
+## 2026-11-26 - Lịch làm việc lặp lại, bỏ loại ca thường / tăng ca
+
+Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho nhân viên từ ngày nào tới ngày nào. Loại ca (thường / tăng ca) bỏ vì không còn bảng lương.
+
+**Đã làm**
+- Migration `20261127110000_recurring_working_schedules`: gộp các ca sống chỉ khác `schedule_type` (giữ dòng NORMAL cũ nhất, chuyển người sang, dòng kia DELETED), bỏ cột `schedule_type`, dựng lại `working_schedules_one_per_slot` không có loại ca; thêm `working_schedule_series` (ca mẫu, `start_date`, `end_date`, `weekdays int[]` 0 = CN … 6 = T7, `status` ACTIVE | DELETED, CHECK khoảng / thứ / trạng thái), `working_schedule_series_users`, và `working_schedule_users.series_id` (FK SET NULL).
+- `POST /working-schedules/series` (`schedules:create`): sinh sẵn mọi ngày khớp thành ca thường như phân ca tay, mỗi lượt mang `series_id`. Tối đa 366 ngày (`SCHEDULE_SERIES_RANGE_INVALID`), không ngày nào khớp → `SCHEDULE_SERIES_EMPTY`. Ngày người đó đã ở đúng ca đó thì bỏ qua (trả `skipped[]`); chồng giờ với ca khác → 409 `SCHEDULE_OVERLAP` kèm `errors[]` mọi ngày bị chồng, không ghi gì.
+- `DELETE /working-schedules/series/:id?fromDate=` (`schedules:delete`, mặc định hôm nay): gỡ lượt của chuỗi ở các ca SCHEDULED từ ngày đó, ca rỗng thì xoá, giữ quá khứ và lượt xếp tay; cắt `end_date` hoặc DELETED nếu dừng từ ngày đầu. Mã mới `SCHEDULE_SERIES_NOT_FOUND`.
+- Đọc lịch: `assignedUsers[].series` (`{ id, startDate, endDate, weekdays, status }` hoặc null). PATCH một ca giữ `seriesId` của người ở lại nếu không đổi ca mẫu / ngày.
+- `createBulk` giờ kiểm trùng + chồng ca cho cả lô bằng một query mỗi loại và ghi trong một transaction (`persist`, `createManyAndReturn`), trước đây một query mỗi dòng và không có transaction.
+- Bỏ `scheduleType` khỏi DTO, bộ lọc `?scheduleType=`, `ScheduleType` / `SCHEDULE_TYPES`. Client cũ còn gửi trường này thì bị `whitelist` bỏ qua, không lỗi.
+- Test: `schedule-series.spec.ts` (hàm thuần), `test/working-schedule-series.e2e-spec.ts` (sinh ca, bỏ qua ngày đã xếp, chồng ca, dừng từ một ngày); `smoke` thêm dọn `workingScheduleSeries`. `smoke`, `working-schedule-*`, `di-check` qua trên Postgres local; unit: chỉ 9 suite `*.excel.spec.ts` fail sẵn trên `dev`.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa có route sửa một chuỗi: dừng rồi tạo lại. Chưa có route liệt kê chuỗi.
+- Migration chưa chạy trên dữ liệu dev / prod thật (bước gộp ca chỉ khác loại chưa gặp dữ liệu thật).

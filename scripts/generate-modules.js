@@ -12,7 +12,7 @@ const CHILD_MODELS = new Set([
   'UserFcmToken', 'SubscriptionHistoryLog',
   'ProductImage', 'ProductItemSupplier', 'ProductItemDetail', 'ProductItemImage',
   'StockMovementRequestItem',
-  'WorkingScheduleUser',
+  'WorkingScheduleUser', 'WorkingScheduleSeriesUser',
   'OrderItem', 'OrderAppliedPromotion',
   'PromotionBranch', 'PromotionCategory', 'PromotionProductItem',
   'CashDrawerShiftLog',
@@ -103,7 +103,7 @@ const PORTED_MODELS = new Set([
   'Order', 'Promotion', 'PromotionLog', 'Customer', 'CashDrawerSession',
   // Đã sửa tay thành chỉ đọc.
   'CashFlow',
-  'Holiday', 'ShiftTemplate', 'WorkingSchedule',
+  'Holiday', 'ShiftTemplate', 'WorkingSchedule', 'WorkingScheduleSeries',
   'Ticket', 'AIChatHistory',
   // Hành trình đơn, viết tay từ đầu.
   'ProductionRequest', 'Fulfillment', 'Shipment', 'OrderReturn', 'SalesChannel',
