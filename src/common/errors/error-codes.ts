@@ -152,6 +152,7 @@ export const ErrorCode = {
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
   INVENTORY_ALREADY_AT_LOCATION: 'INVENTORY_ALREADY_AT_LOCATION',
   INVENTORY_NOT_FOUND: 'INVENTORY_NOT_FOUND',
+  /** Gỡ món khỏi địa điểm khi còn hàng, kể cả hàng hỏng. */
   INVENTORY_STILL_HAS_STOCK: 'INVENTORY_STILL_HAS_STOCK',
   /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
   INSUFFICIENT_AVAILABLE_STOCK: 'INSUFFICIENT_AVAILABLE_STOCK',
@@ -161,12 +162,16 @@ export const ErrorCode = {
   INVENTORY_LOCK_MISMATCH: 'INVENTORY_LOCK_MISMATCH',
   /** Hàng đặt riêng chưa có lot được tạo cho dòng đơn ở địa điểm này. */
   INVENTORY_CUSTOM_LOT_NOT_FOUND: 'INVENTORY_CUSTOM_LOT_NOT_FOUND',
-  /** Không giữ hay bán hàng từ kho hàng hỏng (`isSellable = false`). */
+  /** @deprecated Bỏ kho hàng hỏng riêng (2026-11-26), hàng hỏng là lô `isSellable = false`. Giữ lại vì mã chỉ được thêm, không xoá. */
   LOCATION_NOT_SELLABLE: 'LOCATION_NOT_SELLABLE',
-  /** `damagedLocationId` phải là địa điểm khác, không bán được, cùng tenant. */
+  /** @deprecated Bỏ `damagedLocationId` (2026-11-26). Giữ lại vì mã chỉ được thêm, không xoá. */
   LOCATION_DAMAGED_INVALID: 'LOCATION_DAMAGED_INVALID',
-  /** Địa điểm chưa có kho hàng hỏng để chuyển hàng lỗi sang. */
+  /** @deprecated Bỏ kho hàng hỏng riêng (2026-11-26). Giữ lại vì mã chỉ được thêm, không xoá. */
   LOCATION_DAMAGED_REQUIRED: 'LOCATION_DAMAGED_REQUIRED',
+  /** Sửa xong / huỷ nhiều hơn số hàng hỏng đang có ở địa điểm đó. */
+  INSUFFICIENT_DAMAGED_STOCK: 'INSUFFICIENT_DAMAGED_STOCK',
+  /** Nhân viên chỉ đánh dấu hỏng / sửa / huỷ hàng tại nơi mình làm việc. */
+  INVENTORY_LOCATION_DENIED: 'INVENTORY_LOCATION_DENIED',
   /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */
   RESERVATION_NOT_ACTIVE: 'RESERVATION_NOT_ACTIVE',
   /** @deprecated Đã bỏ giữ hàng (2026-10-04), không còn nơi nào ném mã này. Giữ lại vì mã chỉ được thêm, không xoá. */

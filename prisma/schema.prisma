@@ -10,7 +10,7 @@
 //   hàng khỏi kệ (bán quầy, xuất chuyển kho, kiểm kê thiếu, đóng gói đơn khác) chỉ lấy được phần này.
 //   Chứng từ khoá là Fulfillment PACKED / HANDED_OVER của đơn chưa ship (không có bảng giữ hàng
 //   riêng): locked_stock = Σ FulfillmentItem.quantity của các fulfillment đó, theo (location, SKU).
-// - Hàng nằm trong các lô (InventoryLot) giữ nguồn gốc và giá vốn: Σ lot.remaining = inventories.stock.
+// - Hàng nằm trong các lô (InventoryLot) giữ nguồn gốc và giá vốn: Σ remaining của lô bán được (isSellable) = inventories.stock; lô hỏng nằm ngoài stock.
 // - Mọi thay đổi tồn ghi sổ kho (InventoryTransaction), mỗi dòng sổ đụng đúng một lô.
 // - Location.type là BRANCH | WAREHOUSE; Branch / Warehouse dùng chung id với Location của nó.
 
@@ -437,8 +437,6 @@ model Location {
   name       String
   type       String  @map("location_type") // BRANCH | WAREHOUSE
   status     String  @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
-  /// false = kho hàng hỏng: tồn ở đây không bao giờ được bán.
-  isSellable Boolean @default(true) @map("is_sellable")
 
   address     String?
   phoneNumber String[] @map("phone_number")
@@ -451,11 +449,6 @@ model Location {
   defaultFulfillmentLocationId String?    @map("default_fulfillment_location_id")
   defaultFulfillmentLocation   Location?  @relation("LocationDefaultFulfillment", fields: [defaultFulfillmentLocationId], references: [id])
   servedLocations              Location[] @relation("LocationDefaultFulfillment")
-
-  // Kho hàng hỏng nhận hàng lỗi / hàng hoàn hỏng của địa điểm này (isSellable = false)
-  damagedLocationId String?    @map("damaged_location_id")
-  damagedLocation   Location?  @relation("LocationDamaged", fields: [damagedLocationId], references: [id])
-  damagedFor        Location[] @relation("LocationDamaged")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -898,6 +891,9 @@ model InventoryLot {
   receivedQuantity  Int      @map("received_quantity") // số lúc mở lô
   remainingQuantity Int      @map("remaining_quantity") // số còn lại
   receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // ngày nhập, dùng xếp FIFO; lô tách giữ ngày của lô cha
+  /// false = hàng hỏng (2026-11-26): vẫn ở địa điểm này nhưng không nằm trong `inventories.stock`, không lô nào rút được
+  /// để bán / đóng gói / chuyển kho. Không bao giờ đổi sau khi tạo: đánh dấu hỏng và sửa xong đều tách lô con.
+  isSellable        Boolean  @default(true) @map("is_sellable")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

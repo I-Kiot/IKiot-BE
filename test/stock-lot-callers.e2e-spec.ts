@@ -48,7 +48,7 @@ describe('stock callers on lots (imports, transfers, stocktakes, till)', () => {
       where: { tenantId, locationId, productItemId: itemId },
     });
     const lots = await prisma.inventoryLot.aggregate({
-      where: { tenantId, locationId, productItemId: itemId },
+      where: { tenantId, locationId, productItemId: itemId, isSellable: true },
       _sum: { remainingQuantity: true },
     });
     // Bất biến này được kiểm ở mọi lần đọc.
