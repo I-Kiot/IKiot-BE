@@ -58,8 +58,9 @@ Mục **§7** liệt kê phần đã rút khỏi Phase 1 để track nào đang 
 | Quyền | Mỗi route ghi `@Permissions(resource, action)` như bảng dưới + `@ApiBearerAuth('bearer')`. Cặp đánh dấu **(mới)** chưa có trong seed – xem §6. |
 | Cột Task | `BE · FE` – mã task Notion v2 phía BE rồi phía FE |
 
-**Location:** `Branch.id = Warehouse.id = Location.id`. Mọi field `locationId` / `sourceLocationId` /
-`damagedLocationId` là id của Location (chi nhánh hay kho đều được, trừ chỗ ghi rõ).
+**Location:** `Branch.id = Warehouse.id = Location.id`. Mọi field `locationId` / `sourceLocationId` là id của
+Location (chi nhánh hay kho đều được, trừ chỗ ghi rõ). Không còn `damagedLocationId` / `Location.isSellable`
+(2026-11-26): hàng hỏng là lô `isSellable = false` tại chính địa điểm, xem "Hàng hỏng" ở §3.
 
 ## 1. Tồn kho – nguyên tắc và hàm dùng chung (`InventoryService`, P0-5, chỉ gọi, không sửa)
 
@@ -264,7 +265,7 @@ Gắn đơn mua lại (`REPLACEMENT_LINKED`) ghi hai sự kiện: ở đơn gố
 | `GET /orders` | `orders:read` (+`view_all` để xem mọi chi nhánh) | `page, limit, search` (mã đơn, tên/SĐT khách), `status`, `channel`, `assigneeId`, `branchId`, `priority`, `fulfillmentType`, `stockSummary`, `cashRemittanceStatus`, `attention` (`SHORT` \| `DUE_SOON` \| `PICKUP_OVERDUE`), `from`, `to`, `sort` (`createdAt` \| `requestedDeliveryDate` \| `priority`), `excludePos` (`true` = bỏ đơn POS `TAKEAWAY`; **màn hành trình phải gửi** – POS liệt kê qua cùng route nên mặc định không lọc, chốt 2026-10-06) | A-9 · D-1 |
 | `GET /orders/:id` | `orders:read` | → `OrderDetail` | A-9 · D-3 |
 | `GET /orders/:id/events` | `orders:read` | → `OrderEvent[]` (nhật ký thao tác, cũ nhất trước, không phân trang). Đơn khác tenant → 404 `ORDER_NOT_FOUND`; đơn chi nhánh khác khi không có `orders:view_all` → 403 `ORDER_BRANCH_DENIED`, như `GET /orders/:id` | 2026-11-10 |
-| `GET /orders/source-locations` | `orders:create` hoặc `orders:update` | → `[{ id, type, name, defaultFulfillmentLocationId }]`: chi nhánh và kho còn hoạt động, trừ kho hàng hỏng, cho ô "Nơi bán" và "Nguồn hàng". `branchId` của `POST /orders` nhận cả kho (mỗi kho có một dòng `branches` cùng id); kho hàng hỏng → `LOCATION_NOT_SELLABLE`. `assigneeId` phải là chủ shop hoặc nhân viên làm việc tại địa điểm bán của đơn, khác → 400 `ORDER_ASSIGNEE_WRONG_LOCATION`, áp dụng khi tạo đơn và khi đổi người phụ trách. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho. Màn tạo đơn chọn một nguồn cho cả đơn và gửi vào `sourceLocationId` của mọi dòng, vì `pack` chỉ nhận đơn xuất từ một nơi (`FULFILLMENT_MULTIPLE_SOURCES`). | – · – |
+| `GET /orders/source-locations` | `orders:create` hoặc `orders:update` | → `[{ id, type, name, defaultFulfillmentLocationId }]`: chi nhánh và kho còn hoạt động, cho ô "Nơi bán" và "Nguồn hàng". `branchId` của `POST /orders` nhận cả kho (mỗi kho có một dòng `branches` cùng id). Hàng hỏng không bao giờ được bán vì nằm ở lô riêng (§3 "Hàng hỏng"). `assigneeId` phải là chủ shop hoặc nhân viên làm việc tại địa điểm bán của đơn, khác → 400 `ORDER_ASSIGNEE_WRONG_LOCATION`, áp dụng khi tạo đơn và khi đổi người phụ trách. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho. Màn tạo đơn chọn một nguồn cho cả đơn và gửi vào `sourceLocationId` của mọi dòng, vì `pack` chỉ nhận đơn xuất từ một nơi (`FULFILLMENT_MULTIPLE_SOURCES`). | – · – |
 | `POST /orders/pos` | `orders:create` | Bán tại quầy (thu và trừ kho ngay). `paymentMethod: SEPAY` → đơn `PENDING` chờ QR. Trả `{ order, qrUrl: string \| null, qrExpiresAt: string \| null }`: `qrExpiresAt` (ISO) = lúc tạo đơn + 15 phút, FE đếm ngược theo giá trị này. Mã QR **chỉ** phát qua `sepayQrView`. | – · – |
 | `POST /orders/pos/:id/cancel` | `orders:create` **hoặc** `orders:update` (guard); service: người chỉ có `create` chỉ huỷ được đơn do **chính mình** lên, đơn người khác → 403 `ORDER_STEP_DENIED` | `{ reason? }` (≤ 500 ký tự; mặc định `Khách không thanh toán QR`) – huỷ đơn quầy **đang chờ QR** (`TAKEAWAY` + `PENDING` + `SEPAY`): hàng về kho (`SALE_REVERSAL`), hoá đơn nháp bị huỷ, sự kiện `CANCELLED` (nguồn `USER`). Đơn không còn chờ QR → 409 `ORDER_NOT_PENDING_SEPAY`; đơn vừa được trả / huỷ ở chỗ khác → 409 `ORDER_PAYMENT_CONFLICT`. Phát socket `order:cancelled` `{ orderId, status: 'CANCELLED', reason: 'MANUAL' }`. `PATCH /orders/:id/status` → `CANCELLED` của đơn `PENDING` đi qua cùng hàm này. Trả `Order`. Test: `test/sepay-qr-expiry.e2e-spec.ts` | – · – |
 | `POST /orders` | `orders:create` | `CreateOrderDto` dưới → đơn **`CONFIRMED`**, `confirmedBy` = người tạo. Không giữ hàng, không chặn vì tồn kho. Ghi `Payment` cọc (E-5). | A-2 · D-2 |
@@ -404,7 +405,7 @@ Không có route mới ở phase này (báo cáo đọc nhật ký là Phase 8).
 - **Nhật ký doanh thu** (bảng `sales_journal_entries`/`_lines`, chưa có route đọc): `SALE` một lần khi đơn `COMPLETED` (ngày = ngày `completedAt` giờ Việt Nam; hàng sau giảm giá, phí ship, giá vốn từ sổ lô); `RETURN` âm khi kiểm hàng trả hoặc đơn quầy trả (chỉ khi đã có `SALE`; không hoàn phí ship); `OTHER_INCOME` khi shop giữ tiền của đơn không thành (huỷ có giữ cọc; trả hàng trước hoàn thành mà không hoàn). Chỉ ghi thêm: kỳ đã qua không bao giờ đổi. Không backfill: dữ liệu cũ không có bút toán.
 - Không đổi payload / mã lỗi nào khác.
 
-## 3. Danh sách cần sản xuất, yêu cầu sản xuất & nhận hàng xưởng – Track B, D (D-4 kho hàng hỏng)
+## 3. Danh sách cần sản xuất, yêu cầu sản xuất & nhận hàng xưởng – Track B, D (D-4 hàng hỏng)
 
 Luồng (hành trình GĐ1 – Bước 4): **danh sách cần sản xuất** (tính lúc xem) → nhân viên lập **yêu cầu
 sản xuất (YCSX)** cho một **xưởng**, chỉ định **kho / chi nhánh nhận hàng** → xưởng giao về đó →
@@ -476,7 +477,6 @@ ReceiveProductionDto = {
   items: { productionRequestItemId: string; receivedQuantity: number;   // lần này nhận bao nhiêu (≥ 0)
            defectQuantity?: number;                                     // trong đó bao nhiêu lỗi (≤ receivedQuantity)
            unitCost?: number }[];                                       // giá xưởng; bỏ trống = costPrice của SKU
-  defectLocationId?: string;   // mặc định damagedLocationId của nơi nhận (LOCATION_DAMAGED_REQUIRED nếu có hàng lỗi mà không có)
   note?: string;
 }
 ```
@@ -492,7 +492,8 @@ ReceiveProductionDto = {
    – **không** tạo được bằng `POST /stock-movements` (`importSource: WORKSHOP` ở đó →
    `IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST`).
 3. Phần đạt (`received − defect`) → `openLot` tại nơi nhận (§1) – **tồn kho tăng ở đây**; phần lỗi →
-   `openLot` tại kho hỏng, `ledger.type = DEFECT`.
+   `openLot` lô hỏng (`isSellable = false`) **cũng tại nơi nhận**, `ledger.type = DEFECT`, không vào `stock`.
+   `defectLocationId` của dòng phiếu nhập = nơi nhận.
 4. Cộng `ProductionRequestItem.receivedQuantity`; YCSX → `PARTIALLY_RECEIVED`, hoặc `COMPLETED` khi mọi dòng đủ.
 5. Sau commit: `notifyLowStock`, báo người phụ trách các đơn đang chờ mặt hàng đó tại nơi nhận (B-3).
 
@@ -551,12 +552,31 @@ items: [{ productionRequestItemId, quantity, receivedQuantity, defectQuantity }]
 còn phiếu `PENDING` → `PRODUCTION_DELIVERY_STATUS_INVALID` (nhận hoặc hủy phiếu trước). Nơi nhận vẫn nhận trực
 tiếp được qua `POST /production-requests/:id/receive` cho xưởng không có tài khoản.
 
-### Kho hàng hỏng (D-4) – giữ nguyên
+### Hàng hỏng (D-4, đổi 2026-11-26)
 
-`POST/PATCH /warehouses` thêm `isSellable?: boolean` (false = kho hàng hỏng). `POST/PATCH /branches` và
-`/warehouses` thêm `damagedLocationId?: string | null` – phải là location `isSellable = false` khác chính
-nó, cùng tenant (`LOCATION_DAMAGED_INVALID`). Response chi nhánh / kho trả thêm `isSellable`,
-`damagedLocationId`, `defaultFulfillmentLocationId`. Logic đặt trong `LocationService` (dùng chung).
+Bỏ kho hàng hỏng riêng: `isSellable` / `damagedLocationId` không còn ở `/branches`, `/warehouses` (field gửi lên bị
+bỏ qua). Hàng hỏng là **lô** `InventoryLot.isSellable = false` nằm tại chính địa điểm, **ngoài** `inventories.stock`.
+
+- Luật: `stock` = Σ `remaining` của lô bán được. Mọi đường rút lô (`drawLots`: bán, đóng gói, giao, chuyển kho,
+  kiểm kê) chỉ chạm lô bán được. Không lô nào đổi cờ: đánh dấu hỏng / sửa xong đều tách lô con giữ nguồn, giá vốn,
+  ngày nhập. `balanceAfter` của sổ kho luôn là `stock` sau dòng đó.
+- Đường vào: nhận xưởng có lỗi (`DEFECT`), kiểm hàng hoàn `DAMAGED` (`RETURN_DAMAGED`, về `locationId` hoặc nơi
+  xuất, luôn thành lô con mới, không gộp vào lô cha), đánh dấu hỏng trên kệ (`MARK_DAMAGED`).
+- Đường ra: sửa xong (`REPAIRED`, về lại `stock`), huỷ / thanh lý (`WRITE_OFF`).
+
+| Route | Quyền | Body | Ghi chú |
+|---|---|---|---|
+| `POST /inventory/:id/mark-damaged` | `inventory:manage_damaged` **(mới)** | `{ quantity, orderItemId?, note? }` | Lấy từ kệ (`stock − lockedStock`), thiếu → `INSUFFICIENT_STOCK`. Không có `orderItemId`: chỉ hàng dùng chung. Có: đúng chiếc may riêng của dòng đơn đó (lô hỏng giữ `orderItemId`, sửa xong về lại đơn). |
+| `POST /inventory/:id/repair-damaged` | `inventory:manage_damaged` | `{ quantity, note? }` | Thiếu hàng hỏng → `INSUFFICIENT_DAMAGED_STOCK` |
+| `POST /inventory/:id/write-off-damaged` | `inventory:manage_damaged` | `{ quantity, note? }` | Thiếu hàng hỏng → `INSUFFICIENT_DAMAGED_STOCK` |
+
+`:id` là dòng `inventories`. Nhân viên chỉ làm tại nơi mình làm việc (`INVENTORY_LOCATION_DENIED`). Chứng từ sổ kho:
+`referenceType = INVENTORY`, `referenceId` = id dòng. Ba route trả dòng tồn như `GET /inventory`.
+
+Đọc: `GET /inventory` mỗi dòng có `damagedQuantity`, lọc `?hasDamaged=true`. `GET /products` mỗi sản phẩm có
+`damagedStock` (cùng phạm vi địa điểm như `totalStock`), lọc `?hasDamaged=true`. `DELETE /inventory/:id` từ chối
+khi còn hàng hỏng (`INVENTORY_STILL_HAS_STOCK`). Mã `LOCATION_NOT_SELLABLE`, `LOCATION_DAMAGED_INVALID`,
+`LOCATION_DAMAGED_REQUIRED` không còn được ném.
 
 ## 4. Lấy hàng & giao hàng – Track C, A, E (BE `shipments/`)
 
@@ -694,7 +714,7 @@ OrderReturn = {
 | `GET /order-returns/:id` | `returns:read` | | D-5 · D-6 |
 | `POST /order-returns` | `returns:create` **hoặc** là người phụ trách đơn (`ORDER_RETURN_DENIED`) | `{ orderId, reason, shipmentId?, note?, items: [{ orderItemId, quantity, note? }] }` – đơn phải đã trừ kho (`SHIPPING` / `RECEIVED` / `COMPLETED`), khác → `ORDER_RETURN_ORDER_NOT_RETURNABLE`; vượt `quantity − returnedQuantity` → `ORDER_RETURN_QTY_EXCEEDS` → `REQUESTED` | D-5 · D-6 |
 | `POST /order-returns/:id/receive` | `returns:inspect` | `{}` – hàng đã về tới shop: `REQUESTED` → `INSPECTING` | D-5 · D-6 |
-| `POST /order-returns/:id/inspect` | `returns:inspect` | `{ items: [{ orderItemId, condition, locationId? }] }` – mọi dòng phải có `condition` (`ORDER_RETURN_CONDITION_REQUIRED`). `GOOD` → `returnDrawn` vào `locationId` (mặc định kho xuất, phải sellable), `RETURN_GOOD` – **cộng lại tồn kho**. `DAMAGED` → `returnDrawn` vào `damagedLocationId` của kho xuất (`LOCATION_DAMAGED_REQUIRED`), `RETURN_DAMAGED` – **không** vào tồn bán được. Cập nhật `returnedQuantity`, dòng `RETURNED` khi hoàn đủ, đơn `RETURNED` khi mọi dòng hoàn đủ. Phiếu → `COMPLETED`. | D-5 · D-6 |
+| `POST /order-returns/:id/inspect` | `returns:inspect` | `{ items: [{ orderItemId, condition, locationId? }] }` – mọi dòng phải có `condition` (`ORDER_RETURN_CONDITION_REQUIRED`). Cả hai về `locationId` (mặc định kho xuất). `GOOD` → `returnDrawn`, `RETURN_GOOD` – **cộng lại tồn kho**. `DAMAGED` → `returnDrawn` thành lô con hỏng (`isSellable = false`), `RETURN_DAMAGED` – **không** vào tồn bán được. Cập nhật `returnedQuantity`, dòng `RETURNED` khi hoàn đủ, đơn `RETURNED` khi mọi dòng hoàn đủ. Phiếu → `COMPLETED`. | D-5 · D-6 |
 | `POST /order-returns/:id/cancel` | `returns:cancel` | chỉ `REQUESTED` / `INSPECTING` (chưa đụng kho) | D-5 · D-6 |
 | `PATCH /order-returns/:id/replacement-order` | `returns:create` | `{ orderId }` – gắn đơn mua lại. Đơn mua lại là **đơn tay mới** tạo bằng `POST /orders` (chạy lại từ GĐ1 – Bước 1); FE mở form tạo đơn điền sẵn khách + mặt hàng hỏng rồi gọi route này. | D-10 · D-11 |
 
@@ -728,7 +748,7 @@ Mọi route dưới `/stats`, quyền `reports:read` (không thêm quyền). Ph�
 | `/stats/revenue-by-branch`, `/stats/top-customers`, `/stats/revenue-comparison` | `revenue`, `orderCount` | theo `created_at` | theo nhật ký |
 | `/stats/top-products`, `/stats/slow-products` | `quantity`, `revenue` | Σ dòng đơn | Σ dòng nhật ký: `quantity` có dấu (hàng trả trừ), `revenue` = tiền hàng sau giảm giá cả đơn đã phân bổ |
 | `/stats/sales-heatmap` | `revenue`, `orderCount` | theo `created_at` | chỉ bút toán SALE, theo giờ ghi sổ |
-| `/stats/inventory` | `stockValue` | Σ `stock × product_items.cost_price` | Σ `remaining_quantity × unit_cost` của các lô còn hàng (mọi kho kể cả kho hàng hỏng) |
+| `/stats/inventory` | `stockValue` | Σ `stock × product_items.cost_price` | Σ `remaining_quantity × unit_cost` của các lô **bán được** còn hàng; hàng hỏng tách ra `damagedValue`, `damagedUnits` (2026-11-26) |
 
 Không đổi: `/stats/orders-by-status`, `/stats/order-pipeline`, `/stats/stock-alerts`, `/stats/admin/overview`.
 
@@ -919,7 +939,7 @@ Của riêng contract:
 | D-1 | FE | GĐ1–1→8; GĐ2 | §2 `GET /orders` |
 | D-2 | FE | GĐ1–1; GĐ2–3B | §2 `POST /orders`, customization |
 | D-3 | FE | GĐ1–2, 3, 7 | §2 `GET /orders/:id`, `confirm` |
-| D-4 | FE | GĐ2–3B; GĐ1–4 | §3 kho hàng hỏng |
+| D-4 | FE | GĐ2–3B; GĐ1–4 | §3 hàng hỏng |
 | D-5 | BE | GĐ2–1→3 | §5 |
 | D-6 | FE | GĐ2–1, 2 | §5 |
 | D-7 | FE | GĐ1–3 | §2 `PATCH /orders/:id`, `/assignee`, `/priority` |
