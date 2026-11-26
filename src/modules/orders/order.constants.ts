@@ -1,16 +1,16 @@
 import { OrderStatus } from '../../common/constants/order-status';
 
-// Từ vựng status dùng chung với fulfillment, shipment và return nên nằm trong common/constants; các chuyển trạng thái bên dưới vẫn là luồng 4 trạng thái của quầy cho tới khi A-2/A-3 thay thế.
+// Luồng trạng thái của đơn quầy.
 export {
   OrderStatus,
   ORDER_STATUSES,
 } from '../../common/constants/order-status';
 
-/** Đơn đi được từ trạng thái nào. Đơn đã COMPLETED không quay lại, chỉ có thể RETURNED; CANCELLED và RETURNED đều là trạng thái cuối, muốn sửa thì tạo đơn mới. */
+/** Các bước chuyển trạng thái hợp lệ của đơn quầy. */
 export const VALID_ORDER_TRANSITIONS: Readonly<
   Record<string, readonly string[]>
 > = {
-  // Đơn quầy chờ SePay chỉ huỷ được bằng PATCH status; chốt COMPLETED là `pay-offline` hoặc webhook (PATCH → COMPLETED trước đây ghi tiền không có thật).
+  // Đơn quầy chờ SePay chỉ huỷ được bằng PATCH status.
   [OrderStatus.PENDING]: [OrderStatus.CANCELLED],
   [OrderStatus.COMPLETED]: [OrderStatus.RETURNED],
   [OrderStatus.CANCELLED]: [],
@@ -23,7 +23,7 @@ export const SETTABLE_ORDER_STATUSES: readonly string[] = [
   OrderStatus.RETURNED,
 ];
 
-/** Phương thức thu tiền ngay khi lên đơn, nên đơn mở ở COMPLETED. SEPAY là ngoại lệ: ngân hàng báo sau nên đơn mở ở PENDING và chờ webhook. */
+/** Phương thức thu tiền ngay, đơn mở ở COMPLETED; SEPAY mở ở PENDING chờ webhook. */
 export const INSTANT_COMPLETE_METHODS: readonly string[] = [
   'CASH',
   'BANK_TRANSFER',

@@ -3,7 +3,7 @@ import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 
-// Chỉ AuditInterceptor ghi AuditLog, nên cố ý không có create/update/delete ở đây (giống module audit chỉ-đọc của iKiotMS-BE).
+// Nhật ký chỉ đọc, chỉ AuditInterceptor ghi.
 @Injectable()
 export class AuditLogService {
   constructor(private readonly prisma: PrismaService) {}

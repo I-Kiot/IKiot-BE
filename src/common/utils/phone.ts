@@ -1,4 +1,4 @@
-/** Số điện thoại Việt Nam ở dạng E.164, dùng làm khoá (store OTP) chứ không để lưu - `User.phoneNumber` giữ đúng cách user đã gõ. */
+/** Chuẩn hoá SĐT Việt Nam về E.164 để làm khoá. */
 export function normalizePhone(phone: string | null | undefined): string {
   if (!phone) return '';
   const cleaned = String(phone)

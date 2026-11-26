@@ -108,11 +108,11 @@ import { SentryModule } from '@sentry/nestjs/setup';
     // Thứ tự quan trọng: JwtAuthGuard phải điền request.user trước khi PermissionsGuard đọc.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
-    // Đăng ký đầu tiên để bọc ngoài cùng: tap của AuditInterceptor vẫn phải thấy body đăng nhập thô mà nó lấy actor từ đó.
+    // Đăng ký đầu tiên để bọc ngoài cùng, AuditInterceptor vẫn thấy body đăng nhập thô.
     { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
     // Mô tả audit theo từng domain lấy từ provider @AuditTemplate(); interceptor này giữ tính chung.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
-    // Đăng ký SAU AuditInterceptor nên là lớp trong cùng: nó cần thấy body thô của handler (chưa bọc envelope) để lấy id / mã chứng từ cho `entity:changed`.
+    // Đăng ký sau AuditInterceptor để thấy body thô của handler khi phát `entity:changed`.
     { provide: APP_INTERCEPTOR, useClass: ChangeFeedInterceptor },
     // Lớp cuối cùng: đổi lỗi Prisma và các lỗi không phải HttpException thành status code thật.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

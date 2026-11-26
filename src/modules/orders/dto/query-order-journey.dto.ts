@@ -15,7 +15,7 @@ import {
   type OrderSort,
 } from '../order-read.constants';
 
-/** Query của `GET /orders`. Giữ nguyên bộ lọc của quầy vì POS vẫn liệt kê qua route này, thêm bộ lọc hành trình đơn. `search` giờ khớp cả mã đơn. */
+/** Query `GET /orders`: bộ lọc của quầy và của hành trình đơn. */
 export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsOptional()
   @IsIn(ORDER_CHANNELS)
@@ -39,12 +39,12 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsIn(STOCK_CHECK_STATUSES)
   stockSummary?: string;
 
-  /** Tiền shipper thu đã về tay chủ chưa, đọc từ Payment BALANCE. `NOT_APPLICABLE` cũng khớp đơn không có BALANCE. */
+  /** Lọc theo tiền shipper thu đã nộp về chủ chưa. */
   @IsOptional()
   @IsIn(REMITTANCE_STATUSES)
   cashRemittanceStatus?: string;
 
-  /** Tên theo contract cho khoảng ngày tạo; `fromDate`/`toDate` kế thừa từ quầy là cùng ý. Gửi cả hai thì `from`/`to` thắng. */
+  /** Khoảng ngày tạo; gửi cả hai cặp thì `from`/`to` thắng. */
   @IsOptional()
   @IsDateString()
   from?: string;
@@ -53,7 +53,7 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsDateString()
   to?: string;
 
-  /** `true` loại đơn bán tại quầy (`TAKEAWAY`). Màn hình hành trình gửi `true`, POS thì không nên đây là tùy chọn chứ không luôn bật như contract (quyết định 2026-10-06, A-8). */
+  /** `true` thì loại đơn bán tại quầy. */
   @BooleanQuery()
   excludePos?: boolean;
 
@@ -61,7 +61,7 @@ export class QueryOrderJourneyDto extends QueryOrderDto {
   @IsIn(ORDER_SORTS)
   sort?: OrderSort;
 
-  /** Đơn cần chú ý: `SHORT` (có dòng thiếu một phần hoặc hết trên kệ), `DUE_SOON` (gần hoặc quá ngày giao), `PICKUP_OVERDUE` (khách tới lấy, đã đóng gói, quá ngày hẹn lấy). Chỉ đơn chưa giao mới khớp. */
+  /** Lọc đơn cần chú ý: thiếu hàng, sắp tới ngày giao, khách lấy quá hạn. */
   @IsOptional()
   @IsIn(ORDER_ATTENTION_KINDS)
   attention?: OrderAttentionKind;

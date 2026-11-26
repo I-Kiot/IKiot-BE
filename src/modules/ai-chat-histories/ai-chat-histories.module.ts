@@ -23,7 +23,7 @@ import { CashDrawerSessionModule } from '../cash-drawer-sessions/cash-drawer-ses
 import { TicketModule } from '../tickets/tickets.module';
 import { StatsModule } from '../stats/stats.module';
 
-/** Import 17 module có chủ đích: trợ lý đọc dữ liệu qua chính các service sở hữu từng câu hỏi, nên số liệu không lệch với dashboard. `GeminiClient` là abstract để test có thể giả lập. */
+/** Import các module mà trợ lý đọc dữ liệu qua. */
 @Module({
   imports: [
     ProductModule,

@@ -5,7 +5,7 @@ import {
 } from '../../common/utils/reference-generator';
 import { normalizeAccountNumber } from '../../common/utils/bank-account';
 
-// Port từ phần subscription của sepayService.js. Không dùng chung với thanh toán đơn hàng: gói này trả vào tài khoản công ty iKiot, còn đơn dùng thông tin ngân hàng và webhook key riêng của từng tenant.
+// Thanh toán gói qua SePay vào tài khoản iKiot.
 @Injectable()
 export class SepaySubscriptionService {
   generatePaymentReference(): string {
@@ -27,7 +27,7 @@ export class SepaySubscriptionService {
     return Boolean(expectedKey) && receivedKey === expectedKey;
   }
 
-  /** Tài khoản của các shop nằm chung trên SePay, nên nếu không kiểm tra thì shop có thể tự trả bằng nội dung `IKMS…` để kích hoạt gói. */
+  /** Kiểm tài khoản nhận là của iKiot. */
   isPlatformAccount(payload: {
     accountNumber?: string | null;
     subAccount?: string | null;

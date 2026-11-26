@@ -1,7 +1,7 @@
 import { IsDateString, IsIn, IsOptional, IsString } from 'class-validator';
 import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
-// Quyền ghi từng trường được kiểm tra trong AuthService.updateMe: owner/admin sửa mọi trường, STAFF và CUSTOMER chỉ sửa avatarUrl.
+// Quyền sửa từng trường kiểm trong `AuthService.updateMe`.
 export class UpdateMeDto {
   @IsOptional()
   @NormalizeEmail()

@@ -22,7 +22,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Port từ CustomerController. Mọi route được gắn permission; module cũ chỉ có `verifyJwt` nên mọi tài khoản đăng nhập đọc và xoá được toàn bộ khách của tenant. */
+/** Controller khách hàng. */
 @ApiTags('customers')
 @ApiBearerAuth('bearer')
 @Controller('customers')

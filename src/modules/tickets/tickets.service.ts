@@ -24,12 +24,12 @@ import type { CreateTicketDto, ReplyTicketDto } from './dto/ticket.dto';
 import { DEFAULT_TICKET_PRIORITY, TicketStatus } from './ticket.constants';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Tin nhắn trả về cũ nhất trước để đọc từ trên xuống. Bản cũ nhúng mảng nên có sẵn thứ tự; ở đây phải yêu cầu rõ. */
+/** Tin nhắn cũ nhất trước. */
 const WITH_MESSAGES = {
   messages: { orderBy: { createdAt: 'asc' } },
 } as const;
 
-/** Luồng hỗ trợ giữa shop và operator. Ticket thuộc shop chứ không thuộc người tạo (nên `/tickets/my` lọc theo `tenantId`); `isDeletedByTenant` là cách xoá duy nhất, ẩn với shop nhưng operator vẫn thấy. Route cũ chỉ có `verifyJwt`, nên mọi tài khoản đăng nhập đều đọc hoặc xoá mềm được ticket bất kỳ. */
+/** Ticket hỗ trợ giữa shop và admin; shop xoá là ẩn. */
 @Injectable()
 export class TicketService {
   constructor(
@@ -38,7 +38,7 @@ export class TicketService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
-  /** Nhãn người gửi trên tin nhắn. JWT cũ không có `profile` hay `email`, nên mọi tin nhắn production từng bị gắn số điện thoại. Ở đây hiển thị đúng vì `JwtStrategy` đọc lại user mỗi request. */
+  /** Nhãn người gửi tin nhắn. */
   private senderName(user: AuthUser): string {
     return user.displayName ?? user.email ?? user.phoneNumber;
   }
@@ -50,10 +50,10 @@ export class TicketService {
     });
     const tenantName = tenant?.name ?? 'Unknown Store';
 
-    // Bản cũ tái sử dụng mã sau ~16,7 phút trên cột unique; ở đây dùng chung generator với mọi mã tham chiếu khác.
+    // Sinh mã ticket.
     const ticketId = generateReference(REFERENCE_PREFIX.TICKET);
 
-    // Nội dung mở đầu được lưu hai lần có chủ đích: trên ticket (danh sách đọc từ đây) và là tin nhắn đầu tiên (thread tự đủ nghĩa).
+    // Lưu nội dung mở đầu trên ticket và là tin nhắn đầu.
     const ticket = await this.prisma.ticket.create({
       data: {
         ticketId,
@@ -143,7 +143,7 @@ export class TicketService {
     return ticket;
   }
 
-  /** Soft delete. Bản cũ set `isDeletedByTenant` bất kể người gọi là ai, nên operator xoá thread cũng ẩn nó khỏi shop. Giữ nguyên hành vi này; bù lại là danh sách admin vẫn hiện thread. */
+  /** Xoá mềm ticket. */
   async remove(user: AuthUser, id: string) {
     const found = await this.prisma.ticket.findUnique({
       where: { id },
@@ -171,7 +171,7 @@ export class TicketService {
     return { message: 'Đã xoá yêu cầu hỗ trợ', data: ticket };
   }
 
-  /** Cố ý không lọc, kể cả thread shop đã xoá: operator cần toàn bộ lịch sử, admin UI hiện thread đã xoá kèm badge. */
+  /** Danh sách ticket cho admin, kể cả đã xoá. */
   async findAllAdmin(query: PaginationQueryDto) {
     const { page, limit } = query;
     const [tickets, total] = await Promise.all([
@@ -203,7 +203,7 @@ export class TicketService {
       ticket,
     );
 
-    // Chủ shop đã tạo ticket rồi quay lại việc kinh doanh, nên event socket chỉ tới khi app đang mở; dòng inbox mới là thứ thực sự tới được họ.
+    // Ghi vào hộp thư cho chủ shop.
     const owners = await this.notifications.tenantOwners(ticket.tenantId);
     await this.notifications.notify({
       tenantId: ticket.tenantId,
@@ -234,7 +234,7 @@ export class TicketService {
     return ticket;
   }
 
-  /** Một lần ghi cho tin nhắn và trạng thái theo lượt người gửi. Status luôn được ghi kể cả khi không đổi, để `@updatedAt` tăng và thread lên đầu cả hai danh sách. */
+  /** Ghi tin nhắn và trạng thái ticket. */
   private appendMessage(
     id: string,
     user: AuthUser,

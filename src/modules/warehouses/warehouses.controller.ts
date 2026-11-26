@@ -27,7 +27,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 export class WarehouseController {
   constructor(private readonly service: WarehouseService) {}
 
-  // `read_own` có trong mọi tài khoản STAFF và chỉ tới nơi của họ; LocationService thu hẹp (`locationReadScope`).
+  // `read_own` chỉ thấy nơi của mình.
   @Permissions('warehouses', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách kho (phân trang, tìm kiếm)' })

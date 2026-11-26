@@ -12,7 +12,7 @@ export function pendingMigrations(
   return shipped.filter((name) => !done.has(name));
 }
 
-/** Tên thư mục migration đi kèm image (`prisma/migrations/<timestamp>_<name>`). Trả null khi thiếu thư mục: build đó không tự kiểm tra được. */
+/** Tên migration đi kèm image; null khi thiếu thư mục migration. */
 function shippedMigrations(): string[] | null {
   try {
     return readdirSync(join(process.cwd(), 'prisma', 'migrations'), {
@@ -33,14 +33,12 @@ export class AppService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Liveness: process còn sống. Cố ý không đụng tới DB để sự cố DB không làm container trông như đã chết. */
+  /** Liveness: process còn sống, cố ý không gọi DB. */
   health() {
     return { status: 'ok', uptime: process.uptime() };
   }
 
-  /**
-   * Readiness: DB trả lời và có đủ migration của build này. `/health` từng báo ok khi code mới chạy trên schema cũ, nên CI chờ check này. 503 kèm tên migration còn thiếu.
-   */
+  /** Readiness: DB trả lời và đủ migration của build này, thiếu thì 503 kèm tên migration. */
   async ready() {
     let applied: string[];
     try {

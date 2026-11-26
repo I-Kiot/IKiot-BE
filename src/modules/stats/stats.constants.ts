@@ -1,7 +1,7 @@
 import { VIETNAM_TIMEZONE } from '../../common/constants/timezone';
 import { OrderStatus } from '../../common/constants/order-status';
 
-/** Dashboard đọc theo ngày địa phương của shop, nên có hai nửa bài toán múi giờ: `TZ_OFFSET` đổi `YYYY-MM-DD` thành thời điểm (`new Date()` không parse được tên múi giờ), còn `TZ_NAME` gom thời điểm về ngày địa phương trong Postgres. */
+/** Hằng số múi giờ cho dashboard. */
 export const TZ_OFFSET = '+07:00';
 export const TZ_NAME = VIETNAM_TIMEZONE;
 
@@ -12,7 +12,7 @@ export const DEFAULT_RANGE_DAYS = 30;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export const GroupBy = {
-  /** Thêm 2026-10-20 cho biểu đồ "Hôm nay" - một ngày gom theo ngày chỉ ra một điểm. Chỉ dùng cho doanh thu shop; tổng quan nền tảng vẫn dùng ngày/tháng. */
+  /** Gom theo giờ, cho biểu đồ "Hôm nay". */
   HOUR: 'hour',
   DAY: 'day',
   MONTH: 'month',
@@ -60,7 +60,7 @@ export const LOW_STOCK_LIST_LIMIT = 100;
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = 10;
 
-/** Nhóm “tình trạng đơn” trên dashboard, thứ tự là thứ tự hiển thị. “Giao thất bại” không phải trạng thái đơn (đơn vẫn SHIPPING, chuyến FAILED chờ giao lại hoặc xác nhận hàng về) nên đếm riêng, xem `getOrderPipeline`. */
+/** Nhóm tình trạng đơn theo thứ tự hiển thị. */
 export const ORDER_PIPELINE_STAGES = [
   { key: 'PENDING_CONFIRMATION', statuses: [OrderStatus.PENDING_CONFIRMATION] },
   { key: 'PROCESSING', statuses: [OrderStatus.CONFIRMED] },
@@ -76,7 +76,7 @@ export const DELIVERY_FAILED_STAGE = 'DELIVERY_FAILED';
 /** Số dòng mỗi danh sách cảnh báo trên dashboard; số đếm bên cạnh tính trên tất cả. */
 export const ALERT_LIST_LIMIT = 5;
 
-/** Bốn loại cảnh báo tồn kho trên dashboard. Một dòng tồn có thể thuộc nhiều loại cùng lúc (vừa dưới mức tối thiểu vừa lâu không bán). */
+/** Các loại cảnh báo tồn kho. */
 export const StockAlertCategory = {
   OUT_OF_STOCK: 'OUT_OF_STOCK',
   LOW_STOCK: 'LOW_STOCK',

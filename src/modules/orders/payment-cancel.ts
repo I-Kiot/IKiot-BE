@@ -7,7 +7,7 @@ import {
 } from '../../common/constants/payment-method';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Dữ liệu huỷ một khoản (tay): trạng thái CANCELLED cùng người huỷ và lúc huỷ. Cron QR hết hạn không dùng hàm này, nó đặt EXPIRED. */
+/** Dữ liệu huỷ một khoản thanh toán. */
 export function cancelData(actorId: string | null, now: Date) {
   return {
     status: PaymentRecordStatus.CANCELLED,
@@ -16,7 +16,7 @@ export function cancelData(actorId: string | null, now: Date) {
   };
 }
 
-/** Khoản QR SePay còn mở (PENDING hay EXPIRED) của đơn, mọi loại khoản (đơn quầy là FULL, đơn có giao là BALANCE). */
+/** Điều kiện khoản QR SePay còn mở. */
 export function openQrPayments<T extends { method: string; status: string }>(
   payments: readonly T[],
 ): T[] {
@@ -27,7 +27,7 @@ export function openQrPayments<T extends { method: string; status: string }>(
   );
 }
 
-/** Huỷ các khoản QR còn mở, trong transaction của người gọi, ghi ai huỷ và lúc nào. Tiền vừa về đúng lúc này thì dừng để người dùng tải lại, không ghi đè khoản đã thu. */
+/** Huỷ các khoản QR còn mở; tiền vừa về thì dừng. */
 export async function cancelCounterQr(
   tx: Prisma.TransactionClient,
   pending: readonly { id: string }[],

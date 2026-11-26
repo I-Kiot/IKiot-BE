@@ -47,7 +47,7 @@ import {
   type StockCheck,
 } from './stock-check';
 
-/** `changes` và `metadata` là cột Json: chỉ trả khi đúng là object, giá trị lạ thành null thay vì lọt ra màn hình. */
+/** Chỉ trả `changes`/`metadata` khi là object. */
 function isJsonObject(value: Prisma.JsonValue): value is Prisma.JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -85,9 +85,7 @@ type StockSummaryCandidate = Prisma.OrderGetPayload<{
   select: typeof STOCK_SUMMARY_CANDIDATE_SELECT;
 }>;
 
-/**
- * `GET /orders` và `GET /orders/:id` của hành trình đơn (A-9). Tách khỏi OrderService (của quầy) để quầy vẫn chạy trên hai route này mà không phải đổi. Quy tắc chi nhánh giống OrderService (chi nhánh của mình, hoặc mọi chi nhánh với `orders:view_all`) và phải giữ như vậy.
- */
+/** Đọc danh sách và chi tiết đơn hành trình. */
 @Injectable()
 export class OrderReadService {
   constructor(private readonly prisma: PrismaService) {}
@@ -107,9 +105,7 @@ export class OrderReadService {
     );
   }
 
-  /**
-   * `GET /orders/alerts`: số đơn chưa giao cần chú ý (thiếu hàng, sắp tới ngày giao, khách tới lấy quá hạn), cho badge và banner. Đếm theo cùng phạm vi và quy tắc với bộ lọc `attention`, để số trên badge khớp đúng số dòng khi bấm vào.
-   */
+  /** Đếm đơn cần chú ý cho badge, cùng quy tắc với bộ lọc `attention`. */
   async alerts(user: AuthUser, tenantId: string, branchId?: string) {
     const base = Object.assign(new QueryOrderJourneyDto(), {
       excludePos: true,
@@ -176,10 +172,7 @@ export class OrderReadService {
     );
   }
 
-  /**
-   * `production` của từng dòng đơn: YCSX gắn dòng (tiến độ) và phần còn đặt xưởng được (`orderableLinesOf`, cùng phép tính với guard khi tạo YCSX).
-   * Theo lô: một query cho phần gắn dòng, và (chỉ khi có dòng tính được stockCheck) vài query cho danh sách sản xuất chung của các cặp (địa điểm, SKU) đó.
-   */
+  /** Tiến độ sản xuất của từng dòng đơn. */
   private async lineProduction(
     tenantId: string,
     orders: readonly {
@@ -257,7 +250,7 @@ export class OrderReadService {
     return { rows, total, stockChecks };
   }
 
-  /** Đơn của tenant khác coi như không tồn tại (contract §0); đơn của chi nhánh khác bị từ chối, như OrderService. Dùng chung cho chi tiết đơn và nhật ký thao tác. */
+  /** Nạp đơn và kiểm phạm vi chi nhánh. */
   private async assertVisible(user: AuthUser, tenantId: string, id: string) {
     const order = await this.prisma.order.findFirst({
       where: { id, tenantId },
@@ -279,7 +272,7 @@ export class OrderReadService {
     }
   }
 
-  /** `GET /orders/:id/events`: toàn bộ nhật ký thao tác của đơn, cũ nhất trước (màn hình tự đảo). Không phân trang. */
+  /** Nhật ký thao tác của đơn, cũ nhất trước. */
   async events(user: AuthUser, tenantId: string, id: string) {
     await this.assertVisible(user, tenantId, id);
     const rows = await this.prisma.orderEvent.findMany({
@@ -386,8 +379,7 @@ export class OrderReadService {
       and.push(remittanceWhere(query.cashRemittanceStatus));
     }
 
-    // stockCheck chỉ có tới khi đơn giao, nên cũng không có stockSummary để khớp. Hai loại attention cũng vậy:
-    // đơn đã giao không còn thiếu hàng hay trễ nữa.
+    // Đơn đã giao thì không còn stockCheck hay attention.
     if (query.stockSummary || query.attention) {
       and.push({ status: { in: [...UNSHIPPED_ORDER_STATUSES] } });
     }
@@ -421,9 +413,7 @@ export class OrderReadService {
     return { branchId: posting };
   }
 
-  /**
-   * Trang sắp theo độ gấp (gấp nhất trước). `priority` là cột chuỗi nên DB sắp sai; mỗi mức là một nhóm, mới nhất trước trong nhóm. Trang được cắt qua các nhóm lần lượt: đếm mỗi nhóm, và mỗi nhóm chỉ đọc tối đa một lần.
-   */
+  /** Phân trang theo độ gấp, đọc từng nhóm ưu tiên. */
   private async pageByPriority(
     where: Prisma.OrderWhereInput,
     skip: number,
@@ -452,9 +442,7 @@ export class OrderReadService {
     return rows;
   }
 
-  /**
-   * Bộ lọc stockSummary. Summary tính từ tồn sống, không lưu nên DB không lọc được: các đơn chưa giao được lọc theo bộ lọc khác rồi mới lọc, sắp và phân trang trong bộ nhớ. Giới hạn theo số đơn chờ giao, không theo lịch sử; ở quy mô một shop thì ổn, nếu không ổn thì tính trước.
-   */
+  /** Lọc theo stockSummary trong bộ nhớ vì DB không lọc được. */
   private async listByStockSummary(
     tenantId: string,
     where: Prisma.OrderWhereInput,
@@ -494,7 +482,7 @@ export class OrderReadService {
   }
 }
 
-/** Cùng quy tắc với `isPickupOverdue`, ở dạng bộ lọc: khách tới lấy, đã đóng gói, quá ngày hẹn theo lịch Việt Nam. */
+/** Lọc đơn khách tới lấy đã quá hạn. */
 function pickupOverdueWhere(): Prisma.OrderWhereInput {
   return {
     fulfillmentType: FulfillmentType.STORE_PICKUP,
@@ -521,7 +509,7 @@ function orderByFor(
   return [{ createdAt: 'desc' }];
 }
 
-/** Ba kiểu sắp xếp đó nhưng trong bộ nhớ, cho bộ lọc stockSummary. Phải khớp với `orderByFor` và `pageByPriority`. */
+/** Sắp xếp trong bộ nhớ, khớp với `orderByFor` và `pageByPriority`. */
 function compareFor(
   sort: OrderSort | undefined,
 ): (a: StockSummaryCandidate, b: StockSummaryCandidate) => number {
@@ -545,7 +533,7 @@ function compareFor(
   return newestFirst;
 }
 
-/** Lọc `cashRemittanceStatus` theo Payment BALANCE. NOT_APPLICABLE là không có gì phải nộp: không có dòng BALANCE, hoặc dòng chưa từng chờ shipper nộp. */
+/** Lọc theo trạng thái nộp tiền shipper. */
 function remittanceWhere(status: string): Prisma.OrderWhereInput {
   if (status === RemittanceStatus.NOT_APPLICABLE) {
     return {

@@ -1,23 +1,4 @@
-// Dữ liệu thử luồng giao xong & thu tiền (C-5 / C-7) – dev only.
-//
-// Chạy SAU chuỗi seed của tài liệu test (docs/tai-khoan-test-hanh-trinh.md):
-//
-//   npx prisma db seed
-//   npx tsx prisma/seed-account-role.ts
-//   npx tsx prisma/seed-furniture-test.ts
-//   npx tsx prisma/seed-c5-delivery.ts
-//
-// Trong shop "Nội thất Demo" (chủ shop 0981189856):
-//   1. Liên kết tài khoản ngân hàng (số giả) để mã QR hiện ra, và đặt webhook key `test-key-local`
-//      để tự bắn webhook SePay giả – chỉ ghi khi các cột đó đang trống.
-//   2. Tạo 5 đơn đã ở bước "Đang vận chuyển" từ CN Hà Nội, giao nội bộ, shipper là CHỦ SHOP – mở
-//      "Đơn giao của tôi" là thấy ngay. Mỗi đơn một kịch bản (xem SCENARIOS).
-//
-// Đơn được tạo đúng hình dạng luồng thật để lại ở bước đó (dòng hàng SHIPPED, fulfillment HANDED_OVER,
-// shipment IN_TRANSIT kèm nhật trình, hoá đơn PENDING), nhưng KHÔNG đụng tồn kho: bước giao xong không
-// đọc / ghi tồn. Vì vậy các đơn này không dùng để thử đóng gói hay ship – dùng C6-TEST cho hai bước đó.
-//
-// Chạy lại an toàn: đơn trùng mã thì bỏ qua.
+// Dữ liệu thử giao xong & thu tiền (dev); chạy sau seed-account-role và seed-furniture-test.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -55,7 +36,7 @@ const CUSTOMER_NAME = 'Khách test giao hàng (C-5)';
 const SKU = 'BAN-OAK-120';
 const GRAND_TOTAL = 3_000_000;
 
-/** Tài khoản ngân hàng giả: ảnh VietQR vẫn hiện vì dịch vụ chỉ dựng ảnh, không kiểm tra tài khoản có thật. */
+/** Tài khoản ngân hàng giả để hiện ảnh VietQR. */
 const TEST_BANKING = {
   bankingBankName: 'MB',
   bankingAccountNumber: '0123456789',

@@ -33,9 +33,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 
-/**
- * Tạo đơn tay (A-2) trên Postgres thật: đơn sinh ra CONFIRMED, chụp giá, chọn kho xuất mặc định, bung combo, ghi tiền cọc và các lỗi chặn. Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
- */
+/** Kiểm tạo đơn tay (Postgres thật). */
 describe('POST /orders – ManualOrderService.create', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;

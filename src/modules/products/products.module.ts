@@ -6,7 +6,7 @@ import { ProductImportService } from './import/product-import.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  // SubscriptionModule cho hạn mức sản phẩm. Không import InventoryModule: tạo sản phẩm không ghi dòng tồn kho.
+  // Module sản phẩm; dùng SubscriptionModule cho hạn mức.
   imports: [SubscriptionModule],
   controllers: [ProductController],
   providers: [ProductService, ProductVariantService, ProductImportService],

@@ -1,7 +1,7 @@
 import { StreamableFile } from '@nestjs/common';
 import { ResponseEnvelopeInterceptor } from './response-envelope.interceptor';
 
-/** Đại diện cho các instance class thật sự đi tới interceptor; trường `data` là trường hợp mà kiểm tra prototype tồn tại để xử lý. */
+/** Class thật có trường `data`, để kiểm tra nhánh prototype. */
 class Money {
   constructor(public readonly data: number) {}
   total() {
@@ -9,7 +9,7 @@ class Money {
   }
 }
 
-/** `wrap` là private, nhưng hình dạng response của mọi endpoint phụ thuộc vào nó, nên test trực tiếp thay vì qua ba mươi bốn route. */
+/** Test thẳng hàm `wrap` vì mọi response phụ thuộc vào nó. */
 const wrap = (body: unknown): unknown =>
   (
     new ResponseEnvelopeInterceptor(null as never) as unknown as {

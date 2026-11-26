@@ -27,8 +27,7 @@ import { ShipmentModule } from '../shipments/shipments.module';
 import { InvoiceModule } from '../invoices/invoices.module';
 
 @Module({
-  // InventoryModule: trừ kho và quy tắc tồn thấp. PromotionModule: đơn tính KM qua cùng engine với /promotions/calculate.
-  // FulfillmentModule (đóng gói C-1), ShipmentModule (giao C-2), CustomerModule (khách của đơn tay A-2).
+  // Module phụ thuộc: kho, khuyến mãi, đóng gói, giao hàng, khách hàng.
   imports: [
     InventoryModule,
     NotificationModule,

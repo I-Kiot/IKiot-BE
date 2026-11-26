@@ -7,7 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PromotionService } from '../promotions/promotions.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Một dòng như client gửi. `unitPrice` chỉ đến từ lúc tạo đơn tay (giá mặc cả); quầy không bao giờ gửi, luôn tính theo danh mục. */
+/** Một dòng client gửi; `unitPrice` chỉ có ở đơn tay. */
 export interface PricingLineInput {
   productItemId: string;
   quantity: number;
@@ -28,7 +28,7 @@ export type PricedLine = Awaited<
   ReturnType<OrderPricingService['priceLines']>
 >[number];
 
-/** Phần tiền của một đơn, dùng chung cho quầy (`OrderService.createPosSale`) và tạo đơn tay (`ManualOrderService`) để cả hai tính giỏ hàng theo cùng quy tắc. */
+/** Tính tiền đơn, dùng chung cho quầy và đơn tay. */
 @Injectable()
 export class OrderPricingService {
   constructor(
@@ -36,10 +36,7 @@ export class OrderPricingService {
     private readonly promotions: PromotionService,
   ) {}
 
-  /**
-   * Tính toàn bộ tiền của đơn ở server, không tin số client gửi. Khuyến mãi đi qua engine của `/promotions/calculate`, nên KM hết hạn hoặc sai chi nhánh bị trả 400 chứ không lặng lẽ giảm giá.
-   * Đơn có khuyến mãi tra biến thể hai lần; lần đọc thêm là cái giá để engine tự giữ bản nhìn của giỏ.
-   */
+  /** Tính toàn bộ tiền đơn ở server, khuyến mãi qua engine của `/promotions/calculate`. */
   async priceOrder(tenantId: string, input: PricingInput) {
     const lines = await this.priceLines(tenantId, input.items);
     const promotionIds = [
@@ -62,7 +59,7 @@ export class OrderPricingService {
       };
     }
 
-    // Một discountType cho mỗi đơn nên hai loại không cộng dồn được: schema không có chỗ ghi tổng vừa tay vừa khuyến mãi.
+    // Một đơn chỉ một loại giảm giá.
     if (input.discountType === 'ORDER') {
       throw new BadRequestException({
         code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
@@ -70,7 +67,7 @@ export class OrderPricingService {
           'An order cannot carry both an order-level discount and a promotion',
       });
     }
-    // Engine luôn tính mỗi dòng theo `retailPrice` (không nhận giá từ bên gọi), nên giá thỏa thuận cộng khuyến mãi sẽ bị giảm trên một số mà dòng không mang. Đơn tay chỉ được một trong hai.
+    // Đơn tay không dùng được cả giá thoả thuận lẫn khuyến mãi.
     if (lines.some((line) => line.unitPrice !== line.listUnitPrice)) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
@@ -89,7 +86,7 @@ export class OrderPricingService {
       promotionIds,
     });
 
-    // Ghép theo vị trí, không theo `productItemId`: engine trả một mục cho mỗi dòng giỏ. Ghép theo id biến thể sẽ gộp các dòng trùng và nhân đôi mức giảm (10 dòng giống nhau dưới KM 10% từng ra giảm 100%).
+    // Ghép kết quả engine theo vị trí dòng.
     if (pricing.itemBreakdown.length !== lines.length) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_PROMOTION_ALLOCATION_MISMATCH,
@@ -98,7 +95,7 @@ export class OrderPricingService {
     }
 
     return {
-      // Phân bổ của engine ghi đè mọi thứ client gửi, kể cả giảm tay trên dòng: hai khoản giảm trên một dòng không có chỗ trong schema.
+      // Phân bổ khuyến mãi ghi đè giảm tay trên dòng.
       lines: lines.map((line, index) => ({
         ...line,
         discountAmount: pricing.itemBreakdown[index].discountAmount,
@@ -109,9 +106,7 @@ export class OrderPricingService {
     };
   }
 
-  /**
-   * Các dòng của một đơn. `listUnitPrice` luôn là `ProductItem.retailPrice`; `unitPrice` bằng nó trừ khi bên gọi thoả thuận giá khác (quầy thì không được). Giảm tay mỗi dòng bị chặn bởi thành tiền của chính dòng; vượt thì trả 400 chứ không cắt âm thầm, vì `discount_amount` lưu lớn hơn số đã giảm sẽ làm `/stats/top-products` báo doanh thu âm.
-   */
+  /** Tính các dòng của đơn; giảm tay không được vượt thành tiền dòng. */
   async priceLines(tenantId: string, items: PricingLineInput[]) {
     const ids = [...new Set(items.map((item) => item.productItemId))];
     const variants = await this.prisma.productItem.findMany({
@@ -172,25 +167,25 @@ export class OrderPricingService {
     );
   }
 
-  /** Tổng thành tiền các dòng (sau giảm từng dòng, trước giảm tay cả đơn và phí giao): cột `orders.subtotal`. Một nơi cho đơn tay, đơn quầy và sửa đơn: trước đây đơn quầy không đặt cột này nên hoá đơn của nó có subtotal 0. */
+  /** Tổng thành tiền các dòng sau giảm từng dòng. */
   subtotalOf(
     lines: { quantity: number; unitPrice: number; discountAmount: number }[],
   ): number {
     return lines.reduce((sum, line) => sum + this.lineTotalOf(line), 0);
   }
 
-  /** Số khách thực phải trả cho hàng: thành tiền các dòng trừ giảm từng dòng, rồi trừ giảm tay cả đơn. Khuyến mãi không trừ lại vì `priceOrder` đã phân bổ vào các dòng. Không âm. Phí giao do bên gọi cộng thêm. */
+  /** Số khách phải trả cho hàng, không âm, chưa cộng phí giao. */
   grandTotalOf(
     lines: { quantity: number; unitPrice: number; discountAmount: number }[],
     discountType: string | null,
     discountValue: number,
   ): number {
-    // Làm tròn từng dòng trước khi trừ giảm, giống `pricing-engine.ts`. Làm tròn một lần ở cuối sẽ lệch vài đồng so với tổng preview đã báo.
+    // Làm tròn từng dòng trước khi trừ giảm, giống `pricing-engine.ts`.
     const afterLineDiscounts = lines.reduce(
       (sum, line) => sum + this.lineTotalOf(line),
       0,
     );
-    // Chặn theo giá trị thật của đơn: chỉ `Math.max(0, …)` thì tổng không âm nhưng thu ngân vẫn chốt được cả giỏ với giá 0đ.
+    // Chặn đơn có tổng bằng 0 do giảm giá.
     const orderDiscount =
       discountType === 'ORDER'
         ? Math.min(Math.max(0, discountValue), afterLineDiscounts)

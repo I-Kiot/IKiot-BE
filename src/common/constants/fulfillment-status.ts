@@ -1,4 +1,4 @@
-/** Đóng gói tại địa điểm xuất hàng. PACKED (sau khi xác nhận hàng nguyên vẹn) khoá hàng khỏi kệ qua `inventories.locked_stock`; hàng chỉ rời `stock` khi đơn chuyển SHIPPING. HANDED_OVER chỉ ghi nhận bàn giao, không đổi kho. */
+/** Trạng thái đóng gói: PACKED khoá hàng khỏi kệ, hàng chỉ rời kho khi đơn SHIPPING. */
 export const FulfillmentStatus = {
   PENDING: 'PENDING',
   PICKING: 'PICKING',

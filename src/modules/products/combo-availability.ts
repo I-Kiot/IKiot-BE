@@ -4,15 +4,12 @@ import type { ComboLeaf } from '../orders/combo-expansion';
 /** Combo chỉ gồm dịch vụ không trừ kho nên không bao giờ hết; vẫn là số hữu hạn vì POS so với `> 0`. */
 export const SERVICE_ONLY_COMBO_SETS = 9999;
 
-/** Hàng trên kệ là phần được bán. `lockedStock` đã đóng gói cho đơn nên không bán; `deductStock` trừ đúng phép này. */
+/** Số bán được trên kệ: `stock - lockedStock`. */
 export function shelfOf(row: { stock: number; lockedStock: number }): number {
   return Math.max(0, row.stock - row.lockedStock);
 }
 
-/**
- * Số bộ combo đủ hàng theo kệ: món hết trước quyết định cả combo. `leaves` đã phẳng (`flattenCombo`),
- * SERVICE không có gì để hết nên bỏ qua.
- */
+/** Số bộ combo đủ hàng theo kệ, món hết trước quyết định. */
 export function comboSetsAvailable(
   leaves: readonly ComboLeaf[],
   shelf: (itemId: string) => number,

@@ -12,7 +12,7 @@ function tsFilesUnder(dir: string): string[] {
   });
 }
 
-/** Đọc source thay vì gọi hàm: lịch @Cron là đối số decorator, nên thiếu múi giờ chỉ lộ ra trên máy ở múi giờ khác. */
+/** Đọc source để chắc mọi @Cron đều ghi múi giờ. */
 describe('cron schedules', () => {
   const sources = tsFilesUnder(SRC)
     .map((path) => ({ path, text: readFileSync(path, 'utf8') }))

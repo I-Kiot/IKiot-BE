@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { OrderLineType } from '../../common/constants/order-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Độ lồng tối đa của combo. Đủ cho "phòng ngủ = bộ giường + bộ tủ", đủ nông để lỗi trong danh mục bị bắt thay vì bị duyệt qua. */
+/** Độ lồng tối đa của combo. */
 export const MAX_COMBO_DEPTH = 5;
 
 export interface ComboItem {
@@ -27,9 +27,7 @@ export interface ComboLeaf {
 const invalid = (message: string) =>
   new BadRequestException({ code: ErrorCode.ORDER_COMBO_INVALID, message });
 
-/**
- * Mở combo xuống các lá (PRODUCT, SERVICE), nhân số lượng qua từng tầng, để đơn chỉ mang lá. Cùng một lá qua nhiều đường thì gộp một dòng. Combo rỗng, tự chứa hoặc lồng quá `MAX_COMBO_DEPTH` đều bị từ chối.
- */
+/** Mở combo xuống các lá, nhân số lượng qua từng tầng và gộp lá trùng. */
 export function flattenCombo(
   comboId: string,
   childrenOf: ReadonlyMap<string, readonly ComboEdge[]>,

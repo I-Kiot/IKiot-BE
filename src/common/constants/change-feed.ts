@@ -1,13 +1,10 @@
-/**
- * Hợp đồng của feed thay đổi thời gian thực (`entity:changed`). Chỉ thêm, không đổi tên (như `ErrorCode`): FE đối chiếu bằng chuỗi.
- * Được phản chiếu thủ công ở FE `src/types/change-feed.ts` - sửa file này thì sửa cả file kia.
- */
+/** Hợp đồng feed realtime `entity:changed`; chỉ thêm, không đổi tên, sửa kèm FE `src/types/change-feed.ts`. */
 export const ENTITY_CHANGED_EVENT = 'entity:changed';
 
-/** Header FE gửi kèm mỗi request để server không phát lại sự kiện cho chính tab đã gây ra thay đổi. FE gửi `X-Socket-Id`; Express hạ về chữ thường. */
+/** Header chứa socket id của tab gây thay đổi, để không phát lại cho chính tab đó. */
 export const SOCKET_ID_HEADER = 'x-socket-id';
 
-/** Bảng dữ liệu mà một sự kiện nói là "đã đổi": màn hình nào đang hiện bảng nào thì đăng ký theo bảng đó. */
+/** Bảng dữ liệu mà sự kiện báo đã đổi, màn hình đăng ký theo bảng. */
 export const ChangeResource = {
   ORDERS: 'orders',
   FULFILLMENTS: 'fulfillments',

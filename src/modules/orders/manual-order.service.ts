@@ -69,16 +69,14 @@ export interface ResolvedDeposit {
   method: string;
 }
 
-/** `itemType` của ProductItem dùng chung từ vựng với loại dòng bán. `COMBO_COMPONENT` không bao giờ do client gửi, chỉ server thêm dưới dòng COMBO. */
+/** Loại dòng bán; COMBO_COMPONENT chỉ server thêm. */
 const SELLABLE_LINE_TYPES: readonly string[] = [
   OrderLineType.PRODUCT,
   OrderLineType.COMBO,
   OrderLineType.SERVICE,
 ];
 
-/**
- * Cọc của đơn tay: PERCENT tính trên tổng và làm tròn tới đồng, AMOUNT lấy đúng số nhập; 0 là không cọc. Cọc lớn hơn giá trị đơn bị từ chối chứ không cắt xuống, vì khách đã đưa đúng số đó. `orders_deposit_valid` ràng buộc cùng giới hạn trong SQL.
- */
+/** Tính cọc của đơn tay: theo % hoặc số tiền, không được vượt giá trị đơn. */
 export function resolveDeposit(
   deposit: { type: string; value: number; method: string } | undefined,
   grandTotal: number,
@@ -108,7 +106,7 @@ export function resolveDeposit(
   return { amount, percent, method: deposit.method };
 }
 
-/** `POST /orders` (A-2): đơn tay nhân viên nhập cho khách đặt qua online hay điện thoại. Sinh ra ở CONFIRMED có người phụ trách, không giữ kho và không bị từ chối vì thiếu hàng; thiếu hàng chỉ chặn ở bước đóng gói (C-1). Bán tại quầy là `OrderService.createPosSale`. */
+/** Tạo đơn tay (`POST /orders`) ở CONFIRMED, không giữ kho. */
 @Injectable()
 export class ManualOrderService {
   constructor(
@@ -188,7 +186,7 @@ export class ManualOrderService {
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
 
-    // Tạo khách trước transaction vì CustomerService giữ dãy mã và quy tắc một số điện thoại một khách. Mọi bước có thể từ chối đơn đã chạy xong, nên khách thừa chỉ còn lại khi DB lỗi, và vẫn là khách thật.
+    // Tạo khách trước transaction.
     const typedInCustomerId =
       !dto.customerId && dto.customer
         ? await this.customers.findOrCreateForOrder(tenantId, dto.customer)
@@ -229,7 +227,7 @@ export class ManualOrderService {
           discountValue,
           depositAmount: deposit?.amount ?? null,
           depositPercent: deposit?.percent ?? null,
-          // paymentStatus để mặc định UNPAID: cọc ghi bên dưới rồi `syncOrderPaymentStatus` suy ra trạng thái từ khoản thật.
+          // Trạng thái thanh toán suy ra từ các khoản sau khi ghi cọc.
           recipientName: dto.recipientName,
           recipientPhone: dto.recipientPhone,
           deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
@@ -331,10 +329,7 @@ export class ManualOrderService {
     }
   }
 
-  /**
-   * Người phụ trách phải đăng nhập được vào shop và làm việc tại địa điểm bán của đơn: phạm vi xem đơn theo địa điểm, nên nhân viên nơi khác được giao cũng không thấy đơn.
-   * Chủ shop xem được mọi nơi nên không bị giới hạn. Dùng chung với route sửa đơn (A-8).
-   */
+  /** Kiểm người phụ trách làm việc tại địa điểm bán của đơn. */
   async assertAssignee(tenantId: string, assigneeId: string, placeId: string) {
     const assignee = await this.prisma.user.findFirst({
       where: {
@@ -359,7 +354,7 @@ export class ManualOrderService {
     }
   }
 
-  /** Mọi người `assertAssignee` nhận cho nơi bán này, cho ô chọn người phụ trách. Cùng điều kiện, nên chọn trong danh sách thì không bị từ chối. */
+  /** Danh sách người nhận được đơn tại nơi bán này. */
   async listAssignableAt(tenantId: string, placeId: string) {
     const people = await this.prisma.user.findMany({
       where: {
@@ -382,10 +377,7 @@ export class ManualOrderService {
     return people.filter((person) => worksAt(person, placeId));
   }
 
-  /**
-   * Nơi đơn bán và lấy hàng được: chi nhánh và kho còn hoạt động. Hàng hỏng là lô riêng nên không cần loại địa điểm nào. Route riêng vì nhân viên bán hàng chỉ có `read_own` trên chi nhánh / kho,
-   * nên danh sách địa điểm thường trả rỗng với họ. Chỉ trả tên và loại. Cùng quy tắc với `assertSourceLocations`.
-   */
+  /** Địa điểm bán và lấy hàng được (chi nhánh, kho còn hoạt động). */
   listSourceLocations(tenantId: string) {
     return this.prisma.location.findMany({
       where: { tenantId, status: LocationStatus.ACTIVE },
@@ -399,7 +391,7 @@ export class ManualOrderService {
     });
   }
 
-  /** Mọi kho xuất trên dòng phải là kho còn hoạt động của tenant. Hàng hỏng không bao giờ giao vì `drawLots` chỉ rút lô bán được. */
+  /** Kiểm mọi kho xuất trên dòng còn hoạt động và thuộc tenant. */
   async assertSourceLocations(
     tenantId: string,
     items: readonly { sourceLocationId?: string }[],

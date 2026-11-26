@@ -1,4 +1,4 @@
-/** Đơn hoàn hàng (OrderReturn), tạo tay cho mọi kênh. Hàng đổi kho khi được kiểm tra, và kiểm tra cũng hoàn tất đơn. Nhập lại hay ghi nhận hỏng là theo từng dòng (`condition`), không phải trạng thái. */
+/** Trạng thái đơn hoàn hàng; kiểm hàng xong là hoàn tất. */
 export const OrderReturnStatus = {
   REQUESTED: 'REQUESTED',
   /** Hàng đã về shop và đang được kiểm. */
@@ -24,7 +24,7 @@ export type OrderReturnReason =
 export const ORDER_RETURN_REASONS: readonly string[] =
   Object.values(OrderReturnReason);
 
-/** Đặt theo từng dòng khi kiểm tra. Cả hai về cùng địa điểm (mặc định nơi xuất hàng): GOOD vào lô bán được, DAMAGED thành lô hỏng (`InventoryLot.isSellable = false`) ngoài `stock`. */
+/** Tình trạng từng dòng hàng hoàn: GOOD vào lô bán được, DAMAGED thành lô hỏng. */
 export const ReturnCondition = {
   GOOD: 'GOOD',
   DAMAGED: 'DAMAGED',

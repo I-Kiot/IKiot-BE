@@ -1,7 +1,4 @@
-/**
- * Luật phân bổ lô cho InventoryService, để thuần nên test không cần DB. Service nạp (và khoá) dòng, hỏi các hàm
- * này cần làm gì rồi ghi kết quả, không theo chiều ngược lại.
- */
+/** Luật phân bổ lô, dạng hàm thuần. */
 
 export interface LotSlice {
   lotId: string;
@@ -16,10 +13,7 @@ export interface DrawableLot {
   orderItemId: string | null;
 }
 
-/**
- * Lô nào bị trừ cho `quantity`: lô làm riêng cho `forOrderItemId` trước, rồi lô dùng chung cũ nhất (FIFO theo `receivedAt`).
- * Lô làm cho dòng khác không bao giờ bị chạm. `null` khi đủ điều kiện không đủ số lượng (lỗi dữ liệu: tồn đã báo có).
- */
+/** Chọn lô bị trừ: lô làm riêng trước, rồi lô dùng chung cũ nhất. */
 export function planDraw(
   lots: readonly DrawableLot[],
   quantity: number,
@@ -56,10 +50,7 @@ export interface DrawnLot {
   returned: number;
 }
 
-/**
- * Chia `quantity` đơn vị trả về vào các lô chứng từ đó đã lấy, để mỗi đơn vị về đúng lô đã rời.
- * `null` nếu trả nhiều hơn đã xuất.
- */
+/** Chia hàng trả về vào các lô chứng từ đã lấy. */
 export function planReturn(
   lots: readonly DrawnLot[],
   quantity: number,
@@ -85,7 +76,7 @@ export function runningBalances(
   return signedQuantities.map((quantity) => (balance += quantity));
 }
 
-/** Giá vốn bình quân các đơn vị dòng đã lấy: Σ(-quantity × unitCost) / Σ(-quantity) trên dòng SALE và SALE_REVERSAL. `null` khi không còn gì đã lấy. */
+/** Giá vốn bình quân các đơn vị dòng đã lấy. */
 export function averageUnitCost(
   rows: readonly { quantity: number; unitCost: number }[],
 ): number | null {

@@ -26,7 +26,7 @@ const DEAD_TOKEN_CODES = new Set([
   'messaging/invalid-registration-token',
 ]);
 
-/** Lỗi có nghĩa là *token* đã chết không? FCM v1 trả `invalid-argument` chung cho token sai định dạng, payload sai cũng trả mã này; nên chỉ xoá khi thông báo nêu đích danh token. */
+/** Lỗi có phải do token đã chết không. */
 function isDeadTokenError(error?: {
   code?: string;
   message?: string;
@@ -39,7 +39,7 @@ function isDeadTokenError(error?: {
   );
 }
 
-/** Gửi push cho người dùng không mở app - là nhánh thứ ba của `notify()`, và như hai nhánh kia, không bao giờ throw. */
+/** Gửi push cho người không mở app, không bao giờ ném lỗi. */
 @Injectable()
 export class PushService {
   private readonly logger = new Logger(PushService.name);
@@ -49,7 +49,7 @@ export class PushService {
     private readonly firebase: FirebaseService,
   ) {}
 
-  /** Gửi một thông báo tới mọi thiết bị đã đăng ký của bất kỳ `userIds` nào; user chưa có thiết bị thì không đóng góp token nào. */
+  /** Gửi thông báo tới mọi thiết bị đã đăng ký của các user. */
   async sendToUsers(
     userIds: (string | null | undefined)[],
     payload: PushPayload,
@@ -57,7 +57,7 @@ export class PushService {
     try {
       const messaging = this.firebase.messaging();
       if (!messaging) {
-        // Dùng debug, không phải warn: trên môi trường cố tình không cấu hình Firebase, warn sẽ bắn cho mọi thông báo.
+        // Log debug thay vì warn khi Firebase chưa cấu hình.
         this.logger.debug('Skipped: Firebase Admin is not configured');
         return { sent: 0, failed: 0 };
       }
@@ -120,7 +120,7 @@ export class PushService {
   }
 }
 
-/** Trong `tokens`, những token mà response nói là chết vĩnh viễn - export để quyết định này unit test được mà không cần Firebase. */
+/** Lọc các token đã chết vĩnh viễn từ response. */
 export function deadTokensIn(
   tokens: string[],
   responses: Pick<SendResponse, 'success' | 'error'>[],

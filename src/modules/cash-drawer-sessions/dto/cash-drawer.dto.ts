@@ -17,9 +17,9 @@ import {
   ShiftLogType,
 } from '../cash-drawer.constants';
 
-/** Số tiền ở đây là đồng nguyên, không có đơn vị nhỏ hơn đang lưu hành, nên kiểm đếm két có số lẻ là lỗi nhập. */
+/** Số tiền là đồng nguyên. */
 export class OpenCashDrawerDto {
-  /** Không bắt buộc với người được gán chi nhánh (chỉ có một chi nhánh khả dĩ); bắt buộc với owner vì owner không gắn chi nhánh nào. */
+  /** Chi nhánh, bắt buộc với chủ shop. */
   @IsOptional()
   @IsUUID()
   branchId?: string;
@@ -46,8 +46,8 @@ export class SubmitShiftLogDto {
   @Min(0, { message: 'Số tiền không được âm' })
   amount: number;
 
-  /** Chỉ có ở `END`, và chỉ khi bàn giao: két vẫn mở và thành của người được giao. Bị từ chối ở `START` vì không có nghĩa. */
-  // Kiểm "không có ở START" trong service thay vì thêm @ValidateIf thứ hai, vì xếp hai decorator trên cùng một property làm rule thắng phụ thuộc thứ tự decorator.
+  /** Người nhận bàn giao, chỉ có ở END. */
+  // Kiểm trong service thay vì thêm decorator.
   @IsOptional()
   @IsUUID()
   nextStaffId?: string;
@@ -102,7 +102,7 @@ export class CurrentCashDrawerDto {
   branchId?: string;
 }
 
-/** `GET /cash-drawer-sessions/reconciliation` - báo cáo chênh lệch qua nhiều ngày, tách khỏi `QueryCashDrawerDto` vì nó so từng phiên với sổ quỹ thay vì liệt kê; vì vậy có giới hạn khoảng ngày và `varianceOnly`. */
+/** Query báo cáo chênh lệch két qua nhiều ngày. */
 export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -121,7 +121,7 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsDateString()
   toDate?: string;
 
-  /** Chỉ các ngày không khớp. Phiên còn mở chưa có tổng đếm nên không có chênh lệch; nó bị loại chứ không được báo là khớp. */
+  /** Chỉ các ngày không khớp. */
   @BooleanQuery()
   varianceOnly?: boolean;
 }

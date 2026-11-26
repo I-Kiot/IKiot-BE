@@ -1,10 +1,6 @@
 import * as ExcelJS from 'exceljs';
 
-/**
- * Khung chung của mọi file báo cáo xuất ra: bảng thống kê giống hệt bảng trên trang web (chốt 2026-11-23, bỏ khung sổ TT99).
- * Mỗi bảng: tên báo cáo + dòng kỳ/địa điểm, đầu bảng tô nền và cố định khi cuộn, các dòng số liệu, dòng tổng in đậm.
- * Không có đầu trang đơn vị, số hiệu mẫu, dòng ký hiệu cột hay ô chữ ký.
- */
+/** Khung chung của file báo cáo: tiêu đề, đầu bảng, dòng số liệu, dòng tổng. */
 
 export const REPORT_FONT = 'Arial';
 const MONEY_FORMAT = '#,##0;-#,##0';
@@ -114,7 +110,7 @@ export class ReportSheet {
     this.row += rows;
   }
 
-  /** Đầu bảng: một dòng tên cột, tô nền. Bảng đầu tiên của sheet được cố định đầu bảng khi cuộn và lặp khi in. */
+  /** Đầu bảng, cố định khi cuộn. */
   tableHeader(headers: string[], numeric: number[] = []) {
     headers.forEach((header, i) => {
       const cell = this.sheet.getCell(this.row, i + 1);
@@ -136,10 +132,7 @@ export class ReportSheet {
     this.row += 1;
   }
 
-  /**
-   * Một dòng số liệu. Số căn phải, định dạng nghìn; `percent` là chỉ số các cột tỷ lệ (giá trị là phân số, in dạng 12,3%).
-   * `strong` là dòng tổng / dòng in đậm giữa bảng. `null` là ô trống.
-   */
+  /** Một dòng số liệu. */
   dataRow(
     values: CellValue[],
     style: { strong?: boolean; percent?: number[]; center?: number[] } = {},

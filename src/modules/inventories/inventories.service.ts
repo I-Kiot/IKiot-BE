@@ -62,7 +62,7 @@ export interface LedgerRef {
   orderItemId?: string | null;
 }
 
-/** Một dòng không đủ hàng trên kệ để khoá – gửi về client trong `errors` để hiện từng mặt hàng thiếu bao nhiêu. */
+/** Một dòng không đủ hàng để khoá. */
 export interface ShortStockLine {
   /** SKU (hoặc tên) – chính là `label` mà `packOrder` truyền vào cho dòng đó. */
   label: string;
@@ -95,7 +95,7 @@ type InventoryRow = Prisma.InventoryGetPayload<{
   include: typeof INVENTORY_INCLUDE;
 }>;
 
-/** Port từ InventoryService, phục vụ bốn route `/inventory` và các primitive tồn mà Order / StockMovement gọi. Đặt chung vì "chuyện gì xảy ra với tồn và khi nào cảnh báo" là một luật. */
+/** Service tồn kho: route `/inventory` và các thao tác tồn dùng chung. */
 @Injectable()
 export class InventoryService {
   private readonly logger = new Logger(InventoryService.name);
@@ -105,10 +105,7 @@ export class InventoryService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /**
-   * `location` đã là `{ id, type, name }` chung (LOCATION_SELECT), nên bỏ `locationId`. `stock` là tổng hàng bán được,
-   * `actualStock` là phần còn trên kệ, `damagedQuantity` là hàng hỏng tại đó (ngoài `stock`); hai số sau tính lúc đọc, không lưu.
-   */
+  /** Dòng tồn trả về: tồn bán được, trên kệ, hàng hỏng. */
   private toResponse(row: InventoryRow, damagedQuantity = 0) {
     const { locationId, ...rest } = row;
     return { ...rest, actualStock: actualStockOf(row), damagedQuantity };
@@ -134,8 +131,7 @@ export class InventoryService {
     };
 
     if (query.isLowStock) {
-      // Dòng thấp khi kệ (stock − locked_stock) ≤ ngưỡng riêng. minStock = 0 tắt cảnh báo nên loại ra, không khớp tất cả.
-      // Prisma không so cột với biểu thức, nên id lấy từ SQL, các điều kiện khác giữ ở đây.
+      // Dòng tồn thấp: kệ ≤ ngưỡng, bỏ ngưỡng 0.
       const low = await this.prisma.$queryRaw<{ id: string }[]>`
         SELECT "id" FROM "inventories"
         WHERE "tenant_id" = ${tenantId}
@@ -188,7 +184,7 @@ export class InventoryService {
     );
   }
 
-  /** Always scoped by tenant - a row in another tenant must read as nonexistent. */
+  /** Luôn lọc theo tenant. */
   private async findRow(tenantId: string, id: string): Promise<InventoryRow> {
     const row = await this.prisma.inventory.findFirst({
       where: { id, tenantId },
@@ -202,7 +198,7 @@ export class InventoryService {
     return row;
   }
 
-  /** Set the low-stock threshold for one line; `0` switches the alert off for that item at that location. */
+  /** Đặt ngưỡng tồn thấp; 0 là tắt cảnh báo. */
   async updateMinStock(tenantId: string, id: string, minStock: number) {
     await this.findRow(tenantId, id);
     const row = await this.prisma.inventory.update({
@@ -213,10 +209,7 @@ export class InventoryService {
     return (await this.withDamaged(tenantId, [row]))[0];
   }
 
-  /**
-   * Bắt đầu nhập một phiên bản tại địa điểm, số 0. Dùng để khai báo "địa điểm này sẽ có hàng này" trước khi hàng về
-   * (VD đặt ngưỡng `minStock` cho hàng đang đặt). Phiếu nhập vốn cũng tạo dòng, đây chỉ là đầu mối.
-   */
+  /** Khai báo phiên bản tại địa điểm với tồn 0. */
   async addProductToLocation(tenantId: string, dto: AddProductToLocationDto) {
     await resolveLocations(this.prisma, tenantId, [dto.locationId]);
 
@@ -257,7 +250,7 @@ export class InventoryService {
     return this.toResponse(row);
   }
 
-  /** Stop stocking a variant at a location. Refuses while any stock is left there, damaged goods included. */
+  /** Bỏ phiên bản khỏi địa điểm, từ chối khi còn hàng. */
   async removeProductFromLocation(tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     if (existing.stock > 0) {
@@ -280,14 +273,11 @@ export class InventoryService {
     }
 
     await this.prisma.inventory.delete({ where: { id } });
-    // `{ success: true }` is what iKiotMS-BE answered here and what the frontend checks.
+    // Trả `{ success: true }`.
     return { success: true };
   }
 
-  /**
-   * Ba route hàng hỏng trên một dòng tồn (`/inventory/:id/...`). Nhân viên chỉ làm ở nơi mình làm việc (`canActAt`).
-   * Chứng từ trong sổ kho là chính dòng inventory (`INVENTORY`, id dòng), kèm người làm và lý do.
-   */
+  /** Đánh dấu hỏng, sửa xong, huỷ hàng hỏng trên một dòng tồn. */
   async changeDamaged(
     user: AuthUser,
     id: string,
@@ -332,22 +322,9 @@ export class InventoryService {
     )[0];
   }
 
-  // ─── Primitive tồn dùng chung cho Order / StockMovement / Fulfillment / OrderReturn ──
-  //
-  // Luật chung (schema, docs/order-flow.md):
-  //   - Hàng đã đóng gói cho đơn bị khoá (2026-10-04): `lockStock` khi đóng gói (CONFIRMED → PACKED),
-  //     `shipLockedStock` khi chuyển SHIPPING (bước duy nhất hạ `stock`, có dòng sổ cái), `releaseLockedStock`
-  //     nếu huỷ giữa chừng. Kệ = `stock − locked_stock`; `deductStock` và `lockStock` chỉ lấy từ kệ, không
-  //     lấy hàng đã đóng cho người khác. Fulfillment ghi ai đang giữ khoá, không có bảng đặt trước.
-  //   - Tồn nằm trong lô: Σ remainingQuantity của lô bán được (isSellable) = inventories.stock, luôn đúng. Lô hỏng
-  //     (isSellable = false, 2026-11-26) nằm ngoài stock; không lô nào đổi cờ, đánh dấu hỏng / sửa xong đều tách lô con. Mỗi thay đổi ghi dòng sổ cái
-  //     (InventoryTransaction), một dòng cho mỗi lô bị chạm.
-  //   - Mọi ghi dùng transaction của người gọi (rollback thì tồn không đổi). Điều kiện chặn thao tác bất khả thi
-  //     nằm trong chính UPDATE đó, không đọc rồi mới ghi.
-  //   - Luôn ghi dòng inventory trước lô, để hai thao tác đồng thời trên một SKU ở một địa điểm xếp hàng theo khoá
-  //     của dòng đó và thấy thay đổi lô của nhau.
+  // ─── Thao tác tồn dùng chung: khoá khi đóng gói, trừ khi xuất, tồn = tổng lô bán được ───
 
-  /** Hàng về lần đầu (nhập, thừa kiểm kê): một lô mới, tồn và dòng sổ cái nhập. Không truyền `unitCost` thì lấy giá vốn hiện tại. */
+  /** Hàng về lần đầu: mở lô mới, tăng tồn, ghi sổ. */
   async openLot(
     tx: Prisma.TransactionClient,
     args: StockKey & {
@@ -357,9 +334,9 @@ export class InventoryService {
       supplierId?: string | null;
       importItemId?: string | null;
       productionRequestItemId?: string | null;
-      /** Only for a piece made for one custom order line - no other line may ever draw it. */
+      /** Lô làm riêng cho một dòng đơn. */
       orderItemId?: string | null;
-      /** FIFO key. Defaults to now. */
+      /** Mốc FIFO, mặc định là bây giờ. */
       receivedAt?: Date;
       /** `false` = lô hỏng (hàng lỗi xưởng): nằm tại địa điểm nhưng không cộng vào `stock`. Mặc định `true`. */
       isSellable?: boolean;
@@ -407,12 +384,12 @@ export class InventoryService {
     return { inventory, lotId: lot.id };
   }
 
-  /** Take stock off a shelf - a till sale, a transfer leaving, a stocktake shortage. (A packed order leaves through `shipLockedStock` instead.) Refuses to take more than is on the shelf (`stock - locked_stock >= quantity`, checked inside the UPDATE, because reading the level and then decrementing lets two tills both sell the last item) - goods packed for an order are not for sale. Then draws the lots FIFO. With `ledger.orderItemId` it draws that line's own custom lot first and refreshes the line's cost of goods (SALE). */
+  /** Trừ hàng trên kệ (bán, chuyển đi, kiểm thiếu) rồi rút lô FIFO. */
   async deductStock(
     tx: Prisma.TransactionClient,
     args: StockKey & {
       quantity: number;
-      /** Shown in the error - an id tells the cashier nothing. */
+      /** Tên hiển thị trong lỗi. */
       label: string;
       ledger: LedgerRef;
     },
@@ -441,18 +418,13 @@ export class InventoryService {
     return inventory;
   }
 
-  /**
-   * Khoá hàng trên kệ cho đơn đang đóng gói (CONFIRMED → PACKED). Thử mọi dòng rồi báo chung các dòng thiếu.
-   * Điều kiện `stock - locked_stock >= quantity` nằm trong UPDATE, nên hai đơn không cùng khoá món cuối.
-   * Không đổi tồn, không ghi sổ cái (hàng chưa rời kho). Trả từng dòng sau khi khoá kèm số lượng khoá, để gọi
-   * `lowStockCrossing(row, -quantity)`: đóng gói cũng làm kệ vơi như bán. Cặp đi chung để khỏi ghép theo index.
-   */
+  /** Khoá hàng trên kệ cho đơn đang đóng gói; báo chung các dòng thiếu. */
   async lockStock(
     tx: Prisma.TransactionClient,
     lines: (StockKey & { quantity: number; label: string })[],
   ): Promise<LockedLine[]> {
     const locked: LockedLine[] = [];
-    // Structured, not a sentence: the client renders each short line's numbers itself.
+    // Lỗi có cấu trúc để client tự hiển thị.
     const short: ShortStockLine[] = [];
     for (const line of lines) {
       this.assertPositive(line.quantity);
@@ -479,7 +451,7 @@ export class InventoryService {
       });
     }
     if (short.length > 0) {
-      // `message` is English for the logs; `errors` is what the client reads (it builds the Vietnamese).
+      // `message` cho log, `errors` cho client.
       throw new BadRequestException({
         code: ErrorCode.INSUFFICIENT_STOCK,
         message: `Not enough stock on the shelf to pack - ${short
@@ -493,7 +465,7 @@ export class InventoryService {
     return locked;
   }
 
-  /** Đóng gói rời kho (PICKED_UP → SHIPPING): `stock` và `locked_stock` cùng giảm nên kệ không đổi; sau đó trừ lô như `deductStock`. Không giao quá số đang khoá. */
+  /** Xuất hàng đã khoá: giảm cả `stock` và `locked_stock`, rồi rút lô. */
   async shipLockedStock(
     tx: Prisma.TransactionClient,
     args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
@@ -523,7 +495,7 @@ export class InventoryService {
     return inventory;
   }
 
-  /** Trả khoá về kệ khi huỷ đơn đã đóng gói, hoặc giảm số lượng trước khi giao. Không đổi `stock`, không ghi sổ cái vì hàng chưa đi đâu. Từ chối như `shipLockedStock`. */
+  /** Nhả hàng khoá về kệ. */
   async releaseLockedStock(
     tx: Prisma.TransactionClient,
     args: StockKey & { quantity: number; label: string },
@@ -546,14 +518,7 @@ export class InventoryService {
     return tx.inventory.findFirstOrThrow({ where: this.keyWhere(args) });
   }
 
-  /**
-   * Hàng trả về theo chứng từ đã xuất, về đúng các lô đã rời: phiếu chuyển đã nhận (`drawnBy` là phiếu,
-   * `toLocationId` là đích; mỗi đơn vị thành lô con giữ nguồn và giá vốn), phiếu chuyển huỷ giữa đường,
-   * đơn đã đóng gói huỷ trước khi bàn giao (cùng địa điểm: về lô gốc), hoặc khách trả (`drawnBy` là dòng đơn,
-   * có thể về địa điểm hàng hỏng). Từ chối nếu trả nhiều hơn đã xuất trừ phần đã trả.
-   * `ifNeverDrawn` cho chứng từ cũ hơn lô (2026-10-02): không có dòng sổ cái để truy, nên hàng về thành lô mới
-   * của nguồn. Bỏ trống nếu không thể xảy ra.
-   */
+  /** Trả hàng về đúng các lô đã rời theo chứng từ đã xuất. */
   async returnDrawn(
     tx: Prisma.TransactionClient,
     args: {
@@ -566,7 +531,7 @@ export class InventoryService {
         | { orderItemId: string };
       ledger: LedgerRef;
       ifNeverDrawn?: { sourceType: LotSourceType };
-      /** `false` = hàng về bị hỏng (RETURN_DAMAGED): luôn thành lô con hỏng, không cộng `stock`, không bao giờ gộp vào lô cha. */
+      /** `false` là hàng về bị hỏng, thành lô hỏng. */
       isSellable?: boolean;
     },
   ): Promise<Inventory> {
@@ -587,7 +552,7 @@ export class InventoryService {
             referenceId: args.drawnBy.referenceId,
           }),
     };
-    // Rows a return writes carry the order line too, so the next return sees them.
+    // Ghi kèm dòng đơn cho lần trả sau.
     const ledger: LedgerRef =
       'orderItemId' in args.drawnBy
         ? { ...args.ledger, orderItemId: args.drawnBy.orderItemId }
@@ -627,7 +592,7 @@ export class InventoryService {
       drawn.set(row.lotId, entry);
     }
     for (const row of inbound) {
-      // Back into the lot itself (same location) or into a lot split off from it.
+      // Về lô gốc hoặc lô con tách ra.
       const origin = drawn.has(row.lotId) ? row.lotId : row.lot.parentLotId;
       const entry = origin ? drawn.get(origin) : undefined;
       if (entry) entry.returned += row.quantity;
@@ -665,7 +630,7 @@ export class InventoryService {
     for (const [index, slice] of slices.entries()) {
       const origin = lotById.get(slice.lotId)!;
       let lotId = origin.id;
-      // Cộng thẳng vào lô gốc chỉ khi cùng địa điểm VÀ cùng loại: hàng hỏng về không bao giờ vào lô bán được.
+      // Chỉ cộng vào lô gốc khi cùng địa điểm và cùng loại.
       if (
         origin.locationId === args.toLocationId &&
         origin.isSellable === sellable
@@ -714,12 +679,7 @@ export class InventoryService {
 
   // ─── Hàng hỏng (2026-11-26): lô `isSellable = false` tại chính địa điểm, ngoài `stock` ─────────────
 
-  /**
-   * Phát hiện hỏng trên kệ: rút `quantity` từ kệ như `deductStock` (không lấy hàng đã đóng gói), rồi tách thành lô con
-   * hỏng cùng địa điểm. Không có `orderItemId`: chỉ hàng dùng chung. Có: đúng chiếc may riêng cho dòng đơn đó; lô hỏng
-   * giữ `orderItemId`, nên sửa xong vẫn về đúng đơn đó, còn trong lúc hỏng đơn đó hiện thiếu hàng ở danh sách cần sản xuất.
-   * Dòng sổ cái không mang `orderItemId`: chỉ SALE / RETURN_* mới được tính là hàng của dòng đơn đã đi.
-   */
+  /** Đánh dấu hàng trên kệ bị hỏng: rút khỏi kệ, tách thành lô hỏng. */
   async markDamaged(
     tx: Prisma.TransactionClient,
     args: StockKey & {
@@ -766,14 +726,14 @@ export class InventoryService {
     return inventory;
   }
 
-  /** Hàng hỏng sửa xong: rút lô hỏng FIFO, tách thành lô con bán được (giữ giá vốn, ngày nhập), cộng lại `stock`. */
+  /** Hàng hỏng sửa xong: tách thành lô bán được, cộng lại tồn. */
   async repairDamaged(
     tx: Prisma.TransactionClient,
     args: StockKey & { quantity: number; label: string; ledger: LedgerRef },
   ): Promise<Inventory> {
     this.assertPositive(args.quantity);
     const ledger = { ...args.ledger, orderItemId: null };
-    // Khoá dòng inventory trước lô; thiếu hàng hỏng thì drawLots ném và cả transaction (kể cả phần tăng này) rollback.
+    // Khoá dòng tồn trước lô.
     const inventory = await this.incrementStock(tx, args, args.quantity);
     const before = inventory.stock - args.quantity;
     const slices = await this.drawLots(
@@ -825,7 +785,7 @@ export class InventoryService {
     return inventory;
   }
 
-  /** Số hàng hỏng còn lại theo (địa điểm, SKU), cộng từ lô lúc đọc. Khoá map: `${locationId}:${productItemId}`. */
+  /** Số hàng hỏng theo (địa điểm, SKU). */
   async damagedQuantities(
     reader: Pick<Prisma.TransactionClient, 'inventoryLot'>,
     tenantId: string,
@@ -852,7 +812,7 @@ export class InventoryService {
     );
   }
 
-  /** Ghi dòng sổ cái. Mọi thay đổi tồn đi qua các primitive trên; ghi trực tiếp chỉ cho dòng không đổi tồn. */
+  /** Ghi dòng sổ kho. */
   async writeLedger(
     tx: Prisma.TransactionClient,
     rows: Prisma.InventoryTransactionCreateManyInput[],
@@ -861,14 +821,9 @@ export class InventoryService {
       await tx.inventoryTransaction.createMany({ data: rows });
   }
 
-  // ─── Primitive internals ────────────────────────────────────────────────────
+  // ─── Nội bộ ───
 
-  /**
-   * Draw `quantity` from the lots after `inventories.stock` has already been lowered to `stockAfter`.
-   * Mặc định chỉ chạm lô bán được: đây là đường duy nhất hàng rời lô, nên bán / đóng gói / chuyển kho / kiểm kê không
-   * thể lấy phải hàng hỏng. `damaged` rút lô hỏng (sửa xong, huỷ): `stock` không đổi, mọi lô hỏng rút được FIFO kể cả
-   * lô may riêng, và thiếu là lỗi người dùng chứ không phải lệch dữ liệu.
-   */
+  /** Rút `quantity` từ các lô; mặc định chỉ lô bán được, `damaged` thì rút lô hỏng. */
   private async drawLots(
     tx: Prisma.TransactionClient,
     key: StockKey,
@@ -878,7 +833,7 @@ export class InventoryService {
     options: {
       /** Rút lô hỏng (sửa xong, huỷ) thay vì lô bán được. */
       damaged?: { label: string };
-      /** Chỉ đúng lô của một dòng đơn (`null` = chỉ lô dùng chung), thiếu là lỗi người dùng. Đánh dấu hỏng dùng. */
+      /** Chỉ rút lô của đúng một dòng đơn. */
       exactly?: { orderItemId: string | null; label: string };
     } = {},
   ): Promise<LotSlice[]> {
@@ -916,7 +871,7 @@ export class InventoryService {
         id: lot.id,
         remainingQuantity: lot.remaining_quantity,
         receivedAt: lot.received_at,
-        // Hàng hỏng không giữ cho dòng đơn nào khi rút: lô nào cũng sửa / huỷ được. `exactly` đã lọc trong SQL.
+        // Hàng hỏng rút được từ mọi lô.
         orderItemId: damaged || exactly ? null : lot.order_item_id,
       })),
       quantity,
@@ -939,7 +894,7 @@ export class InventoryService {
       });
     }
     if (!slices) {
-      // `inventories.stock` covered it, the lots did not: Σ lot.remaining has drifted from stock.
+      // Tổng lô lệch với tồn.
       throw new InternalServerErrorException({
         code: ErrorCode.INVENTORY_LOT_SHORTAGE,
         message: `The lots of ${key.productItemId} at ${key.locationId} hold less than its stock - cannot draw ${quantity}`,
@@ -976,10 +931,7 @@ export class InventoryService {
     return slices;
   }
 
-  /**
-   * Tách các phần vừa rút thành lô con cùng địa điểm, loại `isSellable`, giữ nguồn, giá vốn và ngày nhập của lô cha
-   * (FIFO và giá vốn không đổi qua lần hỏng / sửa). Mỗi lô con một dòng sổ cái dương.
-   */
+  /** Tách phần vừa rút thành lô con cùng địa điểm, giữ nguồn và giá vốn. */
   private async splitInto(
     tx: Prisma.TransactionClient,
     key: StockKey,
@@ -1026,7 +978,7 @@ export class InventoryService {
     await this.writeLedger(tx, rows);
   }
 
-  /** Tăng tồn, tạo dòng nếu địa điểm chưa có món này. Cố ý dùng upsert: đọc rồi tạo thì hai phiếu nhập có thể cùng chèn và một cái chết trên unique index. */
+  /** Tăng tồn, tạo dòng nếu chưa có (upsert). */
   private incrementStock(
     tx: Prisma.TransactionClient,
     key: StockKey,
@@ -1040,7 +992,7 @@ export class InventoryService {
           productItemId: key.productItemId,
         },
       },
-      // Named fields, not `...key`: callers pass their whole argument object as the key.
+      // Ghi trường theo tên.
       create: {
         tenantId: key.tenantId,
         locationId: key.locationId,
@@ -1052,7 +1004,7 @@ export class InventoryService {
     });
   }
 
-  /** `OrderItem.unitCostPrice` = average cost of the units the line actually has out, from its SALE / SALE_REVERSAL rows. */
+  /** Giá vốn bình quân của dòng đơn từ các dòng sổ SALE. */
   private async refreshLineCost(
     tx: Prisma.TransactionClient,
     orderItemId: string,
@@ -1097,7 +1049,7 @@ export class InventoryService {
     }
   }
 
-  /** For an error message only - the guard that refused is the UPDATE, not this read. */
+  /** Đọc để báo lỗi. */
   private async shelfOf(
     tx: Prisma.TransactionClient,
     key: StockKey,
@@ -1141,12 +1093,12 @@ export class InventoryService {
     };
   }
 
-  /** Did this change just push a line through its threshold? The rule itself lives in `low-stock.ts` so it can be tested without a database. */
+  /** Dòng có vừa vượt ngưỡng tồn thấp không. */
   lowStockCrossing(after: Inventory | null, delta: number): Inventory | null {
     return crossedLowStock(after, delta);
   }
 
-  /** Warn whoever manages that location. Call it after the transaction commits - a rolled-back sale must not leave a warning behind - and it never throws, since the sale has already succeeded. */
+  /** Báo quản lý địa điểm sau commit, không ném lỗi. */
   async notifyLowStock(crossings: (Inventory | null)[]): Promise<void> {
     try {
       for (const inventory of crossings.filter(
@@ -1169,7 +1121,7 @@ export class InventoryService {
           referenceId: inventory.id,
           ...InventoryNotificationTemplates.lowStock({
             label: item?.productName ?? item?.sku ?? 'Một mặt hàng',
-            // The shelf, which is what crossed the threshold - not the total.
+            // So theo tồn trên kệ.
             stock: actualStockOf(inventory),
             minStock: inventory.minStock,
           }),

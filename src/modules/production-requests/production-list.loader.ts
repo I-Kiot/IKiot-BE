@@ -8,16 +8,13 @@ import {
 import { OPEN_PRODUCTION_REQUEST_STATUSES } from '../../common/constants/production-request-status';
 import { buildProductionState, type ProductionState } from './production-list';
 
-/**
- * Tải dữ liệu cho `production-list.ts` bằng hàm thường nhận một Prisma reader (không DI), như `computeStockChecks`:
- * `OrderReadService` được dựng trong vài suite e2e chỉ với PrismaModule, nên không thể thêm phụ thuộc vào constructor của nó.
- */
+/** Tải dữ liệu cho danh sách cần sản xuất. */
 export type ProductionListReader = Pick<
   Prisma.TransactionClient,
   'orderItem' | 'productionRequestItem' | 'inventory' | 'inventoryLot'
 >;
 
-/** Dòng cần tải. `locationIds: null` = mọi địa điểm, và chỉ khi đó mới lấy dòng chưa chọn kho nguồn (chúng không thuộc địa điểm nào nhân viên có thể được gắn vào). */
+/** Dòng cần tải; `locationIds` null là mọi địa điểm. */
 export interface ListScope {
   locationIds: string[] | null;
   productItemIds?: string[];
@@ -199,7 +196,7 @@ export async function loadProductionState(
   });
 }
 
-/** Các dòng đúng những cặp (địa điểm, SKU) này, cả chuẩn lẫn tuỳ chỉnh; `coverage` trả nguyên (không lọc theo cặp). */
+/** Các dòng của những cặp (địa điểm, SKU) này. */
 export async function productionStateForPairs(
   reader: ProductionListReader,
   tenantId: string,

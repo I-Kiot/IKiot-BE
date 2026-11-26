@@ -6,7 +6,7 @@ import {
 
 const iso = (at: string) => formatBusinessDate(businessDate(new Date(at)));
 
-// TP.HCM là UTC+7 quanh năm; sai ở đây thì két mở sáng sớm bị gán vào doanh thu hôm trước, và không ai thấy cho tới khi két hụt cả một ca.
+// TP.HCM là UTC+7 quanh năm.
 describe('businessDate', () => {
   it('uses the shop local day, not the UTC day', () => {
     // 17:30 UTC đã là 00:30 sáng hôm sau ở Việt Nam.
@@ -42,7 +42,7 @@ describe('businessDate', () => {
   });
 });
 
-// Nghịch đảo của businessDate, kiểm bằng chính nó thay vì offset viết tay: quan trọng là hai hàm khớp nhau.
+// Kiểm nghịch đảo của businessDate.
 describe('businessDayRange', () => {
   const day = businessDate(new Date('2026-08-26T09:15:00.000Z'));
 
@@ -72,7 +72,7 @@ describe('businessDayRange', () => {
   });
 
   it('survives a daylight-saving transition', () => {
-    // 2026-03-08 là ngày New York đổi giờ tiết kiệm ánh sáng nên ngày đó dài 23 giờ - Việt Nam không có việc này, nhưng hàm là tổng quát.
+    // Ngày New York đổi giờ (23 giờ), để kiểm hàm tổng quát.
     const springForward = new Date(Date.UTC(2026, 2, 8));
     const { start, end } = businessDayRange(springForward, 'America/New_York');
     expect(start.toISOString()).toBe('2026-03-08T05:00:00.000Z');

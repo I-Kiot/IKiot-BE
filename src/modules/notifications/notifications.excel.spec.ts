@@ -8,7 +8,7 @@ const bodyOf = (error: unknown) =>
     message: string;
   };
 
-// Excel sheet "Notifications" - inbox actions (UTC017-UTC024).
+// Sheet Excel "Notifications" - thao tác hộp thư (UTC017-UTC024).
 describe('Excel sheet Notifications - NotificationService', () => {
   let prisma: any;
   let service: NotificationService;
@@ -99,7 +99,7 @@ describe('Excel sheet Notifications - NotificationService', () => {
   });
 });
 
-// Excel sheet "Notifications" - AdminNotificationService (UTC025-UTC040).
+// Sheet Excel "Notifications" - AdminNotificationService (UTC025-UTC040).
 describe('Excel sheet Notifications - AdminNotificationService', () => {
   let prisma: any;
   let email: { sendSystemNotificationEmail: jest.Mock };

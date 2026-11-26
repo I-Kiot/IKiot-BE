@@ -35,10 +35,7 @@ function query<T extends StatsQueryDto>(Dto: new () => T, input: object): T {
   return Object.assign(new Dto(), input);
 }
 
-/**
- * Phase 8 (Postgres thật): thống kê đọc từ sổ doanh thu và sổ thu chi.
- * Kịch bản chính: bán ở tháng 9, trả hàng ở tháng 10 -> tháng 9 giữ nguyên, tháng 10 âm đúng phần trả.
- */
+/** Kiểm thống kê đọc từ sổ doanh thu: bán tháng 9, trả tháng 10 (Postgres thật). */
 describe('stats on the sales journal + reconciliation reports', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -259,7 +256,7 @@ describe('stats on the sales journal + reconciliation reports', () => {
           },
         },
       });
-      // Đơn COMPLETED cũ không có bút toán (trước migration sổ): báo cáo không được lỗi mà phải nói rõ phần thiếu.
+      // Báo số đơn cũ chưa có bút toán.
       await orderRow({
         status: OrderStatus.COMPLETED,
         completedAt: new Date('2026-09-12T05:00:00Z'),

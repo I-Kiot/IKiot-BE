@@ -59,7 +59,7 @@ function hasBankInfo(banking: BankingSnapshot) {
   return Boolean(banking.bankingAccountNumber && banking.bankingBankName);
 }
 
-/** Shop đọc và sửa hồ sơ của chính mình. Không bao giờ nhận tenant id từ caller; `TenantService` là phía admin. */
+/** Shop đọc và sửa hồ sơ của mình. */
 @Injectable()
 export class TenantSelfService {
   constructor(
@@ -68,7 +68,7 @@ export class TenantSelfService {
     private readonly sepaySync: SepayAccountSyncService,
   ) {}
 
-  /** Hồ sơ của shop, với `hasSepayKey` thay cho key: màn cài đặt cần biết đã liên kết chưa, và không cần trả key bí mật về. */
+  /** Hồ sơ shop kèm `hasSepayKey`. */
   async findMine(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -145,7 +145,7 @@ export class TenantSelfService {
     return withNestedBanking(tenant);
   }
 
-  /** Ghi hồ sơ shop và, nếu cột nhận tiền đổi (kể cả liên kết SePay / key bị xoá theo), một dòng `tenant_banking_changes` trong cùng transaction. Ảnh trước đọc LẠI trong transaction, nên hai lần lưu đua nhau không ghi cùng một "từ". */
+  /** Ghi hồ sơ shop và lịch sử ngân hàng nếu đổi. */
   private async updateWithHistory(
     tenantId: string,
     actorId: string | null,
@@ -180,7 +180,7 @@ export class TenantSelfService {
     });
   }
 
-  /** Webhook tìm shop theo tài khoản, nên một số chỉ thuộc một shop và không được đổi khi QR in với số đó còn chờ thanh toán. SePay đang theo dõi số cũ, nên đổi số sẽ huỷ liên kết shop. */
+  /** Không đổi số tài khoản khi còn QR chờ thanh toán. */
   private async bankingWrite(
     tenantId: string,
     before: BankingSnapshot,
@@ -287,7 +287,7 @@ export class TenantSelfService {
     return { message: 'SePay key saved' };
   }
 
-  /** `GET /tenant/banking/history`: ai đổi tài khoản nhận tiền / key SePay / liên kết SePay và đổi từ gì sang gì. Mới nhất trước. Key webhook không bao giờ nằm trong đây, chỉ có `keyChanged`. */
+  /** Lịch sử đổi thông tin nhận tiền, mới nhất trước. */
   async bankingHistory(tenantId: string, query: QueryBankingHistoryDto) {
     const where: Prisma.TenantBankingChangeWhereInput = { tenantId };
     const [rows, total] = await Promise.all([

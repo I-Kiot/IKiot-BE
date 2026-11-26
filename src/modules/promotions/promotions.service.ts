@@ -47,7 +47,7 @@ type PromotionRow = Prisma.PromotionGetPayload<{
   include: typeof PROMOTION_INCLUDE;
 }>;
 
-/** Phần chạm DB của PromotionService; tính toán nằm trong `pricing-engine.ts`. Phạm vi chi nhánh thay role branch cũ: owner thấy tất cả, STAFF thấy khuyến mãi toàn chuỗi cộng khuyến mãi gắn chi nhánh mình; tạo mới chỉ cần `promotions:create`. */
+/** Service khuyến mãi: phạm vi chi nhánh, tính toán ở `pricing-engine.ts`. */
 @Injectable()
 export class PromotionService {
   constructor(private readonly prisma: PrismaService) {}
@@ -213,7 +213,7 @@ export class PromotionService {
     return this.toResponse(updated);
   }
 
-  /** Xoá mềm về INACTIVE: dòng đơn hàng và log khuyến mãi trỏ tới khuyến mãi, mà mức giảm đã thực sự cấp thì phải giải thích được sau nhiều tháng. */
+  /** Xoá mềm về INACTIVE. */
   async deactivate(user: AuthUser, tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     this.assertBranchAccess(user, existing);
@@ -280,7 +280,7 @@ export class PromotionService {
       previewDiscount: entry.previewDiscount,
     });
 
-    // Cái dùng được đứng trước; trong mỗi nhóm, mức giảm lớn nhất đứng trước - đúng thứ tự thu ngân quét danh sách.
+    // Sắp: dùng được trước, giảm nhiều trước.
     const byUsefulness = (a: (typeof entries)[number], b: typeof a) =>
       a.eligible !== b.eligible
         ? a.eligible
@@ -312,7 +312,7 @@ export class PromotionService {
     );
   }
 
-  /** Ghi mức giảm vào đơn: tăng `usedCount` và ghi PromotionLog cho mỗi khuyến mãi. Hai giới hạn sử dụng được kiểm lại trong transaction (hai máy tính tiền có thể cùng qua bước xem trước): giới hạn toàn cục bằng increment có điều kiện, theo khách bằng đếm lại log; `@@unique([orderId, promotionId])` là chốt cuối. */
+  /** Ghi khuyến mãi vào đơn, kiểm lại giới hạn sử dụng trong transaction. */
   async apply(
     tenantId: string,
     userId: string,
@@ -405,7 +405,7 @@ export class PromotionService {
     return { cart, candidates, usage };
   }
 
-  /** Mọi id client gửi trong giỏ phải thuộc tenant này, vì nếu không `GET /promotions/:id/logs` (join tên, SĐT khách) thành cách đọc khách của shop khác từng dòng. Cả bốn endpoint đi qua đây, để xem trước với `branchId` ngoại lai không lệch âm thầm so với đơn bán. */
+  /** Kiểm mọi id trong giỏ thuộc tenant. */
   private async assertCartRefs(tenantId: string, dto: PriceCartDto) {
     const [branch, customer, order] = await Promise.all([
       dto.branchId
@@ -447,7 +447,7 @@ export class PromotionService {
     }
   }
 
-  /** Khuyến mãi có thể gắn category, nhưng dòng giỏ là variant mà sản phẩm cha mới mang category; một query giải quyết cả hai bước. */
+  /** Lấy danh mục cho từng dòng giỏ. */
   private async buildCartContext(
     tenantId: string,
     dto: PriceCartDto,
@@ -457,7 +457,7 @@ export class PromotionService {
       where: { tenantId, id: { in: ids } },
       select: {
         id: true,
-        // Giá tính ở đây, không tin giá caller gửi: xem trước dựa trên giá client gửi sẽ báo mức giảm mà đơn sau đó không chấp nhận, và `/apply` ghi log theo báo giá đó.
+        // Giá lấy từ server.
         retailPrice: true,
         product: { select: { categoryId: true } },
       },
@@ -470,7 +470,7 @@ export class PromotionService {
     }
     const byId = new Map(variants.map((v) => [v.id, v]));
 
-    // Chính index là định danh dòng: thứ tự `dto.items` được giữ qua engine và trả lại trong `itemBreakdown`, nhờ đó caller ghép theo vị trí.
+    // Index là định danh dòng.
     const items: CartItem[] = dto.items.map((item, lineId) => {
       const unitPrice = Number(byId.get(item.productItemId)!.retailPrice);
       return {
@@ -512,7 +512,7 @@ export class PromotionService {
     return rows.map((row) => this.toPricingPromotion(row));
   }
 
-  /** Số lần khách đã dùng từng khuyến mãi có giới hạn. Chỉ đếm cái có giới hạn, và truyền vào dạng map để engine không phụ thuộc DB. */
+  /** Số lần khách đã dùng các khuyến mãi có giới hạn. */
   private async customerUsageCounts(
     tenantId: string,
     customerId: string | null,

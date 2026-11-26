@@ -43,9 +43,7 @@ import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
 
-/**
- * Huỷ đơn (A-5) trên Postgres thật: huỷ trước / sau đóng gói (trả phần khoá về kệ), tiền cọc hoàn một phần hoặc giữ, các trạng thái không được huỷ, và YCSX liên quan chỉ được báo lại. Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
- */
+/** Kiểm huỷ đơn trước / sau đóng gói và hoàn cọc (Postgres thật). */
 describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;
@@ -469,7 +467,7 @@ describe('POST /orders/:id/cancel – OrderCancelService.cancel', () => {
 
   // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
   it('leaves the money ledger consistent', async () => {
-    // Một ca dựng đơn COMPLETED thẳng vào bảng (để thử huỷ đơn đã hoàn thành) nên không có bút toán SALE: bỏ kiểm nhật ký doanh thu ở suite này.
+    // Bỏ kiểm sổ doanh thu vì có đơn COMPLETED dựng thẳng.
     await assertMoneyInvariants(prisma, tenantId, {
       skip: ['SALES_JOURNAL'],
     });

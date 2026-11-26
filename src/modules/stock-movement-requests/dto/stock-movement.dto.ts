@@ -14,7 +14,7 @@ import { IMPORT_SOURCES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { MOVEMENT_STATUSES, MOVEMENT_TYPES } from '../stock-movement.constants';
 
-/** Một dòng phiếu. Trường bắt buộc tuỳ loại phiếu, service kiểm: `quantity` không bắt buộc với ADJUST (dùng số hệ thống), `importPrice` với EXPORT/RETURN lấy giá vốn. */
+/** Một dòng phiếu kho. */
 export class MovementItemDto {
   @IsUUID()
   productItemId: string;
@@ -42,7 +42,7 @@ export class MovementItemDto {
   note?: string;
 }
 
-/** Port từ payload StockMovementController nhận. `status` do state machine quyết, `totalPrice` tính từ dòng. */
+/** Body tạo phiếu kho. */
 export class CreateStockMovementDto {
   @IsIn(MOVEMENT_TYPES, {
     message: `movementType phải là ${MOVEMENT_TYPES.join(', ')}`,
@@ -53,12 +53,12 @@ export class CreateStockMovementDto {
   @IsUUID()
   fromSupplierId?: string;
 
-  /** Hàng xuất từ đâu, bắt buộc với EXPORT/RETURN/ADJUST. STAFF có thể bỏ trống để dùng nơi phân công; TENANT_OWNER phải ghi. */
+  /** Nơi xuất hàng. */
   @IsOptional()
   @IsUUID()
   fromLocationId?: string;
 
-  /** Hàng về đâu, bắt buộc với IMPORT/EXPORT/RETURN, vô nghĩa với ADJUST. Chỉ nhận id: loại địa điểm đọc từ dòng Location, không lấy từ client. */
+  /** Nơi nhận hàng. */
   @IsOptional()
   @IsUUID()
   toLocationId?: string;
@@ -82,7 +82,7 @@ export class UpdateMovementDetailsDto {
   details: MovementItemDto[];
 }
 
-/** What actually turned up, line by line. Every line of the request must be accounted for. */
+/** Số thực nhận từng dòng. */
 export class ReceiveMovementItemDto {
   @IsUUID()
   productItemId: string;
@@ -110,7 +110,7 @@ export class QueryStockMovementDto extends PaginationQueryDto {
   @IsIn(MOVEMENT_TYPES)
   movementType?: string;
 
-  /** Chỉ phiếu IMPORT mới có nguồn: màn Nhập hàng lọc ở đây vì danh sách phân trang ở server, lọc ở client sẽ thiếu phiếu cũ. */
+  /** Lọc theo nguồn nhập. */
   @IsOptional()
   @IsIn(IMPORT_SOURCES)
   importSource?: string;

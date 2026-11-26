@@ -34,9 +34,7 @@ type NotifyArgs = {
   referenceId: string;
 };
 
-/**
- * Cảnh báo thiếu hàng phía đơn (B-3) trên Postgres thật: tạo đơn, sửa dòng, làm dòng custom khiến một dòng danh sách cần sản xuất từ đủ chuyển sang thiếu thì báo người quản lý nơi xuất, một lần lúc chuyển; dòng vốn đã thiếu không báo lại. Cảnh báo hỏng không làm hỏng đơn. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm cảnh báo thiếu hàng phía đơn chỉ báo một lần (Postgres thật). */
 describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;
@@ -264,7 +262,7 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
   });
 
   it('fires for a line made to measure, which moves to a SKU with no stock', async () => {
-    // SKU mới: lúc tạo đơn đã thiếu; làm dòng thành custom chuyển nhu cầu sang SKU mới, và SKU đó cũng thiếu.
+    // SKU mới cũng thiếu.
     const benchId = randomUUID();
     await prisma.productItem.create({
       data: {

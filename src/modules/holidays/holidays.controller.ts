@@ -25,7 +25,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Sáu route giữ đường dẫn và quyền cũ (`:holidayId` đổi thành `:id` cho khớp các module khác). Route sync dùng `holidays:update` vì nó ghi lại các dòng tenant đã sở hữu. */
+/** Controller ngày lễ. */
 @ApiTags('holidays')
 @ApiBearerAuth('bearer')
 @Controller('holidays')

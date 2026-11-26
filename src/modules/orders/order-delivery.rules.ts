@@ -2,8 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { FulfillmentType } from '../../common/constants/order-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Quy tắc thuần về thông tin giao hàng của đơn giao tận nơi (bug DEF-ST-09). Tạo đơn và sửa đơn cùng đi qua đây,
-// để hai đường không thể lệch nhau về "thế nào là đủ thông tin để giao".
+// Quy tắc thông tin giao hàng dùng chung cho tạo và sửa đơn.
 
 /** Ba thông tin người giao cần để mang hàng tới khách. */
 export interface DeliveryInfo {

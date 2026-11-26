@@ -119,7 +119,7 @@ const ORDER_INCLUDE = {
 
 type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
 
-/** Bản port của OrderService. Bán hàng đổi tiền và tồn kho ngay, nên mỗi hàm tính số, ghi trong một transaction rồi mới báo người. Tổng tiền do server tính, không nhận từ client; giảm giá cũng vậy: client chỉ nêu khuyến mãi, `OrderPricingService.priceOrder` chạy qua cùng engine của `/promotions/calculate`. */
+/** Service đơn hàng: bán tại quầy, đổi trạng thái, thanh toán SePay. */
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
@@ -134,14 +134,14 @@ export class OrderService {
     private readonly invoices: InvoiceService,
   ) {}
 
-  /** Bán tại quầy (`POST /orders/pos`): thu và trừ kho ngay, nằm ngoài hành trình đơn. Tạo đơn tay của hành trình là `ManualOrderService.create` (`POST /orders`). */
+  /** Bán tại quầy: thu tiền và trừ kho ngay. */
   async createPosSale(
     user: AuthUser,
     tenantId: string,
     dto: CreatePosOrderDto,
   ) {
     const userId = user.userId;
-    // Ghi đơn phải có phạm vi giống lúc đọc: trước đây `create` không nhận người gọi nên thu ngân có thể lên đơn cho chi nhánh khác, trừ tồn và sổ của chi nhánh đó, rồi không thấy đơn để hoàn tác.
+    // Kiểm phạm vi chi nhánh khi lên đơn.
     const scope = this.branchScope(user);
     if (scope.branchId !== undefined && dto.branchId !== scope.branchId) {
       throw new ForbiddenException({
@@ -180,16 +180,16 @@ export class OrderService {
       discountValue,
     );
 
-    // Combo trong giỏ tính giá như một bộ nhưng không có tồn riêng: được mở thành các dòng thực tế (lá đã phẳng hoá), và chính các lá này rời kho bên dưới. Làm trước transaction vì mở combo cần đọc danh mục.
+    // Mở combo thành các dòng lá trước transaction.
     const components = await expandCombos(this.prisma, tenantId, lines);
-    // Quầy trừ kho ngay tại chi nhánh và chưa bao giờ lưu kho xuất hay thuế VAT trên dòng; hai trường này để trống để combo không làm đổi cách lưu hay xuất hóa đơn các dòng khác của đơn quầy.
+    // Đơn quầy không lưu kho xuất và VAT trên dòng.
     const itemRows = buildOrderItemRows(
       lines.map((line) => ({ ...line, sourceLocationId: null })),
       components,
       (line) => this.pricing.lineTotalOf(line),
     ).map((row) => ({ ...row, vatRate: undefined }));
 
-    // Tiền khách đưa phải ít nhất đủ trả hóa đơn, để chênh lệch là "tiền thừa" chứ không phải thiếu âm thầm bị ghi thành doanh thu.
+    // Tiền khách đưa phải đủ trả hoá đơn.
     if (dto.customerPay !== undefined && toDong(dto.customerPay) < grandTotal) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_CUSTOMER_PAY_TOO_LOW,
@@ -219,7 +219,7 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
-          // Đơn quầy được xác nhận và xử lý bởi người lên đơn; ràng buộc `orders_assignee_required` yêu cầu mọi đơn không phải nháp có người phụ trách. Đơn tay của hành trình chỉ định người phụ trách rõ ràng (`ManualOrderService`).
+          // Người lên đơn quầy là người phụ trách.
           assigneeId: userId,
           confirmedById: userId,
           confirmedAt: now,
@@ -227,7 +227,7 @@ export class OrderService {
           status,
           // Đơn quầy mở ở COMPLETED (thu ngay) thì chốt luôn lúc này: CHECK `orders_completed_at_required`.
           ...(status === OrderStatus.COMPLETED ? { completedAt: now } : {}),
-          // paymentStatus để mặc định UNPAID: khoản tiền ghi bên dưới rồi `syncOrderPaymentStatus` suy ra trạng thái (đơn quầy giờ cũng có Payment).
+          // Trạng thái thanh toán suy ra sau khi ghi khoản tiền.
           subtotal: this.pricing.subtotalOf(lines),
           // Mã tham chiếu của quầy đồng thời là mã đơn, để hóa đơn và chuyển khoản gọi tên đơn giống nhau.
           code: paymentReference,
@@ -246,9 +246,9 @@ export class OrderService {
         include: ORDER_INCLUDE,
       });
 
-      // Bán làm giảm tồn nên theo dõi ngưỡng tồn thấp giống như chuyển kho; `deductStock` cũng là chỗ kiểm "đủ hàng không" mà không có race giữa kiểm tra và trừ.
+      // Trừ kho và theo dõi ngưỡng tồn thấp.
       const lowStock: (Inventory | null)[] = [];
-      // Chỉ dòng có hàng mới rời kệ: dòng COMBO cha chỉ là giá, SERVICE không có gì để lấy, nên các con của combo bị trừ còn cha thì không. Mỗi dòng sổ ghi tên dòng đơn của nó (không phải SKU: một SKU giờ có thể vừa nằm dòng riêng vừa nằm trong combo), để biết giá vốn của dòng.
+      // Chỉ dòng có hàng mới trừ kho; mỗi dòng sổ ghi dòng đơn của nó.
       for (const item of created.items) {
         if (!STOCKED_LINE_TYPES.includes(item.lineType)) continue;
         const after = await this.inventory.deductStock(tx, {
@@ -268,7 +268,7 @@ export class OrderService {
         lowStock.push(this.inventory.lowStockCrossing(after, -item.quantity));
       }
 
-      // Tiền: nhận ngay thì một khoản FULL (+ CHANGE nếu thối) và dòng thu chi của chúng; SePay thì khoản FULL chờ webhook, hạn QR = lúc tạo đơn + 15 phút.
+      // Ghi khoản thanh toán: nhận ngay thì FULL (+ CHANGE), SePay thì chờ webhook.
       if (status === OrderStatus.COMPLETED) {
         await recordPosPayments(tx, {
           order: created,
@@ -310,7 +310,7 @@ export class OrderService {
         },
       });
 
-      // Đơn quầy có hóa đơn ngay từ đầu: phát hành luôn nếu đã trả, PENDING trong khi chờ chuyển khoản SePay (webhook sẽ phát hành).
+      // Tạo hoá đơn cho đơn quầy.
       await this.invoices.ensurePending(tx, created.id);
       if (status === OrderStatus.COMPLETED) {
         await this.invoices.issueForOrder(tx, created.id, userId);
@@ -326,7 +326,7 @@ export class OrderService {
 
     await this.inventory.notifyLowStock(crossings);
 
-    // Mã QR chỉ phát qua `sepayQrView` (cửa duy nhất): hạn của đơn quầy là lúc tạo đơn + 15 phút, FE đếm ngược theo `qrExpiresAt`.
+    // Lấy link QR qua `sepayQrView`.
     const qr =
       isSepay && banking
         ? sepayQrView(
@@ -353,7 +353,7 @@ export class OrderService {
     const where: Prisma.OrderWhereInput = { tenantId, ...scope };
     if (query.status) where.status = query.status;
     if (query.paymentMethod) where.paymentMethod = query.paymentMethod;
-    // Chỉ thu hẹp, không thay thế: `findOne` đã từ chối chi nhánh lạ, nên việc danh sách bị đổi phạm vi qua query string mới là chỗ bất thường.
+    // Filter của client chỉ thu hẹp phạm vi.
     const branchId = narrowToScope(
       scope.branchId,
       query.branchId,
@@ -403,8 +403,8 @@ export class OrderService {
     return this.toResponse(await this.findRow(user, tenantId, id));
   }
 
-  /** Tài khoản này xem được đơn của chi nhánh nào: mặc định của mình, có `orders:view_all` thì mọi chi nhánh. iKiotMS-BE cũ không phân phạm vi này, quyền nằm trong danh mục mà không dùng; cách làm giống `stock-movements`. */
-  /** Tài khoản này đọc/ghi được đơn của chi nhánh nào: của mình, hoặc mọi chi nhánh với `orders:view_all`. Dùng chung với `ManualOrderService` để hai bên tạo đơn từ chối chi nhánh khác theo cùng quy tắc. */
+  /** Các chi nhánh tài khoản được xem đơn. */
+  /** Các chi nhánh tài khoản được đọc/ghi đơn. */
   branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
     const posting = postingOf(user);
@@ -418,7 +418,7 @@ export class OrderService {
     return { branchId: posting };
   }
 
-  /** Chuyển đơn sang trạng thái mới, đưa tồn kho và tiền về đúng theo trạng thái đó. Lệnh ghi có điều kiện theo status đã đọc, nên hai quầy bấm cùng lúc không thể cùng áp dụng hiệu ứng phụ. */
+  /** Chuyển trạng thái đơn quầy kèm tồn kho và tiền tương ứng. */
   async updateStatus(
     user: AuthUser,
     tenantId: string,
@@ -427,7 +427,7 @@ export class OrderService {
   ) {
     const order = await this.findRow(user, tenantId, id);
 
-    // Đơn quầy chờ SePay không được chốt COMPLETED bằng PATCH: không có khoản nào về mà vẫn ghi doanh thu và dòng tiền "SePay" (tiền ma). Muốn chốt thì `pay-offline` (thu tay, có số tiền) hoặc đợi webhook.
+    // Đơn chờ SePay không được chốt COMPLETED bằng PATCH.
     if (
       newStatus === OrderStatus.COMPLETED &&
       order.status === OrderStatus.PENDING &&
@@ -440,7 +440,7 @@ export class OrderService {
       });
     }
 
-    // Chỉ máy trạng thái của quầy: đơn hành trình chuyển sang RETURNED ở đây sẽ trả mọi dòng về chi nhánh và bỏ qua `order-returns` hoàn toàn. Đơn hành trình chuyển qua route riêng (`assertTransition`).
+    // Đơn hành trình không đổi trạng thái qua route này.
     const allowed =
       order.fulfillmentType === FulfillmentType.TAKEAWAY
         ? (VALID_ORDER_TRANSITIONS[order.status] ?? [])
@@ -452,8 +452,7 @@ export class OrderService {
       });
     }
 
-    // Huỷ đơn quầy đang chờ QR đi chung một hàm với nút "Hủy đơn này" và cron QR hết hạn: một nơi trả hàng về kho, huỷ hoá đơn nháp và ghi sự kiện CANCELLED.
-    // PATCH không có số hoàn: đơn đã có tiền (khách chuyển thiếu) phải huỷ bằng `POST /orders/pos/:id/cancel` kèm `refundAmount` (người gọi PATCH nhận `ORDER_REFUND_AMOUNT_REQUIRED`).
+    // Huỷ đơn quầy chờ QR dùng chung hàm với nút huỷ và cron.
     if (
       newStatus === OrderStatus.CANCELLED &&
       order.status === OrderStatus.PENDING &&
@@ -490,7 +489,7 @@ export class OrderService {
         });
       }
 
-      // Trả hàng đơn quầy luôn hoàn đúng số tiền đang giữ (quyết định 2026-11-11, D4): khoản REFUND + dòng chi ORDER_REFUND, rồi trạng thái thanh toán suy ra (hoàn hết → REFUNDED). Người bấm trả hàng là người hoàn tiền.
+      // Trả hàng đơn quầy hoàn đúng số tiền đang giữ.
       let refundPaymentId: string | undefined;
       let refundAmount = 0;
       if (newStatus === OrderStatus.RETURNED) {
@@ -534,13 +533,12 @@ export class OrderService {
           : {}),
       });
 
-      // Cố ý không theo dõi tồn thấp ở đây: hủy và trả chỉ làm tồn tăng, mà tồn tăng thì không thể rơi xuống dưới ngưỡng.
+      // Huỷ và trả chỉ làm tồn tăng nên không kiểm tồn thấp.
       if (
         newStatus === OrderStatus.CANCELLED ||
         newStatus === OrderStatus.RETURNED
       ) {
-        // Trả về đúng các lô mà đơn đã lấy. Đơn lên trước khi có lô (2026-10-02) không có dòng sổ để theo, nên trả về thành lô OPENING.
-        // Chỉ dòng đã lấy hàng mới được trả hàng. Combo cha chưa bao giờ lấy gì; nếu không lọc, `ifNeverDrawn` sẽ mở một lô cho SKU của combo, tức tồn cho một biến thể không được phép có tồn.
+        // Trả hàng về đúng các lô đơn đã lấy.
         for (const line of order.items.filter((item) =>
           STOCKED_LINE_TYPES.includes(item.lineType),
         )) {
@@ -592,12 +590,7 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  /**
-   * Huỷ một đơn quầy đang chờ QR, trong transaction của người gọi. Có điều kiện (còn PENDING + SEPAY): thu ngân bấm, cron hết hạn và webhook thắng cùng lúc thì chỉ một bên áp dụng hiệu ứng phụ.
-   * Khoá đơn trước (thứ tự khoá sổ → đơn → khoản: webhook đang chờ khoá sau dòng sổ của nó sẽ thấy đơn đã huỷ rồi từ chối). Các khoản QR còn mở bị huỷ cùng đơn.
-   * `allowPaid` false (cron QR hết hạn): đơn đã có khoản PAID (khách chuyển thiếu) thì không tự huỷ, vì huỷ phải quyết định hoàn hay giữ tiền. `allowPaid` true (người bấm): đơn đang giữ tiền thì bắt buộc nêu số hoàn (`resolveRefund`), hoàn là khoản REFUND + dòng chi.
-   * Trả `false` khi đơn không còn chờ nữa. Sự kiện CANCELLED chỉ ghi sau khi chiếm được đơn.
-   */
+  /** Huỷ đơn quầy đang chờ QR trong transaction của bên gọi; false nếu đơn không còn chờ. */
   private async cancelPendingPosSale(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -663,7 +656,7 @@ export class OrderService {
       refundPaymentId = refunded.id;
     }
     const afterCancel = await syncOrderPaymentStatus(tx, order.id);
-    // Tiền shop giữ lại sau khi hoàn (khách chuyển thiếu rồi không lấy hàng, hoàn ít hơn đã nhận) là thu nhập khác.
+    // Tiền giữ lại sau khi hoàn ghi là thu nhập khác.
     await postOtherIncome(tx, {
       orderId: order.id,
       kept: afterCancel.net,
@@ -692,7 +685,7 @@ export class OrderService {
       },
     });
 
-    // Trả về đúng các lô mà đơn đã lấy (đơn quầy trừ kho ngay lúc tạo). Chỉ dòng đã lấy hàng mới được trả: combo cha chưa bao giờ lấy gì.
+    // Trả hàng về đúng các lô đơn đã lấy.
     for (const line of order.items.filter((item) =>
       STOCKED_LINE_TYPES.includes(item.lineType),
     )) {
@@ -715,10 +708,7 @@ export class OrderService {
     return true;
   }
 
-  /**
-   * "Hủy đơn này" trên màn QR của quầy (`POST /orders/pos/:id/cancel`). Người chỉ có `orders:create` (thu ngân) huỷ được đơn do chính mình lên; huỷ đơn của người khác cần `orders:update`.
-   * Khác `PATCH /orders/:id/status` ở chỗ không đòi `orders:update` cho đơn của mình, nhận số hoàn cho đơn đã có tiền (`refundAmount`, `refundMethod`), và chỉ áp dụng cho đơn quầy đang chờ QR.
-   */
+  /** Huỷ đơn quầy chờ QR từ nút "Hủy đơn này". */
   async cancelPosSale(
     user: AuthUser,
     tenantId: string,
@@ -762,11 +752,7 @@ export class OrderService {
     return this.toResponse(await this.findRow(user, tenantId, id));
   }
 
-  /**
-   * Cron QR hết hạn: huỷ các đơn quầy chờ QR đã quá 15 phút và CHƯA có đồng nào, trả hàng về kho. Mỗi đơn một transaction để một đơn lỗi không kéo cả lượt; nguồn sự kiện là SYSTEM.
-   * Đơn đã có khoản PAID (khách chuyển thiếu) không bao giờ bị cron huỷ: số tiền đó thuộc về khách, huỷ hay thu nốt là việc của người ở quầy. Hạn của đơn là hạn của MỌI khoản QR còn mở của nó (mã mới phát cho phần còn lại kéo dài hạn); đơn cũ chưa có Payment tính từ `createdAt`.
-   * Lọc thô theo `createdAt` trong SQL rồi lọc đúng bằng `isQrExpired`. Trả số đơn đã huỷ.
-   */
+  /** Cron huỷ đơn quầy chờ QR đã quá 15 phút và chưa có tiền. */
   async cancelExpiredPosSales(now: Date = new Date()): Promise<number> {
     const candidates = await this.prisma.order.findMany({
       where: {
@@ -800,7 +786,7 @@ export class OrderService {
         if (!done) continue; // webhook hay thu ngân vừa chốt trước
         cancelled += 1;
         this.announceCancelled(order, 'QR_EXPIRED');
-        // Hàm thường chứ không phải ChangeFeedService: OrderService được dựng thủ công / liệt kê trong nhiều provider list e2e, thêm phụ thuộc vào constructor sẽ làm vỡ chúng.
+        // Phát thay đổi bằng hàm thường để không thêm phụ thuộc vào constructor.
         publishChange(
           this.realtime,
           {
@@ -821,7 +807,7 @@ export class OrderService {
     return cancelled;
   }
 
-  /** Báo màn hình cửa hàng biết đơn quầy vừa bị huỷ (tay hay do QR hết hạn) để màn QR đang mở chuyển sang "đã huỷ". */
+  /** Báo màn hình cửa hàng đơn quầy vừa bị huỷ. */
   private announceCancelled(
     order: { id: string; tenantId: string },
     reason: 'QR_EXPIRED' | 'MANUAL',
@@ -833,10 +819,7 @@ export class OrderService {
     });
   }
 
-  /**
-   * Chốt đơn quầy chờ SePay bằng cách khác (khách trả tiền mặt / chuyển khoản tay). Khoá đơn rồi huỷ các khoản QR còn mở, tính số còn phải thu từ các khoản đã nhận (khách chuyển thiếu trước đó thì chỉ thu phần còn lại),
-   * ghi khoản FULL (hay BALANCE nếu đã có tiền) + CHANGE nếu thối tiền, đơn COMPLETED khi đủ tiền. Có điều kiện: đơn vẫn PENDING và vẫn SEPAY, để không chạy đua với webhook làm thu hai lần.
-   */
+  /** Chốt đơn quầy chờ SePay bằng tiền mặt hoặc chuyển khoản tay. */
   async payOffline(
     user: AuthUser,
     tenantId: string,
@@ -880,7 +863,7 @@ export class OrderService {
         });
       }
       const payments = await tx.payment.findMany({ where: { orderId: id } });
-      // Mã QR đang chờ không còn dùng (khách đã trả bằng cách khác): huỷ, ghi ai huỷ. Tiền vừa về thì webhook đã giữ khoá trước nên tới đây khoản đã PAID, không nằm trong danh sách mở.
+      // Huỷ mã QR đang chờ.
       await cancelCounterQr(tx, openQrPayments(payments), userId, now);
       const derived = derivePaymentStatus(
         current.grandTotal,
@@ -924,7 +907,7 @@ export class OrderService {
         });
       }
 
-      // Khoản tiền + dòng thu chi + trạng thái thanh toán (đủ tiền nên ra PAID) trong cùng transaction với việc chiếm đơn.
+      // Ghi khoản tiền, dòng thu chi và trạng thái thanh toán.
       const recorded = await recordPosPayments(tx, {
         order,
         method: paymentMethod,
@@ -971,11 +954,7 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  /**
-   * Phát mã QR cho phần còn lại của đơn quầy chờ SePay (`POST /orders/pos/:id/qr`): khách chuyển thiếu rồi muốn chuyển nốt (hay mã cũ hết hạn mà đơn chưa bị huỷ). Số tiền = số còn phải thu của đơn, mã tham chiếu mới, hạn mới.
-   * Khoá đơn; còn một mã đang sống đúng số tiền thì trả nguyên mã đó (bấm hai lần không đổi mã khách đang quét), ngược lại huỷ các mã còn mở rồi tạo khoản mới (FULL nếu chưa có đồng nào, BALANCE nếu đã trả một phần).
-   * Người chỉ có `orders:create` chỉ làm được trên đơn của chính mình (cùng quy tắc với huỷ).
-   */
+  /** Phát mã QR cho phần còn lại của đơn quầy; mã còn sống đúng số tiền thì dùng lại. */
   async createPosQr(user: AuthUser, tenantId: string, id: string) {
     const order = await this.findRow(user, tenantId, id);
     if (
@@ -1073,9 +1052,7 @@ export class OrderService {
     };
   }
 
-  /**
-   * Phần webhook SePay xử lý khi tiền về cho đơn quầy, nhận các tham số rời (test và tích hợp gọi trực tiếp). Webhook thật gọi `completeSepayTransfer` với giao dịch đã chuẩn hoá. Chi tiết ở đó.
-   */
+  /** Xử lý tiền SePay về cho đơn quầy (tham số rời, cho test). */
   completeSepayOrder(
     tenantId: string,
     paymentReference: string,
@@ -1096,11 +1073,7 @@ export class OrderService {
     );
   }
 
-  /**
-   * Phần webhook SePay xử lý khi tiền về cho đơn quầy. Trả `null` khi mã không thuộc đơn quầy nào (webhook thử tiếp khoản thu khi giao), `{ message }` khi đã xử lý (chốt, chốt thiếu, trùng, hoặc từ chối và báo chủ shop).
-   * Toàn bộ chốt tiền nằm ở `processSepayTransfer` (`sepay-settlement.ts`), dùng chung với thu khi giao. Hết hạn tính TRƯỚC: đơn vẫn chờ thì chốt dù QR đã hết hạn (tiền về thật), đơn đã huỷ / đã thu thì từ chối + ghi sổ + báo chủ shop hoàn.
-   * Chuyển thiếu là khoản trả một phần: đơn vẫn PENDING, thu ngân nhận thông báo và chọn QR cho phần còn lại hay thu tiền mặt.
-   */
+  /** Xử lý tiền SePay về cho đơn quầy; null khi mã không thuộc đơn quầy nào. */
   async completeSepayTransfer(
     tenantId: string,
     paymentReference: string,
@@ -1139,7 +1112,7 @@ export class OrderService {
           },
           this.logger,
         );
-        // Đáng gửi thông báo thật, khác các bước còn lại của hành trình: xác nhận đến sau vài phút, lúc thu ngân không còn nhìn màn hình đó nữa.
+        // Gửi thông báo vì xác nhận đến sau vài phút.
         await notifySettled(this.sepayDeps(), result);
         return {
           message: result.partial
@@ -1171,7 +1144,7 @@ export class OrderService {
       });
   }
 
-  /** Đơn không gắn khách vẫn cần một dòng khách, nên mỗi tenant có một khách vãng lai, tạo ở lần dùng đầu. Dùng `upsert` vì hai đơn ẩn danh cùng lúc sẽ cùng không thấy gì và cùng insert. */
+  /** Khách vãng lai của tenant, tạo ở lần dùng đầu. */
   async resolveWalkInCustomer(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -1196,7 +1169,7 @@ export class OrderService {
     return customer.id;
   }
 
-  /** Báo cho màn hình cửa hàng biết đơn vừa được thanh toán. Room `order:<id>` cũ đã bỏ vì gateway chỉ đưa socket vào room do server chọn, nên gửi vào room tenant với mã đơn trong payload. `partial` / `due` / `paymentStatus` cho màn QR biết khách chuyển thiếu (đơn chưa hoàn thành, còn `due`). */
+  /** Báo màn hình cửa hàng đơn vừa được thanh toán. */
   private announcePaid(
     order: { id: string; tenantId: string; status: string },
     paidAmount: number,
@@ -1214,7 +1187,7 @@ export class OrderService {
     });
   }
 
-  /** Lấy một đơn và kiểm tra tài khoản này được đọc hay ghi nó không. Kiểm tra chi nhánh từng chỉ nằm trong `findOne`, nên một tài khoản có thể RETURN đơn mình không được xem, trả tồn về chi nhánh đó và ghi hoàn tiền vào sổ của nó. */
+  /** Lấy đơn và kiểm quyền đọc/ghi theo chi nhánh. */
   private async findRow(
     user: AuthUser,
     tenantId: string,

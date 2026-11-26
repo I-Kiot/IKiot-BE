@@ -9,10 +9,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { USER_REF_SELECT } from './order-read';
 import { toUserRef } from './order-read.mapper';
 
-/**
- * Nhật ký thao tác trên đơn (`order_events`). Hàm thường, không DI (cùng kiểu `order-cash-flow.ts`): mọi chỗ ghi truyền `tx` của chính transaction đang đổi đơn,
- * và chỉ gọi sau khi lệnh chiếm trạng thái (`updateMany ... count === 1`) đã thành công, nên sự kiện chỉ tồn tại khi thay đổi tồn tại; lỗi về sau trong transaction cuốn cả sự kiện đi.
- */
+/** Ghi nhật ký thao tác trên đơn trong transaction đang đổi đơn. */
 
 export type OrderEventActor =
   | { source: typeof OrderEventSource.USER; userId: string }
@@ -155,7 +152,7 @@ const ACTOR_SELECT = {
 
 type ActorRow = Prisma.UserGetPayload<{ select: typeof ACTOR_SELECT }>;
 
-/** Tên, vai trò chụp lúc ghi. STAFF lấy tên `Role`; ADMIN / TENANT_OWNER không có dòng `Role` nên lấy mã `systemRole`. Không có người dùng thì để trống hết. */
+/** Tên và vai trò người làm, chụp lúc ghi. */
 export function actorSnapshot(row: ActorRow | null): {
   actorId: string | null;
   actorName: string | null;
@@ -172,7 +169,7 @@ export function actorSnapshot(row: ActorRow | null): {
   };
 }
 
-/** Ghi từng sự kiện một (không `createMany`) để `occurred_at = clock_timestamp()` tăng dần và giữ đúng thứ tự trong cùng transaction. */
+/** Ghi từng sự kiện để giữ đúng thứ tự thời gian. */
 export async function recordOrderEvents(
   tx: Prisma.TransactionClient,
   actor: OrderEventActor,
@@ -253,7 +250,7 @@ export type LineSnap = {
   parentItemId?: string | null;
 };
 
-/** Chỉ dòng cấp trên cùng (`parentItemId` rỗng): dòng cũ mất id là bị bỏ, dòng mới không có id là thêm, đổi số lượng hay đơn giá là đổi. */
+/** So dòng trước/sau: dòng bị bỏ, thêm hoặc đổi. */
 export function diffOrderLines(
   allBefore: readonly (LineSnap & { id: string })[],
   allAfter: readonly LineSnap[],
@@ -290,7 +287,7 @@ export function diffOrderLines(
   return { added, removed, changed };
 }
 
-/** Tên hiển thị (`lastName firstName`, thiếu thì số điện thoại) của một tập người dùng, một lần truy vấn. */
+/** Tên hiển thị của nhiều người dùng trong một truy vấn. */
 export async function displayNamesOf(
   tx: Prisma.TransactionClient,
   ids: readonly (string | null | undefined)[],

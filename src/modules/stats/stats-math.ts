@@ -7,7 +7,7 @@ import {
   TZ_OFFSET,
 } from './stats.constants';
 
-/** Số học đằng sau mọi con số dashboard, viết dạng hàm thuần (cùng cách với `pricing-engine.ts`) vì đây là các quy tắc chủ shop hay tranh cãi. */
+/** Số học cho dashboard. */
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -16,7 +16,7 @@ export interface DateRange {
   toDate: Date;
 }
 
-/** `YYYY-MM-DD` trơn là cả ngày địa phương: đầu khoảng thành 00:00, cuối khoảng thành 23:59:59.999. Chuỗi khác đưa thẳng cho `Date` và giữ offset của nó. */
+/** Đổi `YYYY-MM-DD` thành đầu/cuối ngày theo giờ Việt Nam. */
 export function parseBoundary(raw: string, endOfDay: boolean): Date {
   if (DATE_ONLY.test(raw)) {
     const time = endOfDay ? '23:59:59.999' : '00:00:00.000';
@@ -33,7 +33,7 @@ export function resolveRange(rawFrom?: string, rawTo?: string): DateRange {
   return { fromDate, toDate };
 }
 
-/** Khoảng bằng nhau ngay trước khoảng được hỏi, là mốc cho mọi `changePct`. Hai khoảng đều bao cả hai đầu và liền kề không chồng nhau, nên các `- 1` là cần thiết. */
+/** Khoảng bằng nhau ngay trước khoảng được hỏi. */
 export function previousPeriod({ fromDate, toDate }: DateRange): DateRange {
   const span = toDate.getTime() - fromDate.getTime();
   return {
@@ -42,7 +42,7 @@ export function previousPeriod({ fromDate, toDate }: DateRange): DateRange {
   };
 }
 
-/** % thay đổi so với kỳ trước, một chữ số thập phân; `null` khi kỳ trước bằng 0, vì "từ không lên có" không có % trung thực, còn 0 sẽ bị đọc là đi ngang. */
+/** % thay đổi so với kỳ trước; null khi kỳ trước bằng 0. */
 export function changePct(current: number, previous: number): number | null {
   if (previous === 0) return null;
   return Math.round(((current - previous) / previous) * 1000) / 10;
@@ -87,12 +87,12 @@ export interface ComparisonWindow {
 
 const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-/** Nửa đêm của ngày lịch địa phương (UTC+7) dưới dạng thời điểm. `Date.UTC` tự chuẩn hoá tràn tháng/ngày nên `m - 3` hay `d - 7` không cần xử lý riêng. */
+/** Nửa đêm của một ngày theo giờ Việt Nam. */
 function localMidnight(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m, d) - TZ_OFFSET_MS);
 }
 
-/** Hôm nay, tuần này (bắt đầu thứ Hai), tháng, quý, năm so với kỳ trước, theo lịch địa phương. Kỳ trước lấy đúng *khoảng thời gian đã trôi qua* (1–15/10 so với 1–15/9), không vượt cuối kỳ đó, nên tháng đang dở không bị so với tháng đủ. */
+/** Các mốc hôm nay, tuần, tháng, quý, năm so với cùng khoảng kỳ trước. */
 export function comparisonWindows(now: Date): ComparisonWindow[] {
   const local = new Date(now.getTime() + TZ_OFFSET_MS);
   const y = local.getUTCFullYear();
@@ -130,7 +130,7 @@ export function comparisonWindows(now: Date): ComparisonWindow[] {
   });
 }
 
-/** Xếp một dòng tồn vào mức cảnh báo theo số ngày chưa bán: dưới 30 bình thường, 30–59 cảnh báo, 60–89 cần chú ý, từ 90 tồn lâu ngày. Ngưỡng nằm ở `STOCK_AGING_DAYS`; phần đếm trong SQL (`getStockAlerts`) đọc cùng hằng số đó, còn mức của từng dòng do hàm này gán. */
+/** Mức cảnh báo theo số ngày chưa bán. */
 export function stockAgingLevel(daysIdle: number): StockAgingLevel {
   if (daysIdle >= STOCK_AGING_DAYS[StockAgingLevel.STALE]) {
     return StockAgingLevel.STALE;
@@ -144,14 +144,14 @@ export function stockAgingLevel(daysIdle: number): StockAgingLevel {
   return StockAgingLevel.NORMAL;
 }
 
-/** Khoảng thời gian có quá dài để chia theo giờ không. So bằng mili-giây là đủ ở đây: câu hỏi là "có vượt N ngày không", không phải đếm ngày lịch. */
+/** Khoảng có dài quá N ngày không. */
 export function exceedsHourlyRange({ fromDate, toDate }: DateRange): boolean {
   return (
     toDate.getTime() - fromDate.getTime() > MAX_HOURLY_RANGE_DAYS * MS_PER_DAY
   );
 }
 
-/** Khoảng ngày địa phương (`YYYY-MM-DD`, gồm cả hai đầu) - đơn vị của sổ doanh thu: bút toán chỉ có `business_date`, không có giờ để cắt giữa ngày. */
+/** Khoảng ngày địa phương cho sổ doanh thu. */
 export interface BusinessDateRange {
   from: string;
   to: string;
@@ -178,7 +178,7 @@ export function businessDatesOf({
   return { from: vietnamDateOf(fromDate), to: vietnamDateOf(toDate) };
 }
 
-/** Cùng số ngày liền ngay trước khoảng đã cho, không chồng lên nó (khác `previousPeriod`, cắt theo mili-giây và có thể rơi vào cùng một ngày với đầu kỳ này). */
+/** Cùng số ngày ngay trước khoảng đã cho. */
 export function previousBusinessDates({
   from,
   to,
@@ -192,7 +192,7 @@ export function previousBusinessDates({
   return { from: shiftDate(prevTo, -(days - 1)), to: prevTo };
 }
 
-/** Mọi mốc của khoảng ngày địa phương (`YYYY-MM-DD` theo ngày, `YYYY-MM` theo tháng), kể cả mốc không phát sinh - giống `generateDateBuckets` của FE để bảng theo thời gian trên web và trong file có cùng số dòng. */
+/** Mọi mốc ngày/tháng trong khoảng, kể cả mốc không phát sinh. */
 export function dateBuckets(
   { from, to }: BusinessDateRange,
   groupBy: 'day' | 'month',

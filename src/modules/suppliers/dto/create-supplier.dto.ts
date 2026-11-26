@@ -10,13 +10,13 @@ import {
 } from 'class-validator';
 import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 
-// Cố ý không có `outstandingDebt`: server quản lý, tăng khi nhận hàng và chỉ giảm qua POST /suppliers/:id/payments. DTO sinh tự động từng cho client gửi nó, nên PATCH viết lại được sổ nợ.
+// Công nợ do server quản lý.
 export class CreateSupplierDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên nhà cung cấp không được để trống' })
   supplierName: string;
 
-  /** GOODS bán hàng có sẵn (nhập NCC); WORKSHOP làm theo đơn (yêu cầu sản xuất). Mặc định GOODS. Khoá sau khi có phiếu gắn NCC. */
+  /** Loại NCC: GOODS hoặc WORKSHOP, khoá sau khi có phiếu. */
   @IsOptional()
   @IsIn(SUPPLIER_TYPES, {
     message: `Loại nhà cung cấp phải là ${SUPPLIER_TYPES.join(' hoặc ')}`,

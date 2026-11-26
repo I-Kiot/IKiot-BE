@@ -36,7 +36,7 @@ export class StaffProfileDto {
   @MaxLength(20)
   taxNumber?: string;
 
-  /** CCCD Việt Nam. Định dạng và độ khớp với `dob`/`gender` được kiểm tra trong service; xem `validateVietnamIdentificationId` để biết vì sao ba trường phải khớp nhau. */
+  /** Số CCCD, kiểm định dạng và khớp ngày sinh/giới tính trong service. */
   @IsOptional()
   @IsString()
   identificationId?: string;
@@ -50,7 +50,7 @@ export class StaffProfileDto {
   gender?: string;
 }
 
-/** Các kiểm tra của `updateStaff`. `password`, `phoneNumber`, `status` đều bị từ chối: hai trường đầu có route riêng, còn vòng đời tài khoản chạy các guard mà ghi trường thường sẽ bỏ qua (nhận `status` là lỗ hổng của bản NestJS đầu). Không có `systemRole` để nhân viên không thể được thăng cấp qua endpoint này. */
+/** Body sửa nhân viên; mật khẩu, SĐT, trạng thái sửa qua route riêng. */
 export class UpdateUserDto {
   @IsOptional()
   @NormalizeEmail()
@@ -60,7 +60,7 @@ export class UpdateUserDto {
   @IsUUID()
   roleId?: string;
 
-  /** Nơi người này làm việc. Đặt một bên sẽ xoá bên kia: nhân viên chỉ thuộc đúng một địa điểm, service bắt buộc điều này thay vì tin client gửi đủ cả hai. */
+  /** Nơi làm việc; đặt một bên thì xoá bên kia. */
   @IsOptional()
   @IsUUID()
   branchId?: string;

@@ -95,7 +95,7 @@ export class SyncVietnamHolidayDto {
   @Type(() => Number)
   @IsInt({ message: 'year phải là số nguyên' })
   @Min(2000)
-  // Service cũ giới hạn tới năm hiện tại + 5; hằng số này đủ gần và không đổi kết quả khi qua năm giữa lúc request.
+  // Năm tối đa cho ngày lễ.
   @Max(2100)
   year: number;
 }

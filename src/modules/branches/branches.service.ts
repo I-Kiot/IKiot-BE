@@ -21,14 +21,14 @@ const BRANCH_CONFIG: LocationConfig = {
   },
 };
 
-// Port từ BranchService + BranchController; CRUD và bổ nhiệm quản lý nằm ở LocationService, dùng chung với WarehouseService vì hai bên gần như y hệt và đã lệch nhau ở bản cũ.
+// Service chi nhánh, dùng chung LocationService với kho.
 @Injectable()
 export class BranchService extends LocationService {
   constructor(prisma: PrismaService, subscriptions: SubscriptionService) {
     super(prisma, subscriptions, BRANCH_CONFIG);
   }
 
-  /** Thin wrapper so the response keeps the `branchId` key the old API returned. */
+  /** Giữ khoá `branchId` trong response. */
   async assignManager(tenantId: string, branchId: string, staffId: string) {
     const manager = await this.appointManager(tenantId, branchId, staffId);
     return { branchId, manager };

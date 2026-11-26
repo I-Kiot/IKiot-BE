@@ -29,7 +29,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Dashboard shop: endpoint chỉ đọc, giữ đường dẫn cũ, đều yêu cầu `reports:read`. Phạm vi dữ liệu do quyền gắn của người gọi quyết định, không phải query string - xem `stats-scope.ts`. */
+/** Dashboard shop, cần `reports:read`. */
 @ApiTags('stats')
 @ApiBearerAuth('bearer')
 @Controller('stats')
@@ -178,7 +178,7 @@ export class StatsController {
     return this.service.getOrderPipeline(user, query);
   }
 
-  /** Các bút toán doanh thu nguyên bản (SALE / RETURN / OTHER_INCOME) kèm dòng, phân trang: nền cho báo cáo kế toán. Khoảng ngày theo `business_date`. */
+  /** Bút toán doanh thu kèm dòng, phân trang. */
   @Permissions('reports', 'read')
   @Get('sales-journal')
   salesJournal(
@@ -188,7 +188,7 @@ export class StatsController {
     return this.reports.getSalesJournal(user, query);
   }
 
-  /** Tiền chưa khớp tại lúc gọi: tiền shipper đang giữ, giao dịch SePay chưa xử lý, đơn trả dư, tiền chưa gắn đơn, quỹ chủ, tiền mặt quầy kho, hoàn tiền mặt từ két. */
+  /** Tiền chưa khớp tại lúc gọi. */
   @Permissions('reports', 'read')
   @Get('unreconciled')
   unreconciled(

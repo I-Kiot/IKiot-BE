@@ -6,7 +6,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { resolveTenantScope } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Chỉ đọc có chủ đích: iKiotMS-BE chưa từng có route ghi `CashFlow`. POST/PATCH/DELETE sinh tự động đã bị xoá vì cho phép ghi nhận doanh thu chưa xảy ra; các cặp permission tương ứng để trống. */
+/** Sổ quỹ chỉ đọc. */
 @ApiTags('cash-flows')
 @ApiBearerAuth('bearer')
 @Controller('cash-flows')

@@ -62,7 +62,7 @@ import {
 } from './order-events';
 import { USER_REF_SELECT } from './order-read';
 
-/** Trường của đơn mà nhật ký EDITED so trước/sau. Người phụ trách và mức ưu tiên có sự kiện riêng nên không nằm đây. */
+/** Các trường được so trước/sau trong nhật ký sửa đơn. */
 const EDIT_FIELDS = [
   'recipientName',
   'recipientPhone',
@@ -85,9 +85,7 @@ export interface EditedDeposit {
   percent: number | null;
 }
 
-/**
- * Cọc sau khi sửa: cọc gửi kèm được xử lý như lúc tạo; không thì cọc theo % bám theo tổng mới, cọc số tiền thì giữ nguyên. Số đã thu không tự đổi, thu thêm hay hoàn bớt là việc của E-5. Nếu kết quả khác số shop đang giữ, lần sửa bị từ chối với `ORDER_DEPOSIT_CHANGED` kèm cả hai số, để client hỏi người dùng.
- */
+/** Tính lại cọc sau khi sửa; khác số đang giữ thì báo `ORDER_DEPOSIT_CHANGED`. */
 export function resolveEditedDeposit(input: {
   sent: { type: string; value: number; method: string } | undefined;
   stored: EditedDeposit | null;
@@ -129,12 +127,7 @@ export function resolveEditedDeposit(input: {
   return next;
 }
 
-/**
- * Sửa tiền của đơn đã có khoản thu thật thì lệch sổ, nên bị chặn:
- * - `ORDER_EDIT_LOCKED_BY_PAYMENT`: tổng tiền, phí giao, cọc hay các dòng đổi trong khi đã có khoản FULL / BALANCE đã thu (tiền thu tại quầy, tại cửa, hay shipper): huỷ đơn rồi tạo lại.
- * - `ORDER_TOTAL_BELOW_PAID`: tổng đơn mới thấp hơn số shop đang giữ (kèm `paid`, `grandTotal`). Cọc thì sửa được, miễn tổng mới không thấp hơn cọc.
- * Thuần (nhận các khoản đã đọc) để chạy cả ngoài lẫn trong transaction, sau khi khoá đơn.
- */
+/** Chặn sửa tiền của đơn đã có khoản thu thật. */
 export function assertEditAllowedByPayments(
   payments: readonly { kind: string; status: string; amount: unknown }[],
   next: { grandTotal: number; moneyChanged: boolean },
@@ -144,7 +137,7 @@ export function assertEditAllowedByPayments(
       p.status === PaymentRecordStatus.PAID &&
       (p.kind === PaymentKind.FULL || p.kind === PaymentKind.BALANCE),
   );
-  // Đơn chỉ có cọc thì luật cọc (`resolveEditedDeposit`: ORDER_DEPOSIT_EXCEEDS_TOTAL / ORDER_DEPOSIT_CHANGED) đã lo; hai mã mới chỉ áp cho đơn đã có khoản thu thật.
+  // Đơn chỉ có cọc thì do luật cọc xử lý.
   if (!settled) return;
   const { net } = derivePaymentStatus(
     next.grandTotal,
@@ -180,11 +173,7 @@ type ExistingLine = {
   sourceLocationId: string | null;
 };
 
-/**
- * Sửa đơn hành trình trước khi giao (A-8, contract §2): `PATCH /orders/:id`, `/assignee`, `/priority`. Cho phép khi CONFIRMED / PACKED / PICKED_UP, không bao giờ cho đơn bán tại quầy.
- * Chỉ đổi dòng khi còn CONFIRMED: sau đóng gói, hàng trên kệ khóa đúng các dòng đó, và việc khóa lại khi sửa bị xét là không đáng rủi ro (2026-10-06) nên phải hủy rồi tạo lại.
- * Các thứ khác (người phụ trách, ưu tiên, tiền, thông tin giao) đổi được tới SHIPPING. Không đụng tới tồn kho.
- */
+/** Sửa đơn hành trình trước khi giao; chỉ đổi dòng khi còn CONFIRMED. */
 @Injectable()
 export class OrderEditService {
   constructor(
@@ -247,7 +236,7 @@ export class OrderEditService {
         ? Math.round(dto.shippingFee)
         : storedShipping;
 
-    // Khách tới lấy: đổi hình thức giao có ràng buộc, và không có phí giao hàng (khi đổi sang đây phải gửi shippingFee = 0).
+    // Khách tới lấy thì không có phí giao.
     const nextType = dto.fulfillmentType ?? order.fulfillmentType;
     const leavingPickup =
       order.fulfillmentType === FulfillmentType.STORE_PICKUP &&
@@ -268,7 +257,7 @@ export class OrderEditService {
     if (nextType === FulfillmentType.STORE_PICKUP) {
       assertNoPickupShippingFee(shippingFee);
     }
-    // Kiểm tra trên kết quả sau khi ghép (giá trị gửi lên đè giá trị đang lưu): trường nào cũng có thể là trường đang bị xoá.
+    // Kiểm tra trên dữ liệu sau khi ghép.
     assertDeliveryInfoComplete(nextType, {
       recipientName:
         dto.recipientName !== undefined
@@ -291,7 +280,7 @@ export class OrderEditService {
       grandTotal = money.goodsTotal + shippingFee;
     }
 
-    // Tiền chỉ đổi khi số tiền thật sự đổi (không phải khi client gửi lại đúng giá trị cũ): tổng, phí giao hay cọc. Dòng không cần xét riêng: chỉ sửa được lúc CONFIRMED, khi chưa thể có khoản FULL / BALANCE.
+    // Tiền chỉ coi là đổi khi số tiền thật sự đổi.
     const depositAmountNow = Number(order.depositAmount ?? 0);
     const moneyChanged =
       shippingFee !== storedShipping ||
@@ -337,7 +326,7 @@ export class OrderEditService {
           )
         : [];
 
-    // Tạo khách trước transaction như lúc tạo: CustomerService giữ dãy mã và quy tắc một số điện thoại một khách.
+    // Tạo khách trước transaction.
     const typedInCustomerId =
       !dto.customerId && dto.customer
         ? await this.customers.findOrCreateForOrder(tenantId, dto.customer)
@@ -367,7 +356,7 @@ export class OrderEditService {
         : null;
 
     await this.prisma.$transaction(async (tx) => {
-      // Khoá đơn trước, đọc lại các khoản rồi kiểm lại luật tiền: một lần thu tiền xen vào giữa lúc đọc và lúc ghi không lọt qua.
+      // Khoá đơn rồi kiểm lại luật tiền.
       if (!(await lockOrder(tx, tenantId, id))) {
         throw new NotFoundException({
           code: ErrorCode.ORDER_NOT_FOUND,
@@ -505,7 +494,7 @@ export class OrderEditService {
     if (dto.assigneeId === order.assigneeId)
       return this.reads.findOne(user, tenantId, id);
     await this.manual.assertAssignee(tenantId, dto.assigneeId, order.branchId);
-    // Quyền đến từ việc đang phụ trách thì lúc ghi vẫn phải đang phụ trách: hai người cùng giao lại thì người sau thua.
+    // Người phụ trách phải còn phụ trách lúc ghi.
     await this.claimUnshipped(
       user,
       tenantId,
@@ -518,7 +507,7 @@ export class OrderEditService {
     return this.reads.findOne(user, tenantId, id);
   }
 
-  /** `GET /orders/:id/assignees`: ai nhận được đơn này, cho ô chọn người phụ trách. Chỉ ai đổi được người phụ trách mới xem được. */
+  /** Danh sách người nhận được đơn, cho ô chọn người phụ trách. */
   async listAssignees(user: AuthUser, tenantId: string, id: string) {
     const order = await this.loadEditable(user, tenantId, id, {
       assigneeMayEdit: true,
@@ -532,7 +521,7 @@ export class OrderEditService {
     }));
   }
 
-  /** Báo người mới và người cũ sau khi đã ghi, trừ chính người vừa đổi. Không bao giờ ném lỗi (`notify` nuốt lỗi). */
+  /** Báo người phụ trách mới và cũ, không bao giờ ném lỗi. */
   private async notifyReassigned(
     tenantId: string,
     order: { id: string; code: string; assigneeId: string | null },
@@ -587,10 +576,7 @@ export class OrderEditService {
     return this.reads.findOne(user, tenantId, id);
   }
 
-  /**
-   * Đơn nếu người này được sửa lúc này: trong phạm vi quyền, thuộc hành trình và chưa giao.
-   * `assigneeMayEdit`: người đang phụ trách được bỏ qua phạm vi chi nhánh (vd. đã chuyển nơi làm sau khi nhận đơn), như các bước khác của đơn.
-   */
+  /** Đơn mà người này được sửa lúc này. */
   private async loadEditable(
     user: AuthUser,
     tenantId: string,
@@ -696,7 +682,7 @@ export class OrderEditService {
     }
   }
 
-  /** Chỉ đổi các trường được gửi, miễn là đơn chưa bắt đầu giao trong lúc đó. Lệnh chiếm và sự kiện nằm chung một transaction: `events` chỉ chạy sau khi chiếm được. */
+  /** Chỉ đổi các trường được gửi, khi đơn chưa bắt đầu giao. */
   private async claimUnshipped(
     user: AuthUser,
     tenantId: string,
@@ -727,7 +713,7 @@ export class OrderEditService {
     });
   }
 
-  /** Đổi người phụ trách: tên hai người (không phải id) nằm trong `changes` để màn hình hiện thẳng, id nằm trong `metadata`. Không đổi thì không ghi gì. */
+  /** Dựng thay đổi người phụ trách cho nhật ký. */
   private async assigneeEvents(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -754,7 +740,7 @@ export class OrderEditService {
     ];
   }
 
-  /** Sự kiện của một lần `PATCH /orders/:id`: EDITED (trường + dòng), rồi ASSIGNEE_CHANGED, PRIORITY_CHANGED nếu có. Mọi giá trị trong `changes` là dạng hiển thị được: tên thay cho id, số thay cho Decimal. */
+  /** Dựng các sự kiện của một lần sửa đơn. */
   private async editEvents(
     tx: Prisma.TransactionClient,
     ctx: {
@@ -896,10 +882,7 @@ export class OrderEditService {
     return events;
   }
 
-  /**
-   * Tính lại giá đơn theo quy tắc lúc tạo. Trường bỏ trống được lấy từ đơn: dòng (dòng cũ giữ giá đã thỏa thuận trừ khi gửi giá mới),
-   * khuyến mãi và giảm giá tay.
-   */
+  /** Tính lại giá đơn theo quy tắc lúc tạo. */
   private async reprice(
     tenantId: string,
     order: Awaited<ReturnType<OrderEditService['loadEditable']>>,
@@ -986,10 +969,7 @@ export class OrderEditService {
     };
   }
 
-  /**
-   * Ghi các dòng đã có nhưng được tính lại giá: dòng bị bỏ thì xóa (con combo đi theo nhờ cascade), dòng giữ thì cập nhật tại chỗ,
-   * con combo co giãn theo số lượng mới và chuyển sang kho xuất mới. Dòng mới do bên gọi insert.
-   */
+  /** Ghi lại các dòng đã có: xoá dòng bị bỏ, cập nhật dòng giữ. */
   private async writeLines(
     tx: Prisma.TransactionClient,
     order: { items: ExistingLine[] },
@@ -1042,7 +1022,7 @@ export class OrderEditService {
   }
 }
 
-/** Kho xuất của dòng đã có. Dòng COMBO không lưu kho (các thành phần mang), nên lấy từ thành phần đầu tiên có hàng. */
+/** Kho xuất của một dòng đã có. */
 function sourceOf(
   line: ExistingLine,
   all: readonly ExistingLine[],

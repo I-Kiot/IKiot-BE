@@ -3,7 +3,7 @@ import { SystemRole } from '../../common/constants/system-role';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Phạm vi dữ liệu dashboard của người gọi. Tài khoản gắn chi nhánh/kho chỉ thấy nơi đó; không gắn gì thì thấy cả tenant. Nên thủ quỹ có `reports:read` chỉ thấy chi nhánh của mình. */
+/** Phạm vi dữ liệu dashboard theo nơi làm việc của người gọi. */
 
 export interface LocationScope {
   branchId?: string;
@@ -18,7 +18,7 @@ function seesWholeTenant(user: AuthUser): boolean {
   );
 }
 
-/** Phạm vi cho những gì đếm từ `Order`. Kho cũng tạo được đơn nên tài khoản gắn kho thấy đơn bán tại kho của mình. */
+/** Phạm vi cho số liệu từ đơn hàng. */
 export function orderScope(
   user: AuthUser,
   requestedBranchId?: string,
@@ -41,7 +41,7 @@ export function orderScope(
   return requestedBranchId ? { branchId: requestedBranchId } : {};
 }
 
-/** Phạm vi cho những gì đếm từ `CashFlow` hoặc `Inventory`, có ở cả chi nhánh lẫn kho. Khi chủ chọn cả hai, kho được ưu tiên - bộ lọc cũ kiểm tra kho trước và tài liệu Swagger hứa thứ tự đó. */
+/** Phạm vi cho số liệu từ dòng tiền hoặc tồn kho. */
 export function locationScope(
   user: AuthUser,
   requestedBranchId?: string,
@@ -66,7 +66,7 @@ export function locationScope(
   return {};
 }
 
-/** Tài khoản có gắn nơi làm việc được truyền chính địa điểm của mình làm bộ lọc; chọn địa điểm người khác thì bị từ chối, không bỏ qua, vì bản cũ bỏ qua khiến quản lý tưởng đang xem chi nhánh khác khi đọc số của mình. */
+/** Chọn địa điểm khác nơi mình làm thì từ chối. */
 function assertOwnLocation(
   requested: string | undefined,
   own: string,

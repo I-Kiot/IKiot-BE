@@ -5,10 +5,7 @@ import {
   CashFlowFund,
 } from '../../../common/constants/cash-flow-category';
 
-/**
- * Tên tiếng Việt của các mã in trong file báo cáo: file xuất không in mã thô như API trả cho dashboard (dashboard tự dịch ở FE).
- * Cùng câu chữ với `IKiot-FE/src/lib/stats-format.ts`; mã chưa có tên thì in nguyên mã.
- */
+/** Tên tiếng Việt của các mã trong file báo cáo, khớp `IKiot-FE/src/lib/stats-format.ts`. */
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PENDING_CONFIRMATION]: 'Chờ xác nhận',
@@ -58,7 +55,7 @@ const SEPAY_OUTCOME_LABELS: Record<string, string> = {
   UNMATCHED: 'Không gắn được đơn',
 };
 
-/** Cùng câu chữ với `JOURNAL_ENTRY_TYPE_LABELS` / `JOURNAL_SOURCE_LABELS` của FE (cột Loại, Nguồn của Sổ doanh thu). */
+/** Tên loại và nguồn của sổ doanh thu. */
 const JOURNAL_ENTRY_TYPE_LABELS: Record<string, string> = {
   SALE: 'Bán hàng',
   RETURN: 'Trả hàng',

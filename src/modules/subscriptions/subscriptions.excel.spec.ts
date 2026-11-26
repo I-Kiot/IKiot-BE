@@ -8,7 +8,7 @@ const bodyOf = (error: unknown) =>
     message: string;
   };
 
-// Excel sheet "Subscriptions" - SubscriptionService (UTC011-UTC030).
+// Sheet Excel "Subscriptions" - SubscriptionService (UTC011-UTC030).
 describe('Excel sheet Subscriptions - SubscriptionService', () => {
   let prisma: any;
   let realtime: { emitToRoom: jest.Mock };

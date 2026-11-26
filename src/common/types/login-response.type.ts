@@ -1,7 +1,7 @@
-/** Phần của response đăng nhập mà AuditInterceptor đọc; AuthService khai báo qua `satisfies`, nên đổi response sẽ thành lỗi build thay vì một dòng audit trống. */
+/** Phần response đăng nhập mà AuditInterceptor đọc. */
 export interface AuditableLoginResponse {
   accessToken: string;
-  /** Interceptor không đọc trường này, nhưng `satisfies` kiểm tra excess property trên literal, nên mọi key trả về phải được khai báo. */
+  /** Khai báo để `satisfies` không báo thừa trường. */
   refreshToken: string;
   user: {
     id: string;

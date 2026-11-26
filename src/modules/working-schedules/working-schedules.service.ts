@@ -65,10 +65,7 @@ interface ResolvedAssignment {
   endAt: Date;
 }
 
-/**
- * Lịch làm việc là một ca trong một ngày có nhiều người; phân ca theo lô vì quản lý xếp cả tuần một lần.
- * Đã bỏ có chủ đích `deduplicateWorkingSchedules` (Postgres chặn trùng bằng partial unique index) và `validateRoleHierarchy` (các role đó không còn).
- */
+/** Lịch làm việc: một ca nhiều người, xếp theo lô. */
 @Injectable()
 export class WorkingScheduleService {
   constructor(
@@ -77,7 +74,7 @@ export class WorkingScheduleService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** Các dòng rơi vào cùng một slot được gộp thành một lịch, không ghi hai lần; nhờ vậy thêm người vào ca đã có sẵn vẫn hoạt động. */
+  /** Gộp các dòng cùng slot thành một lịch. */
   async createBulk(
     tenantId: string,
     actorId: string,
@@ -94,7 +91,7 @@ export class WorkingScheduleService {
       saved.push(await this.upsertSlot(tenantId, actorId, assignment));
     }
 
-    // Mỗi người nhận một thông báo, không theo từng dòng (xếp một tuần tạo nhiều lịch cho cùng một người). Bỏ qua người thực hiện.
+    // Mỗi người một thông báo.
     const recipients = [
       ...new Set(
         saved.flatMap((row) => row.assignedUsers.map((a) => a.userId)),
@@ -196,7 +193,7 @@ export class WorkingScheduleService {
     };
   }
 
-  /** Trả `{ data: null }` thay vì 404 vì không có ca là kết quả bình thường (máy bán hàng hỏi lúc khởi động). Kèm `serverTime` để client không phải tin đồng hồ của mình. */
+  /** Ca hiện tại, null nếu không có; kèm giờ server. */
   async findCurrent(tenantId: string, userId: string) {
     const now = new Date();
     const schedule = await this.prisma.workingSchedule.findFirst({
@@ -355,7 +352,7 @@ export class WorkingScheduleService {
     });
   }
 
-  /** Mọi người được xếp ca phải là tài khoản STAFF đang hoạt động trong tenant; đây là phần còn lại của kiểm tra cũ sau khi bỏ `validateRoleHierarchy`. */
+  /** Người được xếp ca phải là nhân viên đang hoạt động. */
   private async assertStaffOfTenant(tenantId: string, userIds: string[]) {
     if (userIds.length === 0) return;
     const found = await this.prisma.user.count({
@@ -435,9 +432,7 @@ export class WorkingScheduleService {
       });
     }
 
-    // Người đã có trong ca bị `assertNotAlreadyAssigned` từ chối từ trước (bug DEF-ST-08: trước đây là no-op trả 201).
-    // Không `skipDuplicates`: hai request cùng phân một người đã qua kiểm tra thì khoá `@@id([scheduleId, userId])`
-    // làm người chậm hơn nhận P2002 → 409, thay vì cả hai cùng báo thành công.
+    // Không bỏ qua trùng: trùng thì 409.
     const already = new Set(existing.assignedUsers.map((a) => a.userId));
     const toAdd = assignment.userIds.filter((id) => !already.has(id));
     return this.prisma.workingSchedule.update({
@@ -454,10 +449,7 @@ export class WorkingScheduleService {
     });
   }
 
-  /**
-   * Từ chối phân lại một người vào đúng ca (cùng loại, ca mẫu, ngày, giờ) họ đã có. Một query cho cả lô:
-   * tải mọi lịch còn sống của các slot trong lô, rồi đối chiếu người trong bộ nhớ.
-   */
+  /** Từ chối xếp lại người vào đúng ca họ đã có. */
   private async assertNotAlreadyAssigned(
     tenantId: string,
     assignments: ResolvedAssignment[],
@@ -521,7 +513,7 @@ export class WorkingScheduleService {
     }
   }
 
-  /** Không ai được ở hai ca chồng nhau. Mỗi assignment một query; trường hợp trùng trong cùng batch được bắt vì dòng sau đối chiếu với dòng đã lưu trước đó. */
+  /** Không ai ở hai ca chồng nhau. */
   private async assertNoOverlap(
     tenantId: string,
     assignment: ResolvedAssignment,
@@ -554,7 +546,7 @@ export class WorkingScheduleService {
     }
   }
 
-  // ─── Filters ───────────────────────────────────────────────────────────────
+  // ─── Bộ lọc ───
 
   private buildWhere(
     tenantId: string,
@@ -604,7 +596,7 @@ export class WorkingScheduleService {
     return where;
   }
 
-  // ─── Decoration ────────────────────────────────────────────────────────────
+  // ─── Trang trí ───
 
   private async decorate(tenantId: string, rows: ScheduleRow[]) {
     if (rows.length === 0) return [];

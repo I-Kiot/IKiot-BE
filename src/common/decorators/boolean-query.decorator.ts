@@ -2,9 +2,7 @@ import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsOptional } from 'class-validator';
 
-/**
- * Cờ boolean tuỳ chọn trên query. Chỉ `'true'` / `'false'` thành boolean; giá trị khác giữ nguyên để `IsBoolean` trả 400, không bao giờ âm thầm thành `false` (`?hasDebt=yes` từng liệt kê mọi NCC).
- */
+/** Cờ boolean trên query: chỉ nhận 'true'/'false', giá trị khác trả 400. */
 export function BooleanQuery(message?: string): PropertyDecorator {
   return applyDecorators(
     IsOptional(),

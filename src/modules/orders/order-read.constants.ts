@@ -1,8 +1,8 @@
 import { OrderPriority } from '../../common/constants/order-status';
 
-// Hằng số chỉ dùng cho đọc đơn (A-9). Đặt ở đây thay vì common/constants để task này không sửa file dùng chung; chuyển đi nếu module khác cần.
+// Hằng số cho phần đọc đơn.
 
-/** `stockCheck.status` của dòng (Đủ hàng / Thiếu một phần / Hết hàng): tính lúc đọc theo tồn trên kệ, không lưu; không phải số đã giữ cho đơn. `stockSummary` của đơn là dòng tệ nhất. */
+/** Tình trạng hàng của dòng tính theo tồn trên kệ. */
 export const StockCheckStatus = {
   ENOUGH: 'ENOUGH',
   PARTIAL: 'PARTIAL',
@@ -15,14 +15,14 @@ export type StockCheckStatus =
 export const STOCK_CHECK_STATUSES: readonly string[] =
   Object.values(StockCheckStatus);
 
-/** Xếp từ tệ nhất: `stockSummary` của đơn là giá trị đầu tiên trong danh sách này mà có dòng nào đó mang. */
+/** Thứ tự từ tệ nhất để tính `stockSummary`. */
 export const STOCK_CHECK_SEVERITY: readonly StockCheckStatus[] = [
   StockCheckStatus.OUT,
   StockCheckStatus.PARTIAL,
   StockCheckStatus.ENOUGH,
 ];
 
-/** `Payment.kind` (FULL | DEPOSIT | BALANCE | REFUND). BALANCE là khoản shipper thu khi giao; `collection` và `cashRemittanceStatus` đọc từ dòng này. */
+/** Loại khoản thanh toán; BALANCE là khoản shipper thu khi giao. */
 export const PaymentKind = {
   FULL: 'FULL',
   DEPOSIT: 'DEPOSIT',
@@ -32,7 +32,7 @@ export const PaymentKind = {
 
 export type PaymentKind = (typeof PaymentKind)[keyof typeof PaymentKind];
 
-/** Các kiểu sắp xếp của `GET /orders`. Mỗi kiểu có một chiều cố định (mới nhất, giao sớm nhất, gấp nhất trước) vì đó là thứ màn hình cần. */
+/** Các kiểu sắp xếp của `GET /orders`. */
 export const ORDER_SORTS = [
   'createdAt',
   'requestedDeliveryDate',
@@ -41,14 +41,14 @@ export const ORDER_SORTS = [
 
 export type OrderSort = (typeof ORDER_SORTS)[number];
 
-/** Gấp nhất trước. `priority` là cột chuỗi nên DB sắp theo bảng chữ cái (HIGH < NORMAL < URGENT); danh sách duyệt lần lượt các nhóm này thay vì nhờ DB. */
+/** Sắp gấp nhất trước theo từng mức ưu tiên. */
 export const PRIORITY_SORT_ORDER: readonly string[] = [
   OrderPriority.URGENT,
   OrderPriority.HIGH,
   OrderPriority.NORMAL,
 ];
 
-/** Đơn bị gắn cờ "cần chú ý" ở bộ lọc `attention` và `GET /orders/alerts`: có dòng thiếu trên kệ, hoặc ngày giao khách sắp tới (hoặc đã qua). */
+/** Lý do đơn cần chú ý: thiếu hàng hoặc sắp tới ngày giao. */
 export const ORDER_ATTENTION_KINDS = [
   'SHORT',
   'DUE_SOON',
@@ -57,5 +57,5 @@ export const ORDER_ATTENTION_KINDS = [
 
 export type OrderAttentionKind = (typeof ORDER_ATTENTION_KINDS)[number];
 
-/** "Sắp tới ngày giao": ngày giao là hôm nay hoặc trong vòng ngần này ngày tính từ hôm nay. Ngày đã quá cũng tính: đó là trường hợp gấp nhất, không được miễn. */
+/** Số ngày tính là sắp tới ngày giao (kể cả đã quá). */
 export const DUE_SOON_DAYS = 2;

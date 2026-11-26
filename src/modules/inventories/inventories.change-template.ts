@@ -13,9 +13,9 @@ import {
   readString,
 } from '../../common/realtime/change-ref';
 
-/** Nội dung feed `entity:changed` của hàng hỏng (2026-11-26). Chỉ tên người làm + động từ + SKU, không số lượng / giá trị. */
+/** Nội dung feed `entity:changed` của hàng hỏng. */
 
-/** Body là dòng tồn `{ id, productItem: { sku, productName } }` (`InventoryService.changeDamaged`). Đọc mềm: thiếu thì `null`. */
+/** Đọc dòng tồn từ body. */
 export function inventoryTarget({
   body,
   params,

@@ -26,11 +26,7 @@ const SOCKET_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 type AuthedRequest = Request & { user?: AuthUser };
 
-/**
- * Phát `entity:changed` sau mỗi handler có `@EmitsChange` thành công. Đăng ký SAU `AuditInterceptor` nên là lớp trong cùng, thấy body thô của handler (chưa bọc envelope).
- * Chỉ phát khi observable phát giá trị: lỗi làm observable lỗi nên `tap.next` không chạy, và handler đã resolve nghĩa là `$transaction` của service đã commit.
- * Việc phát là fire-and-forget và không bao giờ đổi hay làm chậm response.
- */
+/** Phát `entity:changed` sau khi handler có `@EmitsChange` thành công, không ảnh hưởng response. */
 @Injectable()
 export class ChangeFeedInterceptor implements NestInterceptor {
   private readonly logger = new Logger(ChangeFeedInterceptor.name);

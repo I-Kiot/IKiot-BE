@@ -5,13 +5,13 @@ import { SepayTransactionOutcome } from '../../../common/constants/payment-metho
 
 const OUTCOMES: readonly string[] = Object.values(SepayTransactionOutcome);
 
-/** Query của `GET /sepay-transactions`: danh sách ngoại lệ của sổ SePay (tiền về chưa chốt, chốt thiếu, trả dư, không gắn được đơn). */
+/** Query sổ giao dịch SePay. */
 export class QuerySepayTransactionDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(OUTCOMES, { message: `outcome phải là ${OUTCOMES.join(', ')}` })
   outcome?: string;
 
-  /** `true`: chỉ những dòng còn việc phải làm (chưa xử lý và là REJECTED, UNMATCHED, SETTLED_PARTIAL hay có tiền dư). */
+  /** Chỉ giao dịch còn cần xử lý. */
   @BooleanQuery()
   unresolved?: boolean;
 

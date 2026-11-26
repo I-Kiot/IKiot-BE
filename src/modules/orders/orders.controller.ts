@@ -61,7 +61,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { EmitsChange } from '../../common/realtime/emits-change.decorator';
 import { OrderChanges } from './orders.change-template';
 
-/** Bản port của OrderController, cộng các route hành trình và webhook SePay. Không có DELETE: đơn không nên có thì chuyển sang CANCELLED hoặc RETURNED, cả hai đều để lại dấu vết. */
+/** Controller đơn hàng: quầy, hành trình đơn và webhook SePay. */
 @ApiTags('orders')
 @ApiBearerAuth('bearer')
 @Controller('orders')
@@ -97,10 +97,7 @@ export class OrderController {
     return this.service.createPosSale(user, requireTenantId(user), dto);
   }
 
-  /**
-   * "Hủy đơn này" trên màn QR của quầy: huỷ đơn quầy đang chờ QR, trả hàng về kho. `orders:create` hoặc `orders:update` là qua cửa; người chỉ có `create` chỉ huỷ được đơn do chính mình lên (service kiểm).
-   * Khai báo trên `:id` để "pos" không bị đọc thành mã đơn.
-   */
+  /** Huỷ đơn quầy đang chờ QR; người chỉ có `orders:create` chỉ huỷ được đơn của mình. */
   @Permissions('orders', 'create', 'update')
   @HttpCode(HttpStatus.OK)
   @Post('pos/:id/cancel')
@@ -113,9 +110,7 @@ export class OrderController {
     return this.service.cancelPosSale(user, requireTenantId(user), id, dto);
   }
 
-  /**
-   * Phát mã QR cho phần còn lại của đơn quầy chờ SePay (khách chuyển thiếu, hay mã cũ hết hạn mà đơn chưa bị huỷ). Quyền như "Hủy đơn này": `orders:create` (chỉ đơn của mình) hoặc `orders:update`. Trả `{ order, qrUrl, qrExpiresAt, amount }`.
-   */
+  /** Phát mã QR cho phần còn lại của đơn quầy chờ SePay. */
   @Permissions('orders', 'create', 'update')
   @HttpCode(HttpStatus.OK)
   @Post('pos/:id/qr')
@@ -133,7 +128,7 @@ export class OrderController {
     return this.reads.findAll(user, requireTenantId(user), query);
   }
 
-  /** Số đơn cần chú ý (thiếu hàng trên kệ, sắp tới ngày giao). Khai báo trên `:id`, nếu không sẽ bị đọc thành mã đơn. */
+  /** Số đơn cần chú ý. */
   @Permissions('orders', 'read')
   @Get('alerts')
   alerts(
@@ -159,7 +154,7 @@ export class OrderController {
     return this.reads.findOne(user, requireTenantId(user), id);
   }
 
-  /** Nhật ký thao tác trên đơn (cũ nhất trước, không phân trang). Cùng quyền và phạm vi chi nhánh với `GET /orders/:id`. */
+  /** Nhật ký thao tác của đơn. */
   @Permissions('orders', 'read')
   @Get(':id/events')
   events(
@@ -169,7 +164,7 @@ export class OrderController {
     return this.reads.events(user, requireTenantId(user), id);
   }
 
-  /** Sửa đơn hành trình trước khi giao (A-8). Chỉ sửa dòng khi còn CONFIRMED; đã đóng gói thì hàng bị khóa trên kệ (contract §2). */
+  /** Sửa đơn hành trình trước khi giao. */
   @Permissions('orders', 'update')
   @Patch(':id')
   @EmitsChange(OrderChanges.edited)
@@ -181,10 +176,7 @@ export class OrderController {
     return this.edits.update(user, requireTenantId(user), id, dto);
   }
 
-  /**
-   * Người có thể phụ trách đơn này (nhân viên làm tại nơi bán, và chủ shop), cho ô chọn ở danh sách đơn. Cùng luật quyền với `PATCH :id/assignee`.
-   * **Cố ý không có `@Permissions`**: người đang phụ trách được xem dù không có `orders:update`; quyền kiểm trong service (`assertReassignAccess`).
-   */
+  /** Người có thể phụ trách đơn; quyền kiểm trong service. */
   @Get(':id/assignees')
   listAssignees(
     @CurrentUser() user: AuthUser,
@@ -193,10 +185,7 @@ export class OrderController {
     return this.edits.listAssignees(user, requireTenantId(user), id);
   }
 
-  /**
-   * Đổi người phụ trách mà không cần mở form sửa (A-8). Chủ shop, người đang phụ trách (giao lại), hoặc người có `orders:update` (chốt 2026-11-08).
-   * **Cố ý không có `@Permissions`**: guard chạy trước khi biết ai đang phụ trách đơn, nên quyền kiểm trong service (`assertReassignAccess`).
-   */
+  /** Đổi người phụ trách; quyền kiểm trong service. */
   @Patch(':id/assignee')
   @EmitsChange(OrderChanges.assigneeChanged)
   setAssignee(
@@ -219,7 +208,7 @@ export class OrderController {
     return this.edits.setPriority(user, requireTenantId(user), id, dto);
   }
 
-  /** Làm dòng thành đơn may theo số đo (A-4). Lần đầu dòng có ProductItem riêng; chỉ khi còn CONFIRMED, và bị khóa khi yêu cầu sản xuất của dòng đã gửi. */
+  /** Lưu thông số may đo cho dòng đơn. */
   @Permissions('orders', 'update')
   @Put(':id/items/:itemId/customization')
   @EmitsChange(OrderChanges.customized)
@@ -238,7 +227,7 @@ export class OrderController {
     );
   }
 
-  /** Chủ xác nhận shipper đã nộp đủ tiền thu khi giao (RECEIVED → COMPLETED). Có quyền riêng: đếm tiền không phải là sửa đơn. */
+  /** Chủ shop xác nhận shipper đã nộp đủ tiền. */
   @Permissions('orders', 'confirm_cash')
   @HttpCode(HttpStatus.OK)
   @Post(':id/confirm-remittance')
@@ -267,9 +256,7 @@ export class OrderController {
     );
   }
 
-  /**
-   * Đóng đơn (C-1): CONFIRMED → PACKED, khoá hàng, chặn nếu trên kệ thiếu. **Cố ý không có `@Permissions`**: người phụ trách đóng được đơn của mình mà không cần quyền trong role (2026-10-06), nên quyền kiểm trong service (`assertOrderStepAccess`): chủ shop, người phụ trách, hoặc `orders:pack` tại kho xuất. `pack` vẫn là quyền riêng để người đóng gói không sửa được đơn.
-   */
+  /** Đóng gói đơn: CONFIRMED → PACKED; quyền kiểm trong service. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pack')
   @EmitsChange(OrderChanges.packed)
@@ -281,9 +268,7 @@ export class OrderController {
     return this.fulfillments.packOrder(user, id, dto);
   }
 
-  /**
-   * C-2: PICKED_UP → SHIPPING, bước trừ tồn kho (đúng phần đã khoá lúc đóng gói). **Cố ý không có `@Permissions`**, cùng lý do với `pack`: chủ shop, người phụ trách, hoặc `orders:ship` tại kho của fulfillment, kiểm trong `ShipmentService.shipOrder`.
-   */
+  /** Bắt đầu vận chuyển: PICKED_UP → SHIPPING, trừ tồn; quyền kiểm trong service. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/ship')
   @EmitsChange(OrderChanges.shipped)
@@ -295,9 +280,7 @@ export class OrderController {
     return this.shipments.shipOrder(user, requireTenantId(user), id, dto);
   }
 
-  /**
-   * Đơn khách tới lấy, đang chờ khách (PACKED): thu số còn lại tại quầy. **Cố ý không có `@Permissions`**, cùng lý do với `ship`: chủ shop, hoặc `orders:ship` tại kho xuất, kiểm trong `OrderPickupService`.
-   */
+  /** Thu số còn lại tại quầy của đơn khách tới lấy. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pickup/collect')
   @EmitsChange(OrderChanges.pickupCollected)
@@ -309,7 +292,7 @@ export class OrderController {
     return this.pickups.collect(user, requireTenantId(user), id, dto);
   }
 
-  /** Đơn khách tới lấy đã thu đủ: giao hàng cho khách, trừ tồn, PACKED → COMPLETED. Quyền kiểm trong `OrderPickupService`. */
+  /** Giao hàng cho khách tới lấy đã thu đủ. */
   @HttpCode(HttpStatus.OK)
   @Post(':id/pickup/hand-over')
   @EmitsChange(OrderChanges.pickupHandedOver)
@@ -321,7 +304,7 @@ export class OrderController {
     return this.pickups.handOver(user, requireTenantId(user), id, dto);
   }
 
-  /** Hủy đơn hành trình trước khi hàng rời kho (A-5): CONFIRMED / PACKED / PICKED_UP. Đơn đã đóng gói thì hàng khóa trả về kệ; cọc hoàn theo số tiền người gọi chỉ định. */
+  /** Huỷ đơn hành trình trước khi hàng rời kho. */
   @Permissions('orders', 'update')
   @HttpCode(HttpStatus.OK)
   @Post(':id/cancel')
@@ -334,7 +317,7 @@ export class OrderController {
     return this.cancels.cancel(user, requireTenantId(user), id, dto);
   }
 
-  /** Quyết định tiền treo của đơn đã kết thúc (hoàn hoặc giữ làm thu nhập khác). Quyền `returns:inspect` như `refund-excess`. */
+  /** Quyết định tiền treo của đơn đã kết thúc. */
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/settle-held')
@@ -347,7 +330,7 @@ export class OrderController {
     return this.heldSettle.settle(user, requireTenantId(user), id, dto);
   }
 
-  /** Hoàn phần khách chuyển dư của đơn đã chốt (Phase 6). Dùng quyền kiểm hàng trả `returns:inspect` (không có quyền hoàn tiền riêng, quyết định D1). */
+  /** Hoàn phần khách chuyển dư. */
   @Permissions('returns', 'inspect')
   @HttpCode(HttpStatus.OK)
   @Post(':id/refund-excess')
@@ -365,7 +348,7 @@ export class OrderController {
     );
   }
 
-  /** Chốt đơn SePay đã trả bằng cách khác. Có một trong hai quyền là đủ, khớp với authorize orders update / pay_offline cũ, để role chỉ có `orders:update` không mất quyền khi port sang. */
+  /** Chốt đơn SePay đã trả bằng cách khác. */
   @Permissions('orders', 'update', 'pay_offline')
   @HttpCode(HttpStatus.OK)
   @Post(':id/pay-offline')
@@ -385,7 +368,7 @@ export class OrderController {
   }
 }
 
-/** Luôn trả 200 vì SePay retry mọi mã khác. Mã tham chiếu chỉ tra trong tenant đã xác định, nên tiền vào tài khoản shop B không chốt được đơn của shop A. */
+/** Webhook SePay, luôn trả 200. */
 @ApiTags('orders')
 @Controller('webhook/sepay')
 export class SepayOrderWebhookController {
@@ -409,7 +392,7 @@ export class SepayOrderWebhookController {
 
       // SePay gửi "Apikey <key>", không phải "Bearer <key>".
       const apiKey = authHeader?.replace(/^Apikey\s+/i, '').trim() ?? '';
-      // Giao dịch chuẩn hoá một lần, kèm khoá chống lặp: không có mã giao dịch thì dùng mã ngân hàng hoặc băm các trường (`sepayDedupeKey`).
+      // Chuẩn hoá giao dịch kèm khoá chống lặp.
       const transfer = sepayTransferFromPayload(payload);
       const content =
         typeof payload.content === 'string' ? payload.content : '';
@@ -417,7 +400,7 @@ export class SepayOrderWebhookController {
 
       const tenant = await this.sepay.resolveTenant(apiKey, payload);
       if (!tenant) {
-        // Chỉ khi webhook dùng key dùng chung (SePay thật, chưa biết tài khoản của shop nào) mới ghi sổ "tài khoản không thuộc shop nào" và báo operator; key sai / thiếu thì không ghi gì, để kẻ lạ không làm đầy sổ.
+        // Chỉ ghi sổ "không thuộc shop nào" khi webhook dùng key dùng chung.
         if (this.sepay.isSharedKey(apiKey) && transfer.amount > 0) {
           const recorded = await this.sepay.recordUnmatched(
             null,
@@ -450,12 +433,12 @@ export class SepayOrderWebhookController {
         reference,
         transfer,
       );
-      // Trùng giao dịch, tiền về muộn bị từ chối, chuyển thiếu: đều đã ghi sổ (+ báo chủ shop / người thu) nên trả success: true để SePay thôi gọi lại.
+      // Đã ghi sổ nên trả success để SePay thôi gọi lại.
       if (order) {
         return { success: true, message: order.message };
       }
 
-      // 2. Thu tiền QR lúc giao / tại quầy (C-5): mã nằm trên khoản thanh toán của đơn có giao / khách tới lấy.
+      // Thu tiền QR lúc giao / tại quầy.
       const outcome = await this.delivery.settleSepayTransfer(
         tenant.id,
         reference,

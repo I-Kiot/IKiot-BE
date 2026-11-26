@@ -20,7 +20,7 @@ export interface CategoryNode extends Category {
   children: CategoryNode[];
 }
 
-/** Port từ CategoryService; như brands, category đã gắn theo tenant khi port. Phần xử lý cây, breadcrumb và vòng lặp được giữ nguyên cho bộ chọn của frontend. */
+/** Service danh mục theo tenant, dạng cây. */
 @Injectable()
 export class CategoryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -48,7 +48,7 @@ export class CategoryService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** Lấy cả rừng danh mục trong một query rồi ghép trên bộ nhớ: cây nhỏ và được đọc liên tục, nên giữ một round trip thay vì CTE đệ quy. */
+  /** Lấy cả cây danh mục trong một truy vấn. */
   async findTree(tenantId: string): Promise<CategoryNode[]> {
     const categories = await this.prisma.category.findMany({
       where: { tenantId },
@@ -65,7 +65,7 @@ export class CategoryService {
       const parent = category.parentId
         ? byId.get(category.parentId)
         : undefined;
-      // Danh mục có cha bị thiếu (hoặc thuộc tenant khác) được đưa lên gốc thay vì bỏ đi, để lỗi dữ liệu không bao giờ làm mất sản phẩm khỏi bộ chọn.
+      // Danh mục mất cha thì đưa lên gốc.
       if (parent) parent.children.push(node);
       else roots.push(node);
     }
@@ -84,7 +84,7 @@ export class CategoryService {
     return category;
   }
 
-  /** Mọi danh mục của tenant, key theo id. Các lần đi lên cha từng tốn một query mỗi cấp, và `findTree` đã chứng minh cả rừng vừa trong một query. */
+  /** Mọi danh mục của tenant theo id. */
   private async categoriesById(
     tenantId: string,
   ): Promise<Map<string, Category>> {
@@ -94,7 +94,7 @@ export class CategoryService {
     return new Map(categories.map((category) => [category.id, category]));
   }
 
-  /** Chuỗi từ `startFromId` lên tới gốc, gốc đứng đầu và gồm cả chính nó; dừng ở MAX_DEPTH để chu kỳ cha trong dữ liệu không quay vô hạn. */
+  /** Chuỗi từ danh mục lên gốc, có giới hạn độ sâu. */
   private ancestorsOf(
     byId: Map<string, Category>,
     startFromId: string | null,
@@ -155,7 +155,7 @@ export class CategoryService {
       });
     }
 
-    // Chuỗi tổ tiên mà danh mục sẽ có (kể cả cha đề xuất); nếu đi qua chính danh mục này thì việc chuyển sẽ tạo vòng lặp.
+    // Chặn chuyển danh mục tạo vòng lặp.
     const byId = await this.categoriesById(tenantId);
     const wouldBeAncestors = this.ancestorsOf(byId, newParentId);
     if (wouldBeAncestors.some((ancestor) => ancestor.id === categoryId)) {
@@ -166,7 +166,7 @@ export class CategoryService {
     }
   }
 
-  /** Hai danh mục cùng cha không được trùng tên (không phân biệt hoa thường, bỏ khoảng trắng hai đầu). Khác cha thì trùng được: "Khác" dưới nhiều nhóm là bình thường. */
+  /** Danh mục cùng cha không trùng tên. */
   private async assertNameFree(
     tenantId: string,
     name: string,
@@ -224,7 +224,7 @@ export class CategoryService {
         data: dto.name === undefined ? dto : { ...dto, name: dto.name.trim() },
       });
 
-      // `Product.categoryName` là bản sao phi chuẩn hoá cho màn danh sách, nên phải đổi theo khi đổi tên. iKiotMS-BE trước đây không làm, và mọi sản phẩm vẫn hiện tên cũ.
+      // Cập nhật tên danh mục trên sản phẩm khi đổi tên.
       if (renamed) {
         await tx.product.updateMany({
           where: { tenantId, categoryId: id },
@@ -239,7 +239,7 @@ export class CategoryService {
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
 
-    // `Category.parentId` là onDelete: Restrict và `Product.categoryId` là FK thường; nếu không kiểm trước, cả hai sẽ thành lỗi ràng buộc không được xử lý.
+    // Kiểm còn danh mục con hoặc sản phẩm trước khi xoá.
     const [children, products] = await Promise.all([
       this.prisma.category.count({ where: { parentId: id } }),
       this.prisma.product.count({ where: { categoryId: id } }),

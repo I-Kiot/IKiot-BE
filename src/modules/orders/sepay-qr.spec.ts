@@ -226,7 +226,7 @@ describe('decideSepayTransfer', () => {
   });
 });
 
-/** Mọi mã QR phải qua `sepayQrView`: ngoài file định nghĩa và `sepay-qr.ts`, không file nào được gọi thẳng hàm dựng link VietQR. */
+/** Mọi link VietQR phải qua `sepayQrView`. */
 describe('buildSepayQrUrl gate', () => {
   const SRC = join(__dirname, '..', '..');
   function tsFilesUnder(dir: string): string[] {

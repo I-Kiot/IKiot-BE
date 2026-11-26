@@ -1,4 +1,4 @@
-// Envelope danh sách mà mọi endpoint list đã port đều trả về - dạng `{ data, pagination }` mà bảng của frontend đã đọc.
+// Envelope danh sách `{ data, pagination }`.
 export interface Paginated<T> {
   data: T[];
   pagination: {

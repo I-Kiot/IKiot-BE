@@ -8,13 +8,13 @@ import {
 } from 'class-validator';
 import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
-// Theo CreateBranchRequestDTO của iKiotMS-BE. Không có `status`: chi nhánh mới luôn ACTIVE (DTO generated cũ cho phép tạo sẵn ở trạng thái đã xoá).
+// Body tạo chi nhánh, luôn ACTIVE.
 export class CreateBranchDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên chi nhánh không được để trống' })
   name: string;
 
-  // Model Mongoose kiểm "ít nhất một SĐT"; Postgres không diễn đạt được trên text[] nên giữ là luật tầng ứng dụng.
+  // Bắt buộc ít nhất một SĐT.
   @IsArray()
   @ArrayNotEmpty({ message: 'Chi nhánh phải có ít nhất một số điện thoại' })
   @IsString({ each: true })

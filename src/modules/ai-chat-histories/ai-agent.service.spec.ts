@@ -7,7 +7,7 @@ import type {
   GeminiClient,
 } from './gemini.client';
 
-/** Model giả: mỗi phần tử là câu trả lời của một lượt; hết script thì trả lời văn bản thường, như model thật. */
+/** Model giả: mỗi phần tử là câu trả lời của một lượt. */
 class FakeGemini implements GeminiClient {
   readonly seen: GenerateOptions[] = [];
 
@@ -93,7 +93,7 @@ describe('AiAgentService.run', () => {
     expect(result.answer).toBe('Doanh thu tháng này là 12.000.000đ.');
     expect(result.steps).toBe(2);
 
-    // Lượt của model phải được đưa vào trước kết quả tool, nếu không request thứ hai có tool answer mà không có call nào yêu cầu.
+    // Đưa lượt của model vào trước kết quả tool.
     const second = gemini.seen[1].contents as Content[];
     expect(second).toHaveLength(3);
     expect(second[1].parts[0]).toHaveProperty('functionCall');
@@ -158,7 +158,7 @@ describe('AiAgentService.run', () => {
     expect(JSON.stringify(second[2])).toContain('reports:read');
   });
 
-  /** Hồi quy mà seam này sinh ra để kiểm tra: vòng lặp cũ throw khi `loopCount >= maxLoops`, làm mất câu trả lời có được ở lượt cho phép cuối. */
+  /** Câu trả lời ở lượt cuối cho phép vẫn được giữ. */
   it('keeps an answer produced on the very last allowed turn', async () => {
     const script = Array.from({ length: MAX_AGENT_STEPS - 1 }, () =>
       toolCall('searchProducts'),
@@ -185,7 +185,7 @@ describe('AiAgentService.run', () => {
     ).rejects.toThrow('exceeded execution loop limit');
   });
 
-  // Custom tool và Google Search grounding không bật cùng lúc được - đó là lý do có bước phân loại trước.
+  // Custom tool và Google Search không bật cùng lúc.
   it('arms tools according to the route', async () => {
     const cases: [AgentRoute, boolean, boolean][] = [
       [AgentRoute.INTERNAL_DATA, true, false],

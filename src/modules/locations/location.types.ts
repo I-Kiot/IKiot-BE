@@ -16,7 +16,7 @@ export const LOCATION_INCLUDE = {
   manager: { select: MANAGER_SELECT },
 } as const;
 
-/** Dòng Location như LocationService đọc và trả về. Chi nhánh / kho không có cột riêng ngoài liên kết, nên mọi thứ API hiện đều nằm ở đây. */
+/** Dòng Location trả về. */
 export type LocationRow = Prisma.LocationGetPayload<{
   include: typeof LOCATION_INCLUDE;
 }>;

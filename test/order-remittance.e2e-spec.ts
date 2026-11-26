@@ -41,9 +41,7 @@ import { UserStatus } from './../src/common/constants/user-status';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-/**
- * Chủ xác nhận đã nhận tiền mặt từ shipper (A-10) trên Postgres thật. Đơn đi đủ luồng: tạo (có cọc) → đóng gói → lấy hàng → đang vận chuyển → giao thu tiền mặt (C-5), rồi mới xác nhận. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm chủ shop xác nhận tiền mặt shipper nộp (Postgres thật). */
 describe('POST /orders/:id/confirm-remittance – OrderRemittanceService', () => {
   let prisma: PrismaService;
   let manual: ManualOrderService;

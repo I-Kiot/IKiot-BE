@@ -18,7 +18,7 @@ function birthYearOf(centurySexCode: number, yearSuffix: string): number {
   return 1900 + Math.floor(centurySexCode / 2) * 100 + Number(yearSuffix);
 }
 
-/** Kiểm tra CCCD 12 số và đối chiếu với hồ sơ: số 1–3 là tỉnh, số 4 là thế kỷ và giới tính, số 5–6 là năm sinh. CCCD lệch với `dob` hoặc `gender` nghĩa là một trường bị nhập sai, nên bắt ngay trước khi dùng. Trả về số đã trim. */
+/** Kiểm CCCD 12 số và đối chiếu ngày sinh, giới tính. */
 export function validateVietnamIdentificationId(
   identificationId: string,
   profile: { dob?: Date | string | null; gender?: string | null } = {},

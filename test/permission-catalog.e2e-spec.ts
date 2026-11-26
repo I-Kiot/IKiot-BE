@@ -4,9 +4,7 @@ import { Test } from '@nestjs/testing';
 import { PrismaModule } from './../src/prisma/prisma.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 
-/**
- * Danh mục quyền trên Postgres thật: `RolePermission` có khoá ngoại vào `permission_catalog`, nên quyền không có dòng trong danh mục thì không gán được cho role nào. Deploy chỉ chạy `prisma migrate deploy`, không chạy seed, nên quyền thêm vào seed sau này phải có migration; ba quyền dưới đây từng bị sót. Tự tạo một tenant riêng và dọn sạch.
- */
+/** Kiểm quyền phải có trong danh mục mới gán được cho role (Postgres thật). */
 describe('Permission catalog – pairs added after the first seed', () => {
   let prisma: PrismaService;
 

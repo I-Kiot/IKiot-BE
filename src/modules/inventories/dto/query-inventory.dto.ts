@@ -5,7 +5,7 @@ import { IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
 
-/** Ghép bằng `IntersectionType` để luật "cái này kéo theo cái kia" chỉ nằm ở `LocationRefQueryDto`, không lệch nhau. */
+/** Ghép query bằng `IntersectionType`. */
 export class QueryInventoryDto extends IntersectionType(
   PaginationQueryDto,
   LocationRefQueryDto,

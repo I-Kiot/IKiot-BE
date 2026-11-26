@@ -7,7 +7,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Chỉ đọc có chủ đích: hoá đơn do vòng đời đơn hàng sinh ra. Dùng `orders:read` vì hoá đơn chỉ là góc nhìn của đơn; permission riêng cho cùng một giao dịch dễ bị cấp lệch nhau. */
+/** Controller hoá đơn, chỉ đọc, quyền `orders:read`. */
 @ApiTags('invoices')
 @ApiBearerAuth('bearer')
 @Controller('invoices')

@@ -23,7 +23,7 @@ const lookups = (over: Partial<ImportLookups> = {}): ImportLookups => ({
   ...over,
 });
 
-// Typed wrappers: jest's asymmetric matchers are `any`, which the lint config refuses to assign.
+// Bọc matcher của jest để có kiểu.
 const anyText = () => expect.any(String) as string;
 const containing = (text: string) => expect.stringContaining(text) as string;
 const arrayContaining = <T>(items: T[]) => expect.arrayContaining(items) as T[];

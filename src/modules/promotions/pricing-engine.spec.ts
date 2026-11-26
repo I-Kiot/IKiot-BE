@@ -33,7 +33,7 @@ function promo(over: Partial<PricingPromotion> = {}): PricingPromotion {
   };
 }
 
-// lineId được cấp tuần tự như `buildCartContext`; chỉ truyền `lineId` tường minh khi test nói về chính id đó.
+// lineId cấp tuần tự như `buildCartContext`.
 let nextLineId = 0;
 beforeEach(() => {
   nextLineId = 0;
@@ -114,7 +114,7 @@ describe('evaluateEligibility', () => {
   });
 
   it('rejects a per-customer-capped promotion on a walk-in cart', () => {
-    // Không có khách thì không kiểm được giới hạn theo khách nên không được cho qua; nếu không, voucher mỗi khách một lần sẽ dùng được ở mọi đơn vãng lai.
+    // Khuyến mãi giới hạn theo khách cần có khách.
     const verdict = evaluateEligibility(
       promo({ usageLimitPerCustomer: 1 }),
       cart([item()], { customerId: null }),
@@ -162,7 +162,7 @@ describe('allocatePerItemDiscount', () => {
   });
 
   it('does not multiply the discount when one variant is on several lines', () => {
-    // Lỗi cũ: phân bổ theo `productItemId` khiến N dòng cùng variant cộng dồn phần của nhau, 10 dòng giảm 10% thành giảm 100% và đơn ghi 0đ.
+    // Phân bổ theo dòng, không theo variant.
     const lines = Array.from({ length: 10 }, () =>
       item({ productItemId: 'same-sku', unitPrice: 100_000 }),
     );

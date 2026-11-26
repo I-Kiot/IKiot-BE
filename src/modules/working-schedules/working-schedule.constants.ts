@@ -20,7 +20,7 @@ export const FILTERABLE_SCHEDULE_STATUSES = [
   ScheduleStatus.CANCELLED,
 ];
 
-/** Trạng thái còn chiếm giờ của người; CANCELLED và DELETED không xung đột với ca nào, nhờ đó xếp lại được sau khi hủy. */
+/** Trạng thái lịch còn chiếm giờ của người. */
 export const LIVE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,

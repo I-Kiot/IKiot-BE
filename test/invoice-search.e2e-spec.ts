@@ -10,9 +10,7 @@ import { QueryOrderJourneyDto } from './../src/modules/orders/dto/query-order-jo
 import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-/**
- * Tìm hoá đơn và đơn theo SĐT khách trên Postgres thật: số lưu chỉ còn chữ số (`0912345678`) nên gõ có dấu cách, dấu chấm hay `+84` vẫn phải ra đúng khách. Tự tạo một tenant riêng và dọn sạch.
- */
+/** Tìm hoá đơn và đơn theo SĐT khách với nhiều cách gõ (Postgres thật). */
 describe('Search by customer phone – invoices and orders', () => {
   let prisma: PrismaService;
   let invoices: InvoiceReadService;

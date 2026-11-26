@@ -9,7 +9,7 @@ import type {
 } from '../../common/realtime/change-feed.types';
 import { readRef, readString } from '../../common/realtime/change-ref';
 
-/** Nội dung feed `entity:changed` của phiếu chuyển / nhập / kiểm kê. Chỉ tên người làm + động từ + nhãn phiếu. */
+/** Nội dung feed `entity:changed` của phiếu kho. */
 
 /** Danh từ theo loại phiếu - cùng nhãn FE hiện ở bảng (`transfers-columns`, `movement-detail-header`). */
 const MOVEMENT_NOUN: Readonly<Record<string, string>> = {
@@ -19,13 +19,13 @@ const MOVEMENT_NOUN: Readonly<Record<string, string>> = {
   IMPORT: 'phiếu nhập hàng',
 };
 
-/** Phiếu không có cột `code`: nhãn là `<danh từ> #<6 ký tự cuối của id>`, giống FE. Thiếu loại phiếu thì dùng "phiếu kho". */
+/** Nhãn phiếu: `<loại> #<6 ký tự cuối id>`. */
 export function movementLabel(id: string, movementType: string | null): string {
   const noun = (movementType && MOVEMENT_NOUN[movementType]) || 'phiếu kho';
   return `${noun} #${id.slice(-6).toUpperCase()}`;
 }
 
-/** Body có `{ id, movementType }`; đọc mềm vì tên khoá chưa kiểm với mọi route (thiếu id thì interceptor chỉ ghi cảnh báo). */
+/** Đọc id và loại phiếu từ body. */
 export function movementTarget({
   body,
   params,

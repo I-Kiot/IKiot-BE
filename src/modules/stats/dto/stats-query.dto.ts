@@ -35,7 +35,7 @@ const upper = () =>
     typeof value === 'string' ? value.toUpperCase() : value,
   );
 
-/** `fromDate` không được sau `toDate`. Validator cho cả khoảng chứ không từng trường, vì từng đầu mút riêng đều hợp lệ. So sánh qua `resolveRange` (cùng cách query parse): `new Date('2026-10-21')` là nửa đêm UTC = 07:00 giờ VN, nên “hôm nay đến bây giờ” gửi lúc 00:00–07:00 từng bị báo ngược. */
+/** Kiểm `fromDate` không sau `toDate`. */
 @ValidatorConstraint({ name: 'rangeIsForwards' })
 class RangeIsForwards implements ValidatorConstraintInterface {
   validate(_: unknown, args: ValidationArguments): boolean {
@@ -49,7 +49,7 @@ class RangeIsForwards implements ValidatorConstraintInterface {
   }
 }
 
-/** Query dùng chung cho mọi endpoint dashboard, tách theo route để mỗi route chỉ nhận phần nó đọc (DTO gộp cũ làm `?sortBy=` bị bỏ qua lặng lẽ ở `/stats/overview`). Hai đầu nhận ISO timestamp đầy đủ hoặc `YYYY-MM-DD` (ngày địa phương); cắt `toDate` về nửa đêm sẽ mất một ngày bán hàng. */
+/** Query dùng chung cho các endpoint dashboard. */
 export class StatsQueryDto {
   @IsOptional()
   @IsISO8601({ strict: false }, { message: 'fromDate không hợp lệ' })
@@ -145,14 +145,14 @@ export const STAFF_GROUP_BY_VALUES: readonly string[] = [
 
 /** `/stats/revenue-by-staff`: doanh thu gắn với ai. */
 export class RevenueByStaffQueryDto extends StatsQueryDto {
-  /** assignee (mặc định, người phụ trách), creator (người lên đơn) hoặc collector (người thu tiền, theo tiền thực thu). */
+  /** Gom doanh thu theo người phụ trách, người lên đơn hoặc người thu tiền. */
   @IsOptional()
   @IsIn(STAFF_GROUP_BY_VALUES, {
     message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
   })
   groupBy: string = 'assignee';
 
-  /** Trang (từ 1) - chỉ phân trang khi có `limit`; không gửi thì trả đủ mọi dòng như trước (export, AI tool, dashboard dùng cách này). */
+  /** Trang (từ 1), chỉ phân trang khi có `limit`. */
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -196,7 +196,7 @@ export const REPORT_SECTIONS: readonly string[] = [
   'inventory',
 ];
 
-/** Bộ lọc của sổ doanh thu, không phân trang: `/stats/export/sales-journal` xuất cả kỳ. Khoảng ngày lọc theo `business_date` (ngày địa phương), không theo giờ. */
+/** Bộ lọc sổ doanh thu, lọc theo `business_date`. */
 export class SalesJournalExportQueryDto extends StatsQueryDto {
   @IsOptional()
   @upper()
@@ -226,7 +226,7 @@ export class SalesJournalQueryDto extends SalesJournalExportQueryDto {
   limit: number = 20;
 }
 
-/** `/stats/export/report`: file của trang Báo cáo chi tiết. Thêm bộ lọc kho cho phần thu chi và tồn kho, như chính trang đó gọi. */
+/** Query xuất file báo cáo chi tiết. */
 export class ReportExportQueryDto extends StatsQueryDto {
   @IsOptional()
   @IsString()
@@ -312,7 +312,7 @@ export class InventoryStatsQueryDto {
 /** Cảnh báo tồn kho: như `/stats/inventory`, là mức tồn "ngay lúc này" nên không có khoảng ngày. */
 export class StockAlertsQueryDto extends InventoryStatsQueryDto {}
 
-/** Tình trạng đơn đang chạy: đếm tại thời điểm gọi, không theo kỳ - một đơn chờ xác nhận từ tuần trước vẫn đang chờ. */
+/** Đếm tình trạng đơn tại thời điểm gọi. */
 export class OrderPipelineQueryDto {
   @IsOptional()
   @IsString()

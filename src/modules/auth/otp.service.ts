@@ -36,7 +36,7 @@ interface OtpEntry {
   sentAt: number;
 }
 
-/** `nguyen@gmail.com` -> `ng***@gmail.com`: giữ tối đa 2 ký tự, ít nhất 1, không bao giờ lộ cả phần local. */
+/** Che email: `nguyen@gmail.com` → `ng***@gmail.com`. */
 export function maskEmail(email: string): string {
   const at = email.lastIndexOf('@');
   if (at <= 0) return '***';
@@ -45,11 +45,7 @@ export function maskEmail(email: string): string {
   return `${local.slice(0, keep)}***${email.slice(at)}`;
 }
 
-/**
- * OTP gửi qua email, lưu trong Redis theo `otp:<purpose>:<userId>` (fallback bộ nhớ khi Redis chết, chỉ đúng với một process).
- * Chỉ lưu hash của mã, mã có TTL (kiểm tra lại cả khi store trả về), dùng một lần, giới hạn số lần thử, có cooldown gửi lại
- * và gắn với đúng một challenge. `burn` là dấu "đã dùng" một lần cho challenge token / reset token.
- */
+/** OTP qua email, lưu hash trong Redis: có hạn, dùng một lần, giới hạn số lần thử, cooldown gửi lại. */
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
@@ -114,10 +110,7 @@ export class OtpService {
     };
   }
 
-  /**
-   * Tạo, lưu hash và gửi mã. Trong cooldown: `reject` trả 429, `rebind` không gửi mail mới mà gắn entry vào challenge mới
-   * (challenge cũ ngừng dùng được) - dùng cho đăng nhập lại / quên mật khẩu, nơi client mất challenge token là chuyện thường.
-   */
+  /** Tạo, lưu hash và gửi mã; trong cooldown thì từ chối hoặc gắn sang challenge mới. */
   async send(
     purpose: OtpPurpose,
     user: { id: string; email: string },

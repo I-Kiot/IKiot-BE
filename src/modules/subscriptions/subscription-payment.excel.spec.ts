@@ -14,7 +14,7 @@ const bodyOf = (error: unknown) =>
     message: string;
   };
 
-// Excel sheet "Subscriptions" - SepaySubscriptionService (UTC031-UTC040).
+// Sheet Excel "Subscriptions" - SepaySubscriptionService (UTC031-UTC040).
 describe('Excel sheet Subscriptions - SepaySubscriptionService', () => {
   const service = new SepaySubscriptionService();
   const saved = { ...process.env };
@@ -83,7 +83,7 @@ describe('Excel sheet Subscriptions - SepaySubscriptionService', () => {
   });
 });
 
-// Excel sheet "Subscriptions" - handleSepayWebhook (UTC041-UTC049).
+// Sheet Excel "Subscriptions" - handleSepayWebhook (UTC041-UTC049).
 describe('Excel sheet Subscriptions - handleSepayWebhook', () => {
   let prisma: any;
   let notifications: { tenantOwners: jest.Mock; notify: jest.Mock };
@@ -295,7 +295,7 @@ describe('Excel sheet Subscriptions - handleSepayWebhook', () => {
   });
 });
 
-// Excel sheet "Subscriptions" - assignFreeTrial (UTC050-UTC053).
+// Sheet Excel "Subscriptions" - assignFreeTrial (UTC050-UTC053).
 describe('Excel sheet Subscriptions - assignFreeTrial', () => {
   let prisma: any;
   let service: SubscriptionService;
@@ -385,7 +385,7 @@ describe('Excel sheet Subscriptions - assignFreeTrial', () => {
   });
 });
 
-// Excel sheet "Subscriptions" - initiateUpgrade / initiateRenewal / createPlanInvoice (UTC054-UTC064).
+// Sheet Excel "Subscriptions" - initiateUpgrade / initiateRenewal / createPlanInvoice (UTC054-UTC064).
 describe('Excel sheet Subscriptions - invoices', () => {
   let prisma: any;
   let service: SubscriptionBillingService;

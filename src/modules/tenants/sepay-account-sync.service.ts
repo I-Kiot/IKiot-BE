@@ -25,7 +25,7 @@ const PAGE_SIZE = 100;
 /** Chặn `has_more` chạy vô hạn: 5.000 tài khoản đã vượt xa số shop mà một nền tảng liên kết. */
 const MAX_PAGES = 50;
 
-/** Đánh dấu shop đã liên kết khi tài khoản của shop xuất hiện trên tài khoản SePay của nền tảng; webhook dùng chung đã phục vụ phần này. */
+/** Đánh dấu shop đã liên kết SePay theo danh sách tài khoản của nền tảng. */
 @Injectable()
 export class SepayAccountSyncService {
   private readonly logger = new Logger(SepayAccountSyncService.name);
@@ -35,7 +35,7 @@ export class SepayAccountSyncService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** Ném lỗi khi không đọc được SePay: nếu coi lỗi đọc là "không có tài khoản" thì mọi shop sẽ bị huỷ liên kết. */
+  /** Ném lỗi khi không đọc được SePay. */
   async sync(): Promise<{
     accounts: number;
     linked: string[];
@@ -58,7 +58,7 @@ export class SepayAccountSyncService {
     const { link, unlink } = planSepayLinks(tenants, accounts);
 
     if (link.length > 0 || unlink.length > 0) {
-      // Mỗi shop đổi liên kết có một dòng lịch sử (người làm: hệ thống) trong cùng transaction. Chỉ ghi khi lệnh có điều kiện thật sự đổi dòng, để hai lần đồng bộ chạy đua không ghi hai lần.
+      // Ghi lịch sử đổi liên kết trong cùng transaction.
       const now = new Date();
       const linkedBefore = new Map(
         tenants.map((tenant) => [tenant.id, tenant.bankingSepayLinkedAt]),

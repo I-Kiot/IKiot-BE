@@ -20,7 +20,7 @@ export class PaySupplierDebtDto {
   @IsIn(PAYMENT_METHODS)
   paymentMethod?: string;
 
-  /** Trả bằng tiền mặt từ két của chi nhánh này (quỹ DRAWER, vào đối soát két). Bỏ trống: tiền của chủ, không qua két nào (quỹ OWNER). Chỉ chọn được nơi mình được làm việc. */
+  /** Chi nhánh trả tiền mặt từ két; bỏ trống là tiền của chủ. */
   @IsOptional()
   @IsUUID()
   locationId?: string;

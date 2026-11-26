@@ -105,10 +105,7 @@ export function nextProductionDeliveryCode(
   return `${PRODUCTION_DELIVERY_CODE_PREFIX}${String(current + step).padStart(6, '0')}`;
 }
 
-/**
- * Dòng nào sẽ vượt số đã đặt nếu phiếu này được ghi: đã nhận + đang chờ trên phiếu khác + phiếu này, tính theo từng dòng.
- * Hàm thuần nên quy tắc được test không cần DB.
- */
+/** Các dòng sẽ vượt số đã đặt nếu ghi phiếu giao này. */
 export function deliveryOvershoots(
   lines: { id: string; quantity: number; receivedQuantity: number }[],
   pending: Map<string, number>,
@@ -130,12 +127,7 @@ export function deliveryOvershoots(
 
 const CODE_ATTEMPTS = 5;
 
-/**
- * Nhân viên xưởng (tài khoản STAFF có `users.workshop_id`) và phiếu giao của họ (2026-10-09).
- * Xưởng thấy mọi yêu cầu gửi tới mình ở mọi địa điểm và viết phiếu giao, có thể thiếu để thành phẩm đi trước.
- * Phiếu không tạo gì lên kho: xưởng cũng là bên được trả theo số lượng nhận, nên địa điểm nhận đếm hàng và xác nhận phiếu,
- * qua đúng một đường nhận hàng (`ProductionRequestService.receiveGoods`).
- */
+/** Service phiếu giao của xưởng; phiếu không đụng tồn, nơi nhận xác nhận mới tăng tồn. */
 @Injectable()
 export class ProductionDeliveryService {
   constructor(
@@ -186,10 +178,7 @@ export class ProductionDeliveryService {
     return this.requests.toResponse(request);
   }
 
-  /**
-   * Xưởng xác nhận đang làm YCSX (2026-11-16). Từ lúc này shop không huỷ được (`manualTransitionViolation`).
-   * Chỉ YCSX đã gửi (SENT) mà chưa ai nhận; ghi có điều kiện nên hai người cùng bấm, hay shop huỷ chen giữa, chỉ một bên thắng.
-   */
+  /** Xưởng xác nhận đang làm YCSX; từ đây shop không huỷ được. */
   async accept(user: AuthUser, id: string) {
     const tenantId = requireTenantId(user);
     const request = await this.workshopRequest(user, id);
@@ -233,10 +222,7 @@ export class ProductionDeliveryService {
     return this.requests.toResponse(await this.requests.findRow(tenantId, id));
   }
 
-  /**
-   * Xưởng huỷ yêu cầu (2026-11-16). Từ lúc xưởng xác nhận đang làm, chỉ xưởng huỷ được; trước đó xưởng cũng được từ chối.
-   * Đi qua cùng lõi đổi trạng thái với shop (`changeStatus`): luật huỷ, khoá dòng và đếm phiếu chờ nhận, báo lại danh sách cần sản xuất.
-   */
+  /** Xưởng huỷ YCSX, dùng chung lõi đổi trạng thái với shop. */
   async cancelRequest(
     user: AuthUser,
     id: string,
@@ -289,7 +275,7 @@ export class ProductionDeliveryService {
     }
 
     let deliveryCode: string | null = null;
-    // Phiếu giao đầu tiên cũng là "đã nhận làm" nếu xưởng chưa bấm xác nhận; gán lại ở mỗi lần thử vì lần thử hỏng đã rollback.
+    // Phiếu giao đầu tiên cũng tính là đã nhận làm.
     let newlyAccepted = false;
     for (
       let attempt = 1;
@@ -298,7 +284,7 @@ export class ProductionDeliveryService {
     ) {
       try {
         deliveryCode = await this.prisma.$transaction(async (tx) => {
-          // Tuần tự hoá phiếu và lần nhận trên cùng một yêu cầu: chỗ còn lại của dòng được đọc sau khi mọi phiếu trước đó đã commit.
+          // Khoá YCSX để phiếu giao và lần nhận chạy tuần tự.
           await tx.$queryRaw`SELECT id FROM production_requests WHERE id = ${requestId} FOR UPDATE`;
           const fresh = await tx.productionRequest.findUniqueOrThrow({
             where: { id: requestId },
@@ -440,7 +426,7 @@ export class ProductionDeliveryService {
     return this.cancel(user, delivery, dto, true);
   }
 
-  /** Phiếu giao tới địa điểm của người gọi (chủ shop thấy mọi địa điểm): danh sách "chờ nhận". Nhân viên xưởng chỉ thấy phiếu của xưởng mình. */
+  /** Danh sách phiếu giao chờ nhận theo địa điểm. */
   async list(user: AuthUser, query: QueryProductionDeliveryDto) {
     const tenantId = requireTenantId(user);
     const requestWhere: Prisma.ProductionRequestWhereInput = {};
@@ -607,7 +593,7 @@ export class ProductionDeliveryService {
     );
   }
 
-  /** Báo shop việc xưởng nhận làm / huỷ yêu cầu: người tạo YCSX và chủ shop. Gọi sau commit; `notify` không bao giờ ném lỗi. */
+  /** Báo shop khi xưởng nhận làm hoặc huỷ YCSX. */
   private async notifyShop(
     user: AuthUser,
     request: RequestRow,
@@ -643,7 +629,7 @@ export class ProductionDeliveryService {
     return user.workshopId;
   }
 
-  /** Yêu cầu mà xưởng của người gọi được thấy: đã gửi tới xưởng và qua DRAFT. Còn lại trả 404; yêu cầu của xưởng khác phải như không tồn tại. */
+  /** YCSX mà xưởng của người gọi được thấy, còn lại trả 404. */
   private async workshopRequest(
     user: AuthUser,
     id: string,

@@ -8,7 +8,7 @@ import {
 } from 'class-validator';
 import { ShipmentStatus } from '../../../common/constants/shipment-status';
 
-/** Trạng thái một sự kiện nhật trình được mang (chốt 2026-10-06). DELIVERED / FAILED chỉ đi qua `deliver` (C-5) và `fail`. */
+/** Trạng thái của sự kiện nhật trình. */
 export const LOGGABLE_SHIPMENT_STATUSES: readonly string[] = [
   ShipmentStatus.OUT_FOR_DELIVERY,
 ];

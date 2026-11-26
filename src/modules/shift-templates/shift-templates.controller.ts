@@ -19,7 +19,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Năm route giữ đường dẫn cũ. Quyền dùng `schedules:*` vì ca mẫu là một phần của xếp lịch, không có resource riêng (như route cũ). */
+/** Controller ca mẫu, quyền `schedules:*`. */
 @ApiTags('shift-templates')
 @ApiBearerAuth('bearer')
 @Controller('shift-templates')

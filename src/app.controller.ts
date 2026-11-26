@@ -4,7 +4,7 @@ import { AppService } from './app.service';
 import { Public } from './common/decorators/public.decorator';
 import { RawResponse } from './common/decorators/raw-response.decorator';
 
-// Endpoint probe không cần xác thực: @Public() bỏ qua JWT guard toàn cục, @RawResponse() giữ body `{ status: "ok" }` thô.
+// Probe không cần đăng nhập, trả body thô `{ status: "ok" }`.
 @ApiTags('health')
 @Controller()
 export class AppController {
@@ -25,10 +25,7 @@ export class AppController {
     return this.appService.health();
   }
 
-  /**
-   * Readiness cho deploy: 200 khi DB trả lời và đủ migration của image, ngược lại 503.
-   * Không gộp vào `/health`: container healthcheck gọi route đó, DB chớp tắt không được restart API.
-   */
+  /** Readiness cho deploy: 200 khi DB trả lời và đủ migration, ngược lại 503. */
   @Public()
   @RawResponse()
   @Get('health/ready')
@@ -36,7 +33,7 @@ export class AppController {
     return this.appService.ready();
   }
 
-  /** Smoke test của Sentry: ném lỗi có chủ đích để kiểm chứng đường `@SentryExceptionCaptured()` trong `AllExceptionsFilter`. Public để gọi bằng curl. */
+  /** Ném lỗi có chủ đích để kiểm tra Sentry nhận được lỗi. */
   @Public()
   @Get('debug-sentry')
   getError() {

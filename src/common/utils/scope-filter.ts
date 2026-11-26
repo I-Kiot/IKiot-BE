@@ -1,7 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { ErrorCode } from '../errors/error-codes';
 
-/** Filter của client chỉ được thu hẹp scope do server tính, không được thay thế - `?branchId=` từng ghi đè scope và đưa thu ngân xem sổ của chi nhánh khác. */
+/** Filter của client chỉ được thu hẹp phạm vi do server tính. */
 export function narrowToScope(
   scoped: string | undefined,
   requested: string | undefined,
@@ -18,7 +18,7 @@ export function narrowToScope(
   return requested;
 }
 
-/** Được đọc dòng nhân sự của ai: luôn là của chính mình, được mở rộng tới địa điểm đã gán khi có quyền read-all. Object rỗng nghĩa là không giới hạn. */
+/** Phạm vi đọc dữ liệu nhân sự: của mình, hoặc nơi được gán khi có quyền xem tất cả. */
 export interface StaffReadScope {
   userId?: string;
   branchId?: string;
@@ -32,7 +32,7 @@ export interface StaffScopeQuery {
   warehouseId?: string;
 }
 
-/** Áp {@link narrowToScope} cho cả ba filter nhân sự cùng lúc - ghép tay từng cái là thứ để `?branchId=` thay thế chi nhánh do server suy ra. */
+/** Áp `narrowToScope` cho cả ba filter nhân sự. */
 export function narrowStaffScope(
   scope: StaffReadScope,
   query: StaffScopeQuery,

@@ -15,7 +15,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Hành trình GĐ1 Bước 4 trên Postgres thật: đơn thiếu tủ hiện trên danh sách sản xuất, yêu cầu sản xuất phủ được nó, tồn tăng khi xưởng nhận hàng. Lô, sổ kho, hàng lỗi, công nợ kiểm bằng cách đọc lại bảng. Tự tạo và xoá tenant riêng.
+// Kiểm danh sách cần sản xuất và nhận hàng xưởng (Postgres thật).
 describe('production list, production requests and workshop receipts', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -578,7 +578,7 @@ describe('production list, production requests and workshop receipts', () => {
     });
     expect(Number(workshop.outstandingDebt)).toBe(1200);
 
-    // Tồn 1 + đang đặt 1 so với nhu cầu 3: vẫn thiếu 1, không tạo nháp. Phần dòng được YCSX gắn nhận (1 còn chờ) trừ khỏi cả hai phía.
+    // Tồn 1 + đặt 1 so với cần 3: vẫn thiếu 1.
     const partly = await cabinetRow();
     expect(partly).toMatchObject({
       stock: 1,

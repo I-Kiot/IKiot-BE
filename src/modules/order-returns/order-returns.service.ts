@@ -161,9 +161,7 @@ export function toOrderReturn(row: ReturnRow) {
   };
 }
 
-/**
- * Hoàn hàng (D-5). Mở tay cho mọi kênh với đơn đã trừ kho. Khi chuyển sang `inspect`, từng dòng đi qua `InventoryService.returnDrawn`: GOOD vào tồn bán được, DAMAGED vào kho hàng hỏng của kho xuất, không bao giờ là tồn bán được.
- */
+/** Service đơn hoàn hàng; kiểm hàng đưa từng dòng về kho. */
 @Injectable()
 export class OrderReturnService {
   constructor(
@@ -216,10 +214,7 @@ export class OrderReturnService {
     };
   }
 
-  /**
-   * Gợi ý hoàn tiền cho phiếu đang kiểm: `goodsValue` = giá trị thực (sau giảm giá) của các dòng hoàn theo phân bổ luỹ kế (`sliceValue`),
-   * `max` = tiền shop đang giữ của đơn, `suggested` = nhỏ hơn của hai số. Phí giao không nằm trong gợi ý; chỉ hoàn khi người kiểm tự nhập số lớn hơn.
-   */
+  /** Gợi ý số hoàn khi kiểm hàng trả. */
   private async refundSuggestion(row: ReturnRow) {
     const order = await this.prisma.order.findUniqueOrThrow({
       where: { id: row.order.id },
@@ -421,7 +416,7 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, id);
   }
 
-  /** Bước "hàng đã về" dùng chung cho `receive` và `confirmFailedDelivery`: REQUESTED → INSPECTING và sự kiện của nó, cùng transaction. */
+  /** Bước "hàng đã về": REQUESTED → INSPECTING. */
   private async claimReceived(
     tx: Prisma.TransactionClient,
     user: AuthUser,
@@ -449,12 +444,7 @@ export class OrderReturnService {
     });
   }
 
-  /**
-   * `POST /order-returns/confirm-failed-delivery`: hàng của lần giao thất bại đã về shop. Một lần bấm mở đơn hoàn
-   * DELIVERY_FAILED cho mọi dòng còn ở ngoài, nhận và kiểm luôn, nên tồn về lại, đơn → RETURNED và shipment → RETURNED
-   * trong một transaction. Trước đó shipment thất bại vẫn đang trên đường (shipper có thể giao lại), nên `fail` không làm việc này.
-   * Dòng về GOOD tại nơi đã xuất, trừ khi `items` ghi khác.
-   */
+  /** Xác nhận hàng giao thất bại đã về shop: mở, nhận và kiểm đơn hoàn trong một lần. */
   async confirmFailedDelivery(
     user: AuthUser,
     tenantId: string,
@@ -613,10 +603,7 @@ export class OrderReturnService {
     return this.findOne(user, tenantId, id);
   }
 
-  /**
-   * `POST /order-returns/:id/inspect`: mỗi dòng có một kết luận và đi qua `returnDrawn` trong một transaction.
-   * Dòng bị từ chối (không có kho hàng hỏng, kho không bán được) thì không đưa gì về. Đơn hoàn và đơn gốc được khoá ngay khi đọc trạng thái.
-   */
+  /** Kiểm hàng trả: mỗi dòng có kết luận và về kho. */
   async inspect(
     user: AuthUser,
     tenantId: string,
@@ -660,7 +647,7 @@ export class OrderReturnService {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      // Đơn khoá trước: kiểm hàng đổi tiền (hoàn tiền) nên xếp hàng với thu tiền / huỷ / sửa đơn cùng lúc. Số tiền đang giữ đọc SAU khoá.
+      // Khoá đơn trước khi kiểm hàng.
       await lockOrder(tx, tenantId, orderReturn.order.id);
       const held = await this.heldMoney(tx, orderReturn.order.id);
       if (held > 0 && !dto.refund && !options.refundOptional) {
@@ -809,8 +796,7 @@ export class OrderReturnService {
         })),
       );
 
-      // Nhật ký doanh thu (Phase 7). Đã có SALE: hàng trả là bút toán RETURN âm vào ngày kiểm (kỳ cũ không đổi). Chưa có SALE (trả trước khi hoàn thành): SALE ghi sau đã trừ số trả,
-      // nên không có gì để đảo; nhưng nếu đơn kết thúc ở RETURNED mà shop vẫn giữ tiền (không hoàn / hoàn thiếu) thì phần giữ là OTHER_INCOME (quyết định D3).
+      // Ghi sổ doanh thu cho hàng trả.
       const hasSale = await tx.salesJournalEntry.findFirst({
         where: {
           orderId: orderReturn.order.id,
@@ -835,7 +821,7 @@ export class OrderReturnService {
           source: SalesJournalSource.RETURN_INSPECTION,
         });
       } else if (settled?.to === OrderStatus.RETURNED && dto.refund) {
-        // Chỉ khi người kiểm ĐÃ nêu số hoàn (kể cả 0 = giữ). Không nêu (giao thất bại, "Chưa hoàn") thì tiền ở lại treo chưa quyết định: `POST /orders/:id/settle-held`.
+        // Chỉ ghi khi người kiểm đã nêu số hoàn.
         await postOtherIncome(tx, {
           orderId: orderReturn.order.id,
           kept: await this.heldMoney(tx, orderReturn.order.id),
@@ -942,7 +928,7 @@ export class OrderReturnService {
     });
   }
 
-  /** Hàng của dòng xuất từ đâu: dòng SALE trong sổ ghi đúng nơi đó; đơn bán trước khi có lot thì dùng nguồn dự kiến của dòng. */
+  /** Nơi hàng của dòng đã xuất. */
   private async shippedFrom(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -966,10 +952,7 @@ export class OrderReturnService {
     return item?.sourceLocationId ?? null;
   }
 
-  /**
-   * Hàng về đâu: địa điểm được chỉ định, mặc định nơi đã xuất hàng. Cả GOOD lẫn DAMAGED về cùng một chỗ (2026-11-26):
-   * hàng hỏng thành lô `isSellable = false` tại đó thay vì sang kho hàng hỏng riêng.
-   */
+  /** Nơi hàng trả về, mặc định nơi đã xuất. */
   private async destination(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -1000,7 +983,7 @@ export class OrderReturnService {
     return locationId;
   }
 
-  /** Đơn → RETURNED khi mọi dòng đã trừ kho được hoàn đủ; hoàn một phần thì đơn giữ nguyên. Trả trạng thái trước/sau nếu đơn thật sự đổi, không thì `null`. */
+  /** Đơn → RETURNED khi mọi dòng đã hoàn đủ. */
   private async settleOrder(
     tx: Prisma.TransactionClient,
     tenantId: string,

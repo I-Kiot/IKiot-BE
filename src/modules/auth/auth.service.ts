@@ -36,14 +36,14 @@ import { LOCATION_SELECT } from '../../common/dto/location-ref.dto';
 
 const BCRYPT_COST = 10;
 
-// Kèm vào user trả về: chỉ `locationId` không cho biết là chi nhánh hay kho, mà dashboard cần để lọc theo phạm vi. Dạng `{ id, type, name }` theo schema; không thêm lại `branchId`/`warehouseId`.
+// Kèm loại và tên địa điểm làm việc vào user trả về.
 const SESSION_USER_INCLUDE = {
   location: LOCATION_SELECT,
   // Nhân viên xưởng: dashboard dùng để chuyển sang màn hình xưởng.
   workshop: { select: { id: true, supplierName: true } },
 } as const;
 
-// Đánh dấu vào reset token và kiểm tra lại khi dùng, để access token thông thường gửi tới /auth/reset-password không bị coi là quyền đặt lại mật khẩu.
+// Đánh dấu loại token để access token không dùng được làm reset token.
 const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';
 const RESET_TOKEN_TTL_SECONDS = 15 * 60;
 
@@ -51,7 +51,7 @@ const RESET_TOKEN_TTL_SECONDS = 15 * 60;
 const OTP_CHALLENGE_TOKEN_TYPE = 'otp_challenge';
 const CHALLENGE_TTL_SECONDS = 15 * 60;
 
-// Giống AuthService của iKiotMS-BE: "mobile" chỉ dành cho nhân viên, "web" cho mọi tài khoản trừ CUSTOMER.
+// "mobile" chỉ cho nhân viên, "web" cho mọi tài khoản trừ CUSTOMER.
 const ROLE_DENIED_MOBILE = 'This app is for employees and managers only';
 const ROLE_DENIED_WEB = 'A customer account cannot sign in here';
 
@@ -65,7 +65,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
   ) {}
 
-  /** Gửi OTP và đóng gói thành "challenge response": client giữ `challengeToken`, mã nằm trong email. Gửi trước, ký sau, nên gửi lỗi thì không lộ token nào. */
+  /** Gửi OTP rồi trả challenge token. */
   private async issueChallenge(
     user: { id: string; email: string },
     purpose: OtpPurpose,
@@ -87,7 +87,7 @@ export class AuthService {
     });
   }
 
-  /** Đọc challenge token. Mọi lỗi (hỏng, hết hạn, sai loại, sai purpose) cùng một mã `OTP_CHALLENGE_INVALID`. */
+  /** Đọc challenge token; mọi lỗi trả `OTP_CHALLENGE_INVALID`. */
   private readChallenge(token: string, expected?: OtpPurpose) {
     let payload: {
       sub?: string;
@@ -120,7 +120,7 @@ export class AuthService {
       throw this.invalidChallenge();
   }
 
-  /** Tra tài khoản theo số điện thoại hoặc email (có `@` là email). Email bỏ qua tài khoản đã xoá để địa chỉ cũ dùng lại được. */
+  /** Tìm tài khoản theo số điện thoại hoặc email. */
   private findByIdentifier(identifier: string) {
     return this.prisma.user.findFirst({
       where: identifier.includes('@')
@@ -182,8 +182,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
 
-    // Tài khoản được tạo chưa xác minh email: không có token cho tới khi nhập đúng mã (/auth/login/verify-otp).
-    // Gửi OTP nằm TRONG transaction: gửi mail lỗi thì shop và chủ shop bị rollback, người dùng sửa cấu hình/email rồi gửi lại form được, thay vì kẹt với số điện thoại, email và tên shop "đã tồn tại".
+    // Tạo shop và chủ shop chưa xác minh email; gửi OTP trong transaction, lỗi thì rollback.
     const { tenant, owner, challenge } = await this.prisma.$transaction(
       async (tx) => {
         const tenant = await tx.tenant.create({
@@ -233,7 +232,7 @@ export class AuthService {
     if (INACTIVE_USER_STATUSES.has(user.status)) throw invalid();
     if (!(await bcrypt.compare(dto.password, user.password))) throw invalid();
 
-    // Chưa xác minh email: mật khẩu đúng vẫn chưa đủ, phải qua OTP (đăng nhập lần đầu của nhân viên, hoặc chủ shop chưa nhập mã lúc đăng ký).
+    // Chưa xác minh email thì phải qua OTP.
     if (!user.emailVerifiedAt) {
       if (!user.email) throw this.emailMissing();
       return this.issueChallenge(
@@ -250,7 +249,7 @@ export class AuthService {
     return this.startSession(user, userAgent);
   }
 
-  /** Đổi OTP xác minh email lấy phiên đăng nhập. Đường dẫn chứa `/login` nên AuditInterceptor ghi một dòng LOGIN. */
+  /** Đổi OTP xác minh email lấy phiên đăng nhập. */
   async verifyLoginOtp(dto: VerifyOtpDto, userAgent?: string) {
     const challenge = this.readChallenge(
       dto.challengeToken,
@@ -286,7 +285,7 @@ export class AuthService {
     return this.startSession(verified, userAgent);
   }
 
-  /** Gửi lại mã cho một challenge đang có (cooldown 60s -> 429). Dùng đúng jti cũ nên challenge token đang giữ vẫn dùng tiếp được. */
+  /** Gửi lại mã cho challenge đang có (cooldown 60s). */
   async resendOtp(dto: ResendOtpDto) {
     const challenge = this.readChallenge(dto.challengeToken);
     const user = await this.prisma.user.findUnique({
@@ -305,7 +304,7 @@ export class AuthService {
     );
   }
 
-  /** Quyền hiện có của tài khoản đang đăng nhập. Rỗng với ADMIN/TENANT_OWNER (guard bỏ qua); quyền phụ của trưởng ca hết hạn theo thời gian. Chỉ để vẽ UI, không phải nguồn phân quyền. */
+  /** Quyền hiện có của tài khoản đang đăng nhập, chỉ để vẽ UI. */
   async me(authUser: AuthUser) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: authUser.userId },
@@ -406,7 +405,7 @@ export class AuthService {
     return { success: true };
   }
 
-  /** Đăng nhập bằng Firebase ID token (Google), khớp user theo email, không tự tạo tài khoản. `platform` quyết định cổng vai trò ("mobile" chỉ STAFF). */
+  /** Đăng nhập bằng Firebase (Google), khớp user theo email. */
   async firebaseLogin(dto: FirebaseLoginDto, userAgent?: string) {
     if (!this.firebase.isConfigured()) {
       throw new UnauthorizedException({
@@ -483,7 +482,7 @@ export class AuthService {
   async refresh(refreshToken: string, userAgent?: string) {
     const rotated = await this.refreshTokens.rotate(refreshToken, userAgent);
 
-    // Đọc lại user để chắc tài khoản còn dùng được: token cấp trước khi bị khoá không được sống sót qua đó, vì JwtStrategy chỉ kiểm tra access token.
+    // Đọc lại user để chắc tài khoản còn hoạt động.
     const user = await this.prisma.user.findUnique({
       where: { id: rotated.userId },
       select: { id: true, status: true },
@@ -507,7 +506,7 @@ export class AuthService {
     return { success: true };
   }
 
-  /** Tài khoản được phép qua bước đặt lại mật khẩu. Cùng một thông báo cho "không tồn tại" và "bị khoá", vì endpoint public mà phân biệt được sẽ lộ tài khoản nào đã đăng ký. */
+  /** Tài khoản được đặt lại mật khẩu; không phân biệt "không tồn tại" và "bị khoá". */
   private async resettableUser(identifier: string) {
     const id = identifier.trim();
     if (!id) {
@@ -539,7 +538,7 @@ export class AuthService {
     return { ...challenge, message: 'Đã gửi mã OTP tới email của bạn.' };
   }
 
-  /** Đổi OTP đã xác minh lấy reset token (`type: 'password_reset'`, có `jti`), được `resetPassword` kiểm tra lại và chỉ dùng một lần. */
+  /** Đổi OTP đã xác minh lấy reset token dùng một lần. */
   async verifyForgotPasswordOtp(dto: VerifyOtpDto) {
     const challenge = this.readChallenge(
       dto.challengeToken,
@@ -636,7 +635,7 @@ export class AuthService {
     };
   }
 
-  /** Kiểm tra số điện thoại, email hoặc tên shop đã tồn tại chưa. Lộ sự tồn tại là chủ đích, chỉ cho form đăng ký kiểm tra trước khi submit; chỉ truy vấn trường được gửi. */
+  /** Kiểm số điện thoại, email, tên shop đã tồn tại chưa. */
   async checkAvailability(dto: CheckAvailabilityDto) {
     const [phoneTaken, emailTaken, tenantTaken] = await Promise.all([
       dto.phoneNumber
@@ -670,7 +669,7 @@ export class AuthService {
     return this.jwt.sign({ sub: userId });
   }
 
-  /** Bỏ password hash và gom cột `profile_*` thành object `profile` như `/users`, để dashboard đọc `user.profile.firstName` ở cả `/auth/me` và `/auth/login`. */
+  /** Bỏ mật khẩu và gom cột `profile_*` thành `profile`. */
   private toPublicUser<
     T extends { password?: string | null } & FlatUserProfile,
   >(user: T) {

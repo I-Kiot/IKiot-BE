@@ -1,11 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Đầu số di động thực tế được cấp ở Việt Nam sau đợt đổi số 2018: Viettel 03x, Vietnamobile 05x, Mobifone 07x, Vinaphone 08x và dải 09x cũ. */
+/** Đầu số di động ở Việt Nam. */
 const VIETNAM_MOBILE_PHONE_REGEX =
   /^(?:03[2-9]|05[25689]|07[06789]|08[1-9]|09\d)\d{7}$/;
 
-/** Các dải trông như số di động nhưng không bao giờ là số di động. Mỗi dải có message riêng, vì "số không hợp lệ" vô nghĩa khi đó là một đường dây đang hoạt động. */
+/** Các dải số không phải di động. */
 const RESERVED_RANGES: readonly { pattern: RegExp; reason: string }[] = [
   {
     pattern: /^065\d{7}$/,
@@ -54,7 +54,7 @@ const RESERVED_RANGES: readonly { pattern: RegExp; reason: string }[] = [
   },
 ];
 
-/** Kiểm tra số di động cho tài khoản nhân viên. Số điện thoại là login và nơi nhận OTP, nên số không nhận được SMS sẽ tạo ra tài khoản không ai vào được. Trả về số đã trim. */
+/** Kiểm số di động cho tài khoản nhân viên. */
 export function validateVietnamPhoneNumber(phoneNumber: string): string {
   const value = phoneNumber.trim();
 
@@ -65,7 +65,7 @@ export function validateVietnamPhoneNumber(phoneNumber: string): string {
     });
   }
 
-  // Cố ý kiểm tra trước quy tắc định dạng: số khẩn cấp chỉ có 3 chữ số, nếu "phải đủ 10 số" chạy trước thì báo lỗi vô nghĩa.
+  // Kiểm số khẩn cấp trước quy tắc độ dài.
   const reserved = RESERVED_RANGES.find(({ pattern }) => pattern.test(value));
   if (reserved)
     throw new BadRequestException({

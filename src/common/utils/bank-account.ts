@@ -1,4 +1,4 @@
-/** Một cách viết duy nhất, để thứ shop gõ, thứ SePay liệt kê và thứ webhook gửi về so khớp được với nhau. Giữ lại chữ cái vì tài khoản ảo có thể có chữ. */
+/** Chuẩn hoá số tài khoản ngân hàng để so khớp với SePay. */
 export function normalizeAccountNumber(
   value: string | null | undefined,
 ): string {

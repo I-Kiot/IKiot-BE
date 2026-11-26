@@ -17,7 +17,7 @@ export interface SubscriptionTerm {
   trialEndDate: Date | null;
 }
 
-/** Quy tắc hết hạn DUY NHẤT trong codebase: trạng thái gói phải có tại `now`. Áp dụng lười bởi `settleSubscription()` mỗi lần đọc, và cron chạy hằng đêm. Hai bản viết tay trước đây đã lệch nhau: không viết lại ở chỗ gọi. */
+/** Quy tắc hết hạn duy nhất của gói, dùng cho cả đọc và cron. */
 export function nextSubscriptionStatus(
   subscription: SubscriptionTerm,
   now: Date,

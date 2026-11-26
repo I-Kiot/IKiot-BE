@@ -17,10 +17,7 @@ export interface ComboComponentInput {
   quantity: number;
 }
 
-/**
- * Giá vốn combo = tổng `số lượng x giá vốn` các thành phần, không nhập tay (sẽ lệch khi món đổi giá).
- * Làm tròn 2 chữ số như cột DB để khớp tổng Decimal.
- */
+/** Giá vốn combo = tổng số lượng x giá vốn thành phần, làm tròn 2 chữ số. */
 export function comboCostOf(
   components: readonly { quantity: number; costPrice: number }[],
 ): number {
@@ -59,10 +56,7 @@ function ancestorsOf(
   return [...seen];
 }
 
-/**
- * Kiểm đồ thị khi `comboId` chứa `edges`: combo đó và các combo trên phải còn bung được (`flattenCombo`).
- * Hàm thuần để test không cần DB; chặn lúc nhập thay vì lúc thanh toán.
- */
+/** Kiểm combo và các combo phía trên vẫn bung được sau khi đổi thành phần. */
 export function assertComboGraph(
   comboId: string,
   edges: readonly ComboEdge[],
@@ -98,11 +92,7 @@ export function assertNoDiscontinuedComponent(
   });
 }
 
-/**
- * Mọi thao tác đổi "combo chứa gì / món còn bán không" (ghi thành phần, ngừng, bật lại) phải xếp hàng qua
- * khoá này. Nếu không, hai thao tác cùng kiểm trên trạng thái cũ có thể cùng qua và cùng phá quy tắc.
- * Khoá theo transaction, tự nhả khi commit / rollback.
- */
+/** Khoá theo transaction cho mọi thao tác đổi thành phần combo hoặc trạng thái bán. */
 export async function lockComboGraph(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -110,10 +100,7 @@ export async function lockComboGraph(
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`combo-graph:${tenantId}`}::text))`;
 }
 
-/**
- * Ghi thành phần combo, thay danh sách cũ. Phải chạy dưới `lockComboGraph`, không thì hai lần sửa cùng kiểm
- * một đồ thị cũ có thể tạo vòng lặp. Người gọi kiểm `assertComponentsMatchType` trước.
- */
+/** Ghi thành phần combo, thay danh sách cũ; chạy dưới `lockComboGraph`. */
 export async function writeComboComponents(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -229,10 +216,7 @@ export async function writeComboComponents(
   await recomputeComboCosts(tx, tenantId, [comboId], actorId);
 }
 
-/**
- * Tính lại giá vốn combo phía trên `changedIds` (lưu sẵn, không tính lúc đọc), con trước cha.
- * Chạy trong transaction của người gọi để sửa và tính lại cùng rollback.
- */
+/** Tính lại giá vốn các combo phía trên món đổi, con trước cha. */
 export async function recomputeComboCosts(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -264,8 +248,7 @@ export async function recomputeComboCosts(
     parentsOf.set(row.componentItemId, parents);
   }
 
-  // Bước 2 - gom combo cần giá mới bằng cách đi lên từ các món đổi. Combo đến bằng nhiều đường
-  // (Phòng ăn qua Ghế và qua Bộ bàn ăn) chỉ được xử lý một lần.
+  // Bước 2: gom các combo cần tính lại, mỗi combo một lần.
   const affected = new Set<string>();
   const queue = [...changedIds];
   while (queue.length > 0) {
@@ -295,8 +278,7 @@ export async function recomputeComboCosts(
   // Giá vốn lưu sẵn trước khi tính lại, cho lịch sử giá.
   const storedCosts = new Map(costs);
 
-  // Bước 4 - giá mới của `id`: không bị ảnh hưởng thì lấy giá đã lưu. Bị ảnh hưởng thì tính từ món con
-  // (đệ quy để combo con tính trước), ghi vào `costs` và bỏ khỏi `affected` để mỗi combo chỉ tính một lần.
+  // Bước 4: tính giá mới của combo, đệ quy để combo con tính trước.
   const resolve = (id: string): number => {
     if (!affected.has(id)) return costs.get(id) ?? 0;
     const cost = comboCostOf(
@@ -324,7 +306,7 @@ export async function recomputeComboCosts(
   }
 }
 
-/** `comboComponents` chỉ thuộc COMBO: COMBO cần ≥1 món, loại khác không được có (danh sách rỗng ở loại khác vẫn hợp lệ). */
+/** Chỉ COMBO có thành phần, và phải có ít nhất một món. */
 export function assertComponentsMatchType(
   itemType: string,
   components: ComboComponentInput[] | undefined,

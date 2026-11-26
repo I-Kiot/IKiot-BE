@@ -24,13 +24,7 @@ import {
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/**
- * `POST /orders/:id/settle-held`: quyết định số tiền "treo" của đơn đã kết thúc (RETURNED / CANCELLED mà shop giữ tiền, chưa hoàn, chưa ghi thu nhập khác; xem `held-undecided.ts`).
- * Một transaction: khoá đơn → đọc lại số treo SAU khoá (không còn treo = 409 `ORDER_NO_HELD_MONEY`, nên bấm hai lần chỉ có một tác dụng) →
- *  - REFUND: `recordRefund` (khoản REFUND + dòng chi ORDER_REFUND + sự kiện REFUNDED), trần = số treo; phần còn lại sau hoàn một phần vẫn treo.
- *  - KEEP: OTHER_INCOME cho toàn bộ số treo, ghi ở NGÀY QUYẾT ĐỊNH (`now`, không lùi ngày) + sự kiện HELD_KEPT. Từ đó đơn không còn treo.
- * Quyền `returns:inspect` (không thêm quyền mới).
- */
+/** Quyết định tiền treo của đơn đã kết thúc: hoàn cho khách hoặc giữ lại. */
 @Injectable()
 export class OrderHeldSettleService {
   constructor(
@@ -96,7 +90,7 @@ export class OrderHeldSettleService {
       }
 
       const amount = dto.amount ?? held;
-      // Số hoàn vượt phần treo là 400 (cùng mã với các route hoàn khác); `recordRefund` còn chặn vượt số đang giữ.
+      // Số hoàn vượt phần treo thì trả 400.
       if (amount > held) {
         throw new BadRequestException({
           code: ErrorCode.ORDER_REFUND_EXCEEDS_PAID,
@@ -121,7 +115,7 @@ export class OrderHeldSettleService {
     return this.reads.findOne(user, tenantId, id);
   }
 
-  /** Cùng cách `resolveRefund`: hoàn bằng phương thức của khoản nhận gần nhất; SePay chỉ báo tiền vào nên hoàn bằng chuyển khoản. */
+  /** Hoàn bằng phương thức của khoản nhận gần nhất. */
   private async defaultMethod(
     tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     orderId: string,

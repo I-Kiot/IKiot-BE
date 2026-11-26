@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { CARRIER_TYPES } from '../../../common/constants/shipment-status';
 
-/** Ghi nhận "ĐVVC đã lấy hàng" cho đơn đã đóng gói (C-2, gán shipper C-8). Không nhận trạng thái, người thao tác hay địa chỉ: server tự lấy. */
+/** Body giao cho vận chuyển. */
 export class CreateShipmentDto {
   @IsUUID('4', { message: 'Mã đơn hàng không hợp lệ' })
   orderId: string;

@@ -11,7 +11,7 @@ import {
 } from 'class-validator';
 import { VALID_PLAN_FEATURES } from '../../subscriptions/subscription.constants';
 
-// planCode và billingCycle cố ý không có: là khoá ổn định mà luồng nâng cấp/gia hạn và logic hạng của FE phụ thuộc, không được sửa sau khi tạo.
+// Không sửa planCode và billingCycle.
 export class UpdatePlanDto {
   @IsOptional()
   @IsString()

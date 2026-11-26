@@ -69,7 +69,7 @@ describe('reconcileSession', () => {
   });
 
   it('subtracts change handed back, not just sales rung up', () => {
-    // Bán tiền mặt có trả lại tiền thừa ghi hai dòng (INCOME số đưa, EXPENSE số thừa); chỉ tính nhánh INCOME sẽ báo mọi két đều dư.
+    // Bán có tiền thối ghi hai dòng thu và chi.
     const result = run({
       finalAmount: 600_000,
       movements: [sale('02:00', 200_000), payout('02:00', 100_000)],
@@ -170,7 +170,7 @@ describe('reconcileSession', () => {
   });
 
   it('catches the manager recounting a different total than the cashier handed over', () => {
-    // Đoạn CLOSING làm lộ điều này: không có tiền nào chuyển sau END cuối, nên mọi chênh lệch là do hai lần đếm không khớp.
+    // Đoạn cuối ngày: chênh lệch chỉ do đếm lại.
     const result = run({
       finalAmount: 480_000,
       shiftLogs: [start('01:00', 'anh', 500_000), end('09:00', 'anh', 500_000)],
@@ -255,7 +255,7 @@ describe('reconcileSession', () => {
     expect(shuffled).toEqual(ordered);
   });
 
-  // Tính chất mà cả báo cáo dựa vào: nếu chênh lệch các đoạn và chênh lệch phiên lệch nhau thì phần chi tiết chỉ là trang trí.
+  // Tổng chênh các đoạn phải bằng chênh của phiên.
   it.each([
     ['a clean day', 1_500_000, 0],
     ['a shortfall', 1_450_000, -50_000],
@@ -281,7 +281,7 @@ describe('reconcileSession', () => {
   );
 
   it('does not let floating-point sums invent a variance', () => {
-    // Decimal(14,2) trả về qua Number(), nên hàng trăm số `.10` cộng lại thành 1234.9999999999998 nếu không làm tròn ở ranh giới.
+    // Làm tròn để tránh lệch số thực.
     const movements = Array.from({ length: 300 }, (_unused, index) =>
       sale('02:00', 0.1 + index * 0),
     );

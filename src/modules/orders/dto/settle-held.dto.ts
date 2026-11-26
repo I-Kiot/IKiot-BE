@@ -12,9 +12,9 @@ import { REFUND_METHODS } from '../../../common/constants/payment-method';
 
 export const SETTLE_HELD_ACTIONS = ['REFUND', 'KEEP'] as const;
 
-/** `POST /orders/:id/settle-held`: quyết định số tiền treo của đơn đã kết thúc (`paymentSummary.heldUndecided`). */
+/** Body `POST /orders/:id/settle-held`: quyết định tiền treo của đơn đã kết thúc. */
 export class SettleHeldDto {
-  /** REFUND = hoàn cho khách (`amount` ≤ số treo, mặc định hoàn hết); KEEP = giữ toàn bộ phần treo, ghi thu nhập khác (không có `amount`). */
+  /** REFUND hoàn cho khách, KEEP giữ toàn bộ và ghi thu nhập khác. */
   @IsIn(SETTLE_HELD_ACTIONS, {
     message: `action phải là ${SETTLE_HELD_ACTIONS.join(', ')}`,
   })

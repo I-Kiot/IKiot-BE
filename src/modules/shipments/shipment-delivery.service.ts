@@ -100,15 +100,8 @@ const DELIVERY_SELECT = {
   },
 } as const;
 
-/**
- * Giao xong và thu tiền khi giao (C-5) cho lần giao nội bộ (shipper / thợ của shop):
- * - Đã cọc đủ → COMPLETED.
- * - Tiền mặt → RECEIVED; khoản CASH còn ở tay shipper (`remittanceStatus` PENDING) tới khi chủ xác nhận (A-10).
- * - QR → RECEIVED; khoản SEPAY chờ webhook, đủ tiền thì COMPLETED. Khách không chuyển thì shipper bấm `payCash`.
- * - Chuyển thiếu: khoản QR thành PAID với số thực nhận, đơn PARTIALLY_PAID và vẫn RECEIVED; shipper thu nốt phần còn lại bằng mã mới (`reissueQr`) hay tiền mặt (`payCash`).
- * Lần giao qua ĐVVC ngoài không đi qua đây (hãng tự báo về, C-4). Dòng thu chi ghi lúc tiền đổi chủ (QR về / chủ nhận tiền shipper nộp), không ở bước giao.
- */
-/** Kết cục của `settleSepayTransfer`: `settled` có giá trị chỉ khi tiền được chốt (trùng / từ chối thì không có gì đổi để báo). */
+/** Giao xong và thu tiền khi giao (shipper nội bộ). */
+/** Kết quả xử lý tiền SePay. */
 export type SepayDeliveryOutcome =
   { kind: 'NOT_OURS' } | { kind: 'HANDLED'; settled: SepaySettled | null };
 
@@ -138,10 +131,7 @@ export class ShipmentDeliveryService {
     return rows.map(toSummary);
   }
 
-  /**
-   * Lịch sử giao của người gọi: mọi trạng thái, kèm số liệu từng thẻ và số tiền đã thu. Khoảng ngày theo lúc kết thúc (`deliveredAt`, hoặc `updatedAt` với lần không giao được), nhưng không bao giờ ẩn lần còn mở: lần giao dở từ sáu tuần trước vẫn phải được thẻ “cần giao” đếm.
-   * Số liệu bỏ qua `status` và `search` nhưng vẫn theo khoảng ngày, để thẻ khớp danh sách khi bấm vào.
-   */
+  /** Lịch sử giao của người gọi kèm số liệu. */
   async listMyHistory(
     user: AuthUser,
     tenantId: string,
@@ -256,7 +246,7 @@ export class ShipmentDeliveryService {
     const shipment = await this.loadShipment(tenantId, id);
     const access = deliveryActorAccess(user, shipment);
 
-    // Kiểm tra dưới đây chỉ để báo lỗi sớm và rõ; chốt chặn thật là các câu ghi có điều kiện trong transaction.
+    // Kiểm sớm để báo lỗi rõ.
     if (shipment.carrierType !== CarrierType.INTERNAL) {
       throw new BadRequestException({
         code: ErrorCode.SHIPMENT_DELIVER_INTERNAL_ONLY,
@@ -283,7 +273,7 @@ export class ShipmentDeliveryService {
       });
     }
 
-    // Số còn phải thu tính từ các khoản đã thu thật (không phải `tổng − cọc`), và được tính lại trong transaction sau khi khoá đơn.
+    // Tính lại số còn phải thu trong transaction.
     const amountDue = amountStillDueOf(shipment.order);
     assertCollectionMatches(amountDue, dto.paymentMethod, dto.collectedAmount);
 
@@ -327,7 +317,7 @@ export class ShipmentDeliveryService {
         },
       });
 
-      // Trạng thái thanh toán không đặt tay ở đây: khoản tiền mặt ghi bên dưới rồi `syncOrderPaymentStatus` suy ra (tiền mặt nghĩa là khách đã trả đủ, dù tiền còn ở tay shipper).
+      // Trạng thái thanh toán suy ra sau khi ghi khoản tiền mặt.
       const orderData =
         nextOrderStatus === OrderStatus.COMPLETED
           ? completedData(now)
@@ -346,7 +336,7 @@ export class ShipmentDeliveryService {
           message: 'The order has just changed, please reload',
         });
       }
-      // Sau khi chiếm được lần giao và đơn: số còn phải thu tính lại từ các khoản đã đọc trong transaction (đơn đã khoá). Lệch so với số shipper thấy lúc bấm thì dừng, không ghi sai số.
+      // Số phải thu lệch so với lúc bấm thì dừng.
       const freshPayments = await tx.payment.findMany({
         where: { orderId: shipment.order.id },
         select: { kind: true, status: true, amount: true },
@@ -433,10 +423,7 @@ export class ShipmentDeliveryService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  /**
-   * Đã giao bằng QR nhưng khách không chuyển (hay chuyển thiếu): shipper thu tiền mặt cho phần còn lại. Còn phải thu (`due`) lớn hơn 0 là đủ, KHÔNG cần có khoản QR đang chờ (khách chuyển thiếu rồi trả nốt tiền mặt).
-   * Khoản QR còn mở (nếu có) bị huỷ; ghi khoản tiền mặt đúng bằng `due` (chờ nộp lại cho chủ); đơn giữ RECEIVED. Số tiền do server tính, không nhận từ client.
-   */
+  /** Shipper thu tiền mặt cho phần còn lại. */
   async payCash(user: AuthUser, tenantId: string, id: string, dto: PayCashDto) {
     const shipment = await this.loadShipment(tenantId, id);
     const access = deliveryActorAccess(user, shipment);
@@ -445,7 +432,7 @@ export class ShipmentDeliveryService {
     let collected = 0;
     await this.prisma.$transaction(async (tx) => {
       await lockOrder(tx, tenantId, shipment.order.id);
-      // Đọc đơn và các khoản SAU khoá: tiền vừa về (webhook giữ khoá trước) thì đơn đã COMPLETED hay hết phải thu, và dừng ở đây.
+      // Đọc lại đơn và các khoản sau khoá.
       const order = await tx.order.findUniqueOrThrow({
         where: { id: shipment.order.id },
         select: {
@@ -469,7 +456,7 @@ export class ShipmentDeliveryService {
         });
       }
       collected = due;
-      // Khoản QR còn mở (mã hết hạn cũng vậy) hết hiệu lực. Tiền vừa về thì khoản đã PAID, không nằm trong danh sách mở.
+      // Huỷ các khoản QR còn mở.
       await cancelCounterQr(
         tx,
         openQrPayments(order.payments),
@@ -489,7 +476,7 @@ export class ShipmentDeliveryService {
       }
       const orderClaimed = await tx.order.updateMany({
         where: orderWhere,
-        // Chỉ để lệnh chiếm là một lệnh thật (nhảy updatedAt); trạng thái thanh toán do `syncOrderPaymentStatus` suy ra sau khi ghi khoản tiền mặt.
+        // Cập nhật updatedAt để lệnh chiếm có hiệu lực.
         data: { updatedAt: now },
       });
       if (orderClaimed.count !== 1) {
@@ -535,11 +522,7 @@ export class ShipmentDeliveryService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  /**
-   * Shipper tạo lại mã QR cho phần còn lại: mã cũ đã hết hạn (khách vẫn muốn chuyển khoản) hay khách đã chuyển thiếu một phần. Điều kiện là đơn RECEIVED và còn phải thu (`due`) lớn hơn 0; không cần khoản QR trước đó còn mở.
-   * Mã còn hạn đúng số tiền thì trả nguyên chi tiết, không đổi gì (bấm hai lần không sinh hai mã). Ngược lại các khoản QR còn mở bị huỷ và khoản mới có số tiền = `due` (không phải số của khoản cũ), mã tham chiếu mới, hạn mới.
-   * Chuyển khoản vào mã cũ sau đó bị từ chối (PAYMENT_SUPERSEDED) và báo chủ shop. Không có sự kiện trên đơn: đơn không đổi gì.
-   */
+  /** Shipper tạo lại mã QR cho phần còn lại. */
   async reissueQr(user: AuthUser, tenantId: string, id: string) {
     const shipment = await this.loadShipment(tenantId, id);
     const access = deliveryActorAccess(user, shipment);
@@ -565,7 +548,7 @@ export class ShipmentDeliveryService {
         });
       }
       const open = openQrPayments(order.payments);
-      // Mã còn hạn, đúng số tiền, và là mã duy nhất còn mở thì giữ nguyên: màn hình khác vừa tạo lại, hay bấm đúp.
+      // Mã còn hạn, đúng số tiền thì giữ nguyên.
       const live = open.find(
         (payment) =>
           payment.status === PaymentRecordStatus.PENDING &&
@@ -575,7 +558,7 @@ export class ShipmentDeliveryService {
       if (live && open.length === 1) return;
 
       await cancelCounterQr(tx, open, user.userId, now);
-      // Đơn vẫn chờ tiền (RECEIVED, chưa PAID), và người bấm vẫn phụ trách đơn nếu nhờ đó mà được phép. Ghi updatedAt để câu UPDATE là một lệnh chiếm thật.
+      // Chiếm đơn còn chờ tiền.
       const orderWhere: {
         id: string;
         tenantId: string;
@@ -621,9 +604,7 @@ export class ShipmentDeliveryService {
     return loadShipmentDetail(this.prisma, tenantId, id);
   }
 
-  /**
-   * Tiền QR lúc giao / tại quầy đã về, nhận các tham số rời (test và tích hợp gọi trực tiếp). Webhook thật gọi `settleSepayTransfer` với giao dịch đã chuẩn hoá.
-   */
+  /** Xử lý tiền QR về (tham số rời, cho test). */
   async settleSepayBalance(
     tenantId: string,
     paymentReference: string,
@@ -645,12 +626,7 @@ export class ShipmentDeliveryService {
     return outcome.kind === 'HANDLED';
   }
 
-  /**
-   * Tiền QR lúc giao / tại quầy đã về (webhook SePay gọi khi nhánh bán tại quầy không khớp). Trả `{ kind: 'HANDLED' }` nếu mã thuộc một khoản của đơn có giao / khách tới lấy (đã xử lý: chốt, chốt thiếu, trùng, hoặc từ chối; `settled` có giá trị chỉ khi tiền được chốt, để webhook phát `entity:changed`), `{ kind: 'NOT_OURS' }` nếu không phải mã của ta.
-   * Không ném lỗi nghiệp vụ: SePay gọi lại mọi câu trả lời khác 200. Toàn bộ chốt tiền nằm ở `processSepayTransfer` (`sepay-settlement.ts`), dùng chung với đơn quầy.
-   * Hết hạn tính TRƯỚC khi quyết định. Khoản còn mở và đơn còn chờ khoản này thì chốt, kể cả khi mã đã hết hạn (tiền về thật; `lateAfterExpiry` trên sự kiện). Chuyển thiếu là khoản trả một phần: đơn chưa hoàn thành, shipper tạo mã mới cho phần còn lại hay thu tiền mặt.
-   * Khoản đã huỷ (tiền mặt, mã mới, đơn huỷ), đã thu bằng giao dịch khác, hay đơn không còn chờ thì KHÔNG chốt: ghi sổ REJECTED + dòng thu chi chưa gắn đơn và báo chủ shop hoàn / đối soát.
-   */
+  /** Xử lý tiền QR lúc giao / tại quầy từ webhook. */
   async settleSepayTransfer(
     tenantId: string,
     paymentReference: string,
@@ -695,7 +671,7 @@ export class ShipmentDeliveryService {
     return shipment;
   }
 
-  /** Báo người phụ trách và chủ shop: shipper đang giữ tiền mặt, chờ nộp lại (A-10). Không bao giờ ném lỗi. */
+  /** Báo shipper đang giữ tiền mặt chờ nộp. */
   private async notifyCashHeld(
     tenantId: string,
     order: { id: string; code: string; assigneeId: string | null },
@@ -715,10 +691,7 @@ export class ShipmentDeliveryService {
   }
 }
 
-/**
- * Số tiền shipper thu phải khớp đúng số còn phải thu (chốt 2026-10-06: chỉ xử lý thu đủ 100%).
- * Không còn gì phải thu thì chỉ nhận `NONE` với số thu 0; còn phải thu thì không được `NONE` và số thu phải đúng bằng số đó.
- */
+/** Số shipper thu phải đúng số còn phải thu. */
 function assertCollectionMatches(
   amountDue: number,
   method: string,

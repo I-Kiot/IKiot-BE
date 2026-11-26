@@ -65,7 +65,7 @@ export class InspectOrderReturnItemDto {
   @IsUUID()
   orderItemId: string;
 
-  /** Thiếu hoặc null thì bị từ chối bằng ORDER_RETURN_CONDITION_REQUIRED, để service chỉ ra được mọi dòng thiếu. */
+  /** Tình trạng hàng trả, bắt buộc. */
   @IsOptional()
   @IsIn(RETURN_CONDITIONS, {
     message: `condition phải là ${RETURN_CONDITIONS.join(', ')}`,
@@ -89,7 +89,7 @@ export class ReturnRefundDto {
   @Min(0, { message: 'Số tiền hoàn không được âm' })
   amount: number;
 
-  /** Bắt buộc khi `amount > 0`. Tiền mặt ra khỏi quỹ của chi nhánh bán đơn; chuyển khoản là tiền ra ngân hàng. */
+  /** Cách hoàn tiền, bắt buộc khi `amount > 0`. */
   @ValidateIf((o: ReturnRefundDto) => o.amount > 0)
   @IsIn(REFUND_METHODS, {
     message: `method phải là ${REFUND_METHODS.join(', ')}`,

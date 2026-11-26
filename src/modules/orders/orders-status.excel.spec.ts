@@ -12,7 +12,7 @@ const codeOf = (error: unknown) =>
     message: string;
   };
 
-// Excel sheet "Orders" - updateStatus (UTC025-UTC034) and payOffline (UTC035-UTC041).
+// Sheet Excel "Orders" - updateStatus (UTC025-UTC034) và payOffline (UTC035-UTC041).
 describe('Excel sheet Orders - updateStatus / payOffline', () => {
   const TENANT = 'T1';
   const owner = { userId: 'U2', systemRole: 'TENANT_OWNER' } as never;
@@ -77,7 +77,7 @@ describe('Excel sheet Orders - updateStatus / payOffline', () => {
       .mockResolvedValue(undefined);
   });
 
-  /** Order read first as `before`, then re-read inside the transaction as `after`. */
+  /** Đơn đọc lần đầu là `before`, đọc lại trong transaction là `after`. */
   const given = (before: Record<string, unknown>, after = before) => {
     prisma.order.findFirst.mockResolvedValue(order(before));
     tx.order.findUniqueOrThrow.mockResolvedValue(order(after));

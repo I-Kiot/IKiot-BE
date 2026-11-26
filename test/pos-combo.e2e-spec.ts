@@ -11,9 +11,7 @@ import { ProductService } from './../src/modules/products/products.service';
 import { SystemRole } from './../src/common/constants/system-role';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Bán một COMBO ở quầy (POST /orders/pos) trên Postgres thật (docker compose up -d), và số bộ
-// combo mà ô tìm kiếm của quầy hiển thị. Combo "Bộ phòng ăn" = 1 Bàn + 4 Ghế + 1 Lắp đặt (dịch vụ).
-// Tự tạo tenant riêng và dọn sạch sau khi chạy.
+// Kiểm bán combo tại quầy và số bộ combo hiển thị (Postgres thật).
 describe('till sale of a combo (POST /orders/pos) and combo availability in search', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -216,7 +214,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
     it('counts the shelf, not the stock on hand: packed chairs are not for sale', async () => {
       await prisma.inventory.updateMany({
         where: { tenantId, productItemId: chairId },
-        data: { lockedStock: 4 }, // 7 on hand, only 3 on the shelf
+        data: { lockedStock: 4 }, // có 7, trên kệ chỉ 3
       });
       const combo = await comboAsSearched();
       expect(combo.availableStock).toBe(0);
@@ -240,8 +238,8 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
       const table = result.data
         .flatMap((product) => product.items)
         .find((row) => row.id === tableId)!;
-      expect(table.stock).toBe(5); // on hand
-      expect(table.availableStock).toBe(3); // for sale
+      expect(table.stock).toBe(5); // tổng
+      expect(table.availableStock).toBe(3); // bán được
       await prisma.inventory.updateMany({
         where: { tenantId, productItemId: tableId },
         data: { lockedStock: 0 },
@@ -373,7 +371,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
     });
 
     it('refuses the whole sale when one component is short, naming it', async () => {
-      await setStock(chairId, 3); // a set needs 4
+      await setStock(chairId, 3); // một bộ cần 4
       const orderCount = await prisma.order.count({ where: { tenantId } });
 
       const error = await failureOf(() => sellCombo());
@@ -394,7 +392,7 @@ describe('till sale of a combo (POST /orders/pos) and combo availability in sear
       const { order } = await sellCombo(1, [
         { productItemId: chairId, quantity: 1 },
       ]);
-      expect(await stockOf(chairId)).toBe(2); // 7 - 4 (combo) - 1 (loose)
+      expect(await stockOf(chairId)).toBe(2); // 7 - 4 (combo) - 1 (lẻ)
 
       const chairLines = await prisma.orderItem.findMany({
         where: { orderId: order.id, productItemId: chairId },

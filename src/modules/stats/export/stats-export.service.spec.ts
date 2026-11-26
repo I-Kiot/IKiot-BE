@@ -40,7 +40,7 @@ describe('StatsExportService.salesJournal', () => {
     systemRole: SystemRole.TENANT_OWNER,
   } as AuthUser;
 
-  // Một đơn bán 2 ghế (2.000.000, giá vốn 1.200.000) có phí ship 50.000, rồi trả lại 1 ghế, và một khoản tiền giữ lại 100.000.
+  // Dữ liệu mẫu: bán 2 ghế, trả 1, giữ lại 100.000.
   const journal = [
     {
       entryType: 'SALE',

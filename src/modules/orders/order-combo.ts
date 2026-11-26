@@ -16,9 +16,7 @@ import type { PricedLine } from './order-pricing.service';
 
 export type ComboGraphReader = Pick<Prisma.TransactionClient, 'comboComponent'>;
 
-/**
- * Đồ thị combo dưới `comboIds`: với mỗi combo tới được, các thành phần trực tiếp. Nạp mỗi tầng một query, mỗi tầng bị chặn bởi `MAX_COMBO_DEPTH`. Phía đơn (mở combo thành dòng) và phía danh mục (đếm số bộ trên kệ) dùng chung, nên hai bên phải duyệt giống hệt nhau.
- */
+/** Đồ thị thành phần của các combo, nạp từng tầng. */
 export async function loadComboGraph(
   db: ComboGraphReader,
   tenantId: string,
@@ -83,13 +81,7 @@ export async function expandCombos(
   return new Map(comboIds.map((id) => [id, flattenCombo(id, childrenOf)]));
 }
 
-/**
- * Dòng đơn dưới dạng hàng: mỗi dòng có giá; dưới mỗi dòng COMBO là một dòng con cho từng lá đã phẳng hóa, giá 0.
- * Tiền nằm ở dòng combo, còn con mang tồn kho và xuất từ kho của combo. Con là COMBO_COMPONENT, hoặc SERVICE nếu lá là dịch vụ
- * (dịch vụ không cần hàng nên không có kho xuất).
- *
- * `sourceLocationId` có thể null ở mọi dòng: quầy (`OrderService.createPosSale`) trừ kho ngay tại chi nhánh và chưa bao giờ lưu kho xuất.
- */
+/** Dựng dòng đơn: dòng COMBO mang giá, các dòng con mang tồn kho. */
 export function buildOrderItemRows(
   lines: readonly (PricedLine & { sourceLocationId: string | null })[],
   components: ReadonlyMap<string, ComboLeaf[]>,

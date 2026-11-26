@@ -5,7 +5,7 @@ import { RealtimeGateway } from './realtime.gateway';
 import { ChangeFeedService } from './change-feed.service';
 import { accessTokenSecret } from '../config/env';
 
-// Global như PrismaModule, có JwtModule riêng khoá bằng `accessTokenSecret()` - từng đọc thẳng JWT_SECRET ở đây khiến mọi handshake lỗi "invalid signature".
+// Module realtime global, JwtModule riêng dùng `accessTokenSecret()`.
 @Global()
 @Module({
   imports: [

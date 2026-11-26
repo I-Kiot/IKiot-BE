@@ -16,9 +16,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-/**
- * Đọc đơn (A-9, OrderReadService) trên Postgres thật: lọc, sắp xếp (priority không theo alphabet, cắt trang qua các nhóm), stockSummary, phạm vi chi nhánh, và hình dạng OrderListItem / OrderDetail. Tự tạo tenant riêng và dọn sạch.
- */
+/** Kiểm đọc đơn: lọc, sắp xếp, stockSummary, phạm vi (Postgres thật). */
 describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
   let prisma: PrismaService;
   let reads: OrderReadService;
@@ -367,8 +365,7 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
         tenantId,
         query({ stockSummary: 'ENOUGH' }),
       );
-      // URGENT cần 1, trên kệ 1; PACKED đã khoá hàng của chính nó; OTHER-BRANCH cũng cần 1 –
-      // chưa đóng gói thì không đơn nào giữ hàng của đơn nào.
+      // URGENT cần 1, kệ có 1; đơn chưa đóng gói không giữ hàng.
       expect(codesOf(enough).sort()).toEqual(
         [`${P}-OTHER-BRANCH`, `${P}-PACKED`, `${P}-URGENT`].sort(),
       );

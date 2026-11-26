@@ -1,6 +1,4 @@
-// Danh mục, nhà cung cấp, khách, tồn đầu để test hành trình đơn (chép từ docs/tai-khoan-test-hanh-trinh.md, phần 1.5). Chạy sau seed-account-role.ts.
-// Tồn đầu đi qua `receiveGoods`, bản sao luồng nhập của app (script tsx không khởi động được DI): mỗi địa điểm một phiếu RECEIVED, một lô, một dòng sổ IMPORT, công nợ NCC, để Σ lot.remaining = stock. Đổi luồng nhập thì sửa cả hai.
-// Idempotent theo từng phần; tồn đầu bỏ qua khi NCC đã có phát sinh.
+// Danh mục, NCC, khách, tồn đầu để test hành trình đơn.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -395,7 +393,7 @@ async function main() {
     });
   }
 
-  // Products + variants. productCode follows ProductService.allocateItemCodes (SP000001...).
+  // Sản phẩm và phiên bản.
   let counter = await prisma.productItem.count({ where: { tenantId } });
   let createdProducts = 0;
   for (const product of PRODUCTS) {
@@ -431,9 +429,7 @@ async function main() {
           },
           select: { id: true },
         });
-        // Thuộc tính thuộc về sản phẩm (2026-10-16): đi qua cùng hàm ProductService dùng, để
-        // mỗi giá trị trỏ vào product_attributes - ghi `details` trần thì sản phẩm không có
-        // thuộc tính nào và form "thêm phiên bản" không có gì để chọn.
+        // Ghi thuộc tính qua hàm của ProductService.
         await writeItemDetails(
           tx,
           tenantId,

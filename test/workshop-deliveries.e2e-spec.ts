@@ -10,7 +10,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-// Thợ xưởng và phiếu giao hàng trên Postgres thật: xưởng chỉ thấy yêu cầu gửi cho mình, khai báo giao thiếu được, và tồn chỉ tăng khi kho đếm và xác nhận (lô, công nợ và trạng thái yêu cầu được đọc lại). Tự tạo tenant riêng và xoá sau khi chạy.
+// Kiểm phiếu giao của xưởng (Postgres thật).
 describe('workshop staff delivery notes', () => {
   let app: INestApplication;
   let prisma: PrismaService;

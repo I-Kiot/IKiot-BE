@@ -10,7 +10,7 @@ export class CancelOrderDto {
   )
   reason?: string;
 
-  /** Phần cọc hoàn lại cho khách (0 = shop giữ hết). Bắt buộc khi đơn đang giữ cọc; phần còn lại shop giữ. */
+  /** Phần cọc hoàn cho khách (0 = shop giữ hết), bắt buộc khi đơn đang giữ cọc. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })

@@ -1,4 +1,4 @@
-/** Các tool trợ lý, mô tả cho Gemini. Giữ 30 tool và cách diễn đạt như `ai.service.js` vì model suy luận theo chính text này. `permission` không gửi cho Gemini: cổng đó do `AiToolsService.run` kiểm tra. */
+/** Khai báo các tool của trợ lý cho Gemini; quyền kiểm ở `AiToolsService.run`. */
 
 export interface ToolDeclaration {
   name: string;
@@ -133,7 +133,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        // Trước đây là `keyword` + `role`; role giờ do tenant tự định nghĩa nên model lọc theo nơi nhân viên làm việc.
+        // Lọc nhân viên theo nơi làm việc.
         search: STRING('Từ khóa tìm kiếm (tên, email, số điện thoại)'),
         status: STRING('Lọc theo trạng thái (ACTIVE, INACTIVE)'),
         branchId: STRING('Lọc nhân viên thuộc một chi nhánh'),

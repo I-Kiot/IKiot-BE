@@ -36,7 +36,7 @@ export class CategoryController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  // Phải nằm trên @Get(':id'): route khớp từ trên xuống, nếu không 'tree' sẽ bị coi là :id và ParseUUIDPipe trả 400 khó hiểu.
+  // Route `tree` phải khai báo trên `:id`.
   @Permissions('categories', 'read')
   @Get('tree')
   @ApiOperation({ summary: 'Cây danh mục (toàn bộ, lồng nhau)' })

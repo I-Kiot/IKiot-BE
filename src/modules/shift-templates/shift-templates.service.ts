@@ -14,7 +14,7 @@ export const ShiftTemplateStatus = {
   DELETED: 'DELETED',
 } as const;
 
-/** Mẫu ca mà các dòng `WorkingSchedule` được cắt ra. Mọi truy vấn lọc `status: ACTIVE`, kể cả theo id: mẫu đã xoá coi như không tồn tại, nhưng lịch vẫn trỏ tới nên không bao giờ xoá cứng. */
+/** Service ca mẫu; chỉ đọc mẫu ACTIVE. */
 @Injectable()
 export class ShiftTemplateService {
   constructor(private readonly prisma: PrismaService) {}
@@ -88,7 +88,7 @@ export class ShiftTemplateService {
     };
   }
 
-  /** Xoá mềm: `WorkingSchedule.shiftTemplateId` là foreign key thật, xoá cứng sẽ lỗi khi mẫu đã từng được xếp lịch, và các lịch đó vẫn cần biết mình thuộc ca nào. */
+  /** Xoá mềm ca mẫu. */
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
     const deleted = await this.prisma.shiftTemplate.update({
@@ -101,7 +101,7 @@ export class ShiftTemplateService {
     };
   }
 
-  /** Tra cứu mẫu cho cả batch lịch. Quy tắc "mẫu phải ACTIVE và thuộc tenant" chỉ viết ở đây, không lặp lại ở WorkingScheduleService. */
+  /** Tra mẫu ca ACTIVE của tenant cho cả lô lịch. */
   async activeByIds(
     tenantId: string,
     ids: string[],

@@ -12,9 +12,9 @@ import { INACTIVE_USER_STATUSES } from '../constants/user-status';
 import { SystemRole } from '../constants/system-role';
 import { socketCorsOrigins } from '../config/env';
 
-// Port từ socketService.js của iKiotMS-BE, có một sửa lỗi: room được join ở server từ JWT, không còn event `join` do client điều khiển để nghe trộm.
+// Gateway Socket.IO; room được join ở server theo JWT.
 @Injectable()
-// Cùng danh sách origin với HTTP. Trước đây đọc FRONTEND_URL trong khi main.ts đọc CORS_ORIGIN, nên khoá API rồi socket vẫn mở.
+// Dùng chung danh sách origin với HTTP.
 @WebSocketGateway({ cors: { origin: socketCorsOrigins() } })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -36,7 +36,7 @@ export class RealtimeGateway
         select: { id: true, tenantId: true, systemRole: true, status: true },
       });
       if (!user) throw new Error('User not found');
-      // Access token còn sống sau khi bị vô hiệu, nên tài khoản cũng được kiểm tra lúc handshake - nếu không, nhân viên đã nghỉ vẫn giữ feed trực tiếp của shop.
+      // Kiểm tra tài khoản lúc handshake để chặn người đã bị vô hiệu.
       if (INACTIVE_USER_STATUSES.has(user.status)) {
         throw new Error('Account is not active');
       }
@@ -56,7 +56,7 @@ export class RealtimeGateway
     // socket.io tự rời mọi room khi ngắt kết nối - không cần làm gì ở đây.
   }
 
-  /** Ngắt mọi socket đang mở của user này: tài khoản chỉ được kiểm tra lúc handshake, nên socket đang sống sẽ sống qua việc vô hiệu mà HTTP đã áp dụng. */
+  /** Ngắt mọi socket đang mở của user. */
   disconnectUser(userId: string): void {
     this.server?.in(`user:${userId}`).disconnectSockets(true);
   }
@@ -66,9 +66,7 @@ export class RealtimeGateway
     this.server?.to(room).emit(event, payload);
   }
 
-  /**
-   * Như `emitToRoom` nhưng bỏ qua một socket (tab đã gây ra thay đổi, nó tự cập nhật rồi). Tách thành method riêng để các spy / assert trên `emitToRoom` của luồng SePay không bị ảnh hưởng bởi feed `entity:changed`.
-   */
+  /** Phát tới room nhưng bỏ qua một socket (tab gây thay đổi). */
   emitToRoomExcept(
     room: string,
     exceptSocketId: string | null,

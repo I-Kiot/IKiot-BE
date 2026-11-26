@@ -3,7 +3,7 @@ import type { NotificationContent } from '../notification-content.type';
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')}đ`;
 
 export const OrderNotificationTemplates = {
-  /** Tiền chuyển khoản SePay về là sự kiện duy nhất đáng push: đến vài phút sau khi khách đã rời quầy, thu ngân không còn nhìn màn hình. */
+  /** Tiền chuyển khoản SePay đã về. */
   paid: (paymentReference: string, amount: number): NotificationContent => ({
     type: 'ORDER_PAID',
     title: 'Khách đã thanh toán',
@@ -50,7 +50,7 @@ export const OrderNotificationTemplates = {
     link: '/shipments',
   }),
 
-  /** Tiền chuyển khoản về nhưng không chốt được (mã QR đã hết hạn và đơn đã huỷ / đã thu, khoản bị thay bằng tiền mặt hay mã mới): chủ shop phải hoàn tiền hoặc đối soát bằng tay. */
+  /** Tiền chuyển khoản về nhưng không chốt được, cần hoàn hoặc đối soát. */
   lateTransferNeedsAction: (
     orderId: string,
     orderCode: string,
@@ -64,7 +64,7 @@ export const OrderNotificationTemplates = {
     link: isPos ? '/sales/invoices' : `/sales/orders/${orderId}`,
   }),
 
-  /** Khách chuyển thiếu so với mã QR: tiền đã về và được ghi là khoản trả một phần; đơn còn thiếu `due`, người phụ trách cần thu nốt (mã QR mới hay tiền mặt). */
+  /** Khách chuyển thiếu, cần thu nốt. */
   partialTransfer: (
     orderId: string,
     orderCode: string,
@@ -90,7 +90,7 @@ export const OrderNotificationTemplates = {
     link: `/sales/orders/${orderId}`,
   }),
 
-  /** Tiền chuyển khoản về nhưng không gắn được đơn nào (không có mã, mã lạ): chủ shop đối soát, hoàn tiền hoặc đánh dấu đã xử lý. */
+  /** Tiền về không gắn được đơn nào. */
   unmatchedTransfer: (
     amount: number,
     content: string | null,

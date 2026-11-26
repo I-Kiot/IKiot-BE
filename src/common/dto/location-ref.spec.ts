@@ -12,7 +12,7 @@ import { LocationType, isReturnDirection } from '../constants/location-type';
 const BRANCH = '11111111-1111-4111-8111-111111111111';
 const WAREHOUSE = '22222222-2222-4222-8222-222222222222';
 
-// Chốt rằng cặp branch/warehouse mà các module khác vẫn suy luận theo luôn khớp với cột `location_id` duy nhất và `Location.type` trong DB.
+// Kiểm cặp chi nhánh/kho luôn khớp `location_id` và loại địa điểm.
 describe('location reference mapping', () => {
   it('answers the pair as a { locationId, locationType } reference', () => {
     expect(toLocationRef({ branchId: BRANCH, warehouseId: null })).toEqual({
@@ -43,8 +43,7 @@ describe('location reference mapping', () => {
   });
 });
 
-// `locationWhere` lọc trong SQL, `locationMatcher` lọc trong bộ nhớ. Đọc tồn kho dựa vào cả hai
-// để trả lời cùng một câu hỏi, nên mỗi case kiểm tra song song cả hai.
+// Kiểm lọc SQL và lọc trong bộ nhớ cho cùng kết quả.
 describe('location filter', () => {
   const rows = [
     { locationId: BRANCH, location: { type: LocationType.BRANCH } },

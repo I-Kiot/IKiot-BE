@@ -27,7 +27,7 @@ const TRANSITIONABLE = [
   SubscriptionStatus.PAST_DUE,
 ];
 
-// Port từ subscriptionJob.js dùng @nestjs/schedule: cùng lịch 02:00 hằng ngày, cùng hai bước (đổi trạng thái rồi nhắc hết hạn), bỏ qua khi chạy test.
+// Cron gói dịch vụ: đổi trạng thái rồi nhắc hết hạn.
 @Injectable()
 export class SubscriptionCronService {
   private readonly logger = new Logger(SubscriptionCronService.name);
@@ -38,7 +38,7 @@ export class SubscriptionCronService {
     private readonly email: EmailService,
   ) {}
 
-  // 02:00 theo giờ Việt Nam, không theo giờ của host: mọi câu hỏi bên dưới đều về ngày lịch địa phương. Trên host UTC, 2 giờ sáng không gắn múi giờ sẽ chạy lúc 9 giờ sáng giờ VN và lệch một ngày.
+  // 02:00 giờ Việt Nam.
   @Cron(CronExpression.EVERY_DAY_AT_2AM, { timeZone: VIETNAM_TIMEZONE })
   async runDailyJob() {
     if (process.env.NODE_ENV === 'test') return;
@@ -55,7 +55,7 @@ export class SubscriptionCronService {
     }
   }
 
-  /** Quét hằng đêm mọi gói đã hết hạn. Quyết định lấy từ `nextSubscriptionStatus` (cùng hàm được áp dụng lười khi đọc); job này chỉ tìm ứng viên và ghi kết quả. */
+  /** Quét các gói đã hết hạn và cập nhật trạng thái. */
   async runSubscriptionStatusCheck() {
     const now = new Date();
 
@@ -98,7 +98,7 @@ export class SubscriptionCronService {
       this.logger.log(`Moved ${ids.length} subscription(s) to ${status}`);
     }
 
-    // Hết dùng thử và hết kỳ trả phí được chủ shop hiểu rất khác nhau, nên có nội dung riêng dù cả hai đều thành EXPIRED.
+    // Nội dung riêng cho hết dùng thử và hết kỳ trả phí.
     const expired = transitions.filter(
       ({ nextStatus }) => nextStatus === SubscriptionStatus.EXPIRED,
     );
@@ -171,7 +171,7 @@ export class SubscriptionCronService {
     }
   }
 
-  /** Owner của từng tenant, lấy trong một query cho cả batch. `Tenant.tenantOwnerId` là scalar không ràng buộc FK (relation sẽ thành FK vòng lúc tạo), nên tìm owner theo role. */
+  /** Chủ shop của từng tenant trong một truy vấn. */
   private async ownersOf(tenantIds: string[]) {
     const owners = await this.prisma.user.findMany({
       where: {

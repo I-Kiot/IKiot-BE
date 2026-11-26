@@ -38,7 +38,7 @@ export class EmailService {
     return Boolean(process.env.MAIL_HOST && process.env.MAIL_USER);
   }
 
-  /** Gửi mã OTP. Khác hai hàm gửi còn lại: KHÔNG nuốt lỗi, vì người dùng đang chờ mã và caller phải trả 503 thay vì báo "đã gửi". */
+  /** Gửi mã OTP; lỗi được ném lên để trả 503. */
   async sendOtpEmail(
     to: string,
     code: string,
@@ -128,7 +128,7 @@ export class EmailService {
     }
   }
 
-  /** Một thông báo do vận hành soạn, gửi cho một chủ shop; `category` là chữ tự do và nằm trong tiêu đề email. */
+  /** Gửi thông báo của vận hành cho một chủ shop. */
   async sendSystemNotificationEmail(
     to: string,
     data: AnnouncementData,

@@ -57,16 +57,13 @@ export class ProductFilterDto extends IntersectionType(
   @BooleanQuery()
   isManufacturable?: boolean;
 
-  /**
-   * Không có mặc định (2026-10-23): POS, dialog đơn và bộ chọn combo đều tìm mọi loại qua route này,
-   * nên mỗi màn tự nêu loại nó cần (`/products` gửi `PRODUCT,SERVICE`, `/combos` gửi `COMBO`).
-   */
+  /** Lọc theo loại sản phẩm, không có mặc định. */
   @ProductTypesQuery()
   productType?: ProductType[];
 }
 
 export class QueryProductDto extends ProductFilterDto {
-  /** Filter "Có hàng hỏng" (2026-11-26): chỉ sản phẩm có lô hỏng còn hàng tại địa điểm đang chọn (bỏ trống địa điểm = toàn chuỗi). */
+  /** Chỉ sản phẩm có lô hỏng còn hàng tại địa điểm đang chọn. */
   @BooleanQuery()
   hasDamaged?: boolean;
 
@@ -78,9 +75,9 @@ export class QueryProductDto extends ProductFilterDto {
   search?: string;
 }
 
-/** Tìm nhanh cho POS: một từ khoá khớp tên sản phẩm và mã / SKU / barcode của mọi phiên bản, trả kèm phiên bản. */
+/** Từ khoá tìm nhanh cho POS: tên, mã, SKU, barcode. */
 export class SearchProductDto extends ProductFilterDto {
-  /** Một ký tự là đủ (2026-10-18), POS cần kết quả ngay từ chữ đầu. Trang đã giới hạn chi phí nên không cần ép 2 ký tự. */
+  /** Tối thiểu một ký tự. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -88,10 +85,7 @@ export class SearchProductDto extends ProductFilterDto {
   )
   q?: string;
 
-  /**
-   * Chỉ lấy sản phẩm chứa các phiên bản này (`?itemIds=a,b`), để POS đọc lại tồn của cả giỏ tại nơi bán mới bằng một request.
-   * Tối đa 100, bằng trần `limit`: mỗi id thuộc đúng một sản phẩm nên một trang luôn đủ chứa.
-   */
+  /** Chỉ lấy sản phẩm chứa các phiên bản này (tối đa 100). */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.split(',').filter(Boolean) : value,
@@ -111,7 +105,7 @@ export class QueryProductItemDto {
   )
   search?: string;
 
-  /** Gắn tồn kho tại các chi nhánh này vào `stock` (0 nếu chưa có dòng). Không lọc danh sách, vì bộ chọn phải thấy cả hàng chi nhánh chưa từng có. */
+  /** Gắn tồn tại các chi nhánh này, không lọc danh sách. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.split(',').filter(Boolean) : value,
@@ -119,14 +113,14 @@ export class QueryProductItemDto {
   @IsUUID('4', { each: true })
   branchIds?: string[];
 
-  /** `excludeDiscontinued=true` bỏ phiên bản của hàng đã ngừng, để `limit` chỉ đếm hàng chọn được. Bỏ trống = không lọc. */
+  /** Bỏ phiên bản của hàng đã ngừng bán. */
   @BooleanQuery()
   excludeDiscontinued?: boolean;
 
   @ProductTypesQuery()
   productType?: ProductType[];
 
-  // Không dùng PaginationQueryDto: đây là dropdown, không phải bảng nên không có trang, chỉ giữ mặc định và trần 200/500 như cũ.
+  // Danh sách cho dropdown, không phân trang.
   @IsOptional()
   @Type(() => Number)
   @IsInt()

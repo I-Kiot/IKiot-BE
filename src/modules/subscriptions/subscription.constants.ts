@@ -30,7 +30,7 @@ export function startOfDayUTC(date: Date): Date {
   );
 }
 
-/** Số ngày nguyên giữa hai thời điểm, tính theo nửa đêm để kết quả không phụ thuộc giờ request đến (chia mili-giây từng báo 10 hoặc 11 ngày cho cùng một gói). Âm khi `later` trước `earlier`. */
+/** Số ngày nguyên giữa hai thời điểm, tính theo nửa đêm. */
 export function wholeDaysBetween(earlier: Date, later: Date): number {
   return Math.round(
     (startOfDayUTC(later).getTime() - startOfDayUTC(earlier).getTime()) /
@@ -47,7 +47,7 @@ export function getBillingDays(
   );
 }
 
-// Port từ planFeatures.js: tập cờ cố định mà một phần tử `Plan.features[]` được chứa; UpdatePlanDto kiểm tra theo tập này.
+// Các cờ tính năng của gói.
 export const PLAN_FEATURES = {
   STOCK_MOVEMENT: 'stock_movement',
   SALES: 'sales',

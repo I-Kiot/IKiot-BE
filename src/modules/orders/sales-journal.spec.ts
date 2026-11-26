@@ -9,10 +9,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-/**
- * Mọi đơn COMPLETED có đúng một bút toán SALE (bất biến 6): chỗ nào ghi `completedData(` (lệnh chiếm COMPLETED) phải gọi `postSale(` trong cùng file, và đơn quầy tạo thẳng ở COMPLETED (`? { completedAt: now }`)
- * (đơn quầy tạo thẳng ở COMPLETED) cũng vậy. Quên gọi thì doanh thu của đường chốt đơn đó biến mất khỏi báo cáo mà không lỗi nào báo.
- */
+/** Mọi chỗ chốt đơn COMPLETED phải ghi bút toán SALE. */
 describe('sales journal wiring', () => {
   const root = join(__dirname, '..', '..');
   const files = sourceFiles(root).filter(

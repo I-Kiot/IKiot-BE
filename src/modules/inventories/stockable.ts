@@ -2,10 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { holdsStock } from '../../common/constants/product-status';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/**
- * Từ chối COMBO / SERVICE ở cửa nhập tồn (dòng phiếu, `POST /inventory`): tồn gắn trên combo không bán được mà vẫn đếm vào tổng.
- * Kiểm ở cửa thay vì trong `openLot` vì `openLot` chạy mỗi dòng phiếu.
- */
+/** Từ chối nhập tồn cho COMBO / SERVICE. */
 export function assertHoldsStock(
   items: { id: string; sku: string | null; itemType: string }[],
 ): void {

@@ -1,6 +1,6 @@
-/** Port từ ai.service.js của iKiotMS-BE. Prompt là copy nghiệp vụ, quyết định trợ lý được và không được làm gì, nên đặt ở đây thay vì trong logic điều phối. */
+/** Prompt và hằng số của trợ lý AI. */
 
-/** Cho phép ghi đè vì tên model là chi tiết vận hành; đọc lúc gọi hàm vì hằng số module được tính trước khi ConfigModule nạp `.env`. */
+/** Tên model Gemini, cho phép ghi đè qua env. */
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 export function geminiModel(): string {
@@ -15,7 +15,7 @@ export const TITLE_MAX_LENGTH = 30;
 
 export const ROUTING_HISTORY_MESSAGES = 6;
 
-/** Gemini không kết hợp custom function tool với Google Search grounding trong một request, nên câu hỏi được phân loại trước và chỉ bật đúng một trong hai. */
+/** Nhóm câu hỏi: dùng tool dữ liệu hoặc Google Search. */
 export const AgentRoute = {
   /** Dữ liệu của shop. Bật custom tool, tắt search. */
   INTERNAL_DATA: 'INTERNAL_DATA',
@@ -49,6 +49,6 @@ ${historyText ? `Lịch sử trò chuyện gần đây:\n${historyText}\n` : ''}
 Câu hỏi của người dùng: "${message}"`;
 }
 
-/** Người dùng thấy câu này khi model hoặc tool lỗi; hội thoại vẫn được lưu với câu này làm trả lời, nên không câu hỏi nào bị bỏ lửng. */
+/** Câu trả lời khi model hoặc tool lỗi. */
 export const FALLBACK_REPLY =
   'Xin lỗi, tôi đang có chút xíu việc bận ngay lúc này. Hãy nhờ tôi vào một lúc sau nha.';

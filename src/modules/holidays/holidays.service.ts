@@ -23,7 +23,7 @@ import {
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Lịch ngày lễ của tenant: mọi dòng là `PUBLIC_HOLIDAY` với `branchId: null`. `isManuallyEdited` quan trọng: dòng người dùng sửa được đánh dấu và sync bỏ qua vĩnh viễn. */
+/** Service ngày lễ; dòng sửa tay không bị sync ghi đè. */
 @Injectable()
 export class HolidayService {
   constructor(private readonly prisma: PrismaService) {}
@@ -108,7 +108,7 @@ export class HolidayService {
     });
   }
 
-  /** Xoá cứng như service cũ: không có foreign key nào trỏ tới Holiday, nên không cần giữ vết; xoá nhầm thì lần sync sau sẽ đưa lại. */
+  /** Xoá cứng ngày lễ. */
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
     return this.prisma.holiday.delete({ where: { id } });
@@ -136,7 +136,7 @@ export class HolidayService {
     }
   }
 
-  /** Đổi P2002 của `@@unique([tenantId, date, branchId, type])` thành thông báo của service cũ. Index chỉ có tác dụng nhờ migration partial index, vì `branchId` NULL sẽ không ràng buộc gì. */
+  /** Lỗi trùng ngày lễ. */
   private async guardDuplicate<T>(write: () => Promise<T>): Promise<T> {
     try {
       return await write();

@@ -15,7 +15,7 @@ import { DeviceTokenDto } from './dto/device-token.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Chỉ inbox của chính người gọi: mọi method đều lọc theo user. Không có listing xuyên user; muốn ghi thì gọi notify() từ service khác.
+// Hộp thư của chính người gọi.
 @ApiTags('notifications')
 @ApiBearerAuth('bearer')
 @Controller('notifications')

@@ -14,9 +14,7 @@ const PLATFORM_ACCOUNT = '0123456789';
 const KEY = 'platform-billing-key';
 const MARK = 'pb-e2e';
 
-/**
- * Phase 5 của sổ tiền (Postgres thật): webhook SePay của tài khoản iKiot. Hoá đơn gói bị chiếm có điều kiện trước khi kích hoạt gói, và mọi lần tiền về đều vào `platform_sepay_transactions`.
- */
+/** Kiểm webhook SePay của tài khoản iKiot (Postgres thật). */
 describe('platform SePay webhook', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -252,7 +250,7 @@ describe('platform SePay webhook', () => {
     const rows = await ledgerOf(id);
     expect(rows.map((r) => r.outcome)).toEqual(['UNDERPAID', 'UNDERPAID']);
     expect(notifySystem).toHaveBeenCalledTimes(2);
-    // The full transfer later still activates it.
+    // Chuyển đủ sau đó vẫn kích hoạt.
     const ok = await transfer(`full ${ref}`, 500_000);
     expect(ok.message).toBe('Subscription activated');
     expect(

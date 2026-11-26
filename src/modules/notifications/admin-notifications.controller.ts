@@ -20,7 +20,7 @@ import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Giữ path cũ: `/admin/notifications` là outbox, `/admin/system-notifications` là feed sự kiện. `AdminOnlyGuard` thay cho bảy check `role === 'SUPER_ADMIN'` chép tay, để route mới không quên kiểm tra quyền. */
+/** Route thông báo cho admin nền tảng. */
 @ApiTags('admin-notifications')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)

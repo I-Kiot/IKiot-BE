@@ -12,7 +12,7 @@ import {
 import { SETTABLE_PRODUCT_STATUSES } from '../../../common/constants/product-status';
 import { ProductAttributeDto, ProductImageDto } from './product-item.dto';
 
-/** Port từ UpdateProductRequestDTO, không dùng `PartialType(CreateProductDto)`: `items` không sửa ở đây, và DISCONTINUED chỉ qua DELETE /products/:id (kiểm tồn kho và phiếu đang chờ trước). */
+/** Body sửa sản phẩm; ngừng bán chỉ qua DELETE. */
 export class UpdateProductDto {
   @IsOptional()
   @IsString()
@@ -38,7 +38,7 @@ export class UpdateProductDto {
   })
   status?: string;
 
-  /** Khi có, thay toàn bộ thuộc tính: dòng có `id` được giữ (đổi tên), dòng vắng mặt bị xoá kèm giá trị trên mọi SKU. */
+  /** Thay toàn bộ thuộc tính: giữ dòng có `id`, xoá dòng vắng mặt. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

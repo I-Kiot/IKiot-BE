@@ -63,7 +63,7 @@ const SELECT_SAFE = {
   createdAt: true,
 } as const;
 
-/** Dựng lại vị trí làm việc từ quan hệ `location` duy nhất thành `branchId`/`warehouseId`, kèm tên bên cạnh id vì cột "Chi nhánh" ở danh sách cần hiển thị tên. */
+/** Dựng lại `branchId`/`warehouseId` kèm tên từ `location`. */
 function toUserResponse<
   T extends FlatUserProfile & {
     location: { id: string; type: string; name: string } | null;
@@ -72,7 +72,7 @@ function toUserResponse<
   return withNestedProfile(withNamedPosting(row));
 }
 
-/** Quản lý nhân viên, thay cho toàn bộ module `/staff` của iKiotMS-BE. Phân cấp vai trò cũ (ai được sửa ai theo BRANCH_MANAGER/WAREHOUSE_MANAGER/STAFF) đã bỏ: nay chỉ cần quyền `users:update`. */
+/** Service quản lý nhân viên. */
 @Injectable()
 export class UserService {
   constructor(
@@ -82,7 +82,7 @@ export class UserService {
     private readonly refreshTokens: RefreshTokenService,
   ) {}
 
-  /** Danh sách nhân viên có phân trang và lọc, port từ `getStaffList` (bản NestJS đầu trả toàn bộ user, không giới hạn). Giữ hai quy tắc: chỉ STAFF, và loại người gọi vì màn này dùng để quản lý người khác. */
+  /** Danh sách nhân viên có phân trang, loại người gọi. */
   async findAll(tenantId: string, requesterId: string, query: QueryUserDto) {
     const where: Prisma.UserWhereInput = {
       tenantId,
@@ -92,7 +92,7 @@ export class UserService {
     };
 
     if (query.roleId) where.roleId = query.roleId;
-    // Giờ chỉ có một cột `location_id`; lọc cả chi nhánh lẫn kho sẽ không khớp ai, như phép AND hai cột cũ.
+    // Lọc theo một cột `location_id`.
     const postings = [query.branchId, query.warehouseId].filter(
       (id): id is string => Boolean(id),
     );
@@ -142,13 +142,13 @@ export class UserService {
     return toUserResponse(user);
   }
 
-  /** Tuyển người ở trạng thái INACTIVE, chưa có mật khẩu. Cấp login là `POST /users/:id/account`, gọi riêng. */
+  /** Tuyển nhân viên ở trạng thái INACTIVE, cấp đăng nhập riêng. */
   async create(actor: AuthUser, tenantId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
-    // Cùng quy tắc tập quyền như update: nếu không, có thể tuyển thẳng đồng nghiệp vào role đặc quyền nhất rồi bật login.
+    // Không gán role vượt quyền người thao tác.
     await this.assertRoleIsWithinGrant(actor, tenantId, dto.roleId);
     const posting = this.resolvePosting(dto);
-    // Nhân viên xưởng làm cho một nhà cung cấp xưởng nên không có địa điểm; mọi người khác phải thuộc một chi nhánh hoặc kho.
+    // Nhân viên phải thuộc chi nhánh, kho hoặc xưởng.
     if (!dto.branchId && !dto.warehouseId && !dto.workshopId)
       throw new BadRequestException({
         code: ErrorCode.STAFF_WORKPLACE_REQUIRED,
@@ -161,7 +161,7 @@ export class UserService {
     );
     await this.assertWorkshopBelongsToTenant(tenantId, dto.workshopId);
 
-    // Seat là thứ gói cước bán, nên kiểm tra trước khi ghi row (không đợi lúc bật login), và đếm cùng tập người mà màn danh sách hiển thị.
+    // Kiểm hạn mức số nhân viên của gói.
     await this.subscriptions.assertQuota(
       tenantId,
       'quotaSnapshotMaxUsers',
@@ -188,7 +188,7 @@ export class UserService {
       });
     }
 
-    // Cùng quy tắc bộ ba như update: số CCCD mã hoá thế kỷ, năm sinh và giới tính; lúc tạo chưa có row để đối chiếu.
+    // Kiểm CCCD khớp ngày sinh và giới tính.
     const identificationId = dto.profile?.identificationId
       ? validateVietnamIdentificationId(dto.profile.identificationId, {
           dob: dto.profile.dob ?? null,
@@ -196,7 +196,7 @@ export class UserService {
         })
       : undefined;
 
-    // Kiểm tra giống update. Trước đây chỉ update có, nên hai nhân viên có thể tạo trùng email và lỗi chỉ lộ ra khi sửa.
+    // Kiểm email và CCCD không trùng.
     await this.assertContactDetailsAreFree(null, tenantId, {
       email: dto.email,
       identificationId,
@@ -213,7 +213,7 @@ export class UserService {
         ...posting,
         workshopId: dto.workshopId,
         hireDate: dto.hireDate ? new Date(dto.hireDate) : undefined,
-        // Khi gửi cả hai, trường phẳng được ưu tiên: StaffDTO cũ và form hiện tại dùng tên phẳng, còn phần khác lồng trong profile.
+        // Ưu tiên trường phẳng khi gửi cả hai.
         profileFirstName: dto.firstName ?? dto.profile?.firstName,
         profileLastName: dto.lastName ?? dto.profile?.lastName,
         profileAvatarUrl: dto.profile?.avatarUrl,
@@ -229,7 +229,7 @@ export class UserService {
     return toUserResponse(user);
   }
 
-  /** Sửa hồ sơ nhân viên. Bản NestJS đầu chỉ còn 4 trường nên không sửa được hồ sơ, ngày vào làm, hình thức lương, ghi chú. Vòng đời tài khoản không nằm ở đây; xem UpdateUserDto. */
+  /** Sửa hồ sơ nhân viên. */
   async update(
     actor: AuthUser,
     tenantId: string,
@@ -288,7 +288,7 @@ export class UserService {
     return toUserResponse(updated);
   }
 
-  /** Nhân viên chỉ thuộc đúng một địa điểm, do cột `location_id` duy nhất đảm bảo: chọn chi nhánh sẽ thay thế kho và ngược lại. Gửi cả hai vẫn bị từ chối thay vì âm thầm chọn một. */
+  /** Nhân viên thuộc đúng một địa điểm. */
   private resolvePosting(dto: {
     branchId?: string | null;
     warehouseId?: string | null;
@@ -304,7 +304,7 @@ export class UserService {
     return {};
   }
 
-  /** CCCD phải khớp ngày sinh và giới tính của cùng bản ghi, và vế nào trong bộ ba cũng có thể là thứ đang sửa, nên kiểm tra trên kết quả đã gộp chứ không chỉ trên request. */
+  /** Kiểm CCCD trên dữ liệu sau khi gộp. */
   private resolveIdentificationId(
     current: {
       profileIdentificationId: string | null;
@@ -330,13 +330,13 @@ export class UserService {
     });
   }
 
-  /** Email phải duy nhất toàn nền tảng (là tên đăng nhập thứ hai và nơi nhận OTP); CCCD chỉ duy nhất trong tenant, vì để toàn cục thì shop này dò được ai đang làm ở shop khác. */
+  /** Email duy nhất toàn nền tảng, CCCD duy nhất trong tenant. */
   private async assertContactDetailsAreFree(
     id: string | null,
     tenantId: string,
     values: { email?: string; identificationId?: string },
   ) {
-    // Dùng spread thay vì `id: { not: id }`: với id null, điều kiện đó thành "id is not null", khớp mọi row.
+    // Loại trừ id hiện tại bằng spread.
     const others = id ? { id: { not: id } } : {};
 
     if (values.email) {
@@ -373,7 +373,7 @@ export class UserService {
     }
   }
 
-  /** Xoá mềm kèm ẩn danh: row phải giữ vì đơn hàng, phiếu kho và audit log có FK tới nó, còn dữ liệu cá nhân bị xoá. Số điện thoại thay bằng giá trị duy nhất để tuyển lại được cùng số. */
+  /** Xoá mềm và ẩn danh nhân viên. */
   async remove(
     actor: AuthUser,
     tenantId: string,
@@ -406,13 +406,13 @@ export class UserService {
       });
     });
 
-    // Row không còn là login nhưng các phiên đã mở thì chưa: refresh token còn trong Redis, và socket đã xác thực lúc kết nối. Phải kết thúc chúng.
+    // Kết thúc các phiên đang mở.
     await this.refreshTokens.revokeAllFor(id);
 
     return { success: true };
   }
 
-  /** Bật login cho nhân viên chưa có login: nửa sau của tuyển dụng, và là cách duy nhất để tài khoản nhân viên có mật khẩu. Cũng dùng lại sau khi `deactivateAccount` đã xoá mật khẩu. */
+  /** Bật đăng nhập cho nhân viên. */
   async createAccount(
     actor: AuthUser,
     tenantId: string,
@@ -428,7 +428,7 @@ export class UserService {
     );
     this.assertPasswordsMatch(dto);
 
-    // Lần đăng nhập đầu cần gửi OTP tới email, nên không cấp login cho người chưa có địa chỉ. Kiểm tra trước mọi thay đổi.
+    // Cần email để gửi OTP lần đầu.
     if (!staff.email) {
       throw new BadRequestException({
         code: ErrorCode.ACCOUNT_EMAIL_MISSING,
@@ -490,12 +490,12 @@ export class UserService {
       data: { password: await bcrypt.hash(dto.newPassword, BCRYPT_COST) },
       select: SELECT_SAFE,
     });
-    // Cùng quy tắc `AuthService.resetPassword`: mật khẩu do người khác đặt lại có thể đã bị lộ, nên mọi phiên còn dùng được phải kết thúc.
+    // Đặt lại mật khẩu thì kết thúc mọi phiên.
     await this.refreshTokens.revokeAllFor(id);
     return toUserResponse(updated);
   }
 
-  /** Tắt login mà không xoá người: xoá cả mật khẩu lẫn status, nên token đã phát ra bị từ chối ở request kế tiếp; kích hoạt lại phải đặt mật khẩu mới. Việc hoán đổi `replacementManagerId` cũ đã bỏ: quản lý địa điểm là `Branch.managerId`, dùng `PATCH /branches/:id/manager`. */
+  /** Tắt đăng nhập: xoá mật khẩu, đặt INACTIVE. */
   async deactivateAccount(actor: AuthUser, tenantId: string, id: string) {
     const staff = await this.requireStaff(tenantId, id);
     await this.assertCanActOnStaff(actor, tenantId, staff, 'deactivate');
@@ -513,12 +513,12 @@ export class UserService {
       data: { status: UserStatus.INACTIVE, password: null },
       select: SELECT_SAFE,
     });
-    // INACTIVE đủ cho HTTP vì JwtStrategy đọc lại tài khoản mỗi request, nhưng socket chỉ xác thực một lần lúc kết nối. Thiếu bước này, nhân viên đã nghỉ vẫn nhận live feed của shop tới khi đóng tab.
+    // Ngắt socket đang mở.
     await this.refreshTokens.revokeAllFor(id);
     return toUserResponse(updated);
   }
 
-  /** Không cho tự sửa mình ở endpoint này: `GET /users` đã loại người gọi, nhưng đường update thì không, nên tài khoản có `users:update` có thể PATCH `roleId` và vị trí của chính mình. Tự sửa hồ sơ đi qua `PATCH /auth/me`, nơi không nhận hai trường này. */
+  /** Không tự sửa mình qua endpoint này. */
   private assertNotSelf(actor: AuthUser, id: string) {
     if (actor.userId === id) {
       throw new ForbiddenException({
@@ -528,7 +528,7 @@ export class UserService {
     }
   }
 
-  /** Không được trao quyền mình không có. Thiếu bước này, `users:update` là đường tới mọi quyền khác trong shop: gán đồng nghiệp role đặc quyền nhất, đặt mật khẩu họ qua route cùng quyền, rồi đăng nhập thay. Bản cũ so hai role cố định; nay so tập quyền của role với quyền của mình. Owner và admin nền tảng được miễn. */
+  /** Không gán role có quyền mà người thao tác không có. */
   private async assertRoleIsWithinGrant(
     actor: AuthUser,
     tenantId: string,
@@ -567,7 +567,7 @@ export class UserService {
     }
   }
 
-  /** Quyền của người thao tác, đã bỏ quyền tạm của ca đang chạy. Quyền tạm đúng cho `PermissionsGuard` nhưng sai ở đây, vì đây quyết định cấp vĩnh viễn gì cho người khác: tính cả nó thì trưởng ca có thể cấp `stock_movement:approve` vĩnh viễn ngay trong ca. */
+  /** Quyền của người thao tác, bỏ quyền tạm của ca. */
   private ownGrantsOf(actor: AuthUser): Set<string> {
     const held = new Set(actor.permissions);
     for (const key of held) {
@@ -577,7 +577,7 @@ export class UserService {
     return held;
   }
 
-  /** Người thao tác có được động vào tài khoản này không? Kiểm tra tập quyền chỉ chặn cửa trước: chiếm tài khoản đã có role mạnh hơn không cần gán gì, vì `PATCH /users/:id/account/password` ghi đè mật khẩu của bất kỳ ai. Nên mọi thao tác vòng đời yêu cầu role hiện tại của đích nằm trong quyền người thao tác; owner/admin được miễn, người chưa có role thì ai cũng được. */
+  /** Kiểm người thao tác có được động vào tài khoản này không. */
   private async assertCanActOnStaff(
     actor: AuthUser,
     tenantId: string,
@@ -623,7 +623,7 @@ export class UserService {
     }
   }
 
-  /** Địa điểm không được trỏ tới quản lý đã bị vô hiệu; thay người phải qua PATCH /branches/:id/manager, nơi duy nhất biết quy tắc bổ nhiệm. */
+  /** Không bỏ quản lý đang được địa điểm trỏ tới. */
   private async assertNotAppointedManager(tenantId: string, id: string) {
     const managed = await this.prisma.location.count({
       where: { tenantId, managerId: id },
@@ -648,7 +648,7 @@ export class UserService {
       });
   }
 
-  /** Nhân viên xưởng phải chọn một nhà cung cấp loại WORKSHOP của chính shop. `users.workshop_id` là FK thường, DB không kiểm tra tenant hay loại supplier. */
+  /** Kiểm xưởng là nhà cung cấp loại WORKSHOP của shop. */
   private async assertWorkshopBelongsToTenant(
     tenantId: string,
     workshopId: string | null | undefined,

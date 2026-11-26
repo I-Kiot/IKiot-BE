@@ -2,7 +2,7 @@ import { BadRequestException, Logger } from '@nestjs/common';
 import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
 
-// Excel sheet "Orders" - SepayOrderService (UTC042-UTC053).
+// Sheet Excel "Orders" - SepayOrderService (UTC042-UTC053).
 describe('Excel sheet Orders - SepayOrderService', () => {
   let prisma: { tenant: { findFirst: jest.Mock } };
   let service: SepayOrderService;
@@ -109,7 +109,7 @@ describe('Excel sheet Orders - SepayOrderService', () => {
   });
 });
 
-// Excel sheet "Orders" - completeSepayOrder (UTC054-UTC060).
+// Sheet Excel "Orders" - completeSepayOrder (UTC054-UTC060).
 describe('Excel sheet Orders - completeSepayOrder', () => {
   let prisma: any;
   let tx: any;

@@ -53,7 +53,7 @@ type Ctor<T> = new () => T;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Quyền cần có cho từng tool - ranh giới bảo mật của cả tính năng AI. Bản cũ chạy mọi tool dưới TENANT_OWNER, khiến trợ lý thành cửa hậu vượt mọi quy tắc đọc dữ liệu. */
+/** Quyền cần có cho từng tool. */
 const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   searchProducts: ['products', 'read'],
   getProductStockLevel: ['products', 'read'],
@@ -84,7 +84,7 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getTenantTickets: ['tickets', 'read'],
 };
 
-/** 30 tra cứu chỉ đọc mà trợ lý được thực hiện: mỗi tool ủy quyền cho module sở hữu câu hỏi đó, và tham số model đưa vào được ép kiểu qua cùng DTO mà endpoint REST validate. */
+/** Các tool tra cứu chỉ đọc, gọi qua service sở hữu dữ liệu. */
 @Injectable()
 export class AiToolsService {
   private readonly logger = new Logger(AiToolsService.name);
@@ -110,7 +110,7 @@ export class AiToolsService {
     private readonly stats: StatsService,
   ) {}
 
-  /** Chạy một tool call. Không bao giờ throw: vòng lặp luôn cần một giá trị trả về, và "không có quyền" là điều model có thể nói lại một cách hữu ích. */
+  /** Chạy một tool call, không bao giờ ném lỗi. */
   async run(
     user: AuthUser,
     name: string,
@@ -329,7 +329,7 @@ export class AiToolsService {
         return this.subscriptions.checkTrialStatus(tenantId);
 
       case 'getTenantTickets': {
-        // TicketService không có danh sách lọc, nên tool tự lọc kết quả thay vì thêm một route mà không nơi nào khác cần.
+        // Tự lọc danh sách ticket.
         const all = await this.tickets.findMine(tenantId);
         const status = this.str(args.status, false);
         const filtered = status
@@ -354,7 +354,7 @@ export class AiToolsService {
     }
   }
 
-  /** Output của model -> instance DTO đã validate, dùng đúng class mà tầng HTTP validate, nên tool không bao giờ lỏng hơn endpoint. */
+  /** Ép tham số của model qua DTO đã validate. */
   private async dto<T extends object>(
     ctor: Ctor<T>,
     args: ToolArgs,
@@ -385,7 +385,7 @@ export class AiToolsService {
     };
   }
 
-  /** Báo cáo mặc định tính từ đầu tháng đến hiện tại, không dùng 30 ngày cuộn của module stats: "doanh thu tháng này" là câu người dùng hỏi trợ lý nhiều nhất. */
+  /** Mặc định từ đầu tháng tới nay. */
   private withMonthToDate(args: ToolArgs): ToolArgs {
     if (args.fromDate && args.toDate) return args;
     const now = new Date();
@@ -432,7 +432,7 @@ export class AiToolsService {
     return first.id;
   }
 
-  /** Mã đơn (`paymentReference`) là duy nhất trên mọi tenant, nên filter tenant ở đây là thứ ngăn một shop đọc đơn của shop khác bằng cách đoán mã. */
+  /** Lọc theo tenant khi tìm đơn theo mã. */
   private async resolveOrderId(tenantId: string, term: string) {
     if (UUID.test(term)) return term;
     const order = await this.prisma.order.findFirst({

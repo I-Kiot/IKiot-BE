@@ -11,9 +11,7 @@ import {
 } from './product-import.columns';
 import type { ImportColumn, ImportColumnKey } from './product-import.columns';
 
-// Đọc các dòng của file import thành CreateProductDto. Thuần tuý - không đụng database: mọi thứ cần
-// tra (danh mục, thương hiệu, NCC, SKU và tên đã có) được service nạp sẵn và đưa vào qua `lookups`.
-// Mọi lỗi được gom lại theo dòng thay vì dừng ở lỗi đầu tiên: người dùng sửa cả file một lần.
+// Đọc các dòng file nhập thành CreateProductDto, gom mọi lỗi theo dòng.
 
 export type CellValue = string | number | boolean | Date | null | undefined;
 
@@ -94,11 +92,7 @@ export function textOf(value: CellValue): string {
   return value.normalize('NFC').trim();
 }
 
-/**
- * Đọc một số tiền / phần trăm. Ô số của Excel đi thẳng; ô chữ chấp nhận cách viết quen thuộc ở
- * Việt Nam: `1.200.000`, `1,200,000`, `1 200 000đ`, `10%`. Dấu `.` hay `,` chỉ được coi là phân
- * cách hàng nghìn khi đứng trước đúng ba chữ số - `12,5` là mười hai phẩy năm.
- */
+/** Đọc số tiền / phần trăm từ ô Excel theo cách viết ở Việt Nam. */
 export function numberOf(value: CellValue): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   let text = textOf(value)
@@ -567,7 +561,7 @@ function assembleProduct(
     signatures.set(signature, item.row);
   }
 
-  // Một dòng đã lỗi thì hàng hoá không được tạo - nhưng các luật nhóm vẫn chạy ở trên để báo hết một lần.
+  // Dòng lỗi thì không tạo hàng hoá.
   if (!ok || draft.items.length !== draft.rows.length) return undefined;
 
   const items = draft.items.map(({ item, explicitName, attributes }) => ({

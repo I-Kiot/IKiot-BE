@@ -1,42 +1,6 @@
-// Schema iKiotMS – PostgreSQL. Khoá chính uuid, tên cột snake_case qua @map. Cột kiểu "enum" để
-// String, các giá trị hợp lệ ghi ở comment (hằng nằm trong src/common/constants).
-//
-// Tồn kho:
-// - Tồn chỉ đổi khi hàng thật sự di chuyển: tăng khi nhận hàng nhập (NCC / xưởng) hoặc hàng hoàn
-//   nguyên vẹn; giảm khi đơn chuyển sang Đang vận chuyển (SHIPPING).
-// - Hàng đã đóng gói cho đơn bị khoá (inventories.locked_stock, từ 2026-10-04): khoá khi đơn
-//   CONFIRMED → PACKED (lần đóng hàng được xác nhận), trừ cả stock lẫn locked_stock khi đơn sang
-//   SHIPPING. Tồn trên kệ (actualStock) = stock − locked_stock, không lưu thành cột; mọi thứ lấy
-//   hàng khỏi kệ (bán quầy, xuất chuyển kho, kiểm kê thiếu, đóng gói đơn khác) chỉ lấy được phần này.
-//   Chứng từ khoá là Fulfillment PACKED / HANDED_OVER của đơn chưa ship (không có bảng giữ hàng
-//   riêng): locked_stock = Σ FulfillmentItem.quantity của các fulfillment đó, theo (location, SKU).
-// - Hàng nằm trong các lô (InventoryLot) giữ nguồn gốc và giá vốn: Σ remaining của lô bán được (isSellable) = inventories.stock; lô hỏng nằm ngoài stock.
-// - Mọi thay đổi tồn ghi sổ kho (InventoryTransaction), mỗi dòng sổ đụng đúng một lô.
-// - Location.type là BRANCH | WAREHOUSE; Branch / Warehouse dùng chung id với Location của nó.
+// Schema iKiotMS (PostgreSQL): khoá uuid, cột snake_case, cột "enum" là String; tồn = tổng lô bán được, tồn trên kệ = stock - locked_stock.
 
-// Ràng buộc chỉ có trong SQL (Prisma không biểu diễn được – giữ lại khi sửa migration sinh tự động):
-//   - locations: CHECK location_type IN ('BRANCH', 'WAREHOUSE')
-//   - branches / warehouses: CHECK (id = location_id)
-//   - users: email / CCCD không trùng trong một tenant (bỏ qua tài khoản DELETED)
-//   - holidays: mỗi ngày một PUBLIC_HOLIDAY / tenant (index một phần, branch_id IS NULL)
-//   - cash_drawer_sessions: mỗi chi nhánh tối đa một ca két OPEN (index một phần)
-//   - working_schedules: không trùng ca đang hiệu lực (index một phần)
-//   - inventories: CHECK (stock >= 0), CHECK (locked_stock >= 0 AND locked_stock <= stock)
-//   - order_items: CHECK (quantity > 0 AND returned_quantity BETWEEN 0 AND quantity)
-//   - production_request_items, order_return_items: CHECK (quantity > 0)
-//   - production_request_items: CHECK (received_quantity >= 0)
-//   - stock_movement_request_items: CHECK (defect_quantity BETWEEN 0 AND COALESCE(received_quantity, 0))
-//   - stock_movement_requests: CHECK ((movement_type = 'IMPORT') = (import_source IS NOT NULL))
-//   - inventory_lots: CHECK (received_quantity > 0 AND remaining_quantity BETWEEN 0 AND received_quantity)
-//   - orders: CHECK (status = 'PENDING_CONFIRMATION' OR assignee_id IS NOT NULL)
-//   - orders: CHECK tiền cọc 0 ≤ deposit_amount ≤ grand_total, 0 < deposit_percent ≤ 100
-//   - fulfillment_items: CHECK (qty_packed <= qty_picked AND qty_picked <= quantity)
-//   - payments: CHECK (amount > 0)
-//   - invoices: mỗi đơn tối đa một hoá đơn SALE chưa huỷ (index một phần)
-//   - shipments: mỗi đơn tối đa một lần giao chưa kết thúc (index một phần shipments_one_open_per_order)
-//   - order_events: CHECK type thuộc danh sách (order_events_type_check), CHECK source IN (USER, SYSTEM, WEBHOOK)
-//   - order_events: CHECK (source = 'USER' OR actor_id IS NULL)
-//   - sepay_transactions: CHECK outcome IN (SETTLED, SETTLED_LATE, REJECTED) (sepay_transactions_outcome_check)
+// Nhiều ràng buộc (CHECK, index một phần) chỉ có trong migration SQL; đọc migration trước khi sửa.
 
 generator client {
   provider     = "prisma-client"
@@ -48,9 +12,7 @@ datasource db {
   provider = "postgresql"
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// A. Nền tảng: tenant, tài khoản, phân quyền
-// ─────────────────────────────────────────────────────────────────────────
+// ─── A. Nền tảng: tenant, tài khoản, phân quyền ───
 
 /// Một shop (khách hàng của nền tảng). Mọi dữ liệu nghiệp vụ đều thuộc một tenant.
 model Tenant {
@@ -158,7 +120,7 @@ model User {
   hireDate        DateTime? @map("hire_date") @db.Timestamptz(6)
   locationId      String?   @map("location_id") // nơi làm việc (một chi nhánh hoặc kho)
   location        Location? @relation(fields: [locationId], references: [id])
-  workshopId      String?   @map("workshop_id") // nhân viên xưởng: xưởng (Supplier type WORKSHOP) mình thuộc về - thấy YCSX của xưởng đó ở mọi location
+  workshopId      String?   @map("workshop_id") // xưởng (Supplier WORKSHOP) của nhân viên xưởng
   workshop        Supplier? @relation("WorkshopStaff", fields: [workshopId], references: [id])
   accountNote     String?   @map("account_note")
 
@@ -270,8 +232,7 @@ model PermissionCatalog {
   resource    String
   action      String
   label       String?
-  /// Quyền này mở tính năng gì, viết cho người phân quyền đọc (màn Vai trò hiện dưới ô chọn). Mã
-  /// `resource:action` không đổi được vì `role_permissions` trỏ vào nó, nên nghĩa rõ ràng nằm ở đây.
+  /// Mô tả quyền hiện ở màn Vai trò.
   description String?
 
   rolePermissions RolePermission[]
@@ -315,9 +276,7 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// B. Gói dịch vụ & thanh toán gói
-// ─────────────────────────────────────────────────────────────────────────
+// ─── B. Gói dịch vụ & thanh toán gói ───
 
 /// Gói dịch vụ nền tảng bán cho shop (giá, chu kỳ, hạn mức).
 model Plan {
@@ -424,9 +383,7 @@ model SubscriptionInvoice {
   @@map("subscription_invoices")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// C. Tổ chức & dữ liệu danh mục
-// ─────────────────────────────────────────────────────────────────────────
+// ─── C. Tổ chức & danh mục ───
 
 /// Địa điểm của shop: chi nhánh (bán hàng) hoặc kho. Tồn kho, nhân viên, phiếu kho đều trỏ về đây.
 model Location {
@@ -434,9 +391,9 @@ model Location {
   tenantId String @map("tenant_id")
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  name       String
-  type       String  @map("location_type") // BRANCH | WAREHOUSE
-  status     String  @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
+  name   String
+  type   String @map("location_type") // BRANCH | WAREHOUSE
+  status String @default("ACTIVE") // ACTIVE | INACTIVE | DELETED
 
   address     String?
   phoneNumber String[] @map("phone_number")
@@ -605,9 +562,7 @@ model Customer {
   @@map("customers")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// D. Sản phẩm & tồn kho
-// ─────────────────────────────────────────────────────────────────────────
+// ─── D. Sản phẩm & tồn kho ───
 
 /// Sản phẩm (mục trong danh mục), gom nhiều phiên bản ProductItem.
 model Product {
@@ -623,7 +578,7 @@ model Product {
   categoryName     String?   @map("category_name") // bản sao tên danh mục, cập nhật khi đổi tên
   /// true = đặt xưởng sản xuất được (YCSX); false = chỉ nhập từ NCC. Áp cho mọi SKU của sản phẩm.
   isManufacturable Boolean   @default(false) @map("is_manufacturable")
-  /// PRODUCT | COMBO | SERVICE - cố định lúc tạo. Mọi SKU của sản phẩm có itemType bằng đúng giá trị này (itemTypeFor).
+  /// PRODUCT | COMBO | SERVICE, cố định lúc tạo; mọi SKU cùng loại này.
   productType      String    @default("PRODUCT") @map("product_type")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -636,9 +591,7 @@ model Product {
   @@map("products")
 }
 
-/// Thuộc tính của sản phẩm (Màu, Chất liệu, Kích thước...) - định nghĩa một lần ở sản phẩm, mỗi SKU chỉ giữ
-/// giá trị (`ProductItemDetail.attributeId`). Thêm 2026-10-16: trước đó tên thuộc tính gõ tự do trên từng SKU,
-/// nên không biết một SKU khác SKU kia ở thuộc tính nào - cần cho YCSX đổi thuộc tính / tạo SKU mới.
+/// Thuộc tính của sản phẩm (Màu, Chất liệu...), SKU giữ giá trị qua `ProductItemDetail.attributeId`.
 model ProductAttribute {
   id        String   @id @default(uuid())
   tenantId  String   @map("tenant_id")
@@ -743,7 +696,7 @@ model ProductItemDetail {
   id            String            @id @default(uuid())
   productItemId String            @map("product_item_id")
   productItem   ProductItem       @relation(fields: [productItemId], references: [id], onDelete: Cascade)
-  /// Thuộc tính của sản phẩm mà giá trị này thuộc về. Null = dòng ghi tự do (vd. thông số riêng của SKU custom).
+  /// Thuộc tính của giá trị này; null là dòng ghi tự do.
   attributeId   String?           @map("attribute_id")
   attribute     ProductAttribute? @relation(fields: [attributeId], references: [id], onDelete: Cascade)
   name          String? // bản sao tên thuộc tính
@@ -830,14 +783,13 @@ model InventoryTransaction {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
-  // IMPORT | TRANSFER_OUT | TRANSFER_IN | TRANSFER_LOSS | ADJUST | SALE | SALE_REVERSAL |
-  // RETURN_GOOD | RETURN_DAMAGED | DEFECT | OPENING
+  // IMPORT | TRANSFER_OUT | TRANSFER_IN | TRANSFER_LOSS | ADJUST | SALE | SALE_REVERSAL | RETURN_GOOD | RETURN_DAMAGED | DEFECT | OPENING
   type         String
   quantity     Int // có dấu: + vào, - ra
   balanceAfter Int      @map("balance_after") // tồn sau khi ghi dòng này
   unitCost     Decimal? @map("unit_cost") @db.Decimal(12, 2)
 
-  referenceType String  @map("reference_type") // chứng từ gây ra: STOCK_MOVEMENT | FULFILLMENT | ORDER | PRODUCTION_REQUEST | ORDER_RETURN | INVENTORY
+  referenceType String  @map("reference_type") // chứng từ: STOCK_MOVEMENT | FULFILLMENT | ORDER | PRODUCTION_REQUEST | ORDER_RETURN | INVENTORY
   referenceId   String  @map("reference_id")
   note          String?
 
@@ -858,8 +810,7 @@ model InventoryTransaction {
   @@map("inventory_transactions")
 }
 
-/// Lô hàng: một SKU tại một địa điểm, giữ nguồn gốc và giá vốn. Hàng vào mở lô mới; hàng ra rút
-/// từ lô cũ nhất trước (FIFO), riêng hàng custom chỉ rút từ lô làm cho đúng dòng đơn đó.
+/// Lô hàng: một SKU tại một địa điểm, giữ nguồn và giá vốn; rút theo FIFO.
 model InventoryLot {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -869,8 +820,7 @@ model InventoryLot {
   productItemId String      @map("product_item_id")
   productItem   ProductItem @relation(fields: [productItemId], references: [id])
 
-  // Nguồn gốc hàng, giữ nguyên khi lô bị chuyển kho / hoàn về:
-  // SUPPLIER | WORKSHOP | ADJUSTMENT (dư khi kiểm kê) | OPENING (tồn có trước khi quản lý theo lô)
+  // Nguồn gốc: SUPPLIER | WORKSHOP | ADJUSTMENT | OPENING
   sourceType String    @map("source_type")
   supplierId String?   @map("supplier_id") // NCC hoặc xưởng
   supplier   Supplier? @relation(fields: [supplierId], references: [id])
@@ -891,8 +841,7 @@ model InventoryLot {
   receivedQuantity  Int      @map("received_quantity") // số lúc mở lô
   remainingQuantity Int      @map("remaining_quantity") // số còn lại
   receivedAt        DateTime @map("received_at") @db.Timestamptz(6) // ngày nhập, dùng xếp FIFO; lô tách giữ ngày của lô cha
-  /// false = hàng hỏng (2026-11-26): vẫn ở địa điểm này nhưng không nằm trong `inventories.stock`, không lô nào rút được
-  /// để bán / đóng gói / chuyển kho. Không bao giờ đổi sau khi tạo: đánh dấu hỏng và sửa xong đều tách lô con.
+  /// false = hàng hỏng, nằm ngoài `stock`; không bao giờ đổi sau khi tạo.
   isSellable        Boolean  @default(true) @map("is_sellable")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -969,9 +918,7 @@ model StockMovementRequest {
   movementType String @map("movement_type") // IMPORT (nhập) | EXPORT (chuyển đi) | RETURN (trả về kho) | ADJUST (kiểm kê)
   status       String @default("DRAFT") // DRAFT | PENDING | OPENING | CLOSED | IN_TRANSIT | RECEIVED | COMPLETED | CANCELLED
 
-  // Chỉ phiếu IMPORT, mỗi phiếu một nguồn:
-  //   SUPPLIER = mua thành phẩm từ NCC
-  //   WORKSHOP = hàng xưởng giao theo YCSX; mỗi dòng trỏ về dòng YCSX
+  // Nguồn của phiếu IMPORT: SUPPLIER (NCC) | WORKSHOP (xưởng giao theo YCSX)
   importSource String? @map("import_source")
 
   fromSupplierId String?   @map("from_supplier_id") // NCC hoặc xưởng; loại phải khớp importSource
@@ -1040,9 +987,7 @@ model StockMovementRequestItem {
   @@map("stock_movement_request_items")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// E. Nhân sự: mẫu ca, xếp ca, ngày lễ (lương, chấm công, nghỉ phép không nằm trong schema này)
-// ─────────────────────────────────────────────────────────────────────────
+// ─── E. Nhân sự: ca mẫu, xếp ca, ngày lễ ───
 
 /// Mẫu ca làm việc (vd. Ca sáng 08:00–12:00).
 model ShiftTemplate {
@@ -1119,9 +1064,7 @@ model Holiday {
   @@map("holidays")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// F. Bán hàng: đơn, thanh toán, tiền
-// ─────────────────────────────────────────────────────────────────────────
+// ─── F. Bán hàng: đơn, thanh toán, tiền ───
 
 /// Gian hàng sàn đã kết nối (Shopee) – Phase 2.
 model SalesChannel {
@@ -1158,7 +1101,7 @@ model SalesChannel {
   @@map("sales_channels")
 }
 
-/// Ghép sản phẩm / phân loại trên sàn với SKU của shop. Dòng chưa ghép thì đơn không đồng bộ được – Phase 2.
+/// Ghép sản phẩm trên sàn với SKU của shop.
 model ChannelProductMapping {
   id              String       @id @default(uuid())
   tenantId        String       @map("tenant_id")
@@ -1180,8 +1123,7 @@ model ChannelProductMapping {
   @@map("channel_product_mappings")
 }
 
-/// Đơn hàng. Đơn tạo tay (MANUAL) và đơn Shopee là đơn khách đặt qua mạng, đi theo docs/hanh-trinh-don-hang.md.
-/// Bán tại quầy (POS) cũng lưu ở đây với fulfillmentType TAKEAWAY, nằm ngoài hành trình.
+/// Đơn hàng: đơn tay, Shopee và bán tại quầy (TAKEAWAY).
 model Order {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1192,9 +1134,7 @@ model Order {
   customer   Customer @relation(fields: [customerId], references: [id])
   // Mã đơn hiển thị (sinh bằng generateReference(ORDER), trùng paymentReference của đơn POS cũ)
   code       String
-  // PENDING_CONFIRMATION (Shopee) | CONFIRMED | PACKED | PICKED_UP | SHIPPING (đã trừ tồn) |
-  // RECEIVED (shipper đang giữ tiền mặt) | COMPLETED | CANCELLED | RETURNED.
-  // PENDING: đơn POS cũ chờ chuyển khoản SePay, bỏ khi POS chuyển sang luồng mới.
+  // PENDING_CONFIRMATION | CONFIRMED | PACKED | PICKED_UP | SHIPPING | RECEIVED | COMPLETED | CANCELLED | RETURNED; PENDING là đơn quầy chờ SePay.
   status     String
   // Tag ưu tiên, cùng ngày hẹn giao dùng để chọn đơn đi trước: NORMAL | HIGH | URGENT
   priority   String   @default("NORMAL")
@@ -1215,7 +1155,7 @@ model Order {
   cancelledBy   User?     @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
   cancelledAt   DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelReason  String?   @map("cancel_reason")
-  // Lúc đơn COMPLETED (CHECK orders_completed_at_required). Doanh thu và báo cáo theo ngày này, không theo created_at.
+  // Lúc đơn COMPLETED, báo cáo tính theo ngày này.
   completedAt   DateTime? @map("completed_at") @db.Timestamptz(6)
 
   channel         String        @default("MANUAL") // MANUAL (nhân viên nhập đơn khách đặt qua mạng; POS cũng là MANUAL) | SHOPEE
@@ -1229,15 +1169,13 @@ model Order {
 
   fulfillmentType String @default("HOME_DELIVERY") @map("fulfillment_type") // TAKEAWAY (POS bán tại quầy) | STORE_PICKUP (khách tự lấy) | HOME_DELIVERY (giao tận nơi)
 
-  // grandTotal = subtotal − (discountType = ORDER ? discountValue : 0) + shippingFee (giá đã gồm VAT).
-  // Giảm giá PROMOTION đã nằm trong discountAmount của từng dòng; discountValue chỉ để ghi nhận.
+  // grandTotal = subtotal - giảm cả đơn + phí giao (đã gồm VAT).
   subtotal       Decimal  @default(0) @db.Decimal(14, 2)
   shippingFee    Decimal  @default(0) @map("shipping_fee") @db.Decimal(14, 2) // phí ship thu của khách
   channelFee     Decimal  @default(0) @map("channel_fee") @db.Decimal(14, 2) // phí sàn giữ lại (hoa hồng, phí thanh toán...) – dùng cho báo cáo lợi nhuận
   vatTotal       Decimal  @default(0) @map("vat_total") @db.Decimal(14, 2)
   grandTotal     Decimal  @map("grand_total") @db.Decimal(14, 2)
-  // Tiền cọc khi tạo đơn tay (tiền thật nằm ở Payment kind DEPOSIT). depositPercent chỉ có khi
-  // nhập theo %. Số shipper thu khi giao = grandTotal − depositAmount, tính chứ không lưu.
+  // Tiền cọc của đơn tay; tiền thật nằm ở Payment DEPOSIT.
   depositAmount  Decimal? @map("deposit_amount") @db.Decimal(14, 2)
   depositPercent Decimal? @map("deposit_percent") @db.Decimal(5, 2)
   discountType   String?  @map("discount_type") // ORDER (giảm tay cả đơn) | PROMOTION
@@ -1289,7 +1227,7 @@ model Order {
   @@map("orders")
 }
 
-/// Nhật ký thao tác trên đơn. Chỉ ghi thêm (không có route sửa/xoá), ghi trong cùng transaction với thay đổi.
+/// Nhật ký thao tác trên đơn, chỉ ghi thêm.
 model OrderEvent {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1302,12 +1240,12 @@ model OrderEvent {
   source     String // USER | SYSTEM | WEBHOOK (CHECK)
   actorId    String?  @map("actor_id")
   actor      User?    @relation("OrderEventActor", fields: [actorId], references: [id], onDelete: SetNull)
-  // Chụp tên và vai trò người thao tác lúc ghi: đọc lại vẫn đúng khi tài khoản đổi tên, đổi vai trò hay bị xoá.
+  // Chụp tên và vai trò người thao tác lúc ghi.
   actorName  String?  @map("actor_name")
   actorRole  String?  @map("actor_role")
   changes    Json? // { <trường>: { from, to } } - giá trị đã đổi sang dạng hiển thị được
   metadata   Json?
-  // clock_timestamp() chứ không phải now(): now() là giờ bắt đầu transaction nên các sự kiện cùng transaction sẽ trùng giờ.
+  // Dùng clock_timestamp() để sự kiện cùng transaction có giờ khác nhau.
   occurredAt DateTime @default(dbgenerated("clock_timestamp()")) @map("occurred_at") @db.Timestamptz(6)
 
   @@index([tenantId, orderId, occurredAt])
@@ -1327,7 +1265,7 @@ model OrderItem {
   sourceLocationId String?   @map("source_location_id") // kho dự kiến xuất; dùng tính thiếu hàng
   sourceLocation   Location? @relation("OrderItemSourceLocation", fields: [sourceLocationId], references: [id])
 
-  // PRODUCT | COMBO (mang giá, không có tồn) | COMBO_COMPONENT (món trong combo, có tồn, giá 0) | SERVICE
+  // PRODUCT | COMBO (mang giá) | COMBO_COMPONENT (món trong combo, giá 0) | SERVICE
   lineType     String      @default("PRODUCT") @map("line_type")
   parentItemId String?     @map("parent_item_id") // dòng COMBO cha của món trong combo
   parentItem   OrderItem?  @relation("OrderItemComboParent", fields: [parentItemId], references: [id], onDelete: Cascade)
@@ -1340,7 +1278,7 @@ model OrderItem {
   sku           String?
   variantLabel  String?  @map("variant_label") // vd. "Gỗ sồi / 1m8"
   listUnitPrice Decimal  @map("list_unit_price") @db.Decimal(12, 2) // giá niêm yết lúc bán
-  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // giá vốn thực tế bình quân, tính lúc trừ tồn (Σ sổ kho SALE × lot.unitCost ÷ số lượng); null tới khi ship
+  unitCostPrice Decimal? @map("unit_cost_price") @db.Decimal(12, 2) // giá vốn bình quân tính lúc trừ tồn, null tới khi ship
   vatRate       Decimal? @map("vat_rate") @db.Decimal(5, 2)
 
   quantity         Int
@@ -1366,8 +1304,7 @@ model OrderItem {
   @@map("order_items")
 }
 
-/// Yêu cầu sản xuất (YCSX) gửi một xưởng, chỉ định kho / chi nhánh nhận. Hàng xưởng giao về được
-/// nhận qua phiếu nhập WORKSHOP – lúc đó tồn kho nơi nhận mới tăng.
+/// Yêu cầu sản xuất gửi xưởng; hàng về qua phiếu nhập WORKSHOP mới tăng tồn.
 model ProductionRequest {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1389,7 +1326,7 @@ model ProductionRequest {
   statusUpdatedBy   User?     @relation("ProductionRequestStatusUpdatedBy", fields: [statusUpdatedById], references: [id])
   statusUpdatedAt   DateTime? @map("status_updated_at") @db.Timestamptz(6)
 
-  // Xưởng xác nhận đang làm (2026-11-16): có giá trị thì shop không huỷ được YCSX; xưởng "huỷ nhận làm" để đưa về null.
+  // Lúc xưởng xác nhận đang làm; có giá trị thì shop không huỷ được.
   acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz(6)
   acceptedById String?   @map("accepted_by")
   acceptedBy   User?     @relation("ProductionRequestAcceptedBy", fields: [acceptedById], references: [id])
@@ -1431,9 +1368,7 @@ model ProductionRequestItem {
   @@map("production_request_items")
 }
 
-/// Phiếu giao của xưởng (nhân viên xưởng tạo theo một YCSX đã gửi). Chưa đụng tồn kho: tồn kho và
-/// công nợ xưởng chỉ tăng khi nơi nhận xác nhận (`receive`), lúc đó mới ghi phiếu nhập WORKSHOP
-/// đã nhận (`stockMovementId`). Giao thiếu được - nhiều phiếu cho một YCSX.
+/// Phiếu giao của xưởng; tồn và công nợ chỉ tăng khi nơi nhận xác nhận.
 model ProductionDelivery {
   id                  String            @id @default(uuid())
   tenantId            String            @map("tenant_id")
@@ -1710,8 +1645,7 @@ model CashDrawerSession {
   finalLogManagerId String?   @map("final_log_manager_id")
   finalLogManager   User?     @relation("CashDrawerFinalLogManager", fields: [finalLogManagerId], references: [id])
   finalLogNote      String?   @map("final_log_note")
-  // Lúc chốt. Cùng `createdAt` (lúc mở) là khoảng thời gian thật của phiên, thứ đối soát cộng dòng tiền theo - không
-  // phải ngày giao dịch, vì két quên chốt có thể kéo sang ngày sau. Null khi còn mở.
+  // Lúc chốt két; null khi còn mở.
   closedAt          DateTime? @map("closed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1760,12 +1694,12 @@ model CashFlow {
   createdBy          User?              @relation(fields: [createdById], references: [id])
   paymentReference   String?            @map("payment_reference")
   sepayTransactionId String?            @map("sepay_transaction_id")
-  /// Dòng sổ SePay mà khoản này ghi nhận: tiền về không gắn được đơn (UNALLOCATED_RECEIPT) và lần hoàn lại nó (UNALLOCATED_REFUND). Unique (sepay_ledger_id, category) chỉ có trong SQL.
+  /// Dòng sổ SePay của khoản tiền chưa phân bổ.
   sepayLedgerId      String?            @map("sepay_ledger_id")
   sepayLedger        SepayTransaction?  @relation(fields: [sepayLedgerId], references: [id], onDelete: SetNull)
   supplierDebtEntry  SupplierDebtEntry?
   description        String?
-  // Loại tiền (CHECK cash_flows_category_check; src/common/constants/cash-flow-category.ts) và quỹ nơi tiền nằm (CHECK cash_flows_fund_check).
+  // Loại tiền và quỹ.
   category           String             @map("category")
   fund               String             @map("fund") // DRAWER (tiền mặt qua két chi nhánh) | OWNER (tiền mặt giao thẳng chủ) | BANK (không phải tiền mặt)
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1778,7 +1712,7 @@ model CashFlow {
   @@map("cash_flows")
 }
 
-/// Một khoản thanh toán của đơn (cọc, thu khi giao, hoàn tiền). Mỗi khoản PAID ghi đúng một dòng sổ quỹ.
+/// Một khoản thanh toán của đơn; mỗi khoản PAID có đúng một dòng sổ quỹ.
 model Payment {
   id       String @id @default(uuid())
   tenantId String @map("tenant_id")
@@ -1798,9 +1732,9 @@ model Payment {
   paymentReference   String?   @unique @map("payment_reference") // nội dung khách ghi khi chuyển khoản
   sepayTransactionId String?   @map("sepay_transaction_id")
   paidAt             DateTime? @map("paid_at") @db.Timestamptz(6)
-  // Hạn mã QR SePay (chỉ khoản SEPAY BALANCE): phát + 15 phút, xem orders/sepay-qr.ts. Null = khoản cũ, hạn tính từ createdAt.
+  // Hạn mã QR SePay (phát + 15 phút); null là khoản cũ.
   expiresAt          DateTime? @map("expires_at") @db.Timestamptz(6)
-  // Số tiền mã QR đã yêu cầu; `amount` là số tiền thực đã về (khoản chuyển thiếu / dư vẫn ghi đúng số thực nhận).
+  // Số tiền mã QR yêu cầu; `amount` là số thực về.
   requestedAmount    Decimal?  @map("requested_amount") @db.Decimal(14, 2)
   // Khoản bị huỷ (tay): ai huỷ, lúc nào. Cron QR hết hạn đặt EXPIRED chứ không điền hai cột này.
   cancelledAt        DateTime? @map("cancelled_at") @db.Timestamptz(6)
@@ -1812,8 +1746,7 @@ model Payment {
   collectedById String?   @map("collected_by") // người thu (vd. shipper)
   collectedBy   User?     @relation("PaymentCollectedBy", fields: [collectedById], references: [id])
 
-  // Tiền mặt shipper thu đã nộp lại cho chủ chưa: NOT_APPLICABLE | PENDING (shipper đang giữ) |
-  // RECEIVED (chủ đã xác nhận nhận đủ). PENDING chỉ có ở khoản BALANCE tiền mặt.
+  // Tiền mặt shipper thu đã nộp chưa: NOT_APPLICABLE | PENDING | RECEIVED
   remittanceStatus        String    @default("NOT_APPLICABLE") @map("remittance_status")
   remittanceConfirmedById String?   @map("remittance_confirmed_by")
   remittanceConfirmedBy   User?     @relation("PaymentRemittanceConfirmedBy", fields: [remittanceConfirmedById], references: [id])
@@ -1835,8 +1768,7 @@ model Payment {
   @@map("payments")
 }
 
-/// Sổ giao dịch SePay của webhook đơn hàng: MỌI lần SePay báo tiền về đều có đúng một dòng (khoá chống lặp `dedupe_key`), dù kết cục là chốt, chốt thiếu, từ chối hay không gắn được đơn nào. Là bản ghi bền của tiền đã về nhưng chưa chốt (QR hết hạn, đơn đã huỷ, không có mã, mã lạ) để chủ shop hoàn tiền / đối soát.
-/// `tenant_id` null = tiền về tài khoản không thuộc shop nào. Hai unique index một phần (tenant + dedupe_key, và account + dedupe_key cho dòng không có tenant) chỉ có trong SQL.
+/// Sổ giao dịch SePay của đơn hàng: mỗi lần tiền về đúng một dòng, chống lặp bằng `dedupe_key`.
 model SepayTransaction {
   id                 String    @id @default(uuid())
   tenantId           String?   @map("tenant_id")
@@ -1871,8 +1803,7 @@ model SepayTransaction {
   @@map("sepay_transactions")
 }
 
-/// Sổ giao dịch SePay của tài khoản iKiot (tenant trả tiền gói). Mỗi lần SePay báo tiền về có đúng một dòng
-/// (`dedupe_key` unique, xem sepayDedupeKey). Không bao giờ sửa.
+/// Sổ giao dịch SePay của tài khoản iKiot (tiền gói).
 model PlatformSepayTransaction {
   id                    String               @id @default(uuid())
   dedupeKey             String               @unique @map("dedupe_key")
@@ -1894,9 +1825,7 @@ model PlatformSepayTransaction {
   @@map("platform_sepay_transactions")
 }
 
-/// Nhật ký doanh thu, chỉ ghi thêm (trigger chặn UPDATE). SALE một lần khi đơn COMPLETED; RETURN âm khi trả hàng (chỉ khi đã có SALE);
-/// OTHER_INCOME khi shop giữ tiền của đơn không thành (huỷ / trả trước khi hoàn thành). Báo cáo là phép cộng trên bảng này, kỳ cũ không bao giờ đổi.
-/// Dấu: goods/shipping/other/total âm ở RETURN; cogs_amount dương ở SALE, âm ở RETURN; shipping_cost, channel_fee dương (chi phí, chỉ SALE).
+/// Nhật ký doanh thu chỉ ghi thêm: SALE, RETURN (âm), OTHER_INCOME.
 model SalesJournalEntry {
   id            String       @id @default(uuid())
   tenantId      String       @map("tenant_id")
@@ -1919,7 +1848,7 @@ model SalesJournalEntry {
   shippingCost      Decimal @default(0) @map("shipping_cost") @db.Decimal(14, 2)
   channelFee        Decimal @default(0) @map("channel_fee") @db.Decimal(14, 2)
 
-  // Chụp lúc ghi (không có khoá ngoại): báo cáo theo khách / nhân viên vẫn đúng khi tài khoản đổi hay bị xoá.
+  // Chụp lúc ghi, không có khoá ngoại.
   customerId      String? @map("customer_id")
   assigneeId      String? @map("assignee_id")
   creatorId       String? @map("creator_id")
@@ -1931,7 +1860,7 @@ model SalesJournalEntry {
 
   lines SalesJournalLine[]
 
-  // Các chỉ mục duy nhất một phần (một SALE / OTHER_INCOME / RETURN-quầy cho mỗi đơn, một RETURN cho mỗi đơn hoàn) chỉ nằm trong SQL.
+  // Index duy nhất một phần nằm trong SQL.
   @@index([tenantId, businessDate])
   @@index([tenantId, branchId, businessDate])
   @@map("sales_journal_entries")
@@ -1953,12 +1882,9 @@ model SalesJournalLine {
   @@map("sales_journal_lines")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// F2. Đóng hàng & giao hàng
-// ─────────────────────────────────────────────────────────────────────────
+// ─── F2. Đóng hàng & giao hàng ───
 
-/// Lần đóng hàng của một đơn: ai đóng, ai xác nhận, tại kho nào. Đóng hàng KHÔNG trừ tồn
-/// (tồn trừ lúc đơn sang SHIPPING).
+/// Lần đóng hàng của đơn; không trừ tồn.
 model Fulfillment {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
@@ -1969,7 +1895,6 @@ model Fulfillment {
   location   Location @relation(fields: [locationId], references: [id])
 
   // PENDING | PICKING | PICKED | PACKING | PACKED | HANDED_OVER | EXCEPTION | CANCELLED
-  // Luồng Phase 1 tạo thẳng PACKED khi đóng đơn, HANDED_OVER khi ĐVVC lấy hàng.
   status        String  @default("PENDING")
   exceptionNote String? @map("exception_note") // ghi chú khi có sự cố
 
@@ -2037,7 +1962,7 @@ model FulfillmentPackage {
   @@map("fulfillment_packages")
 }
 
-/// Một lần giao hàng. INTERNAL: shipper / thợ của shop, xác nhận bằng ảnh. EXTERNAL: đơn vị vận chuyển ngoài.
+/// Một lần giao hàng: INTERNAL (shipper shop) hoặc EXTERNAL (ĐVVC).
 model Shipment {
   id            String      @id @default(uuid())
   tenantId      String      @map("tenant_id")
@@ -2054,8 +1979,6 @@ model Shipment {
   driver       User?   @relation("ShipmentDriver", fields: [driverId], references: [id])
 
   // CREATED | PICKED_UP | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED | RETURNED | CANCELLED
-  // Phase 1: INTERNAL tạo ở CREATED (đã gán shipper, chờ lấy) → PICKED_UP khi shipper xác nhận lấy hàng;
-  // EXTERNAL tạo thẳng ở PICKED_UP. Sang IN_TRANSIT khi đơn SHIPPING.
   status String @default("CREATED")
 
   // Người nhận, chép từ đơn
@@ -2127,9 +2050,7 @@ model OperationEvent {
   @@map("operation_events")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// F3. Voucher & hoá đơn (khách hàng nằm ở mục C)
-// ─────────────────────────────────────────────────────────────────────────
+// ─── F3. Voucher & hoá đơn ───
 
 /// Đợt phát mã voucher gắn với một khuyến mãi. Chưa dùng ở Phase 1.
 model Voucher {
@@ -2170,8 +2091,7 @@ model VoucherCode {
   @@map("voucher_codes")
 }
 
-/// Hoá đơn bán hàng. Mỗi đơn (kể cả đơn POS) có một hoá đơn SALE: PENDING từ lúc tạo đơn, ISSUED khi đơn COMPLETED.
-/// Đã phát hành thì không sửa; trả hàng thì phát hoá đơn ADJUSTMENT (số tiền âm).
+/// Hoá đơn bán: PENDING khi tạo đơn, ISSUED khi hoàn tất; trả hàng thì ADJUSTMENT âm.
 model Invoice {
   id                String    @id @default(uuid())
   tenantId          String    @map("tenant_id")
@@ -2233,9 +2153,7 @@ model InvoiceLine {
   @@map("invoice_lines")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// G. Thông báo, hỗ trợ, khác
-// ─────────────────────────────────────────────────────────────────────────
+// ─── G. Thông báo, hỗ trợ, khác ───
 
 /// Thông báo trong app. tenantId và recipientId cùng null = thông báo hệ thống cho admin.
 model Notification {
@@ -2329,11 +2247,9 @@ model AIChatHistory {
   @@map("ai_chat_histories")
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Phase 9. Sổ công nợ NCC, lịch sử thông tin nhận tiền, lịch sử giá
-// ─────────────────────────────────────────────────────────────────────────
+// ─── Sổ công nợ NCC, lịch sử nhận tiền, lịch sử giá ───
 
-/// Sổ công nợ nhà cung cấp, chỉ ghi thêm (trigger trong SQL). amount có dấu: + nhận hàng / số dư đầu, - trả nợ. Σ amount = suppliers.outstanding_debt. created_by null = hệ thống.
+/// Sổ công nợ NCC chỉ ghi thêm; Σ amount = công nợ hiện tại.
 model SupplierDebtEntry {
   id            String    @id @default(uuid())
   tenantId      String    @map("tenant_id")
@@ -2356,7 +2272,7 @@ model SupplierDebtEntry {
   @@map("supplier_debt_entries")
 }
 
-/// Lịch sử đổi thông tin nhận tiền của shop, chỉ ghi thêm. changes = { field: { from, to } }; key webhook chỉ ghi { keyChanged: true }.
+/// Lịch sử đổi thông tin nhận tiền, chỉ ghi thêm.
 model TenantBankingChange {
   id          String   @id @default(uuid())
   tenantId    String   @map("tenant_id")

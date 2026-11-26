@@ -24,10 +24,7 @@ const FIELDS: BankingInputField[] = [
   'accountName',
 ];
 
-/**
- * Màn cài đặt luôn gửi cả ba ô, kể cả khi shop chưa có tài khoản nhận tiền. Cả ba trống là "không đụng tới phần ngân hàng";
- * điền một phần thì từ chối, vì admin cần đủ số tài khoản, ngân hàng và chủ tài khoản để duyệt liên kết SePay.
- */
+/** Phân loại ba ô ngân hàng: trống cả ba, đủ cả ba, hoặc thiếu. */
 export function classifyBankingInput(
   input: PartialBankingInput | undefined,
 ): BankingInputResult {

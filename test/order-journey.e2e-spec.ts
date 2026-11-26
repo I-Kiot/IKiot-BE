@@ -8,9 +8,7 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { assertMoneyInvariants } from './helpers/money-invariants';
 import { businessDate } from '../src/modules/cash-drawer-sessions/business-date';
 
-/**
- * F-1: toàn bộ hành trình đơn qua HTTP trên Postgres thật, từ đơn tay đầu tiên tới đơn mua lại. Mỗi bước kiểm những gì màn hình đọc và sổ kho phải ghi (tồn, tồn đang khoá, kho hàng hỏng). Các test chạy theo thứ tự và chia sẻ state; suite tự tạo tenant và xoá đi.
- */
+/** Kiểm toàn bộ hành trình đơn qua HTTP (Postgres thật); các test chạy theo thứ tự. */
 jest.setTimeout(120_000);
 
 const RUN = Date.now().toString().slice(-7);
@@ -310,7 +308,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .send({
         supplierId: workshopId,
         locationId: warehouseId,
-        // 2 for the order line (the BE refuses to over-order it) + 1 spare for the shelf, which will turn out defective.
+        // 2 cho dòng đơn + 1 dự phòng trên kệ (sẽ bị lỗi).
         items: [
           { productItemId: sofaId, quantity: 2, orderItemId: lineId },
           { productItemId: sofaId, quantity: 1 },
@@ -492,7 +490,7 @@ describe('F-1 order journey, end to end over HTTP', () => {
       .set(auth())
       .send({})
       .expect(200);
-    // Đơn đã thu đủ nên phải nói rõ số hoàn: màn kiểm điền sẵn số gợi ý (giá trị một chiếc), người kiểm có thể sửa.
+    // Đơn đã thu đủ nên phải nêu số hoàn.
     const reading = await http()
       .get(`/order-returns/${returnId}`)
       .set(auth())

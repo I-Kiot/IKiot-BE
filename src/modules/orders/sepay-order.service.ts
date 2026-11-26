@@ -9,7 +9,7 @@ import { NotificationService } from '../notifications/notifications.service';
 import { SepayRejectReason } from '../../common/constants/payment-method';
 import { recordUnmatchedTransfer, type SepayTransfer } from './sepay-qr';
 
-/** Tách khỏi `SepaySubscriptionService`: service kia thu vào tài khoản iKiot lấy từ env, service này thu vào tài khoản riêng của từng shop. */
+/** Thanh toán SePay vào tài khoản riêng của từng shop. */
 @Injectable()
 export class SepayOrderService {
   private readonly logger = new Logger(SepayOrderService.name);
@@ -19,12 +19,12 @@ export class SepayOrderService {
     private readonly notifications: NotificationService,
   ) {}
 
-  /** Mọi đơn đều có mã `ORD`, không chỉ đơn SePay; tiền tố này giúp nhận ra dòng CashFlow là doanh thu bán hàng. */
+  /** Tiền tố mã thanh toán của đơn. */
   generateOrderReference(): string {
     return generateReference(REFERENCE_PREFIX.ORDER);
   }
 
-  /** `{6,10}` thay vì `{10}`: mã tạo trước khi nới không gian ngẫu nhiên dài 6 ký tự hex và có thể còn PENDING. Tham lam nên mã 10 ký tự hiện tại vẫn khớp đủ. */
+  /** Khớp mã dài 6 đến 10 ký tự (gồm mã cũ). */
   extractOrderReference(content = ''): string | null {
     const match = content.match(/ORD[0-9A-F]{6,10}/i);
     return match ? match[0].toUpperCase() : null;
@@ -36,10 +36,7 @@ export class SepayOrderService {
     return !!sharedKey && apiKey === sharedKey;
   }
 
-  /**
-   * Tiền về mà không gắn được đơn nào: ghi sổ UNMATCHED (xem `recordUnmatchedTransfer`). `tenantId` null khi tài khoản nhận không thuộc shop nào.
-   * Webhook chỉ gọi với `tenantId` null khi người gọi dùng key dùng chung: một request key sai không được ghi gì, kẻ lạ không làm đầy sổ được.
-   */
+  /** Ghi sổ tiền về không gắn được đơn. */
   recordUnmatched(
     tenantId: string | null,
     transfer: SepayTransfer,
@@ -76,7 +73,7 @@ export class SepayOrderService {
     });
   }
 
-  /** `subAccount` cũng vậy: ngân hàng đi qua tài khoản ảo báo VA ở đó. Nếu hai trường trỏ tới hai shop khác nhau thì từ chối, không ghi có nhầm shop. */
+  /** Lấy shop theo tài khoản nhận hoặc tài khoản ảo. */
   private async findTenantByAccount(payload: Record<string, unknown>) {
     const numbers = [payload.accountNumber, payload.subAccount]
       .map((value) => (typeof value === 'string' ? value : ''))

@@ -20,9 +20,7 @@ import { SystemRole } from './../src/common/constants/system-role';
 import { ErrorCode } from './../src/common/errors/error-codes';
 import type { AuthUser } from './../src/common/types/auth-user.type';
 
-/**
- * Đóng đơn (C-1, FulfillmentService.packOrder) trên Postgres thật: khoá hàng, chặn khi trên kệ thiếu, và hai lần bấm cùng lúc (race condition). Tự tạo tenant riêng và dọn sạch; chạy lại bao nhiêu lần cũng được.
- */
+/** Kiểm đóng đơn: khoá hàng, chặn thiếu, bấm đồng thời (Postgres thật). */
 describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
   let prisma: PrismaService;
   let fulfillments: FulfillmentService;
@@ -66,7 +64,7 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
     permissions: new Set<string>(),
   } as unknown as AuthUser;
 
-  /** Tạo một đơn CONFIRMED với các dòng cho trước (bỏ trống `sourceLocationId` = xuất từ kho; `null` = chưa có kho xuất). Người phụ trách mặc định là chủ shop. */
+  /** Tạo đơn CONFIRMED với các dòng cho trước. */
   async function createOrder(
     lines: {
       productItemId: string;
@@ -338,7 +336,7 @@ describe('POST /orders/:id/pack – FulfillmentService.packOrder', () => {
 
     expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
     const loser = attempts.find((a) => a.status === 'rejected');
-    // Thua ở bước "nhận đơn" trong transaction, hoặc ở bước kiểm tra sớm nếu tới sau khi bên kia đã commit.
+    // Thua ở bước nhận đơn hoặc kiểm tra sớm.
     expect([
       ErrorCode.ORDER_STATUS_CONFLICT,
       ErrorCode.ORDER_STATUS_TRANSITION_INVALID,

@@ -34,7 +34,7 @@ export class AiAgentService {
     return this.gemini.isConfigured();
   }
 
-  /** Xác định câu hỏi thuộc nhóm nào; lỗi thì rơi về GENERAL_LLM, nhóm này không bật tool nhưng vẫn trả lời được. */
+  /** Phân loại câu hỏi; lỗi thì về GENERAL_LLM. */
   async classify(historyText: string, message: string): Promise<AgentRoute> {
     try {
       const { text } = await this.gemini.generate({
@@ -57,7 +57,7 @@ export class AiAgentService {
     return AgentRoute.GENERAL_LLM;
   }
 
-  /** Chạy hội thoại đến khi có câu trả lời. Điều kiện thoát là một cờ, không phải bộ đếm bước: vòng lặp cũ bỏ câu trả lời đến ở lượt cho phép cuối. */
+  /** Chạy hội thoại tới khi có câu trả lời. */
   async run(
     contents: Content[],
     route: AgentRoute,
@@ -94,7 +94,7 @@ export class AiAgentService {
           }),
         );
 
-        // Lượt của model phải được đưa vào trước kết quả tool, nếu không request sau có tool answer không có call tương ứng.
+        // Đưa lượt của model vào trước kết quả tool.
         if (response.content) contents.push(response.content);
         contents.push({ role: 'user', parts: responses });
         continue;

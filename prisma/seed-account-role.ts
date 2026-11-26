@@ -1,5 +1,4 @@
-// Tài khoản, địa điểm, role để test thủ công hành trình đơn (chép từ docs/tai-khoan-test-hanh-trinh.md, phần 1.2–1.4). Chạy sau `prisma db seed`, trước seed-furniture-test.ts.
-// Chạy lại an toàn: thứ đã có thì giữ nguyên. Chỉ dữ liệu dev, mật khẩu là DEMO_PASSWORD.
+// Seed tài khoản, địa điểm, role để test hành trình đơn; chỉ dev, chạy lại an toàn.
 import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -16,8 +15,7 @@ const OWNER = {
   lastName: 'Nguyễn Thị',
   firstName: 'Mai (Chủ shop)',
 };
-// Email chủ shop. Mặc định là địa chỉ .invalid (không nhận được thư); đặt SEED_OWNER_EMAIL trong .env để dùng
-// hộp thư thật của mình (test quên mật khẩu / đổi email). Đọc từ env để email cá nhân không nằm trong repo.
+// Email chủ shop, đặt SEED_OWNER_EMAIL để dùng hộp thư thật.
 const OWNER_EMAIL =
   process.env.SEED_OWNER_EMAIL?.trim().toLowerCase() ||
   `${OWNER.phoneNumber}@demo.ikiot.invalid`;
@@ -29,14 +27,12 @@ const LOCATIONS: {
   name: string;
   type: 'BRANCH' | 'WAREHOUSE';
 }[] = [
-  // Không còn kho hàng hỏng riêng (2026-11-26): hàng hỏng là lô `isSellable = false` tại chính chi nhánh.
+  // Hàng hỏng là lô `isSellable = false` tại chi nhánh.
   { key: 'HANOI', name: 'CN Hà Nội', type: 'BRANCH' },
   { key: 'HCM', name: 'CN Hồ Chí Minh', type: 'BRANCH' },
 ];
 
-/**
- * Đúng các quyền được tick theo từng role trong file test. Bộ quyền STAFF cơ bản do JwtStrategy cấp và bị loại khỏi những gì role lưu, nên không xuất hiện ở đây.
- */
+/** Quyền của từng role theo file test. */
 const ROLES: {
   code: string;
   name: string;
@@ -67,7 +63,7 @@ const ROLES: {
       ['orders', ['read', 'pack', 'ship']],
       ['shipments', ['create', 'read', 'update']],
       ['inventory', ['read']],
-      // `approve` là tick tùy chọn của file test; cấp để K11 bước 3 và kiểm kho chạy được bằng tài khoản kho.
+      // Cấp `approve` cho tài khoản kho.
       ['stock_movement', ['create', 'read', 'update', 'receive', 'approve']],
       ['production_requests', ['read']],
       ['production', ['receive']],
@@ -305,7 +301,7 @@ async function seedLocations(
     });
     ids[loc.key] = id;
   }
-  // defaultFulfillmentLocationId cố ý để null (file test, phần 0 mục 1: không ai đặt được nên chi nhánh tự xuất hàng).
+  // Để null để chi nhánh tự xuất hàng.
   return ids;
 }
 

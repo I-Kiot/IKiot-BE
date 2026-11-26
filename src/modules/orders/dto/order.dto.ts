@@ -34,7 +34,7 @@ export class OrderItemDto {
 
   // Không có `unitPrice`: giá bán là của danh mục, không phải của quầy. Xem `OrderService.priceLines`.
 
-  /** Giảm tay trên dòng này, bị bỏ qua khi đơn có `appliedPromotions`: server tự tính khuyến mãi và ghi đè mọi dòng nên hai cách không trộn được. */
+  /** Giảm tay trên dòng, bị bỏ qua khi đơn có khuyến mãi. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -42,13 +42,13 @@ export class OrderItemDto {
   discountAmount?: number;
 }
 
-/** Khuyến mãi được chọn, chỉ gửi id: tên và số tiền giảm do server tính. Gửi `promoName`/`discountAmount` cũ cũng không sao vì `whitelist: true` bỏ chúng. */
+/** Khuyến mãi được chọn, chỉ gửi id. */
 export class AppliedPromotionDto {
   @IsUUID()
   promotionId: string;
 }
 
-/** Bán tại quầy (`POST /orders/pos`). Không nhận `grandTotal` từ client: API cũ lưu tổng client gửi nên request giả có thể làm giỏ bằng 0. `status`, `change`, `paymentReference` cũng bỏ vì lý do đó. */
+/** Body bán tại quầy; tổng tiền do server tính. */
 export class CreatePosOrderDto {
   @IsUUID()
   branchId: string;
@@ -79,7 +79,7 @@ export class CreatePosOrderDto {
   @IsString()
   note?: string;
 
-  /** `ORDER`: giảm tay cả đơn. `PROMOTION` không nhận từ client: gửi `appliedPromotions` là đủ để thành đơn khuyến mãi, server tự đặt cả hai trường theo kết quả engine. */
+  /** Loại giảm giá cả đơn; PROMOTION do server tự đặt. */
   @IsOptional()
   @IsIn(['ORDER'], {
     message:
@@ -147,7 +147,7 @@ export class CancelPosSaleDto {
   @MaxLength(500)
   reason?: string;
 
-  /** Phần tiền đã trả (khách chuyển thiếu rồi không trả nốt) hoàn lại cho khách, 0 = shop giữ hết. Bắt buộc khi đơn đang giữ tiền; đơn chưa có đồng nào thì không gửi. */
+  /** Phần tiền đã trả hoàn cho khách (0 = shop giữ hết). */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })

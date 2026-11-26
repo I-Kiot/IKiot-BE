@@ -9,9 +9,9 @@ import type {
 } from '../../common/realtime/change-feed.types';
 import { named, readRef, readRefOf } from '../../common/realtime/change-ref';
 
-/** Nội dung feed `entity:changed` của giao hàng. Chỉ tên người làm + động từ + mã đơn, không bao giờ có tiền / tên khách. */
+/** Nội dung feed `entity:changed` của giao hàng. */
 
-/** Mọi route ghi của shipment trả `{ id, order: { id, code, … } }` (`loadShipmentDetail` / `findDetail`); chủ thể là shipment, đơn đi kèm. */
+/** Lấy shipment và đơn từ body. */
 export function shipmentTarget({
   body,
   params,

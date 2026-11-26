@@ -1,6 +1,6 @@
 import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
-/** Port từ `validatePasswordCombo`. Kiểm tra hai mật khẩu khớp nhau nằm trong service, không phải validator liên trường: một phép so sánh rõ ràng dễ đọc hơn, và message là thứ người dùng thấy. */
+/** Body đặt mật khẩu, kiểm khớp trong service. */
 export class StaffAccountPasswordDto {
   @IsString()
   @MinLength(6, { message: 'Mật khẩu phải có ít nhất 6 ký tự' })

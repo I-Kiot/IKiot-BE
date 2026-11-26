@@ -19,7 +19,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Port từ module brand của iKiotMS-BE, nơi mọi route chạy với `verifyJwt` trần: mọi người dùng đăng nhập đều sửa được mọi thương hiệu trong hệ thống.
+// Controller thương hiệu.
 @ApiTags('brands')
 @ApiBearerAuth('bearer')
 @Controller('brands')

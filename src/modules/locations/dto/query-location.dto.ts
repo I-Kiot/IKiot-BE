@@ -3,7 +3,7 @@ import { IsIn, IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { FILTERABLE_LOCATION_STATUSES } from '../../../common/constants/location-status';
 
-/** Bộ lọc danh sách chung cho chi nhánh và kho; hai endpoint giữ tên Swagger riêng, luật chỉ viết một lần. */
+/** Bộ lọc danh sách chi nhánh và kho. */
 export class QueryLocationDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()

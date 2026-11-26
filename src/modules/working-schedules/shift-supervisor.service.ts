@@ -9,10 +9,7 @@ import {
   columnsOfLocation,
 } from '../../common/dto/location-ref.dto';
 
-/**
- * Quyền tạm của STAFF chỉ có khi ca họ đang quản lý đang chạy (`managedScheduleAccess` của iKiotMS-BE): người được `managedBy` trên lịch đang chạy được mở két, nhận hàng, thanh toán nhà cung cấp tại địa điểm của mình mà không cần quyền cố định.
- * Ba ràng buộc giữ phạm vi hẹp: chỉ ca SCHEDULED đang bao trùm thời điểm hiện tại; chỉ bộ `TEMPORARY_PERMISSIONS`; chỉ địa điểm vừa thuộc ca vừa thuộc posting của người giám sát. `suppliers` là ngoại lệ của ràng buộc cuối vì NCC là dữ liệu toàn tenant.
- */
+/** Quyền tạm của người quản lý ca đang chạy, tại địa điểm của ca. */
 
 /** Đúng bằng `TEMPORARY_PERMISSIONS` cũ. Nới rộng danh sách này là nới rộng những gì một ca được cấp. */
 export const TEMPORARY_PERMISSIONS: Readonly<
@@ -89,7 +86,7 @@ export class ShiftSupervisorService {
       }
     }
 
-    // …giao với nơi chính người giám sát làm việc: ca có người từ chi nhánh khác không được với tới chi nhánh đó.
+    // Chỉ trong nơi người giám sát làm việc.
     for (const branchId of branchIds) {
       if (branchId !== user.branchId) branchIds.delete(branchId);
     }
@@ -120,7 +117,7 @@ export class ShiftSupervisorService {
   }
 }
 
-/** Điểm duy nhất để `StockMovementService.canActAt()` và `CashDrawerSessionService.resolveBranch()` nới quyền theo ca đang chạy. */
+/** Nới quyền theo ca đang chạy. */
 export function supervisesLocation(
   access: ShiftSupervisorAccess | null | undefined,
   location: { branchId: string | null; warehouseId: string | null },

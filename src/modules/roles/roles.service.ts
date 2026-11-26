@@ -58,12 +58,7 @@ export class RolesService {
       .map((p) => ({ resource: p.resource, action: p.action }));
   }
 
-  /**
-   * Từ chối tên vai trò đã có trong shop (ROLE_NAME_TAKEN), để client hiện được câu riêng thay vì lỗi chung.
-   * So khớp chính xác như `@@unique([tenantId, name])`. Chỉ là kiểm tra sớm: hai request trùng tên cùng lúc vẫn có thể
-   * cùng qua, khi đó ràng buộc DB chặn người ghi sau và `AllExceptionsFilter` trả 409 UNIQUE_VIOLATION.
-   * `exceptId`: vai trò đang sửa, không tính là trùng với chính nó.
-   */
+  /** Từ chối tên vai trò đã có trong shop; `exceptId` là vai trò đang sửa. */
   private async assertNameAvailable(
     tenantId: string,
     name: string,
@@ -126,7 +121,7 @@ export class RolesService {
 
   async remove(tenantId: string, id: string) {
     const role = await this.findOne(tenantId, id);
-    // Chỉ tài khoản còn hoạt động mới chặn việc xoá; nhân viên đã xoá mềm vẫn giữ roleId (là FK) nên các row đó được gỡ ở dưới, không đếm.
+    // Chỉ tài khoản còn hoạt động mới chặn xoá role.
     const assignedCount = await this.prisma.user.count({
       where: { roleId: role.id, status: { not: UserStatus.DELETED } },
     });
