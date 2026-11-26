@@ -4,6 +4,22 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 import { QueryOrderActivityDto } from './dto/query-order-activity.dto';
 
+export interface AuditActor {
+  id: string;
+  /** Họ tên theo hồ sơ hiện tại; null khi hồ sơ chưa có tên. */
+  name: string | null;
+  phone: string;
+  avatarUrl: string | null;
+  systemRole: string;
+  /** Chức danh hiển thị: tên Role của nhân viên, hoặc nhãn của chủ shop / quản trị. */
+  roleLabel: string;
+}
+
+const SYSTEM_ROLE_LABELS: Record<string, string> = {
+  TENANT_OWNER: 'Chủ cửa hàng',
+  ADMIN: 'Quản trị viên',
+};
+
 // Nhật ký chỉ đọc, chỉ AuditInterceptor ghi.
 @Injectable()
 export class AuditLogService {
@@ -70,14 +86,57 @@ export class AuditLogService {
       this.prisma.orderEvent.count({ where }),
     ]);
 
+    const actors = await this.loadActors(rows.map((r) => r.actorId));
     return {
       data: rows.map(({ order, ...row }) => ({
         ...row,
         orderId: order.id,
         orderCode: order.code,
+        actor: (row.actorId && actors.get(row.actorId)) || null,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  /** Hồ sơ hiện tại của người thao tác, tra theo id; người đã xóa thì không có trong kết quả. */
+  private async loadActors(
+    ids: (string | null | undefined)[],
+  ): Promise<Map<string, AuditActor>> {
+    const unique = [...new Set(ids.filter((id): id is string => !!id))];
+    if (unique.length === 0) return new Map();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: unique } },
+      select: {
+        id: true,
+        phoneNumber: true,
+        systemRole: true,
+        profileFirstName: true,
+        profileLastName: true,
+        profileAvatarUrl: true,
+        role: { select: { name: true } },
+      },
+    });
+    return new Map(
+      users.map((u) => {
+        const name =
+          [u.profileLastName, u.profileFirstName]
+            .filter(Boolean)
+            .join(' ')
+            .trim() || null;
+        return [
+          u.id,
+          {
+            id: u.id,
+            name,
+            phone: u.phoneNumber,
+            avatarUrl: u.profileAvatarUrl,
+            systemRole: u.systemRole,
+            roleLabel:
+              SYSTEM_ROLE_LABELS[u.systemRole] ?? u.role?.name ?? 'Nhân viên',
+          },
+        ] as const;
+      }),
+    );
   }
 
   private buildWhere(query: QueryAuditLogDto): Prisma.AuditLogWhereInput {
@@ -123,8 +182,12 @@ export class AuditLogService {
       this.prisma.auditLog.count({ where }),
     ]);
 
+    const actors = await this.loadActors(data.map((r) => r.userId));
     return {
-      data,
+      data: data.map((row) => ({
+        ...row,
+        actor: (row.userId && actors.get(row.userId)) || null,
+      })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
