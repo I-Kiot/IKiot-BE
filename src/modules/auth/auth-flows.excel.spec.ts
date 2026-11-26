@@ -536,7 +536,7 @@ describe('AuthService flows', () => {
     });
   });
 
-  // ── PasswordRecovery: an email never reveals whether it has an account (UTC026a-UTC026g) ──
+  // ── Quên mật khẩu: không lộ email có tài khoản hay không (UTC026a-UTC026g) ──
   describe('Excel sheet Auth - forgot password hides account existence', () => {
     const REAL_ID = '6f1c2d3e-4b5a-4c6d-8e7f-90a1b2c3d4e5';
     const UUID_V4 =

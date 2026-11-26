@@ -123,11 +123,7 @@ export class OtpService {
     });
   }
 
-  /**
-   * Như `send` nhưng không gửi email: mã được lưu và đếm lượt thử, cooldown y như thật,
-   * chỉ là không ai biết mã. Dùng cho "quên mật khẩu" với email không có tài khoản hợp lệ,
-   * để câu trả lời không tiết lộ email đó có tài khoản hay không. `sentTo` đã được che sẵn.
-   */
+  /** Như `send` nhưng không gửi email (mã, lượt thử, cooldown y như thật), để "quên mật khẩu" không lộ email nào có tài khoản. */
   sendDecoy(
     purpose: OtpPurpose,
     subjectId: string,

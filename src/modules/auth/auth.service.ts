@@ -300,7 +300,7 @@ export class AuthService {
       where: { id: challenge.userId },
       select: { id: true, email: true, status: true, emailVerifiedAt: true },
     });
-    // Challenge mồi của "quên mật khẩu": cùng cooldown, cùng câu trả lời, không gửi gì.
+    // Gửi lại cho challenge mồi: không gửi gì nhưng cùng cooldown và câu trả lời, để gửi lại cũng không lộ email có tài khoản.
     if (
       !user &&
       challenge.purpose === OtpPurpose.RESET_PASSWORD &&
@@ -546,10 +546,7 @@ export class AuthService {
     return user;
   }
 
-  /**
-   * Challenge quên mật khẩu, thật hoặc mồi. Cả hai mang `to` (email đã che) để "gửi lại"
-   * của challenge mồi trả đúng `sentTo` mà không cần lưu gì thêm; client không phân biệt được.
-   */
+  /** Challenge quên mật khẩu (thật hoặc mồi) mang `to` là email đã che, để "gửi lại" của mồi trả đúng `sentTo` mà không cần lưu thêm. */
   private async issueResetChallenge(
     subjectId: string,
     email: string,
@@ -579,12 +576,7 @@ export class AuthService {
     return { requiresOtp: true as const, challengeToken, ...delivery };
   }
 
-  /**
-   * Nhập email: không bao giờ cho biết email đó có tài khoản hay không (PO, 2026-11-26).
-   * Email không có tài khoản hợp lệ nhận challenge mồi (`forgot-password-decoy.ts`), cùng
-   * hình dạng, cùng status, cùng câu. Nhập số điện thoại (app shipper còn gửi) vẫn báo lỗi
-   * rõ như cũ - xem HANDOFF 2026-11-26.
-   */
+  /** Email không có tài khoản hợp lệ nhận challenge mồi để không lộ email nào đã đăng ký (PO, 2026-11-26); số điện thoại vẫn báo lỗi rõ vì app shipper còn gửi. */
   async sendForgotPasswordOtp(dto: ForgotPasswordDto) {
     const identifier = (dto.identifier ?? dto.phoneNumber ?? '').trim();
     if (identifier.includes('@')) {
@@ -627,9 +619,7 @@ export class AuthService {
       },
     });
     if (!user) {
-      // Challenge mồi: chạy đúng phép kiểm mã như thật (OTP_INVALID + attemptsLeft, rồi
-      // OTP_TOO_MANY_ATTEMPTS), nhưng không bao giờ cấp reset token. Mã không ai biết, nên
-      // chỉ DEV_BYPASS (tắt ở production) hoặc tài khoản vừa bị xoá hẳn mới tới được throw.
+      // Mồi vẫn chạy kiểm mã thật để lỗi và số lần thử giống hệt tài khoản thật; không ai biết mã nên chỉ DEV_BYPASS mới qua được tới throw.
       await this.otp.verify(
         OtpPurpose.RESET_PASSWORD,
         challenge.userId,
