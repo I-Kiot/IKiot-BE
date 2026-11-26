@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { STAFF_BASE_PERMISSIONS } from '../../common/constants/system-role';
+import { AUTO_GRANTED_PERMISSIONS } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
@@ -46,7 +46,7 @@ export class RolesService {
       orderBy: [{ resource: 'asc' }, { action: 'asc' }],
     });
     return rows.filter(
-      (row) => !STAFF_BASE_PERMISSIONS.has(`${row.resource}:${row.action}`),
+      (row) => !AUTO_GRANTED_PERMISSIONS.has(`${row.resource}:${row.action}`),
     );
   }
 
@@ -54,7 +54,7 @@ export class RolesService {
     permissions: { resource: string; action: string }[],
   ): { resource: string; action: string }[] {
     return permissions
-      .filter((p) => !STAFF_BASE_PERMISSIONS.has(`${p.resource}:${p.action}`))
+      .filter((p) => !AUTO_GRANTED_PERMISSIONS.has(`${p.resource}:${p.action}`))
       .map((p) => ({ resource: p.resource, action: p.action }));
   }
 

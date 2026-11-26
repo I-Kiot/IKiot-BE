@@ -354,7 +354,7 @@ const CATALOG: Record<
     label: 'Yêu cầu sản xuất',
   },
   production: {
-    // Nhập số lượng đã sản xuất là thứ làm tăng tồn kho nên có quyền riêng (contract §6). 'deliver' là của nhân viên xưởng: xem yêu cầu của xưởng và lập phiếu giao; phiếu không tăng tồn, việc đó do 'receive' ở kho nhận làm.
+    // Nhập số lượng đã sản xuất là thứ làm tăng tồn kho nên có quyền riêng (contract §6). 'deliver' là của nhân viên xưởng: xem yêu cầu của xưởng và lập phiếu giao; phiếu không tăng tồn, việc đó do 'receive' ở kho nhận làm. 'deliver' tự cấp cho tài khoản gắn xưởng (WORKSHOP_STAFF_PERMISSIONS), role không giữ được.
     actions: ['receive', 'deliver'],
     label: 'Nhập hàng sản xuất',
   },

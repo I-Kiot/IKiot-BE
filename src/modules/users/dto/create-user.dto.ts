@@ -30,7 +30,7 @@ export class CreateUserDto {
   @IsUUID()
   warehouseId?: string;
 
-  /** Nhân viên xưởng: nhà cung cấp loại WORKSHOP mà người này làm việc. Họ thấy yêu cầu sản xuất của xưởng đó ở mọi địa điểm và ghi được phiếu giao (cần `production:deliver`). */
+  /** Nhân viên xưởng: nhà cung cấp loại WORKSHOP mà người này làm việc. Họ thấy yêu cầu sản xuất của xưởng đó ở mọi địa điểm và ghi được phiếu giao; `production:deliver` tự cấp khi tài khoản gắn xưởng. */
   @IsOptional()
   @IsUUID()
   workshopId?: string;

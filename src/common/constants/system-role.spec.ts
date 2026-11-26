@@ -1,6 +1,10 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { STAFF_BASE_PERMISSIONS } from './system-role';
+import {
+  AUTO_GRANTED_PERMISSIONS,
+  STAFF_BASE_PERMISSIONS,
+  WORKSHOP_STAFF_PERMISSIONS,
+} from './system-role';
 
 const SRC = join(__dirname, '..', '..');
 
@@ -25,11 +29,27 @@ describe('STAFF_BASE_PERMISSIONS', () => {
 
   it.each([
     // Nơi bộ quyền trở thành một phần của `AuthUser.permissions`.
-    'modules/auth/strategies/jwt.strategy.ts',
+    ['modules/auth/strategies/jwt.strategy.ts', 'STAFF_BASE_PERMISSIONS'],
+    ['modules/auth/strategies/jwt.strategy.ts', 'WORKSHOP_STAFF_PERMISSIONS'],
     // Nơi bộ quyền bị ẩn khỏi trình chỉnh role và bị gỡ khỏi những gì role lưu.
-    'modules/roles/roles.service.ts',
-  ])('%s honours the set', (file) => {
+    ['modules/roles/roles.service.ts', 'AUTO_GRANTED_PERMISSIONS'],
+  ])('%s honours %s', (file, name) => {
     const text = readFileSync(join(SRC, file), 'utf8');
-    expect(text).toContain('STAFF_BASE_PERMISSIONS');
+    expect(text).toContain(name);
+  });
+});
+
+describe('WORKSHOP_STAFF_PERMISSIONS', () => {
+  it('is only production:deliver', () => {
+    expect([...WORKSHOP_STAFF_PERMISSIONS]).toEqual(['production:deliver']);
+  });
+
+  it('is part of what roles can never hold, together with the staff base set', () => {
+    for (const key of [
+      ...STAFF_BASE_PERMISSIONS,
+      ...WORKSHOP_STAFF_PERMISSIONS,
+    ]) {
+      expect(AUTO_GRANTED_PERMISSIONS.has(key)).toBe(true);
+    }
   });
 });

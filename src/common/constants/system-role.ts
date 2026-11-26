@@ -27,3 +27,18 @@ export const STAFF_BASE_PERMISSIONS: ReadonlySet<string> = new Set([
   'customers:read',
   'customers:create',
 ]);
+
+/**
+ * Quyền tự cấp cho nhân viên xưởng (STAFF có `users.workshop_id`), không đi qua Role (2026-11-26).
+ * `production:deliver` chỉ dùng cho các route `/workshop/*`, mà các route đó đòi tài khoản gắn xưởng, nên cấp theo role
+ * không có ích gì cho người khác; gắn xưởng trong hồ sơ nhân viên là đủ.
+ */
+export const WORKSHOP_STAFF_PERMISSIONS: ReadonlySet<string> = new Set([
+  'production:deliver',
+]);
+
+/** Quyền tự cấp theo loại tài khoản: màn Vai trò không hiện, role không lưu được. */
+export const AUTO_GRANTED_PERMISSIONS: ReadonlySet<string> = new Set([
+  ...STAFF_BASE_PERMISSIONS,
+  ...WORKSHOP_STAFF_PERMISSIONS,
+]);
