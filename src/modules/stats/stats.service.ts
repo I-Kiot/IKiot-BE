@@ -618,7 +618,7 @@ export class StatsService {
   }
 
   /**
-   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết nên dừng nhập gì. Tồn tính ở chi nhánh người xem nếu được gắn vào một chi nhánh, còn chủ shop thì cả chuỗi; trừ kho hàng hỏng (`is_sellable = false`). Số bán đọc từ sổ doanh thu (hàng trả trừ đi).
+   * Hàng bán chậm: SKU còn trên kệ nhưng bán ít nhất trong kỳ (kể cả không bán cái nào), để biết nên dừng nhập gì. Tồn tính ở chi nhánh người xem nếu được gắn vào một chi nhánh, còn chủ shop thì cả chuỗi; `stock` không gồm hàng hỏng. Số bán đọc từ sổ doanh thu (hàng trả trừ đi).
    */
   async getSlowProducts(user: AuthUser, query: SlowProductsQueryDto) {
     const scope = orderScope(user, query.branchId);
@@ -638,7 +638,6 @@ export class StatsService {
         FROM inventories i
         JOIN locations l ON l.id = i.location_id
         WHERE i.tenant_id = ${user.tenantId}
-          AND l.is_sellable = true
           AND l.status <> ${LocationStatus.DELETED}
           ${scope.branchId ? Prisma.sql`AND i.location_id = ${scope.branchId}` : Prisma.empty}
         GROUP BY i.product_item_id
@@ -956,9 +955,18 @@ export class StatsService {
         WHERE i.tenant_id = ${tenantId}
           ${locationFilter}
       `,
-      // Giá trị tồn từ các lô còn hàng (số còn lại x giá vốn của lô: giá nhập NCC / giá xưởng), không phải giá vốn trên danh mục. Gồm cả kho hàng hỏng: hàng vẫn nằm trong sổ kho.
-      this.prisma.$queryRaw<{ stockValue: Prisma.Decimal }[]>`
-        SELECT COALESCE(SUM(lot.remaining_quantity * lot.unit_cost), 0) AS "stockValue"
+      // Giá trị tồn từ các lô còn hàng (số còn lại x giá vốn của lô: giá nhập NCC / giá xưởng), không phải giá vốn trên danh mục.
+      // Tách hai số (2026-11-26): tồn bán được và hàng hỏng (lô `is_sellable = false`), hàng hỏng vẫn nằm trong sổ kho.
+      this.prisma.$queryRaw<
+        {
+          stockValue: Prisma.Decimal;
+          damagedValue: Prisma.Decimal;
+          damagedUnits: number;
+        }[]
+      >`
+        SELECT COALESCE(SUM(lot.remaining_quantity * lot.unit_cost) FILTER (WHERE lot.is_sellable), 0) AS "stockValue",
+               COALESCE(SUM(lot.remaining_quantity * lot.unit_cost) FILTER (WHERE NOT lot.is_sellable), 0) AS "damagedValue",
+               COALESCE(SUM(lot.remaining_quantity) FILTER (WHERE NOT lot.is_sellable), 0)::int AS "damagedUnits"
         FROM inventory_lots lot
         WHERE lot.tenant_id = ${tenantId}
           AND lot.remaining_quantity > 0
@@ -980,6 +988,8 @@ export class StatsService {
     const totals = totalRows[0];
     return {
       stockValue: Number(valueRows[0]?.stockValue ?? 0),
+      damagedValue: Number(valueRows[0]?.damagedValue ?? 0),
+      damagedUnits: valueRows[0]?.damagedUnits ?? 0,
       totalUnits: totals?.totalUnits ?? 0,
       skuCount: totals?.skuCount ?? 0,
       outOfStock: totals?.outOfStock ?? 0,
@@ -1044,6 +1054,7 @@ export class StatsService {
                       WHERE lot.tenant_id = i.tenant_id
                         AND lot.location_id = i.location_id
                         AND lot.product_item_id = i.product_item_id
+                        AND lot.is_sellable
                         AND lot.remaining_quantity > 0),
                      i.created_at
                    ) AT TIME ZONE ${TZ_NAME})::date
@@ -1052,7 +1063,6 @@ export class StatsService {
         JOIN product_items pi ON pi.id = i.product_item_id
         JOIN locations l ON l.id = i.location_id
         WHERE i.tenant_id = ${user.tenantId}
-          AND l.is_sellable = true
           AND l.status <> ${LocationStatus.DELETED}
           ${locationId ? Prisma.sql`AND i.location_id = ${locationId}` : Prisma.empty}
       )`;

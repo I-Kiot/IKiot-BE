@@ -66,6 +66,10 @@ export class ProductFilterDto extends IntersectionType(
 }
 
 export class QueryProductDto extends ProductFilterDto {
+  /** Filter "Có hàng hỏng" (2026-11-26): chỉ sản phẩm có lô hỏng còn hàng tại địa điểm đang chọn (bỏ trống địa điểm = toàn chuỗi). */
+  @BooleanQuery()
+  hasDamaged?: boolean;
+
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
