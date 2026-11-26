@@ -1,11 +1,4 @@
-/** OVERTIME là giờ làm thêm, không bao giờ bị tính là đi muộn. */
-export const ScheduleType = {
-  NORMAL: 'NORMAL',
-  OVERTIME: 'OVERTIME',
-} as const;
-
-export const SCHEDULE_TYPES = Object.values(ScheduleType);
-
+/** Loại ca (NORMAL / OVERTIME) đã bỏ 2026-11-26: nó chỉ có nghĩa với bảng lương, đã ra khỏi phạm vi. */
 export const ScheduleStatus = {
   SCHEDULED: 'SCHEDULED',
   COMPLETED: 'COMPLETED',

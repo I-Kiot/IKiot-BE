@@ -178,6 +178,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       where: { schedule: { tenantId: t } },
     });
     await prisma.workingSchedule.deleteMany({ where: { tenantId: t } });
+    await prisma.workingScheduleSeries.deleteMany({ where: { tenantId: t } });
     await prisma.shiftTemplate.deleteMany({ where: { tenantId: t } });
     await prisma.ticketMessage.deleteMany({
       where: { ticket: { tenantId: t } },
@@ -3378,7 +3379,6 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         tenantId,
         managedById: staffId,
         shiftTemplateId,
-        scheduleType: 'NORMAL',
         workDate: new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`),
         startAt: new Date(now.getTime() - 60 * 60 * 1000),
         endAt: new Date(now.getTime() + 60 * 60 * 1000),

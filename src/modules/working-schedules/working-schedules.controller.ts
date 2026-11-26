@@ -12,7 +12,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { WorkingScheduleService } from './working-schedules.service';
 import {
   BulkCreateWorkingScheduleDto,
+  CreateScheduleSeriesDto,
   QueryWorkingScheduleDto,
+  RemoveScheduleSeriesQueryDto,
   UpdateWorkingScheduleDto,
 } from './dto/working-schedule.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -81,6 +83,27 @@ export class WorkingScheduleController {
     @Body() dto: BulkCreateWorkingScheduleDto,
   ) {
     return this.service.createBulk(requireTenantId(user), user.userId, dto);
+  }
+
+  /** Lịch lặp lại: một ca mẫu từ ngày đến ngày, vào các thứ đã chọn. */
+  @Permissions('schedules', 'create')
+  @Post('series')
+  createSeries(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateScheduleSeriesDto,
+  ) {
+    return this.service.createSeries(requireTenantId(user), user.userId, dto);
+  }
+
+  /** Dừng lịch lặp từ `fromDate` (mặc định hôm nay); ca đã qua giữ nguyên. */
+  @Permissions('schedules', 'delete')
+  @Delete('series/:id')
+  removeSeries(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Query() query: RemoveScheduleSeriesQueryDto,
+  ) {
+    return this.service.removeSeries(requireTenantId(user), id, query.fromDate);
   }
 
   @Permissions('schedules', 'read', 'read_own')

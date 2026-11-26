@@ -56,6 +56,7 @@ model Tenant {
   stockMovementRequests     StockMovementRequest[]
   shiftTemplates            ShiftTemplate[]
   workingSchedules          WorkingSchedule[]
+  workingScheduleSeries     WorkingScheduleSeries[]
   holidays                  Holiday[]
   salesChannels             SalesChannel[]
   channelProductMappings    ChannelProductMapping[]
@@ -137,64 +138,66 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   fcmTokens                     UserFcmToken[]
-  ownedTenants                  Tenant[]                 @relation("TenantOwner")
-  subscriptionChanges           SubscriptionHistoryLog[] @relation("SubscriptionHistoryChangedBy")
-  managedLocations              Location[]               @relation("LocationManager")
-  managedWorkingSchedules       WorkingSchedule[]        @relation("WorkingScheduleManagedBy")
-  createdWorkingSchedules       WorkingSchedule[]        @relation("WorkingScheduleCreatedBy")
+  ownedTenants                  Tenant[]                    @relation("TenantOwner")
+  subscriptionChanges           SubscriptionHistoryLog[]    @relation("SubscriptionHistoryChangedBy")
+  managedLocations              Location[]                  @relation("LocationManager")
+  managedWorkingSchedules       WorkingSchedule[]           @relation("WorkingScheduleManagedBy")
+  createdWorkingSchedules       WorkingSchedule[]           @relation("WorkingScheduleCreatedBy")
   scheduleAssignments           WorkingScheduleUser[]
-  ordersCreated                 Order[]                  @relation("OrderCreatedBy")
-  ordersAssigned                Order[]                  @relation("OrderAssignee")
-  ordersSold                    Order[]                  @relation("OrderSeller")
-  ordersConfirmed               Order[]                  @relation("OrderConfirmedBy")
-  productionRequestsCreated     ProductionRequest[]      @relation("ProductionRequestCreatedBy")
-  productionRequestsUpdated     ProductionRequest[]      @relation("ProductionRequestStatusUpdatedBy")
-  productionRequestsAccepted    ProductionRequest[]      @relation("ProductionRequestAcceptedBy")
-  orderReturnsCreated           OrderReturn[]            @relation("OrderReturnCreatedBy")
-  orderReturnsInspected         OrderReturn[]            @relation("OrderReturnInspectedBy")
-  cashDrawerSessionsOpened      CashDrawerSession[]      @relation("CashDrawerOpenedBy")
-  cashDrawerSessionsCurrent     CashDrawerSession[]      @relation("CashDrawerCurrentStaff")
-  cashDrawerSessionsReopened    CashDrawerSession[]      @relation("CashDrawerReopenedBy")
-  cashDrawerShiftLogsAsStaff    CashDrawerShiftLog[]     @relation("ShiftLogStaff")
-  cashDrawerShiftLogsAsNext     CashDrawerShiftLog[]     @relation("ShiftLogNextStaff")
-  cashDrawerFinalizedSessions   CashDrawerSession[]      @relation("CashDrawerFinalLogManager")
+  createdScheduleSeries         WorkingScheduleSeries[]     @relation("WorkingScheduleSeriesCreatedBy")
+  scheduleSeriesAssignments     WorkingScheduleSeriesUser[]
+  ordersCreated                 Order[]                     @relation("OrderCreatedBy")
+  ordersAssigned                Order[]                     @relation("OrderAssignee")
+  ordersSold                    Order[]                     @relation("OrderSeller")
+  ordersConfirmed               Order[]                     @relation("OrderConfirmedBy")
+  productionRequestsCreated     ProductionRequest[]         @relation("ProductionRequestCreatedBy")
+  productionRequestsUpdated     ProductionRequest[]         @relation("ProductionRequestStatusUpdatedBy")
+  productionRequestsAccepted    ProductionRequest[]         @relation("ProductionRequestAcceptedBy")
+  orderReturnsCreated           OrderReturn[]               @relation("OrderReturnCreatedBy")
+  orderReturnsInspected         OrderReturn[]               @relation("OrderReturnInspectedBy")
+  cashDrawerSessionsOpened      CashDrawerSession[]         @relation("CashDrawerOpenedBy")
+  cashDrawerSessionsCurrent     CashDrawerSession[]         @relation("CashDrawerCurrentStaff")
+  cashDrawerSessionsReopened    CashDrawerSession[]         @relation("CashDrawerReopenedBy")
+  cashDrawerShiftLogsAsStaff    CashDrawerShiftLog[]        @relation("ShiftLogStaff")
+  cashDrawerShiftLogsAsNext     CashDrawerShiftLog[]        @relation("ShiftLogNextStaff")
+  cashDrawerFinalizedSessions   CashDrawerSession[]         @relation("CashDrawerFinalLogManager")
   cashFlowsCreated              CashFlow[]
   promotionLogsCreated          PromotionLog[]
-  notificationsReceived         Notification[]           @relation("NotificationRecipient")
-  notificationsCreated          Notification[]           @relation("NotificationCreatedBy")
+  notificationsReceived         Notification[]              @relation("NotificationRecipient")
+  notificationsCreated          Notification[]              @relation("NotificationCreatedBy")
   ticketsCreated                Ticket[]
   ticketMessages                TicketMessage[]
   aiChatHistories               AIChatHistory[]
   auditLogs                     AuditLog[]
   inventoryTransactions         InventoryTransaction[]
-  stockMovementsCreated         StockMovementRequest[]   @relation("StockMovementCreatedBy")
-  stockMovementsShipped         StockMovementRequest[]   @relation("StockMovementShippedBy")
-  stockMovementsReceived        StockMovementRequest[]   @relation("StockMovementReceivedBy")
-  stockMovementsApproved        StockMovementRequest[]   @relation("StockMovementApprovedBy")
-  stockMovementsCancelled       StockMovementRequest[]   @relation("StockMovementCancelledBy")
-  fulfillmentsAssigned          Fulfillment[]            @relation("FulfillmentAssignee")
-  fulfillmentsVerified          Fulfillment[]            @relation("FulfillmentVerifiedBy")
+  stockMovementsCreated         StockMovementRequest[]      @relation("StockMovementCreatedBy")
+  stockMovementsShipped         StockMovementRequest[]      @relation("StockMovementShippedBy")
+  stockMovementsReceived        StockMovementRequest[]      @relation("StockMovementReceivedBy")
+  stockMovementsApproved        StockMovementRequest[]      @relation("StockMovementApprovedBy")
+  stockMovementsCancelled       StockMovementRequest[]      @relation("StockMovementCancelledBy")
+  fulfillmentsAssigned          Fulfillment[]               @relation("FulfillmentAssignee")
+  fulfillmentsVerified          Fulfillment[]               @relation("FulfillmentVerifiedBy")
   packagesPacked                FulfillmentPackage[]
-  shipmentsDriven               Shipment[]               @relation("ShipmentDriver")
+  shipmentsDriven               Shipment[]                  @relation("ShipmentDriver")
   shipmentEventsCreated         ShipmentEvent[]
   operationEvents               OperationEvent[]
-  paymentsCreated               Payment[]                @relation("PaymentCreatedBy")
-  paymentsCollected             Payment[]                @relation("PaymentCollectedBy")
-  paymentsRemittanceConfirmed   Payment[]                @relation("PaymentRemittanceConfirmedBy")
-  paymentsCancelled             Payment[]                @relation("PaymentCancelledBy")
-  sepayTransactionsResolved     SepayTransaction[]       @relation("SepayTransactionResolvedBy")
-  ordersShipped                 Order[]                  @relation("OrderShippedBy")
-  ordersCancelled               Order[]                  @relation("OrderCancelledBy")
-  orderReturnsReceived          OrderReturn[]            @relation("OrderReturnReceivedBy")
+  paymentsCreated               Payment[]                   @relation("PaymentCreatedBy")
+  paymentsCollected             Payment[]                   @relation("PaymentCollectedBy")
+  paymentsRemittanceConfirmed   Payment[]                   @relation("PaymentRemittanceConfirmedBy")
+  paymentsCancelled             Payment[]                   @relation("PaymentCancelledBy")
+  sepayTransactionsResolved     SepayTransaction[]          @relation("SepayTransactionResolvedBy")
+  ordersShipped                 Order[]                     @relation("OrderShippedBy")
+  ordersCancelled               Order[]                     @relation("OrderCancelledBy")
+  orderReturnsReceived          OrderReturn[]               @relation("OrderReturnReceivedBy")
   invoicesCreated               Invoice[]
-  productionDeliveriesCreated   ProductionDelivery[]     @relation("ProductionDeliveryCreatedBy")
-  productionDeliveriesReceived  ProductionDelivery[]     @relation("ProductionDeliveryReceivedBy")
-  productionDeliveriesCancelled ProductionDelivery[]     @relation("ProductionDeliveryCancelledBy")
-  orderEvents                   OrderEvent[]             @relation("OrderEventActor")
-  salesJournalActed             SalesJournalEntry[]      @relation("SalesJournalActor")
-  supplierDebtEntries           SupplierDebtEntry[]      @relation("SupplierDebtActor")
-  bankingChangesMade            TenantBankingChange[]    @relation("TenantBankingActor")
-  priceChangesMade              ProductItemPriceChange[] @relation("PriceChangeActor")
+  productionDeliveriesCreated   ProductionDelivery[]        @relation("ProductionDeliveryCreatedBy")
+  productionDeliveriesReceived  ProductionDelivery[]        @relation("ProductionDeliveryReceivedBy")
+  productionDeliveriesCancelled ProductionDelivery[]        @relation("ProductionDeliveryCancelledBy")
+  orderEvents                   OrderEvent[]                @relation("OrderEventActor")
+  salesJournalActed             SalesJournalEntry[]         @relation("SalesJournalActor")
+  supplierDebtEntries           SupplierDebtEntry[]         @relation("SupplierDebtActor")
+  bankingChangesMade            TenantBankingChange[]       @relation("TenantBankingActor")
+  priceChangesMade              ProductItemPriceChange[]    @relation("PriceChangeActor")
 
   @@index([tenantId, workshopId])
   @@map("users")
@@ -1004,6 +1007,7 @@ model ShiftTemplate {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   workingSchedules WorkingSchedule[]
+  scheduleSeries   WorkingScheduleSeries[]
 
   @@map("shift_templates")
 }
@@ -1017,7 +1021,6 @@ model WorkingSchedule {
   location        Location?      @relation(fields: [locationId], references: [id])
   managedById     String?        @map("managed_by") // người phụ trách ca, có thêm quyền tạm thời trong ca
   managedBy       User?          @relation("WorkingScheduleManagedBy", fields: [managedById], references: [id])
-  scheduleType    String         @default("NORMAL") @map("schedule_type") // NORMAL | OVERTIME
   shiftTemplateId String?        @map("shift_template_id")
   shiftTemplate   ShiftTemplate? @relation(fields: [shiftTemplateId], references: [id])
   createdById     String?        @map("created_by")
@@ -1035,15 +1038,54 @@ model WorkingSchedule {
   @@map("working_schedules")
 }
 
-/// Nhân viên được xếp vào ca.
+/// Nhân viên được xếp vào ca. `seriesId` có giá trị = lượt này sinh ra từ một lịch lặp lại.
 model WorkingScheduleUser {
-  scheduleId String          @map("schedule_id")
-  schedule   WorkingSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  userId     String          @map("user_id")
-  user       User            @relation(fields: [userId], references: [id])
+  scheduleId String                 @map("schedule_id")
+  schedule   WorkingSchedule        @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  userId     String                 @map("user_id")
+  user       User                   @relation(fields: [userId], references: [id])
+  seriesId   String?                @map("series_id")
+  series     WorkingScheduleSeries? @relation(fields: [seriesId], references: [id], onDelete: SetNull)
 
   @@id([scheduleId, userId])
+  @@index([seriesId])
   @@map("working_schedule_users")
+}
+
+/// Lịch lặp lại: (các) nhân viên giữ một ca mẫu từ ngày A đến ngày B vào các thứ đã chọn.
+/// Khi tạo, từng ngày được sinh thành WorkingSchedule như phân ca tay; chuỗi chỉ ghi nguồn gốc.
+model WorkingScheduleSeries {
+  id              String        @id @default(uuid())
+  tenantId        String        @map("tenant_id")
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  shiftTemplateId String        @map("shift_template_id")
+  shiftTemplate   ShiftTemplate @relation(fields: [shiftTemplateId], references: [id])
+  startDate       DateTime      @map("start_date") @db.Date
+  endDate         DateTime      @map("end_date") @db.Date
+  /// Thứ trong tuần được làm: 0 = Chủ nhật … 6 = Thứ bảy.
+  weekdays        Int[]
+  status          String        @default("ACTIVE") // ACTIVE | DELETED
+  createdById     String?       @map("created_by")
+  createdBy       User?         @relation("WorkingScheduleSeriesCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users       WorkingScheduleSeriesUser[]
+  assignments WorkingScheduleUser[]
+
+  @@index([tenantId, startDate])
+  @@map("working_schedule_series")
+}
+
+/// Nhân viên của một lịch lặp lại.
+model WorkingScheduleSeriesUser {
+  seriesId String                @map("series_id")
+  series   WorkingScheduleSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  userId   String                @map("user_id")
+  user     User                  @relation(fields: [userId], references: [id])
+
+  @@id([seriesId, userId])
+  @@map("working_schedule_series_users")
 }
 
 /// Ngày lễ của shop (đồng bộ Google Calendar hoặc nhập tay).

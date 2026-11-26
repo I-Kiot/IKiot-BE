@@ -12,6 +12,7 @@ import { fromShiftTime } from '../shift-templates/shift-time';
 import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
 import { paginate, skipFor } from '../../common/utils/pagination';
+import { businessDate } from '../cash-drawer-sessions/business-date';
 import {
   dayTypeOf,
   isSunday,
@@ -20,14 +21,21 @@ import {
   workDateOf,
 } from './schedule-time';
 import {
+  MAX_SERIES_DAYS,
+  SeriesStatus,
+  normalizeWeekdays,
+  previousDate,
+  seriesDates,
+  seriesSpanDays,
+} from './schedule-series';
+import {
   LIVE_SCHEDULE_STATUSES,
   ScheduleStatus,
-  ScheduleType,
 } from './working-schedule.constants';
 import {
   BulkCreateWorkingScheduleDto,
+  CreateScheduleSeriesDto,
   QueryWorkingScheduleDto,
-  ScheduleAssignmentDto,
   UpdateWorkingScheduleDto,
 } from './dto/working-schedule.dto';
 import { withNestedProfile } from '../../common/utils/user-profile';
@@ -47,25 +55,94 @@ const STAFF_SELECT = {
   ...USER_POSTING_SELECT,
 } as const;
 
+const SERIES_REF_SELECT = {
+  id: true,
+  startDate: true,
+  endDate: true,
+  weekdays: true,
+  status: true,
+} as const satisfies Prisma.WorkingScheduleSeriesSelect;
+
+const SERIES_SELECT = {
+  ...SERIES_REF_SELECT,
+  shiftTemplateId: true,
+  users: { select: { userId: true } },
+} as const satisfies Prisma.WorkingScheduleSeriesSelect;
+
 const SCHEDULE_INCLUDE = {
   shiftTemplate: true,
-  assignedUsers: { include: { user: { select: STAFF_SELECT } } },
+  assignedUsers: {
+    include: {
+      user: { select: STAFF_SELECT },
+      series: { select: SERIES_REF_SELECT },
+    },
+  },
 } as const satisfies Prisma.WorkingScheduleInclude;
 
 type ScheduleRow = Prisma.WorkingScheduleGetPayload<{
   include: typeof SCHEDULE_INCLUDE;
 }>;
 
+type SeriesRef = Prisma.WorkingScheduleSeriesGetPayload<{
+  select: typeof SERIES_REF_SELECT;
+}>;
+
+type SeriesRow = Prisma.WorkingScheduleSeriesGetPayload<{
+  select: typeof SERIES_SELECT;
+}>;
+
+type Db = Prisma.TransactionClient | PrismaService;
+
+interface AssignmentInput {
+  userIds: string[];
+  shiftTemplateId: string;
+  workDate: string;
+}
+
 interface ResolvedAssignment {
   userIds: string[];
   shiftTemplateId: string;
-  scheduleType: string;
+  shiftName: string;
   workDate: Date;
   startAt: Date;
   endAt: Date;
 }
 
-/** Lịch làm việc: một ca nhiều người, xếp theo lô. */
+interface SlotFields {
+  shiftTemplateId: string | null;
+  workDate: Date | null;
+  startAt: Date | null;
+  endAt: Date | null;
+}
+
+interface LiveSlot {
+  id: string;
+  shiftName: string;
+  userIds: Set<string>;
+}
+
+/** Ca mẫu + ngày + giờ: hai lịch cùng khoá là cùng một ca (unique `working_schedules_one_per_slot`). */
+function slotKey(slot: SlotFields): string {
+  return [
+    slot.shiftTemplateId,
+    slot.workDate?.toISOString(),
+    slot.startAt?.toISOString(),
+    slot.endAt?.toISOString(),
+  ].join('|');
+}
+
+function seriesRefOf(series: SeriesRef | null) {
+  if (!series) return null;
+  return {
+    id: series.id,
+    startDate: localDateText(series.startDate),
+    endDate: localDateText(series.endDate),
+    weekdays: series.weekdays,
+    status: series.status,
+  };
+}
+
+/** Lịch làm việc: một ca nhiều người, xếp theo lô hoặc theo lịch lặp lại. */
 @Injectable()
 export class WorkingScheduleService {
   constructor(
@@ -80,32 +157,202 @@ export class WorkingScheduleService {
     actorId: string,
     dto: BulkCreateWorkingScheduleDto,
   ) {
-    const resolved = await this.resolveAssignments(tenantId, dto.schedules);
+    const resolved = await this.resolveAssignments(
+      tenantId,
+      dto.schedules.map((row) => ({
+        userIds: row.userId,
+        shiftTemplateId: row.shiftTemplateId,
+        workDate: row.workDate,
+      })),
+    );
     const merged = this.mergeBySlot(resolved);
     // Kiểm tra cả lô trước khi ghi bất cứ gì, để một dòng trùng không để lại các dòng trước đó đã lưu dở.
-    await this.assertNotAlreadyAssigned(tenantId, merged);
+    const existing = await this.liveSlots(this.prisma, tenantId, merged);
+    this.assertNotAlreadyAssigned(merged, existing);
+    await this.assertNoOverlap(tenantId, merged);
 
-    const saved: ScheduleRow[] = [];
-    for (const assignment of merged) {
-      await this.assertNoOverlap(tenantId, assignment);
-      saved.push(await this.upsertSlot(tenantId, actorId, assignment));
-    }
-
-    // Mỗi người một thông báo.
-    const recipients = [
-      ...new Set(
-        saved.flatMap((row) => row.assignedUsers.map((a) => a.userId)),
-      ),
-    ].filter((id) => id !== actorId);
-    await this.notifications.notify({
-      tenantId,
-      recipientIds: recipients,
-      ...ScheduleNotificationTemplates.assigned(),
+    const ids = await this.prisma.$transaction((tx) =>
+      this.persist(tx, tenantId, actorId, merged, null),
+    );
+    const saved = await this.prisma.workingSchedule.findMany({
+      where: { id: { in: ids } },
+      include: SCHEDULE_INCLUDE,
+      orderBy: [{ workDate: 'asc' }, { startAt: 'asc' }],
     });
+
+    await this.notifyAssigned(
+      tenantId,
+      actorId,
+      merged.flatMap((a) => a.userIds),
+    );
 
     return {
       message: 'Phân ca thành công',
       data: saved.map((row) => this.toResponse(row)),
+    };
+  }
+
+  /**
+   * Lịch lặp lại: sinh sẵn mọi ngày khớp thành ca như phân ca tay, mỗi lượt mang `seriesId`.
+   * Ngày người đó đã ở đúng ca này (xếp tay trước đó) được bỏ qua chứ không 409: họ vẫn làm
+   * ca đó. Chồng giờ với ca khác thì 409 và không ghi gì, kèm danh sách ngày bị chồng.
+   */
+  async createSeries(
+    tenantId: string,
+    actorId: string,
+    dto: CreateScheduleSeriesDto,
+  ) {
+    const startDate = localDateText(dto.startDate);
+    const endDate = localDateText(dto.endDate);
+    if (startDate > endDate) {
+      throw new BadRequestException({
+        code: ErrorCode.SCHEDULE_SERIES_RANGE_INVALID,
+        message: 'The end date cannot be before the start date',
+      });
+    }
+    if (seriesSpanDays(startDate, endDate) > MAX_SERIES_DAYS) {
+      throw new BadRequestException({
+        code: ErrorCode.SCHEDULE_SERIES_RANGE_INVALID,
+        message: `A recurring schedule can span at most ${MAX_SERIES_DAYS} days`,
+      });
+    }
+    const weekdays = normalizeWeekdays(dto.weekdays);
+    const dates = seriesDates(startDate, endDate, weekdays);
+    if (dates.length === 0) {
+      throw new BadRequestException({
+        code: ErrorCode.SCHEDULE_SERIES_EMPTY,
+        message: 'No day in the range falls on the chosen weekdays',
+      });
+    }
+
+    const userIds = [...new Set(dto.userId)];
+    const resolved = await this.resolveAssignments(
+      tenantId,
+      dates.map((workDate) => ({
+        userIds,
+        shiftTemplateId: dto.shiftTemplateId,
+        workDate,
+      })),
+    );
+
+    const existing = await this.liveSlots(this.prisma, tenantId, resolved);
+    const skipped: { userId: string; workDate: string }[] = [];
+    const toWrite: ResolvedAssignment[] = [];
+    for (const assignment of resolved) {
+      const onShift = existing.get(slotKey(assignment))?.userIds;
+      const fresh = assignment.userIds.filter((id) => !onShift?.has(id));
+      for (const userId of assignment.userIds) {
+        if (onShift?.has(userId)) {
+          skipped.push({
+            userId,
+            workDate: localDateText(assignment.workDate),
+          });
+        }
+      }
+      if (fresh.length > 0) toWrite.push({ ...assignment, userIds: fresh });
+    }
+    await this.assertNoOverlap(tenantId, toWrite);
+
+    const series = await this.prisma.$transaction(
+      async (tx) => {
+        const row = await tx.workingScheduleSeries.create({
+          data: {
+            tenantId,
+            shiftTemplateId: dto.shiftTemplateId,
+            startDate: workDateOf(startDate),
+            endDate: workDateOf(endDate),
+            weekdays,
+            status: SeriesStatus.ACTIVE,
+            createdById: actorId,
+            users: { create: userIds.map((userId) => ({ userId })) },
+          },
+          select: SERIES_SELECT,
+        });
+        await this.persist(tx, tenantId, actorId, toWrite, row.id);
+        return row;
+      },
+      // Một năm nhiều người là vài nghìn dòng; mặc định 5 s không đủ trên máy chậm.
+      { timeout: 30_000 },
+    );
+
+    await this.notifyAssigned(tenantId, actorId, userIds);
+
+    return {
+      message: 'Đã tạo lịch lặp lại',
+      data: {
+        series: this.toSeriesResponse(series),
+        createdCount: toWrite.reduce((n, a) => n + a.userIds.length, 0),
+        skipped,
+      },
+    };
+  }
+
+  /**
+   * Dừng lịch lặp từ `fromDate` (mặc định hôm nay): gỡ các lượt của chuỗi ở các ca còn
+   * SCHEDULED từ ngày đó, ca không còn ai thì xoá. Ca đã qua giữ nguyên làm lịch sử; lượt
+   * xếp tay cùng ca không bị đụng. Chuỗi được cắt ngắn, hoặc xoá nếu dừng từ ngày đầu.
+   */
+  async removeSeries(tenantId: string, id: string, fromDate?: string) {
+    const series = await this.prisma.workingScheduleSeries.findFirst({
+      where: { id, tenantId, status: SeriesStatus.ACTIVE },
+      select: { id: true, startDate: true, endDate: true },
+    });
+    if (!series) {
+      throw new NotFoundException({
+        code: ErrorCode.SCHEDULE_SERIES_NOT_FOUND,
+        message: 'Recurring schedule not found',
+      });
+    }
+
+    const from = fromDate
+      ? localDateText(fromDate)
+      : localDateText(businessDate());
+    const fromDay = workDateOf(from);
+
+    const removedCount = await this.prisma.$transaction(async (tx) => {
+      const links = await tx.workingScheduleUser.findMany({
+        where: {
+          seriesId: id,
+          schedule: {
+            tenantId,
+            status: ScheduleStatus.SCHEDULED,
+            workDate: { gte: fromDay },
+          },
+        },
+        select: { scheduleId: true },
+      });
+      const scheduleIds = [...new Set(links.map((l) => l.scheduleId))];
+      if (scheduleIds.length > 0) {
+        await tx.workingScheduleUser.deleteMany({
+          where: { seriesId: id, scheduleId: { in: scheduleIds } },
+        });
+        // Gỡ người cuối cùng thì xoá cả ca, như `removeUser`.
+        await tx.workingSchedule.updateMany({
+          where: { id: { in: scheduleIds }, assignedUsers: { none: {} } },
+          data: { status: ScheduleStatus.DELETED },
+        });
+      }
+
+      if (fromDay <= series.startDate) {
+        await tx.workingScheduleSeries.update({
+          where: { id },
+          data: { status: SeriesStatus.DELETED },
+        });
+      } else {
+        const lastDay = workDateOf(previousDate(from));
+        if (lastDay < series.endDate) {
+          await tx.workingScheduleSeries.update({
+            where: { id },
+            data: { endDate: lastDay },
+          });
+        }
+      }
+      return links.length;
+    });
+
+    return {
+      message: 'Đã dừng lịch lặp lại',
+      data: { id, fromDate: from, removedCount },
     };
   }
 
@@ -117,7 +364,12 @@ export class WorkingScheduleService {
   ) {
     const current = await this.prisma.workingSchedule.findFirst({
       where: { id, tenantId, status: ScheduleStatus.SCHEDULED },
-      select: { id: true },
+      select: {
+        id: true,
+        shiftTemplateId: true,
+        workDate: true,
+        assignedUsers: { select: { userId: true, seriesId: true } },
+      },
     });
     if (!current) {
       throw new NotFoundException({
@@ -126,8 +378,22 @@ export class WorkingScheduleService {
       });
     }
 
-    const [assignment] = await this.resolveAssignments(tenantId, [dto]);
-    await this.assertNoOverlap(tenantId, assignment, id);
+    const [assignment] = await this.resolveAssignments(tenantId, [
+      {
+        userIds: dto.userId,
+        shiftTemplateId: dto.shiftTemplateId,
+        workDate: dto.workDate,
+      },
+    ]);
+    await this.assertNoOverlap(tenantId, [assignment], id);
+
+    // Còn đúng ca + ngày thì người ở lại vẫn thuộc lịch lặp của họ; đổi ca / ngày là ngoại lệ riêng.
+    const sameSlot =
+      current.shiftTemplateId === assignment.shiftTemplateId &&
+      current.workDate?.getTime() === assignment.workDate.getTime();
+    const seriesOf = new Map(
+      current.assignedUsers.map((a) => [a.userId, a.seriesId]),
+    );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.workingScheduleUser.deleteMany({ where: { scheduleId: id } });
@@ -135,13 +401,15 @@ export class WorkingScheduleService {
         where: { id },
         data: {
           shiftTemplateId: assignment.shiftTemplateId,
-          scheduleType: assignment.scheduleType,
           workDate: assignment.workDate,
           startAt: assignment.startAt,
           endAt: assignment.endAt,
           managedById: actorId,
           assignedUsers: {
-            create: assignment.userIds.map((userId) => ({ userId })),
+            create: assignment.userIds.map((userId) => ({
+              userId,
+              seriesId: sameSlot ? (seriesOf.get(userId) ?? null) : null,
+            })),
           },
         },
         include: SCHEDULE_INCLUDE,
@@ -326,10 +594,10 @@ export class WorkingScheduleService {
 
   private async resolveAssignments(
     tenantId: string,
-    assignments: ScheduleAssignmentDto[],
+    assignments: AssignmentInput[],
   ): Promise<ResolvedAssignment[]> {
     const userIds = [
-      ...new Set(assignments.flatMap((assignment) => assignment.userId)),
+      ...new Set(assignments.flatMap((assignment) => assignment.userIds)),
     ];
     await this.assertStaffOfTenant(tenantId, userIds);
 
@@ -342,9 +610,9 @@ export class WorkingScheduleService {
       const template = templates.get(assignment.shiftTemplateId)!;
       const { startAt, endAt } = shiftInterval(assignment.workDate, template);
       return {
-        userIds: [...new Set(assignment.userId)],
+        userIds: [...new Set(assignment.userIds)],
         shiftTemplateId: assignment.shiftTemplateId,
-        scheduleType: assignment.scheduleType ?? ScheduleType.NORMAL,
+        shiftName: template.name ?? 'shift',
         workDate: workDateOf(assignment.workDate),
         startAt,
         endAt,
@@ -374,14 +642,7 @@ export class WorkingScheduleService {
   private mergeBySlot(assignments: ResolvedAssignment[]): ResolvedAssignment[] {
     const bySlot = new Map<string, ResolvedAssignment>();
     for (const assignment of assignments) {
-      const key = [
-        assignment.scheduleType,
-        assignment.shiftTemplateId,
-        assignment.workDate.toISOString(),
-        assignment.startAt.toISOString(),
-        assignment.endAt.toISOString(),
-      ].join('|');
-
+      const key = slotKey(assignment);
       const existing = bySlot.get(key);
       if (!existing) {
         bySlot.set(key, { ...assignment, userIds: [...assignment.userIds] });
@@ -394,73 +655,18 @@ export class WorkingScheduleService {
     return [...bySlot.values()];
   }
 
-  private async upsertSlot(
-    tenantId: string,
-    actorId: string,
-    assignment: ResolvedAssignment,
-  ): Promise<ScheduleRow> {
-    const existing = await this.prisma.workingSchedule.findFirst({
-      where: {
-        tenantId,
-        scheduleType: assignment.scheduleType,
-        shiftTemplateId: assignment.shiftTemplateId,
-        workDate: assignment.workDate,
-        startAt: assignment.startAt,
-        endAt: assignment.endAt,
-        status: { in: LIVE_SCHEDULE_STATUSES },
-      },
-      include: { assignedUsers: { select: { userId: true } } },
-    });
-
-    if (!existing) {
-      return this.prisma.workingSchedule.create({
-        data: {
-          tenantId,
-          createdById: actorId,
-          managedById: actorId,
-          shiftTemplateId: assignment.shiftTemplateId,
-          scheduleType: assignment.scheduleType,
-          workDate: assignment.workDate,
-          startAt: assignment.startAt,
-          endAt: assignment.endAt,
-          status: ScheduleStatus.SCHEDULED,
-          assignedUsers: {
-            create: assignment.userIds.map((userId) => ({ userId })),
-          },
-        },
-        include: SCHEDULE_INCLUDE,
-      });
-    }
-
-    // Không bỏ qua trùng: trùng thì 409.
-    const already = new Set(existing.assignedUsers.map((a) => a.userId));
-    const toAdd = assignment.userIds.filter((id) => !already.has(id));
-    return this.prisma.workingSchedule.update({
-      where: { id: existing.id },
-      data: {
-        managedById: actorId,
-        assignedUsers: {
-          createMany: {
-            data: toAdd.map((userId) => ({ userId })),
-          },
-        },
-      },
-      include: SCHEDULE_INCLUDE,
-    });
-  }
-
-  /** Từ chối xếp lại người vào đúng ca họ đã có. */
-  private async assertNotAlreadyAssigned(
+  /** Các ca còn sống trùng slot với `assignments`, theo `slotKey`. Một query cho cả lô. */
+  private async liveSlots(
+    db: Db,
     tenantId: string,
     assignments: ResolvedAssignment[],
-  ) {
-    if (assignments.length === 0) return;
-    const existing = await this.prisma.workingSchedule.findMany({
+  ): Promise<Map<string, LiveSlot>> {
+    if (assignments.length === 0) return new Map();
+    const rows = await db.workingSchedule.findMany({
       where: {
         tenantId,
         status: { in: LIVE_SCHEDULE_STATUSES },
         OR: assignments.map((assignment) => ({
-          scheduleType: assignment.scheduleType,
           shiftTemplateId: assignment.shiftTemplateId,
           workDate: assignment.workDate,
           startAt: assignment.startAt,
@@ -468,7 +674,7 @@ export class WorkingScheduleService {
         })),
       },
       select: {
-        scheduleType: true,
+        id: true,
         shiftTemplateId: true,
         workDate: true,
         startAt: true,
@@ -477,29 +683,102 @@ export class WorkingScheduleService {
         assignedUsers: { select: { userId: true } },
       },
     });
+    return new Map(
+      rows.map((row) => [
+        slotKey(row),
+        {
+          id: row.id,
+          shiftName: row.shiftTemplate?.name ?? 'shift',
+          userIds: new Set(row.assignedUsers.map((a) => a.userId)),
+        },
+      ]),
+    );
+  }
 
+  /**
+   * Ghi các lượt phân công: ca chưa có thì tạo, rồi thêm người chưa ở ca. Trả id các ca.
+   * Đọc lại slot trong transaction; hai request đua tạo cùng ca thì unique một-phần chặn
+   * request sau (P2002 → 409).
+   */
+  private async persist(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    actorId: string,
+    assignments: ResolvedAssignment[],
+    seriesId: string | null,
+  ): Promise<string[]> {
+    if (assignments.length === 0) return [];
+    const existing = await this.liveSlots(tx, tenantId, assignments);
+
+    const missing = assignments.filter((a) => !existing.has(slotKey(a)));
+    const created =
+      missing.length === 0
+        ? []
+        : await tx.workingSchedule.createManyAndReturn({
+            data: missing.map((assignment) => ({
+              tenantId,
+              createdById: actorId,
+              managedById: actorId,
+              shiftTemplateId: assignment.shiftTemplateId,
+              workDate: assignment.workDate,
+              startAt: assignment.startAt,
+              endAt: assignment.endAt,
+              status: ScheduleStatus.SCHEDULED,
+            })),
+            select: {
+              id: true,
+              shiftTemplateId: true,
+              workDate: true,
+              startAt: true,
+              endAt: true,
+            },
+          });
+
+    const idByKey = new Map<string, string>();
+    for (const [key, slot] of existing) idByKey.set(key, slot.id);
+    for (const row of created) idByKey.set(slotKey(row), row.id);
+
+    const links = assignments.flatMap((assignment) => {
+      const key = slotKey(assignment);
+      const onShift = existing.get(key)?.userIds;
+      return assignment.userIds
+        .filter((userId) => !onShift?.has(userId))
+        .map((userId) => ({ scheduleId: idByKey.get(key)!, userId, seriesId }));
+    });
+    if (links.length > 0) {
+      await tx.workingScheduleUser.createMany({ data: links });
+    }
+
+    const touched = [...existing.values()].map((slot) => slot.id);
+    if (touched.length > 0) {
+      await tx.workingSchedule.updateMany({
+        where: { id: { in: touched } },
+        data: { managedById: actorId },
+      });
+    }
+
+    return [...new Set(assignments.map((a) => idByKey.get(slotKey(a))!))];
+  }
+
+  /** Từ chối xếp lại người vào đúng ca họ đã có. Không ghi gì nếu có một dòng trùng. */
+  private assertNotAlreadyAssigned(
+    assignments: ResolvedAssignment[],
+    existing: Map<string, LiveSlot>,
+  ) {
     const duplicates: {
       userId: string;
       workDate: string;
       shiftName: string;
     }[] = [];
     for (const assignment of assignments) {
-      const slot = existing.find(
-        (row) =>
-          row.scheduleType === assignment.scheduleType &&
-          row.shiftTemplateId === assignment.shiftTemplateId &&
-          row.workDate?.getTime() === assignment.workDate.getTime() &&
-          row.startAt?.getTime() === assignment.startAt.getTime() &&
-          row.endAt?.getTime() === assignment.endAt.getTime(),
-      );
+      const slot = existing.get(slotKey(assignment));
       if (!slot) continue;
-      const onShift = new Set(slot.assignedUsers.map((a) => a.userId));
       for (const userId of assignment.userIds) {
-        if (!onShift.has(userId)) continue;
+        if (!slot.userIds.has(userId)) continue;
         duplicates.push({
           userId,
           workDate: localDateText(assignment.workDate),
-          shiftName: slot.shiftTemplate?.name ?? 'shift',
+          shiftName: slot.shiftName,
         });
       }
     }
@@ -513,37 +792,95 @@ export class WorkingScheduleService {
     }
   }
 
-  /** Không ai ở hai ca chồng nhau. */
+  /**
+   * Không ai ở hai ca chồng giờ nhau: so với ca đã lưu (một query cho cả lô) và giữa các
+   * dòng của chính lô. Cùng slot là gộp, không phải chồng - đó là cách thêm người vào ca đã có.
+   */
   private async assertNoOverlap(
     tenantId: string,
-    assignment: ResolvedAssignment,
+    assignments: ResolvedAssignment[],
     excludeScheduleId?: string,
   ) {
-    const clash = await this.prisma.workingSchedule.findFirst({
+    if (assignments.length === 0) return;
+    const userIds = [...new Set(assignments.flatMap((a) => a.userIds))];
+    const minStart = new Date(
+      Math.min(...assignments.map((a) => a.startAt.getTime())),
+    );
+    const maxEnd = new Date(
+      Math.max(...assignments.map((a) => a.endAt.getTime())),
+    );
+
+    const rows = await this.prisma.workingSchedule.findMany({
       where: {
         tenantId,
         status: { in: LIVE_SCHEDULE_STATUSES },
         ...(excludeScheduleId ? { id: { not: excludeScheduleId } } : {}),
-        assignedUsers: { some: { userId: { in: assignment.userIds } } },
-        startAt: { lt: assignment.endAt },
-        endAt: { gt: assignment.startAt },
-        // Cùng slot là gộp, không phải trùng - đó là cách thêm người vào ca đã có.
-        NOT: {
-          shiftTemplateId: assignment.shiftTemplateId,
-          workDate: assignment.workDate,
-          startAt: assignment.startAt,
-          endAt: assignment.endAt,
+        assignedUsers: { some: { userId: { in: userIds } } },
+        startAt: { lt: maxEnd },
+        endAt: { gt: minStart },
+      },
+      select: {
+        shiftTemplateId: true,
+        workDate: true,
+        startAt: true,
+        endAt: true,
+        shiftTemplate: { select: { name: true } },
+        assignedUsers: {
+          where: { userId: { in: userIds } },
+          select: { userId: true },
         },
       },
-      include: { shiftTemplate: { select: { name: true } } },
     });
+    const stored = rows.map((row) => ({
+      key: slotKey(row),
+      startAt: row.startAt!,
+      endAt: row.endAt!,
+      workDate: row.workDate,
+      shiftName: row.shiftTemplate?.name ?? 'shift',
+      userIds: row.assignedUsers.map((a) => a.userId),
+    }));
+    const batch = assignments.map((a) => ({ ...a, key: slotKey(a) }));
 
-    if (clash) {
+    const clashes: { workDate: string; shiftName: string }[] = [];
+    for (const [index, assignment] of batch.entries()) {
+      const others = [...stored, ...batch.slice(index + 1)];
+      const clash = others.find(
+        (other) =>
+          other.key !== assignment.key &&
+          other.startAt < assignment.endAt &&
+          other.endAt > assignment.startAt &&
+          other.userIds.some((id) => assignment.userIds.includes(id)),
+      );
+      if (clash) {
+        clashes.push({
+          workDate: localDateText(clash.workDate ?? assignment.workDate),
+          shiftName: clash.shiftName,
+        });
+      }
+    }
+
+    if (clashes.length > 0) {
+      const [first] = clashes;
       throw new ConflictException({
         code: ErrorCode.SCHEDULE_OVERLAP,
-        message: `Overlaps ${clash.shiftTemplate?.name ?? 'shift'} on ${localDateText(clash.workDate ?? assignment.workDate)}`,
+        message: `Overlaps ${first.shiftName} on ${first.workDate}`,
+        errors: clashes,
       });
     }
+  }
+
+  private async notifyAssigned(
+    tenantId: string,
+    actorId: string,
+    userIds: string[],
+  ) {
+    // Mỗi người một thông báo.
+    const recipients = [...new Set(userIds)].filter((id) => id !== actorId);
+    await this.notifications.notify({
+      tenantId,
+      recipientIds: recipients,
+      ...ScheduleNotificationTemplates.assigned(),
+    });
   }
 
   // ─── Bộ lọc ───
@@ -556,7 +893,6 @@ export class WorkingScheduleService {
       tenantId,
       status: query.status ?? { not: ScheduleStatus.DELETED },
     };
-    if (query.scheduleType) where.scheduleType = query.scheduleType;
 
     const assigned: Prisma.WorkingScheduleUserWhereInput = {};
     if (query.userId) assigned.userId = query.userId;
@@ -618,9 +954,11 @@ export class WorkingScheduleService {
           holidayType: holiday?.type ?? null,
         },
         // Cùng cấu trúc lồng với `/users`: tên nhân viên nằm dưới `profile` ở mọi nơi.
-        assignedUsers: row.assignedUsers.map((assigned) =>
-          withNestedProfile(withPosting(assigned.user)),
-        ),
+        // `series` khác null = lượt này đến từ một lịch lặp lại.
+        assignedUsers: row.assignedUsers.map((assigned) => ({
+          ...withNestedProfile(withPosting(assigned.user)),
+          series: seriesRefOf(assigned.series),
+        })),
       };
     });
   }
@@ -664,9 +1002,19 @@ export class WorkingScheduleService {
             endTime: fromShiftTime(shiftTemplate.endTime),
           }
         : null,
-      assignedUsers: assignedUsers.map((assigned) =>
-        withPosting(assigned.user),
-      ),
+      assignedUsers: assignedUsers.map((assigned) => ({
+        ...withPosting(assigned.user),
+        series: seriesRefOf(assigned.series),
+      })),
+    };
+  }
+
+  private toSeriesResponse(row: SeriesRow) {
+    const { users, shiftTemplateId, ...ref } = row;
+    return {
+      ...seriesRefOf(ref)!,
+      shiftTemplateId,
+      userIds: users.map((u) => u.userId),
     };
   }
 }
