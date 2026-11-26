@@ -9,6 +9,7 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import {
@@ -68,6 +69,16 @@ export class FinalizeCashDrawerDto {
   @Min(0, { message: 'Số tiền cuối ca không được âm' })
   finalAmount: number;
 
+  /**
+   * Số chủ rút về khi chốt (chuyển quỹ Két → Chủ); phần còn lại để làm tiền lẻ cho phiên sau.
+   * Bỏ trống là không rút gì, để cả trong két.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'Số tiền rút về phải là số nguyên' })
+  @Min(0, { message: 'Số tiền rút về không được âm' })
+  withdrawAmount?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -75,6 +86,21 @@ export class FinalizeCashDrawerDto {
     typeof value === 'string' ? value.trim() : value,
   )
   note?: string;
+}
+
+/** Mở lại két đã chốt nhầm trong ngày: ai nhận két và vì sao. */
+export class ReopenCashDrawerDto {
+  /** Người nhận két sau khi mở lại; phải là nhân viên đang hoạt động tại chi nhánh. */
+  @IsUUID()
+  staffId: string;
+
+  @IsString()
+  @MinLength(3, { message: 'Vui lòng ghi lý do mở lại két' })
+  @MaxLength(500)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  reason: string;
 }
 
 /** Port từ CashDrawerQueryDTO (ngày dạng `YYYY-MM-DD`, như trước). */

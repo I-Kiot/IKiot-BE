@@ -46,11 +46,15 @@ describe('cash flow category / fund', () => {
     expect(flowTypeOf(CashFlowCategory.UNALLOCATED_RECEIPT)).toBe(
       FlowType.INCOME,
     );
+    expect(flowTypeOf(CashFlowCategory.FUND_TRANSFER_IN)).toBe(FlowType.INCOME);
+    expect(flowTypeOf(CashFlowCategory.DRAWER_SURPLUS)).toBe(FlowType.INCOME);
     for (const expense of [
       CashFlowCategory.ORDER_REFUND,
       CashFlowCategory.SALE_CHANGE,
       CashFlowCategory.SUPPLIER_PAYMENT,
       CashFlowCategory.UNALLOCATED_REFUND,
+      CashFlowCategory.FUND_TRANSFER_OUT,
+      CashFlowCategory.DRAWER_SHORTAGE,
     ]) {
       expect(flowTypeOf(expense)).toBe(FlowType.EXPENSE);
     }
@@ -67,11 +71,12 @@ describe('cash flow category / fund', () => {
 });
 
 describe('cash flow writers', () => {
-  it('only order-cash-flow.ts and suppliers.service.ts create cash flows', () => {
-    // Nơi ghi dòng tiền của đơn, tiền SePay chưa gắn đơn và tiền nhà cung cấp.
+  it('only the known writers create cash flows', () => {
+    // Nơi ghi dòng tiền của đơn, tiền SePay chưa gắn đơn, tiền nhà cung cấp và dòng két tự ghi khi mở / chốt.
     const allowed = new Set([
       'modules/orders/order-cash-flow.ts',
       'modules/suppliers/suppliers.service.ts',
+      'modules/cash-drawer-sessions/drawer-cash-flow.ts',
     ]);
     const root = join(__dirname, '..', '..');
     const offenders: string[] = [];

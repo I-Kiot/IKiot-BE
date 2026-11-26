@@ -22,8 +22,10 @@ import {
   OpenCashDrawerDto,
   QueryCashDrawerDto,
   QueryCashVarianceDto,
+  ReopenCashDrawerDto,
   SubmitShiftLogDto,
 } from './dto/cash-drawer.dto';
+import { summarizeByCashier } from './cashier-summary';
 import {
   reconcileSession,
   summarizeVariance,
@@ -34,6 +36,13 @@ import { PaymentMethod } from '../../common/constants/payment-method';
 import { FlowType } from '../stats/stats.constants';
 import { CashFlowFund } from '../../common/constants/cash-flow-category';
 import { Prisma } from '../../../generated/prisma/client';
+import { bookClosing, bookOpening, keptAmountOf } from './drawer-cash-flow';
+import {
+  ReportSheet,
+  formatDateVi,
+  newWorkbook,
+  toBuffer,
+} from '../stats/export/report-sheet';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
   withNestedProfile,
@@ -76,6 +85,7 @@ const SESSION_INCLUDE = {
   openedBy: { select: STAFF_SELECT },
   currentStaff: { select: STAFF_SELECT },
   finalLogManager: { select: STAFF_SELECT },
+  lastReopenedBy: { select: STAFF_SELECT },
   shiftLogs: {
     // Sắp theo id để thứ tự ổn định.
     orderBy: [{ loggedAt: 'asc' }, { id: 'asc' }],
@@ -99,6 +109,7 @@ const VARIANCE_SELECT = {
   status: true,
   openingAmount: true,
   finalLogAmount: true,
+  withdrawnAmount: true,
   createdAt: true,
   closedAt: true,
 } as const satisfies Prisma.CashDrawerSessionSelect;
@@ -120,6 +131,17 @@ const MAX_REPORT_DAYS = 366;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Két tiền theo ngày của chi nhánh: mở, chuyển ca qua sổ ca, chốt một lần. */
+/** Két được mở lại sau lần ghi sổ ca này (lần trả két cuối trước khi chốt nhầm). */
+function reopenedAfter(
+  session: { lastReopenedAt: Date | null },
+  log: { loggedAt: Date },
+): boolean {
+  return (
+    !!session.lastReopenedAt &&
+    session.lastReopenedAt.getTime() > log.loggedAt.getTime()
+  );
+}
+
 @Injectable()
 export class CashDrawerSessionService {
   constructor(private readonly prisma: PrismaService) {}
@@ -130,19 +152,34 @@ export class CashDrawerSessionService {
     const branchId = this.resolveBranch(user, dto.branchId)!;
     await this.assertBranchAndStaff(tenantId, branchId, dto.staffId);
     await this.assertNoOverdueAt(tenantId, branchId);
+    await this.assertNotClosedToday(tenantId, branchId);
 
     try {
-      const created = await this.prisma.cashDrawerSession.create({
-        data: {
-          tenantId,
-          branchId,
-          businessDate: businessDate(),
-          openingAmount: dto.openingAmount,
-          openedById: user.userId,
-          currentStaffId: dto.staffId,
-          status: CashDrawerStatus.OPEN,
-        },
-        include: SESSION_INCLUDE,
+      const created = await this.prisma.$transaction(async (tx) => {
+        // Đọc trong transaction: số để lại của phiên trước quyết định dòng sổ ghi lúc mở.
+        const previous = await this.lastClosedAt(tx, tenantId, branchId);
+        const session = await tx.cashDrawerSession.create({
+          data: {
+            tenantId,
+            branchId,
+            businessDate: businessDate(),
+            openingAmount: dto.openingAmount,
+            openedById: user.userId,
+            currentStaffId: dto.staffId,
+            status: CashDrawerStatus.OPEN,
+          },
+          include: SESSION_INCLUDE,
+        });
+        await bookOpening(
+          tx,
+          { tenantId, branchId, sessionId: session.id, actorId: user.userId },
+          {
+            openingAmount: dto.openingAmount,
+            keptAmount: previous ? keptAmountOf(previous) : 0,
+            at: session.createdAt,
+          },
+        );
+        return session;
       });
       return this.toResponse(created);
     } catch (error) {
@@ -156,6 +193,118 @@ export class CashDrawerSessionService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Tiền lẻ phiên trước để lại trong két, để màn mở két điền sẵn tiền đầu ca. Đếm khác số này thì lúc mở sẽ ghi
+   * chủ bỏ thêm (chuyển quỹ) hoặc thiếu két.
+   */
+  async openingHint(user: AuthUser, requestedBranchId?: string) {
+    const tenantId = this.tenantOf(user);
+    const branchId = this.resolveBranch(user, requestedBranchId)!;
+    const previous = await this.lastClosedAt(this.prisma, tenantId, branchId);
+    return {
+      branchId,
+      keptAmount: previous ? keptAmountOf(previous) : 0,
+      previousSession: previous
+        ? {
+            id: previous.id,
+            businessDate: previous.businessDate,
+            closedAt: previous.closedAt,
+          }
+        : null,
+    };
+  }
+
+  /** Phiên đã chốt gần nhất của chi nhánh. */
+  private lastClosedAt(
+    client: Prisma.TransactionClient | PrismaService,
+    tenantId: string,
+    branchId: string,
+  ) {
+    return client.cashDrawerSession.findFirst({
+      where: { tenantId, branchId, status: CashDrawerStatus.CLOSED },
+      orderBy: [{ closedAt: 'desc' }, { businessDate: 'desc' }],
+      select: {
+        id: true,
+        businessDate: true,
+        closedAt: true,
+        finalLogAmount: true,
+        withdrawnAmount: true,
+      },
+    });
+  }
+
+  /**
+   * Két hôm nay của một chi nhánh, cho màn "Hôm nay": OPEN (đang mở, kể cả két quá hạn từ ngày trước), CLOSED_TODAY
+   * (phiên của ngày giao dịch hôm nay đã chốt - mỗi chi nhánh một phiên một ngày, nên không mở lại được), NOT_OPENED.
+   * `current` chỉ tìm phiên đang mở, nên một két đã chốt trông y như chưa mở và màn hình mời mở két lần hai.
+   * `session` theo đúng quyền đọc (`read_own` chỉ thấy phiên mình từng giữ); trạng thái và người giữ / người chốt
+   * thì ai ở chi nhánh cũng được biết, không kèm số tiền.
+   */
+  async today(user: AuthUser, requestedBranchId?: string) {
+    const tenantId = this.tenantOf(user);
+    const branchId = this.resolveBranch(user, requestedBranchId)!;
+    const today = businessDate();
+
+    const open = await this.prisma.cashDrawerSession.findFirst({
+      where: { tenantId, branchId, status: CashDrawerStatus.OPEN },
+      select: {
+        id: true,
+        status: true,
+        businessDate: true,
+        currentStaff: { select: STAFF_SELECT },
+      },
+    });
+    if (open) {
+      return {
+        branchId,
+        businessDate: today,
+        state: 'OPEN' as const,
+        sessionId: open.id,
+        overdue: isOverdue(open),
+        holder: withNestedProfile(open.currentStaff),
+        session: await this.visibleSummary(user, open.id),
+      };
+    }
+
+    const closed = await this.prisma.cashDrawerSession.findFirst({
+      where: {
+        tenantId,
+        branchId,
+        businessDate: today,
+        status: CashDrawerStatus.CLOSED,
+      },
+      select: {
+        id: true,
+        closedAt: true,
+        finalLogManager: { select: STAFF_SELECT },
+      },
+    });
+    if (closed) {
+      return {
+        branchId,
+        businessDate: today,
+        state: 'CLOSED_TODAY' as const,
+        sessionId: closed.id,
+        closedAt: closed.closedAt,
+        closedBy: closed.finalLogManager
+          ? withNestedProfile(closed.finalLogManager)
+          : null,
+        session: await this.visibleSummary(user, closed.id),
+      };
+    }
+
+    return { branchId, businessDate: today, state: 'NOT_OPENED' as const };
+  }
+
+  /** Phiên dạng tóm tắt nếu người gọi được đọc nó, null nếu không (vd. `read_own` không giữ két). */
+  private async visibleSummary(user: AuthUser, id: string) {
+    const row = await this.prisma.cashDrawerSession.findFirst({
+      where: { id, ...this.ownershipFilter(user) },
+      include: SESSION_INCLUDE,
+    });
+    return row ? this.toSummary(row) : null;
   }
 
   async current(user: AuthUser, requestedBranchId?: string) {
@@ -291,6 +440,8 @@ export class CashDrawerSessionService {
           paymentMethod: PaymentMethod.CASH,
           // Chỉ tính tiền mặt qua két.
           fund: CashFlowFund.DRAWER,
+          // Dòng két tự ghi khi mở / chốt đã nằm trong số đếm, không phải giao dịch trong phiên.
+          cashDrawerSessionId: null,
         },
         select: { id: true, createdAt: true, flowType: true, amount: true },
         orderBy: { createdAt: 'asc' },
@@ -349,36 +500,7 @@ export class CashDrawerSessionService {
 
   /** Đối soát nhiều ngày, lọc và phân trang trong bộ nhớ. */
   async report(user: AuthUser, query: QueryCashVarianceDto) {
-    const tenantId = this.tenantOf(user);
-    const branchId = this.resolveBranch(user, query.branchId, false);
-    const { fromDate, toDate } = this.reportRange(query);
-
-    const where: Prisma.CashDrawerSessionWhereInput = {
-      tenantId,
-      ...(branchId ? { branchId } : {}),
-      ...this.ownershipFilter(user),
-      businessDate: { gte: fromDate, lte: toDate },
-      ...(query.status ? { status: query.status } : {}),
-    };
-
-    const sessions = await this.prisma.cashDrawerSession.findMany({
-      where,
-      select: VARIANCE_SELECT,
-      orderBy: [{ businessDate: 'desc' }, { branchId: 'asc' }],
-    });
-    if (sessions.length === 0) {
-      return this.emptyReport(query, fromDate, toDate);
-    }
-
-    const cashBySession = await this.cashBySession(sessions);
-
-    const all = sessions.map((session) =>
-      this.varianceRow(session, cashBySession),
-    );
-    const rows = query.varianceOnly
-      ? all.filter((row) => row.variance !== null && row.variance !== 0)
-      : all;
-
+    const { rows, fromDate, toDate } = await this.reportRows(user, query);
     const start = skipFor(query.page, query.limit);
     return {
       ...paginate(
@@ -391,6 +513,243 @@ export class CashDrawerSessionService {
       // Trên mọi phiên khớp bộ lọc, không phải trên trang.
       totals: this.reportTotals(rows),
     };
+  }
+
+  /** File Excel của báo cáo đối soát: cùng bộ lọc, mọi dòng (không phân trang). */
+  async exportReport(
+    user: AuthUser,
+    query: QueryCashVarianceDto,
+  ): Promise<{ buffer: Buffer; filename: string }> {
+    const { rows, fromDate, toDate } = await this.reportRows(user, query);
+    const totals = this.reportTotals(rows);
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    const place =
+      query.branchId && rows[0]?.branch?.name
+        ? rows[0].branch.name
+        : 'Toàn cửa hàng';
+
+    const workbook = newWorkbook();
+    const sheet = new ReportSheet(
+      workbook.addWorksheet('Lịch sử két'),
+      [12, 22, 14, 14, 14, 14, 14, 14, 14, 14, 14],
+    );
+    sheet.title('Lịch sử két tiền', [
+      `Từ ngày ${formatDateVi(day(fromDate))} đến ngày ${formatDateVi(day(toDate))} - ${place}`,
+    ]);
+    sheet.tableHeader(
+      [
+        'Ngày',
+        'Chi nhánh',
+        'Trạng thái',
+        'Đầu ca',
+        'Thu tiền mặt',
+        'Chi tiền mặt',
+        'Theo sổ',
+        'Đếm được',
+        'Chênh lệch',
+        'Chủ rút về',
+        'Để lại',
+      ],
+      [3, 4, 5, 6, 7, 8, 9, 10],
+    );
+    for (const row of rows) {
+      sheet.dataRow([
+        formatDateVi(day(row.businessDate)),
+        row.branch?.name ?? '-',
+        row.overdue
+          ? 'Quên chốt'
+          : row.status === CashDrawerStatus.OPEN
+            ? 'Đang mở'
+            : 'Đã chốt',
+        row.openingAmount,
+        row.cashIn,
+        row.cashOut,
+        row.expectedClosing,
+        row.countedClosing,
+        row.variance,
+        row.withdrawnAmount,
+        row.keptAmount,
+      ]);
+    }
+    if (rows.length === 0) sheet.emptyRow('Không có phiên két nào trong kỳ');
+    sheet.dataRow(
+      [
+        'Tổng cộng',
+        `${totals.sessions} phiên`,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        totals.totalVariance,
+        totals.withdrawn,
+        null,
+      ],
+      { strong: true },
+    );
+    sheet.blank();
+    sheet.note(
+      `Thiếu ${totals.shortfall.toLocaleString('vi-VN')}đ ở ${totals.shortfallSessions} phiên · thừa ${totals.overage.toLocaleString('vi-VN')}đ. Chênh lệch = đếm được − theo sổ; chỉ tính tiền mặt qua két.`,
+    );
+
+    return {
+      buffer: await toBuffer(workbook),
+      filename: `lich-su-ket_${day(fromDate)}_${day(toDate)}.xlsx`,
+    };
+  }
+
+  /** Mọi phiên khớp bộ lọc báo cáo, đã đối soát; trang và file Excel dùng chung. */
+  /** Điều kiện phiên của báo cáo: một chỗ cho bảng phiên, file Excel và bảng theo thu ngân. */
+  private reportWhere(user: AuthUser, query: QueryCashVarianceDto) {
+    const tenantId = this.tenantOf(user);
+    const branchId = this.resolveBranch(user, query.branchId, false);
+    const { fromDate, toDate } = this.reportRange(query);
+    const where: Prisma.CashDrawerSessionWhereInput = {
+      tenantId,
+      ...(branchId ? { branchId } : {}),
+      ...this.ownershipFilter(user),
+      businessDate: { gte: fromDate, lte: toDate },
+      ...(query.status ? { status: query.status } : {}),
+    };
+    return { tenantId, where, fromDate, toDate };
+  }
+
+  /**
+   * Chênh lệch gộp theo thu ngân trong kỳ. Chạy lại đúng `reconcileSession` cho từng phiên (một query tiền mặt cho
+   * mọi phiên), nên số khớp với bảng theo ca của từng phiên. Người chỉ có `read_own` chỉ thấy dòng của mình.
+   */
+  async cashierReport(user: AuthUser, query: QueryCashVarianceDto) {
+    const { tenantId, where, fromDate, toDate } = this.reportWhere(user, query);
+    const period = { fromDate, toDate };
+
+    const sessions = await this.prisma.cashDrawerSession.findMany({
+      where,
+      select: {
+        id: true,
+        branchId: true,
+        openingAmount: true,
+        finalLogAmount: true,
+        createdAt: true,
+        closedAt: true,
+        shiftLogs: {
+          select: { type: true, staffId: true, amount: true, loggedAt: true },
+          orderBy: [{ loggedAt: 'asc' }, { id: 'asc' }],
+        },
+      },
+    });
+    if (sessions.length === 0) {
+      return { data: [], unattributed: [], period };
+    }
+
+    const windows = sessions.map((session) => ({
+      session,
+      window: sessionWindow(session),
+    }));
+    const start = new Date(
+      Math.min(...windows.map((w) => w.window.start.getTime())),
+    );
+    const end = new Date(
+      Math.max(...windows.map((w) => w.window.end.getTime())),
+    );
+    // Cùng điều kiện với `reconcile`: tiền mặt qua két, bỏ dòng két tự ghi.
+    const movements = await this.prisma.cashFlow.findMany({
+      where: {
+        tenantId,
+        locationId: { in: [...new Set(sessions.map((s) => s.branchId))] },
+        paymentMethod: PaymentMethod.CASH,
+        fund: CashFlowFund.DRAWER,
+        cashDrawerSessionId: null,
+        createdAt: { gte: start, lt: end },
+      },
+      select: {
+        locationId: true,
+        createdAt: true,
+        flowType: true,
+        amount: true,
+      },
+    });
+    const byBranch = new Map<string, CashMovement[]>();
+    for (const row of movements) {
+      if (!row.locationId) continue;
+      const list = byBranch.get(row.locationId) ?? [];
+      list.push({
+        at: row.createdAt,
+        flowType: row.flowType,
+        amount: Number(row.amount),
+      });
+      byBranch.set(row.locationId, list);
+    }
+
+    const summary = summarizeByCashier(
+      windows.map(({ session, window }) => ({
+        sessionId: session.id,
+        segments: reconcileSession({
+          openingAmount: Number(session.openingAmount),
+          finalAmount:
+            session.finalLogAmount === null
+              ? null
+              : Number(session.finalLogAmount),
+          shiftLogs: session.shiftLogs.map((log) => ({
+            type: log.type,
+            staffId: log.staffId,
+            amount: Number(log.amount),
+            loggedAt: log.loggedAt,
+          })),
+          movements: (byBranch.get(session.branchId) ?? []).filter(
+            (m) =>
+              m.at.getTime() >= window.start.getTime() &&
+              m.at.getTime() < window.end.getTime(),
+          ),
+        }).segments,
+      })),
+    );
+
+    // Không có quyền xem cả chi nhánh: chỉ dòng của chính mình, không thấy khoản lệch không gán cho ai.
+    const seesAll = can(user, 'cash_drawers', 'read');
+    const rows = seesAll
+      ? summary.rows
+      : summary.rows.filter((row) => row.staffId === user.userId);
+
+    const staff = await this.prisma.user.findMany({
+      where: { tenantId, id: { in: rows.map((row) => row.staffId) } },
+      select: STAFF_SELECT,
+    });
+    const nameOf = new Map(staff.map((s) => [s.id, withNestedProfile(s)]));
+
+    return {
+      data: rows.map((row) => ({
+        ...row,
+        staff: nameOf.get(row.staffId) ?? null,
+      })),
+      unattributed: seesAll ? summary.unattributed : [],
+      period,
+    };
+  }
+
+  private async reportRows(user: AuthUser, query: QueryCashVarianceDto) {
+    const { where, fromDate, toDate } = this.reportWhere(user, query);
+
+    const sessions = await this.prisma.cashDrawerSession.findMany({
+      where,
+      select: VARIANCE_SELECT,
+      orderBy: [{ businessDate: 'desc' }, { branchId: 'asc' }],
+    });
+    if (sessions.length === 0) {
+      return { rows: [], fromDate, toDate };
+    }
+
+    const cashBySession = new Map(
+      (await this.cashBySession(sessions)).map((row) => [row.sessionId, row]),
+    );
+
+    const all = sessions.map((session) =>
+      this.varianceRow(session, cashBySession),
+    );
+    const rows = query.varianceOnly
+      ? all.filter((row) => row.variance !== null && row.variance !== 0)
+      : all;
+    return { rows, fromDate, toDate };
   }
 
   /** Mặc định 30 ngày giao dịch gần nhất, và từ chối khoảng phải phân trang. */
@@ -423,10 +782,11 @@ export class CashDrawerSessionService {
 
   /** Thu chi tiền mặt của từng phiên trong khoảng thời gian của nó. */
   private async cashBySession(
-    sessions: VarianceRow[],
-  ): Promise<Map<string, SessionCashRow>> {
+    sessions: Pick<VarianceRow, 'id'>[],
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<SessionCashRow[]> {
     const now = new Date();
-    const rows = await this.prisma.$queryRaw<SessionCashRow[]>`
+    return client.$queryRaw<SessionCashRow[]>`
       SELECT s.id AS "sessionId",
              COALESCE(SUM(CASE WHEN c.flow_type = ${FlowType.INCOME} THEN c.amount ELSE 0 END), 0) AS "cashIn",
              COALESCE(SUM(CASE WHEN c.flow_type <> ${FlowType.INCOME} THEN c.amount ELSE 0 END), 0) AS "cashOut",
@@ -438,13 +798,13 @@ export class CashDrawerSessionService {
        AND c.payment_method = ${PaymentMethod.CASH}
        -- Only cash that went through the drawer: remitted cash (fund OWNER) never did.
        AND c.fund = ${CashFlowFund.DRAWER}
+       -- Rows the drawer itself books on open / close are already in the counts.
+       AND c.cash_drawer_session_id IS NULL
        AND c.created_at >= s.created_at
        AND c.created_at < COALESCE(s.closed_at, ${now})
       WHERE s.id IN (${Prisma.join(sessions.map((session) => session.id))})
       GROUP BY s.id
     `;
-
-    return new Map(rows.map((row) => [row.sessionId, row]));
   }
 
   private varianceRow(
@@ -469,10 +829,23 @@ export class CashDrawerSessionService {
       overdue: isOverdue(session),
       movementCount: day?.movementCount ?? 0,
       ...summary,
+      // null khi còn mở, hoặc chốt trước khi có tính năng rút tiền.
+      withdrawnAmount:
+        session.withdrawnAmount === null
+          ? null
+          : Number(session.withdrawnAmount),
+      keptAmount:
+        session.finalLogAmount === null ? null : keptAmountOf(session),
     };
   }
 
-  private reportTotals(rows: { variance: number | null }[]) {
+  private reportTotals(
+    rows: {
+      variance: number | null;
+      withdrawnAmount?: number | null;
+      overdue?: boolean;
+    }[],
+  ) {
     // Đếm riêng phiên chưa chốt.
     const settled = rows.filter((row) => row.variance !== null);
     const off = settled.filter((row) => row.variance !== 0);
@@ -487,18 +860,10 @@ export class CashDrawerSessionService {
       overage: off
         .filter((row) => (row.variance ?? 0) > 0)
         .reduce((sum, row) => sum + (row.variance ?? 0), 0),
-    };
-  }
-
-  private emptyReport(
-    query: QueryCashVarianceDto,
-    fromDate: Date,
-    toDate: Date,
-  ) {
-    return {
-      ...paginate([], 0, query.page, query.limit),
-      period: { fromDate, toDate },
-      totals: this.reportTotals([]),
+      shortfallSessions: off.filter((row) => (row.variance ?? 0) < 0).length,
+      // Chủ rút về từ các két trong kỳ.
+      withdrawn: rows.reduce((sum, row) => sum + (row.withdrawnAmount ?? 0), 0),
+      overdueSessions: rows.filter((row) => row.overdue === true).length,
     };
   }
 
@@ -559,7 +924,9 @@ export class CashDrawerSessionService {
       const handedToMe =
         lastLog?.type === ShiftLogType.END &&
         lastLog.nextStaffId === user.userId;
-      if (!isFirstShift && !handedToMe) {
+      // Két mở lại sau lần trả cuối: người quản lý giao két (đã là người giữ két) nhận lại.
+      const reopenedToMe = !!lastLog && reopenedAfter(session, lastLog);
+      if (!isFirstShift && !handedToMe && !reopenedToMe) {
         throw new ConflictException({
           code: ErrorCode.SHIFT_LOG_HANDOVER_INVALID,
           message:
@@ -630,8 +997,93 @@ export class CashDrawerSessionService {
   }
 
   /** Chốt két với tổng đã đếm. */
+  /**
+   * Mở lại két chốt nhầm (2026-11-27). Chỉ phiên của ngày giao dịch hôm nay: số của ngày đã qua đã nằm trong báo cáo.
+   * Phiên về OPEN, giao cho `staffId`; kết quả chốt bị xoá và các dòng sổ ghi lúc chốt (thừa / thiếu, chủ rút) bị gỡ,
+   * vì chúng là kết luận của một lần chốt không còn đúng - chốt lại sẽ ghi lại theo số mới. Dòng ghi lúc mở két giữ nguyên.
+   * Người nhận phải START (đếm lúc nhận) rồi END trước khi chốt lại; tiền bán trong lúc két đóng rơi vào đoạn GAP.
+   */
+  async reopen(user: AuthUser, id: string, dto: ReopenCashDrawerDto) {
+    const tenantId = this.tenantOf(user);
+    const session = await this.findRow(user, id);
+
+    if (session.status !== CashDrawerStatus.CLOSED) {
+      throw new ConflictException({
+        code: ErrorCode.CASH_DRAWER_NOT_CLOSED,
+        message: 'This drawer session is not closed',
+      });
+    }
+    if (session.businessDate.getTime() !== businessDate().getTime()) {
+      throw new ConflictException({
+        code: ErrorCode.CASH_DRAWER_REOPEN_NOT_TODAY,
+        message: 'Only a drawer closed today can be reopened',
+      });
+    }
+    await this.assertBranchAndStaff(tenantId, session.branchId, dto.staffId);
+    const closedAt = session.closedAt;
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.cashDrawerSession.updateMany({
+          where: {
+            id,
+            tenantId,
+            status: CashDrawerStatus.CLOSED,
+            updatedAt: session.updatedAt,
+          },
+          data: {
+            status: CashDrawerStatus.OPEN,
+            currentStaffId: dto.staffId,
+            finalLogAmount: null,
+            finalLogManagerId: null,
+            finalLogNote: null,
+            withdrawnAmount: null,
+            closedAt: null,
+            reopenCount: { increment: 1 },
+            lastReopenedAt: new Date(),
+            lastReopenedById: user.userId,
+            lastReopenReason: dto.reason,
+          },
+        });
+        if (claimed.count === 0) {
+          throw new ConflictException({
+            code: ErrorCode.CASH_DRAWER_CONFLICT,
+            message:
+              'The drawer session has just changed, please reload and try again',
+          });
+        }
+        // Dòng sổ ghi lúc chốt nằm từ `closedAt` trở đi; dòng lúc mở két ghi lúc tạo phiên nên không bị đụng.
+        if (closedAt) {
+          await tx.cashFlow.deleteMany({
+            where: { cashDrawerSessionId: id, createdAt: { gte: closedAt } },
+          });
+        }
+      });
+    } catch (error) {
+      // Index một phần "một két OPEN mỗi chi nhánh" - không xảy ra khi chỉ mở lại phiên hôm nay, nhưng đừng thành 500.
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException({
+          code: ErrorCode.CASH_DRAWER_ALREADY_OPEN,
+          message: 'This branch already has an open drawer session',
+        });
+      }
+      throw error;
+    }
+
+    return this.toResponse(await this.findRow(user, id));
+  }
+
   async finalize(user: AuthUser, id: string, dto: FinalizeCashDrawerDto) {
     const tenantId = this.tenantOf(user);
+    // Lỗi nhập liệu, kiểm trước trạng thái phiên.
+    const withdrawn = dto.withdrawAmount ?? 0;
+    if (withdrawn > dto.finalAmount) {
+      throw new BadRequestException({
+        code: ErrorCode.CASH_DRAWER_WITHDRAW_EXCEEDS_COUNT,
+        message: 'The amount withdrawn cannot exceed the amount counted',
+      });
+    }
+
     const session = await this.findRow(user, id);
 
     if (session.status !== CashDrawerStatus.OPEN) {
@@ -642,10 +1094,12 @@ export class CashDrawerSessionService {
     }
 
     const lastLog = session.shiftLogs.at(-1);
+    // Mở lại sau lần trả cuối thì lần trả đó không còn tính: người nhận két phải nhận rồi trả lại.
     const closedOut =
       lastLog?.type === ShiftLogType.END &&
       lastLog.staffId === session.currentStaffId &&
-      lastLog.nextStaffId === null;
+      lastLog.nextStaffId === null &&
+      !reopenedAfter(session, lastLog);
     if (!closedOut) {
       throw new ConflictException({
         code: ErrorCode.CASH_DRAWER_END_LOG_REQUIRED,
@@ -654,28 +1108,57 @@ export class CashDrawerSessionService {
       });
     }
 
-    const claimed = await this.prisma.cashDrawerSession.updateMany({
-      where: {
-        id,
-        tenantId,
-        status: CashDrawerStatus.OPEN,
-        updatedAt: session.updatedAt,
-      },
-      data: {
-        status: CashDrawerStatus.CLOSED,
-        finalLogAmount: dto.finalAmount,
-        finalLogManagerId: user.userId,
-        finalLogNote: dto.note,
-        closedAt: new Date(),
-      },
-    });
-    if (claimed.count === 0) {
-      throw new ConflictException({
-        code: ErrorCode.CASH_DRAWER_CONFLICT,
-        message:
-          'The drawer session has just changed, please reload and try again',
+    await this.prisma.$transaction(async (tx) => {
+      const closedAt = new Date();
+      const claimed = await tx.cashDrawerSession.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: CashDrawerStatus.OPEN,
+          updatedAt: session.updatedAt,
+        },
+        data: {
+          status: CashDrawerStatus.CLOSED,
+          finalLogAmount: dto.finalAmount,
+          finalLogManagerId: user.userId,
+          finalLogNote: dto.note,
+          withdrawnAmount: withdrawn,
+          closedAt,
+        },
       });
-    }
+      if (claimed.count === 0) {
+        throw new ConflictException({
+          code: ErrorCode.CASH_DRAWER_CONFLICT,
+          message:
+            'The drawer session has just changed, please reload and try again',
+        });
+      }
+
+      // Cùng phép tính với báo cáo đối soát, trên đúng khoảng [mở, chốt) của phiên.
+      const [cash] = await this.cashBySession([{ id: session.id }], tx);
+      const expected = summarizeVariance({
+        openingAmount: Number(session.openingAmount),
+        finalAmount: dto.finalAmount,
+        cashIn: Number(cash?.cashIn ?? 0),
+        cashOut: Number(cash?.cashOut ?? 0),
+      }).expectedClosing;
+
+      await bookClosing(
+        tx,
+        {
+          tenantId,
+          branchId: session.branchId,
+          sessionId: session.id,
+          actorId: user.userId,
+        },
+        {
+          expectedAmount: expected,
+          countedAmount: dto.finalAmount,
+          withdrawnAmount: withdrawn,
+          at: closedAt,
+        },
+      );
+    });
 
     return this.toResponse(await this.findRow(user, id));
   }
@@ -786,6 +1269,29 @@ export class CashDrawerSessionService {
   }
 
   /** Không mở két mới khi két ngày trước chưa chốt. */
+  /**
+   * Mỗi chi nhánh một phiên một ngày (`@@unique([tenantId, branchId, businessDate])`): đã chốt hôm nay thì không mở
+   * lại được. Báo riêng thay vì để P2002 thành CASH_DRAWER_ALREADY_OPEN, vốn đọc như "két đang mở".
+   */
+  private async assertNotClosedToday(tenantId: string, branchId: string) {
+    const closed = await this.prisma.cashDrawerSession.findFirst({
+      where: {
+        tenantId,
+        branchId,
+        businessDate: businessDate(),
+        status: CashDrawerStatus.CLOSED,
+      },
+      select: { id: true },
+    });
+    if (closed) {
+      throw new ConflictException({
+        code: ErrorCode.CASH_DRAWER_CLOSED_TODAY,
+        message: 'This branch has already closed its drawer for today',
+        sessionId: closed.id,
+      });
+    }
+  }
+
   private async assertNoOverdueAt(tenantId: string, branchId: string) {
     const open = await this.prisma.cashDrawerSession.findFirst({
       where: { tenantId, branchId, status: CashDrawerStatus.OPEN },
@@ -863,6 +1369,8 @@ export class CashDrawerSessionService {
       finalLogManagerId,
       finalLogNote,
       finalLogManager,
+      withdrawnAmount,
+      lastReopenedBy,
       shiftLogs,
       openedBy,
       currentStaff,
@@ -877,6 +1385,7 @@ export class CashDrawerSessionService {
       branch: namedBranch(rest.branch),
       overdue: isOverdue(session),
       openedBy: person(openedBy),
+      lastReopenedBy: person(lastReopenedBy),
       currentStaff: person(currentStaff),
       openingAmount: Number(openingAmount),
       // Đã lồng lại: các cột phẳng, nhưng API vẫn giữ object `finalLog` của iKiotMS-BE.
@@ -888,6 +1397,10 @@ export class CashDrawerSessionService {
               managerId: finalLogManagerId,
               manager: person(finalLogManager),
               note: finalLogNote,
+              // null ở phiên chốt trước khi có tính năng rút tiền.
+              withdrawnAmount:
+                withdrawnAmount === null ? null : Number(withdrawnAmount),
+              keptAmount: keptAmountOf({ finalLogAmount, withdrawnAmount }),
             },
       shiftLogs: shiftLogs.map(({ staff, nextStaff, ...log }) => ({
         ...log,

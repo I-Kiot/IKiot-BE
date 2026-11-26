@@ -154,6 +154,7 @@ model User {
   orderReturnsInspected         OrderReturn[]            @relation("OrderReturnInspectedBy")
   cashDrawerSessionsOpened      CashDrawerSession[]      @relation("CashDrawerOpenedBy")
   cashDrawerSessionsCurrent     CashDrawerSession[]      @relation("CashDrawerCurrentStaff")
+  cashDrawerSessionsReopened    CashDrawerSession[]      @relation("CashDrawerReopenedBy")
   cashDrawerShiftLogsAsStaff    CashDrawerShiftLog[]     @relation("ShiftLogStaff")
   cashDrawerShiftLogsAsNext     CashDrawerShiftLog[]     @relation("ShiftLogNextStaff")
   cashDrawerFinalizedSessions   CashDrawerSession[]      @relation("CashDrawerFinalLogManager")
@@ -1650,11 +1651,22 @@ model CashDrawerSession {
   finalLogNote      String?   @map("final_log_note")
   // Lúc chốt két; null khi còn mở.
   closedAt          DateTime? @map("closed_at") @db.Timestamptz(6)
+  // Số chủ rút về khi chốt; phần còn lại (finalLogAmount - withdrawnAmount) để lại làm tiền lẻ cho phiên sau.
+  // null ở phiên chốt trước khi có tính năng này: coi như không để lại gì.
+  withdrawnAmount   Decimal?  @map("withdrawn_amount") @db.Decimal(14, 2)
+  // Mở lại két đã chốt nhầm trong ngày: số lần, lần gần nhất ai mở, lúc nào, vì sao.
+  reopenCount       Int       @default(0) @map("reopen_count")
+  lastReopenedAt    DateTime? @map("last_reopened_at") @db.Timestamptz(6)
+  lastReopenedById  String?   @map("last_reopened_by")
+  lastReopenedBy    User?     @relation("CashDrawerReopenedBy", fields: [lastReopenedById], references: [id])
+  lastReopenReason  String?   @map("last_reopen_reason")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   shiftLogs CashDrawerShiftLog[]
+  /// Dòng sổ két tự ghi khi mở / chốt: chuyển quỹ và thừa / thiếu.
+  cashFlows CashFlow[]
 
   @@unique([tenantId, branchId, businessDate]) // mỗi chi nhánh một ca / ngày; "một ca OPEN" là index một phần (xem đầu file)
   @@map("cash_drawer_sessions")
@@ -1679,39 +1691,43 @@ model CashDrawerShiftLog {
 
 /// Sổ quỹ: chỉ ghi tự động khi có sự kiện tiền (bán, trả NCC, hoàn...), không có API nhập tay.
 model CashFlow {
-  id                 String             @id @default(uuid())
-  tenantId           String             @map("tenant_id")
-  tenant             Tenant             @relation(fields: [tenantId], references: [id])
-  flowType           String             @map("flow_type") // INCOME (thu) | EXPENSE (chi)
-  amount             Decimal            @db.Decimal(14, 2)
-  paymentMethod      String?            @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
-  locationId         String?            @map("location_id")
-  location           Location?          @relation(fields: [locationId], references: [id])
-  paymentId          String?            @unique @map("payment_id")
-  payment            Payment?           @relation(fields: [paymentId], references: [id])
-  orderId            String?            @map("order_id")
-  order              Order?             @relation(fields: [orderId], references: [id])
-  supplierId         String?            @map("supplier_id")
-  supplier           Supplier?          @relation(fields: [supplierId], references: [id])
-  createdById        String?            @map("created_by")
-  createdBy          User?              @relation(fields: [createdById], references: [id])
-  paymentReference   String?            @map("payment_reference")
-  sepayTransactionId String?            @map("sepay_transaction_id")
+  id                  String             @id @default(uuid())
+  tenantId            String             @map("tenant_id")
+  tenant              Tenant             @relation(fields: [tenantId], references: [id])
+  flowType            String             @map("flow_type") // INCOME (thu) | EXPENSE (chi)
+  amount              Decimal            @db.Decimal(14, 2)
+  paymentMethod       String?            @map("payment_method") // CASH | BANK_TRANSFER | SEPAY
+  locationId          String?            @map("location_id")
+  location            Location?          @relation(fields: [locationId], references: [id])
+  paymentId           String?            @unique @map("payment_id")
+  payment             Payment?           @relation(fields: [paymentId], references: [id])
+  orderId             String?            @map("order_id")
+  order               Order?             @relation(fields: [orderId], references: [id])
+  supplierId          String?            @map("supplier_id")
+  supplier            Supplier?          @relation(fields: [supplierId], references: [id])
+  createdById         String?            @map("created_by")
+  createdBy           User?              @relation(fields: [createdById], references: [id])
+  paymentReference    String?            @map("payment_reference")
+  sepayTransactionId  String?            @map("sepay_transaction_id")
   /// Dòng sổ SePay của khoản tiền chưa phân bổ.
-  sepayLedgerId      String?            @map("sepay_ledger_id")
-  sepayLedger        SepayTransaction?  @relation(fields: [sepayLedgerId], references: [id], onDelete: SetNull)
-  supplierDebtEntry  SupplierDebtEntry?
-  description        String?
+  sepayLedgerId       String?            @map("sepay_ledger_id")
+  sepayLedger         SepayTransaction?  @relation(fields: [sepayLedgerId], references: [id], onDelete: SetNull)
+  supplierDebtEntry   SupplierDebtEntry?
+  /// Phiên két đã ghi dòng này khi mở / chốt (chuyển quỹ, thừa / thiếu két). Đối soát két bỏ qua các dòng này.
+  cashDrawerSessionId String?            @map("cash_drawer_session_id")
+  cashDrawerSession   CashDrawerSession? @relation(fields: [cashDrawerSessionId], references: [id], onDelete: Restrict)
+  description         String?
   // Loại tiền và quỹ.
-  category           String             @map("category")
-  fund               String             @map("fund") // DRAWER (tiền mặt qua két chi nhánh) | OWNER (tiền mặt giao thẳng chủ) | BANK (không phải tiền mặt)
-  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  category            String             @map("category")
+  fund                String             @map("fund") // DRAWER (tiền mặt qua két chi nhánh) | OWNER (tiền mặt giao thẳng chủ) | BANK (không phải tiền mặt)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([tenantId, createdAt])
   @@index([tenantId, locationId, createdAt])
   @@index([tenantId, orderId])
   @@index([tenantId, category, createdAt])
+  @@index([cashDrawerSessionId])
   @@map("cash_flows")
 }
 

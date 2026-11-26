@@ -15,6 +15,14 @@ export const CashFlowCategory = {
   SUPPLIER_PAYMENT: 'SUPPLIER_PAYMENT',
   /** Hoàn lại khoản tiền về không gắn được với đơn. */
   UNALLOCATED_REFUND: 'UNALLOCATED_REFUND',
+  /** Chuyển quỹ, vế nhận: tiền mặt vào quỹ này từ quỹ khác (chủ bỏ tiền lẻ vào két, rút két về chủ). */
+  FUND_TRANSFER_IN: 'FUND_TRANSFER_IN',
+  /** Chuyển quỹ, vế chuyển đi. Luôn đi cặp với một FUND_TRANSFER_IN cùng số tiền. */
+  FUND_TRANSFER_OUT: 'FUND_TRANSFER_OUT',
+  /** Đếm két nhiều hơn sổ. */
+  DRAWER_SURPLUS: 'DRAWER_SURPLUS',
+  /** Đếm két ít hơn sổ (lúc chốt, hoặc lúc mở so với số để lại phiên trước). */
+  DRAWER_SHORTAGE: 'DRAWER_SHORTAGE',
 } as const;
 
 export type CashFlowCategory =
@@ -27,7 +35,24 @@ export const CASH_FLOW_CATEGORIES: readonly string[] =
 export const INCOME_CASH_FLOW_CATEGORIES: readonly CashFlowCategory[] = [
   CashFlowCategory.ORDER_PAYMENT,
   CashFlowCategory.UNALLOCATED_RECEIPT,
+  CashFlowCategory.FUND_TRANSFER_IN,
+  CashFlowCategory.DRAWER_SURPLUS,
 ];
+
+/**
+ * Chuyển tiền giữa các quỹ của chính shop: đổi số dư từng quỹ nhưng tổng tiền không đổi, nên mọi tổng thu / chi
+ * (thẻ Tiền vào / Tiền ra, theo hạng mục) bỏ các dòng này. Chỉ bảng theo quỹ hiện chúng, ở cột chuyển đến / đi.
+ */
+export const TRANSFER_CASH_FLOW_CATEGORIES: readonly CashFlowCategory[] = [
+  CashFlowCategory.FUND_TRANSFER_IN,
+  CashFlowCategory.FUND_TRANSFER_OUT,
+];
+
+export function isTransferCategory(category: string): boolean {
+  return (TRANSFER_CASH_FLOW_CATEGORIES as readonly string[]).includes(
+    category,
+  );
+}
 
 /** Suy ra hướng thu/chi từ loại dòng tiền. */
 export function flowTypeOf(category: CashFlowCategory): FlowType {
