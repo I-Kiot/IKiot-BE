@@ -18,6 +18,9 @@ import { FulfillmentService } from './../src/modules/fulfillments/fulfillments.s
 import { NotificationService } from './../src/modules/notifications/notifications.service';
 import { PromotionService } from './../src/modules/promotions/promotions.service';
 import { RealtimeGateway } from './../src/common/realtime/realtime.gateway';
+import { ProductService } from './../src/modules/products/products.service';
+import { SubscriptionService } from './../src/modules/subscriptions/subscriptions.service';
+import type { SearchProductDto } from './../src/modules/products/dto/query-product.dto';
 import {
   InventoryRefType,
   InventoryTxType,
@@ -36,6 +39,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
   let manual: ManualOrderService;
   let customizations: OrderCustomizationService;
   let fulfillments: FulfillmentService;
+  let products: ProductService;
 
   const tenantId = randomUUID();
   const ownerId = randomUUID();
@@ -45,6 +49,10 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
   const sofaId = randomUUID();
   const tableId = randomUUID();
   const comboId = randomUUID();
+  // Hàng chỉ nhập từ NCC (không bật "Có thể sản xuất") và một combo có cả hàng làm được lẫn hàng mua về.
+  const boughtProductId = randomUUID();
+  const lampId = randomUUID();
+  const roomComboId = randomUUID();
   const customerId = randomUUID();
   const workshopId = randomUUID();
 
@@ -141,6 +149,8 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
         { provide: RealtimeGateway, useValue: {} },
         { provide: SepayOrderService, useValue: {} },
         { provide: PromotionService, useValue: {} },
+        ProductService,
+        { provide: SubscriptionService, useValue: {} },
       ],
     }).compile();
     await moduleRef.init();
@@ -148,6 +158,7 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
     manual = moduleRef.get(ManualOrderService);
     customizations = moduleRef.get(OrderCustomizationService);
     fulfillments = moduleRef.get(FulfillmentService);
+    products = moduleRef.get(ProductService);
     const inventory = moduleRef.get(InventoryService);
 
     await prisma.tenant.create({ data: { id: tenantId, name: 'custom-e2e' } });
@@ -179,7 +190,12 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
       data: { id: branchId, tenantId, locationId: branchId },
     });
     await prisma.product.create({
-      data: { id: productId, tenantId, name: 'Nội thất' },
+      data: {
+        id: productId,
+        tenantId,
+        name: 'Nội thất',
+        isManufacturable: true,
+      },
     });
     for (const [id, name, price, itemType] of [
       [sofaId, 'Sofa', 10_000_000, 'PRODUCT'],
@@ -236,6 +252,33 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
       data: [
         { comboItemId: comboId, componentItemId: sofaId, quantity: 1 },
         { comboItemId: comboId, componentItemId: tableId, quantity: 1 },
+      ],
+    });
+    await prisma.product.create({
+      data: { id: boughtProductId, tenantId, name: 'Đèn nhập khẩu' },
+    });
+    for (const [id, product, name, price, itemType] of [
+      [lampId, boughtProductId, 'Đèn', 1_000_000, 'PRODUCT'],
+      [roomComboId, productId, 'Combo sofa + đèn', 10_500_000, 'COMBO'],
+    ] as const) {
+      await prisma.productItem.create({
+        data: {
+          id,
+          tenantId,
+          productId: product,
+          productName: name,
+          productCode: `CUS-${id}`,
+          sku: `CUS-${id.slice(0, 8)}`,
+          retailPrice: price,
+          costPrice: 500_000,
+          itemType,
+        },
+      });
+    }
+    await prisma.comboComponent.createMany({
+      data: [
+        { comboItemId: roomComboId, componentItemId: sofaId, quantity: 1 },
+        { comboItemId: roomComboId, componentItemId: lampId, quantity: 2 },
       ],
     });
     await prisma.customer.create({
@@ -516,6 +559,169 @@ describe('PUT /orders/:id/items/:itemId/customization – OrderCustomizationServ
       where: { id: request.items[0].id },
     });
     expect(requestItem.productItemId).toBe(customId);
+  });
+
+  it('makes each combo component custom on its own as the order is created', async () => {
+    const tableSpecs: OrderItemCustomizationDto = {
+      lengthCm: 150,
+      note: 'Mặt bàn tròn',
+    };
+    const orderId = await createOrder({
+      items: [
+        {
+          productItemId: comboId,
+          quantity: 2,
+          componentCustomizations: [
+            { productItemId: sofaId, customization: sofaSpecs },
+            { productItemId: tableId, customization: tableSpecs },
+          ],
+        },
+      ],
+    });
+    const combo = await lineOf(orderId, comboId);
+    expect(combo.isCustom).toBe(false);
+    const children = await prisma.orderItem.findMany({
+      where: { orderId, parentItemId: combo.id },
+      include: { customization: true },
+    });
+    expect(children).toHaveLength(2);
+    expect(children.every((child) => child.isCustom)).toBe(true);
+    // Mỗi món một SKU riêng và một bộ thông số riêng, không gộp.
+    const notes = children.map((child) => child.customization?.note).sort();
+    expect(notes).toEqual(['Khách muốn tay vịn thấp', 'Mặt bàn tròn'].sort());
+    const lengths = await Promise.all(
+      children.map(async (child) =>
+        Number((await itemOf(child.productItemId)).lengthCm),
+      ),
+    );
+    expect(lengths.sort()).toEqual([150, 181]);
+    expect(children.every((child) => child.quantity === 2)).toBe(true);
+    expect(
+      children.every(
+        (child) =>
+          child.productItemId !== sofaId && child.productItemId !== tableId,
+      ),
+    ).toBe(true);
+
+    // Chỉ làm riêng một món: món kia giữ SKU gốc.
+    const partial = await createOrder({
+      items: [
+        {
+          productItemId: roomComboId,
+          quantity: 1,
+          componentCustomizations: [
+            { productItemId: sofaId, customization: sofaSpecs },
+          ],
+        },
+      ],
+    });
+    const room = await lineOf(partial, roomComboId);
+    const lamp = await prisma.orderItem.findFirstOrThrow({
+      where: { orderId: partial, parentItemId: room.id, productItemId: lampId },
+    });
+    expect(lamp.isCustom).toBe(false);
+    expect(lamp.quantity).toBe(2);
+    expect(
+      await prisma.orderItem.count({
+        where: { orderId: partial, parentItemId: room.id, isCustom: true },
+      }),
+    ).toBe(1);
+  });
+
+  it('refuses to make a non-manufacturable product, or a wrong component, to measure', async () => {
+    const orders = await prisma.order.count({ where: { tenantId } });
+    const refused = async (items: CreateOrderDto['items']) =>
+      codeOf(createOrder({ items }));
+
+    expect(
+      await refused([
+        { productItemId: lampId, quantity: 1, customization: sofaSpecs },
+      ]),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_MANUFACTURABLE);
+    expect(
+      await refused([
+        {
+          productItemId: roomComboId,
+          quantity: 1,
+          componentCustomizations: [
+            { productItemId: lampId, customization: sofaSpecs },
+          ],
+        },
+      ]),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_MANUFACTURABLE);
+    // Bàn không nằm trong combo sofa + đèn.
+    expect(
+      await refused([
+        {
+          productItemId: roomComboId,
+          quantity: 1,
+          componentCustomizations: [
+            { productItemId: tableId, customization: sofaSpecs },
+          ],
+        },
+      ]),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE);
+    expect(
+      await refused([
+        {
+          productItemId: comboId,
+          quantity: 1,
+          componentCustomizations: [
+            { productItemId: sofaId, customization: sofaSpecs },
+            { productItemId: sofaId, customization: sofaSpecs },
+          ],
+        },
+      ]),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE);
+    // Dòng thường không nhận thông số theo món.
+    expect(
+      await refused([
+        {
+          productItemId: sofaId,
+          quantity: 1,
+          componentCustomizations: [
+            { productItemId: sofaId, customization: sofaSpecs },
+          ],
+        },
+      ]),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE);
+    expect(await prisma.order.count({ where: { tenantId } })).toBe(orders);
+
+    // Sau khi tạo đơn cũng vậy.
+    const orderId = await createOrder({
+      items: [{ productItemId: lampId, quantity: 1 }],
+    });
+    const lamp = await lineOf(orderId, lampId);
+    expect(await codeOf(customize(orderId, lamp.id, sofaSpecs))).toBe(
+      ErrorCode.ORDER_ITEM_NOT_MANUFACTURABLE,
+    );
+  });
+
+  it('lists the made-to-order components of each combo in the search', async () => {
+    const result = await products.search(tenantId, {
+      page: 1,
+      limit: 50,
+      itemIds: [comboId, roomComboId, sofaId],
+    } as SearchProductDto);
+    const items = result.data.flatMap((product) => product.items);
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const partsOf = (id: string) =>
+      (
+        byId.get(id) as unknown as {
+          madeToOrderComponents?: { productItemId: string; quantity: number }[];
+        }
+      ).madeToOrderComponents;
+
+    expect(
+      partsOf(comboId)
+        ?.map((part) => part.productItemId)
+        .sort(),
+    ).toEqual([sofaId, tableId].sort());
+    // Đèn là hàng mua về nên không có trong danh sách.
+    expect(partsOf(roomComboId)).toEqual([
+      expect.objectContaining({ productItemId: sofaId, quantity: 1 }),
+    ]);
+    expect(partsOf(sofaId)).toBeUndefined();
   });
 
   it('does not find a line of another order', async () => {

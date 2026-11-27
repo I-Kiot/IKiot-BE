@@ -868,3 +868,39 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 - Huỷ đơn / trả hàng không trả lượt khuyến mãi (hệ cũ cũng không).
 - Chưa thử trên trình duyệt.
 - Nhánh BE `feat/order-promotion-usage` đặt chồng lên `feat/order-import` vì cần `ManualOrderService.prepare/write`. Merge PR nhập đơn trước.
+
+## 2026-11-27 - Chỉ hàng "Có thể sản xuất" mới làm riêng được
+
+- Hàng làm riêng luôn phải đặt xưởng làm. Vì vậy sản phẩm chưa bật `isManufacturable` (chỉ nhập từ NCC) không được làm riêng nữa. Trước đây dòng làm riêng của loại hàng này tạo được, nhưng YCSX từ chối (`PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE`), nên dòng thiếu mãi.
+- BE: `OrderCustomizationService.assertManufacturable` (một truy vấn), mã lỗi mới `ORDER_ITEM_NOT_MANUFACTURABLE`. Được gọi ở:
+  - `ManualOrderService.prepare` cho mọi dòng có `customization`, nên `POST /orders` và nhập đơn Excel đều qua (nhập Excel có câu báo lỗi tiếng Việt riêng);
+  - `PUT /orders/:id/items/:itemId/customization` khi làm riêng lần đầu. Dòng đã làm riêng thì vẫn sửa được thông số.
+- FE: nút "Làm riêng theo yêu cầu" ở màn tạo đơn (`order-cart-lines.tsx`, và `order-lines-editor.tsx` cho đồng bộ) chỉ hiện khi sản phẩm bật cờ. Cờ đi từ `GET /products/search` (`product.isManufacturable`) qua `ProductSearch` vào `OrderLineDraft.isManufacturable`. Dòng "mua lại hàng hỏng" lấy cờ từ dòng đơn gốc. Thêm câu thông báo cho mã lỗi mới.
+- Fixture e2e có làm riêng (`order-customization`, `order-import`, `order-shortage-alerts`, `order-reads`) giờ tạo sản phẩm với `isManufacturable: true`.
+- Kiểm:
+  - BE `tsc` sạch (trừ các `*.excel.spec.ts` lỗi sẵn); unit `orders` qua (trừ 2 suite `*.excel.spec.ts` lỗi sẵn);
+  - e2e trên `ikiot_e2e`: 5 suite (4 suite trên + `order-create`) được 64/65. Lỗi duy nhất là SKU mẫu của template trong `order-import`, chỉ gặp khi chạy song song; chạy riêng thì 7/7;
+  - FE `tsc` sạch.
+
+**Chưa kiểm chứng**
+- Chưa có test riêng cho trường hợp bị từ chối (sản phẩm chưa bật cờ).
+- Chưa thử trên trình duyệt.
+
+## 2026-11-27 - Làm riêng từng món trong combo khi tạo đơn
+
+- Dòng combo ở màn tạo đơn: nút "Làm riêng theo yêu cầu" mở danh sách các món trong combo mà sản phẩm bật "Có thể sản xuất". Mỗi món có nút làm riêng và bộ thông số riêng, không gộp chung. Combo không có món nào như vậy thì không có nút.
+- BE:
+  - `GET /products/search`: mỗi item COMBO có thêm `madeToOrderComponents: [{ productItemId, sku, productName, quantity }]`. Đó là các món lá PRODUCT của sản phẩm bật cờ, lấy từ các lá `stockWithCombos` đã bung sẵn (`ItemStock.leaves`), thêm đúng một truy vấn cho cả trang.
+  - `POST /orders`: `items[].componentCustomizations: [{ productItemId, customization }]`. `assertComponentCustomizations` chỉ nhận dòng COMBO, mỗi SKU một lần, và SKU phải là món lá PRODUCT của chính combo đó; sai thì `ORDER_ITEM_NOT_CUSTOMIZABLE`. Cờ sản phẩm kiểm qua `assertManufacturable` như dòng thường. `write` gọi `apply` trên dòng con của từng món, nên món đó có SKU riêng với số lượng = SL combo × SL món trong bộ.
+  - `buildOrderItemRows` giờ đặt sẵn `id` cho dòng con (trước chỉ dòng cha có). Quầy cũng dùng hàm này; cách ghi không đổi.
+  - Dòng combo vẫn không nhận `customization` của chính nó. Nhập Excel chưa hỗ trợ làm riêng món trong combo.
+- FE: `order-cart-lines.tsx` có danh sách món mở/đóng dưới dòng combo, mỗi món dùng `CustomizationDialog` có sẵn (nút "Bỏ" của dialog bỏ thông số món đó). Payload gửi `componentCustomizations`. Hai dòng cùng combo chỉ gộp khi chưa làm riêng món nào.
+- Test e2e `order-customization` thêm 3 test, 10/10 qua:
+  - làm riêng hai món trong combo, mỗi món SKU riêng và thông số riêng; làm riêng một món thì món kia giữ SKU gốc;
+  - các trường hợp bị từ chối: món chưa bật cờ, món không thuộc combo, một món gửi hai lần, `componentCustomizations` trên dòng thường, làm riêng dòng hàng mua về sau khi tạo đơn;
+  - search trả `madeToOrderComponents`.
+- Chạy chung các suite order / stock-lot / combo / pos / product (song song): 304/305, lỗi còn lại là SKU mẫu của template `order-import` như đã ghi ở mục trước. Unit: chỉ các `*.excel.spec.ts` lỗi sẵn. FE `tsc` và eslint các file đã sửa sạch.
+
+**Chưa kiểm chứng**
+- Chưa thử trên trình duyệt.
+- Màn chi tiết đơn đã hiện thông số trên dòng con chưa thì chưa xem lại; dòng con làm riêng sau khi tạo đơn qua route PUT thì vốn đã có.

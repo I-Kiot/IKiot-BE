@@ -39,6 +39,16 @@ export type DepositType = (typeof DepositType)[keyof typeof DepositType];
 
 export const DEPOSIT_TYPES: readonly string[] = Object.values(DepositType);
 
+/** Làm riêng một món trong combo: `productItemId` là SKU của món lá, như `madeToOrderComponents` của tìm kiếm. */
+export class ComboComponentCustomizationDto {
+  @IsUUID()
+  productItemId: string;
+
+  @ValidateNested()
+  @Type(() => OrderItemCustomizationDto)
+  customization: OrderItemCustomizationDto;
+}
+
 /** Một dòng đơn tay. Combo gửi đúng như chính nó; server tự thêm các thành phần thành dòng con. */
 export class CreateOrderItemDto {
   @IsUUID()
@@ -72,6 +82,16 @@ export class CreateOrderItemDto {
   @ValidateNested()
   @Type(() => OrderItemCustomizationDto)
   customization?: OrderItemCustomizationDto;
+
+  /**
+   * Chỉ cho dòng COMBO: mỗi món làm riêng có thông số riêng, ghi lên dòng con của món đó. Bản thân dòng combo chỉ
+   * là giá nên không nhận `customization`.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ComboComponentCustomizationDto)
+  componentCustomizations?: ComboComponentCustomizationDto[];
 }
 
 /** Khách nhập tay trên form, không chọn từ danh sách. Khớp khách có sẵn theo số điện thoại trước. */
