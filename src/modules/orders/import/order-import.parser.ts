@@ -1,4 +1,5 @@
 import { FulfillmentType } from '../../../common/constants/order-status';
+import { ProductItemType } from '../../../common/constants/product-status';
 import {
   hasMoreThanTwoDecimals,
   normalizeName,
@@ -13,6 +14,7 @@ import type {
   CreateOrderItemDto,
   DepositType,
 } from '../dto/create-order.dto';
+import type { OrderItemSpecDto } from '../dto/order-item-customization.dto';
 import {
   DEPOSIT_METHOD_LABELS,
   FULFILLMENT_LABELS,
@@ -42,9 +44,21 @@ export interface OrderImportLookups {
   /** Nhân viên: khoá là nhãn trong danh sách ("Tên - SĐT", đã chuẩn hoá) và SĐT chuẩn hoá. */
   staff: Map<string, string[]>;
   /** SKU (nguyên văn) → mặt hàng. */
-  items: Map<string, { id: string; sellable: boolean }>;
+  items: Map<string, OrderImportItem>;
   /** SĐT chuẩn hoá → khách có sẵn. */
   customersByPhone: Map<string, { id: string; name: string; phone: string }>;
+}
+
+/** Mặt hàng mà bộ đọc cần: giá để quy giảm % ra tiền, thuộc tính để đọc thông số làm riêng. */
+export interface OrderImportItem {
+  id: string;
+  sellable: boolean;
+  itemType: string;
+  retailPrice: number;
+  /** Thuộc tính của hàng hoá chứa SKU. */
+  attributes: { id: string; name: string; unit: string | null }[];
+  /** Giá trị của SKU theo từng thuộc tính (attributeId → giá trị). */
+  attributeValues: Map<string, string>;
 }
 
 export interface ParsedOrder {
@@ -141,6 +155,8 @@ interface Draft {
   fields: Partial<Record<OrderImportColumnKey, { text: string; row: number }>>;
   values: Partial<Record<OrderImportColumnKey, CellValue>>;
   items: CreateOrderItemDto[];
+  /** Tiền hàng sau giảm từng dòng, làm tròn như `OrderPricingService.lineTotalOf`; nền của giảm giá đơn theo %. */
+  subtotal: number;
 }
 
 export function parseOrderImportRows(
@@ -173,7 +189,14 @@ export function parseOrderImportRows(
     const groupKey = normalizeName(group);
     let draft = drafts.get(groupKey);
     if (!draft) {
-      draft = { group, rows: [], fields: {}, values: {}, items: [] };
+      draft = {
+        group,
+        rows: [],
+        fields: {},
+        values: {},
+        items: [],
+        subtotal: 0,
+      };
       drafts.set(groupKey, draft);
     }
     draft.rows.push(rowNumber);
@@ -196,8 +219,11 @@ export function parseOrderImportRows(
       }
     }
 
-    const item = readLine(cells, rowNumber, lookups, fail);
-    if (item) draft.items.push(item);
+    const line = readLine(cells, rowNumber, lookups, fail);
+    if (line) {
+      draft.items.push(line.item);
+      draft.subtotal += line.total;
+    }
   }
 
   const orders: ParsedOrder[] = [];
@@ -221,6 +247,11 @@ function readAmount(
   fail: Fail,
 ): number | undefined {
   if (!textOf(raw)) return undefined;
+  // `numberOf` bỏ dấu %, nên "10%" ở cột chỉ nhận tiền sẽ thành 10 đồng: chặn rõ ràng.
+  if (textOf(raw).includes('%')) {
+    fail(row, key, `${label(key)} chỉ ghi số tiền, không ghi phần trăm`);
+    return undefined;
+  }
   const value = numberOf(raw);
   if (value === null) {
     fail(row, key, `${label(key)} phải là số (đang là "${textOf(raw)}")`);
@@ -242,10 +273,11 @@ function readLine(
   row: number,
   lookups: OrderImportLookups,
   fail: Fail,
-): CreateOrderItemDto | null {
+): { item: CreateOrderItemDto; total: number } | null {
   let ok = true;
   const sku = textOf(cells.sku);
   let productItemId: string | undefined;
+  let found: OrderImportItem | undefined;
   if (!sku) {
     fail(row, 'sku', 'SKU không được để trống');
     ok = false;
@@ -259,6 +291,7 @@ function readLine(
       ok = false;
     } else {
       productItemId = item.id;
+      found = item;
     }
   }
 
@@ -286,13 +319,161 @@ function readLine(
   if (textOf(cells.unitPrice) && unitPrice === undefined) ok = false;
   if (textOf(cells.lineDiscount) && discountAmount === undefined) ok = false;
 
-  if (!ok || !productItemId || quantity === null) return null;
+  const customization = found
+    ? readCustomization(cells, row, found, fail)
+    : undefined;
+  if (customization === null) ok = false;
+
+  if (!ok || !productItemId || !found || quantity === null) return null;
+  const total = Math.max(
+    0,
+    Math.round(quantity * (unitPrice ?? found.retailPrice)) -
+      (discountAmount ?? 0),
+  );
   return {
-    productItemId,
-    quantity,
-    ...(unitPrice !== undefined ? { unitPrice } : {}),
-    ...(discountAmount ? { discountAmount } : {}),
+    item: {
+      productItemId,
+      quantity,
+      ...(unitPrice !== undefined ? { unitPrice } : {}),
+      ...(discountAmount ? { discountAmount } : {}),
+      ...(customization ? { customization } : {}),
+    },
+    total,
   };
+}
+
+/** Tách "Tên: giá trị; Tên: giá trị" (dấu ; hoặc xuống dòng) thành từng cặp; lỗi viết sẵn cho người sửa file. */
+export function splitCustomSpecs(text: string): {
+  specs: { name: string; value: string }[];
+  errors: string[];
+} {
+  const specs: { name: string; value: string }[] = [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const piece of text.split(/[;\n]/)) {
+    const part = piece.trim();
+    if (!part) continue;
+    const colon = part.indexOf(':');
+    const name = colon > 0 ? part.slice(0, colon).trim() : '';
+    const value = colon > 0 ? part.slice(colon + 1).trim() : '';
+    if (!name) {
+      errors.push(`Thông số "${part}" phải ghi dạng Tên: giá trị`);
+    } else if (!value) {
+      errors.push(`Thông số "${name}" chưa có giá trị`);
+    } else if (seen.has(normalizeName(name))) {
+      errors.push(`Thông số "${name}" bị lặp lại trên cùng một dòng`);
+    } else {
+      seen.add(normalizeName(name));
+      specs.push({ name, value });
+    }
+  }
+  return { specs, errors };
+}
+
+/**
+ * Thông số làm riêng của một dòng, đúng khối `customization` mà hộp thoại "Thông số làm riêng" của form gửi: tên trùng
+ * thuộc tính của hàng hoá là đổi thuộc tính đó (bỏ qua nếu giống giá trị gốc của SKU), tên khác là thông số thêm.
+ * `undefined` = dòng thường, `null` = có lỗi (đã ghi).
+ */
+function readCustomization(
+  cells: OrderImportRow['cells'],
+  row: number,
+  item: OrderImportItem,
+  fail: Fail,
+): CreateOrderItemDto['customization'] | null | undefined {
+  const specText = textOf(cells.customSpecs);
+  const note = textOf(cells.customNote);
+  if (!specText && !note) return undefined;
+
+  // Như `OrderCustomizationService.assertCustomizable`: dòng combo chỉ là giá, dịch vụ không có hàng để làm.
+  if (item.itemType !== ProductItemType.PRODUCT) {
+    fail(
+      row,
+      specText ? 'customSpecs' : 'customNote',
+      item.itemType === ProductItemType.COMBO
+        ? 'Dòng combo không làm riêng được từ file - nhập combo rồi làm riêng từng món trên màn hình đơn'
+        : 'Dịch vụ không làm riêng được',
+    );
+    return null;
+  }
+
+  const { specs: pairs, errors } = splitCustomSpecs(specText);
+  for (const message of errors) fail(row, 'customSpecs', message);
+  if (errors.length > 0) return null;
+
+  const specs: OrderItemSpecDto[] = [];
+  for (const pair of pairs) {
+    const attribute = item.attributes.find(
+      (a) => normalizeName(a.name) === normalizeName(pair.name),
+    );
+    if (!attribute) {
+      specs.push(pair);
+      continue;
+    }
+    // "200 cm" với thuộc tính đơn vị cm: đơn vị thuộc về thuộc tính, giá trị chỉ là "200".
+    let value = pair.value;
+    const unit = attribute.unit?.trim();
+    if (unit && normalizeName(value).endsWith(` ${normalizeName(unit)}`)) {
+      value = value.slice(0, value.length - unit.length).trim();
+    }
+    const base = item.attributeValues.get(attribute.id);
+    if (base !== undefined && normalizeName(base) === normalizeName(value)) {
+      continue;
+    }
+    specs.push({
+      attributeId: attribute.id,
+      name: attribute.name,
+      value,
+      ...(unit ? { unit } : {}),
+    });
+  }
+
+  if (specs.length === 0 && !note) {
+    fail(
+      row,
+      'customSpecs',
+      'Thông số làm riêng giống hệt mặt hàng gốc - để trống nếu dòng này không làm riêng',
+    );
+    return null;
+  }
+  return { ...(specs.length > 0 ? { specs } : {}), ...(note ? { note } : {}) };
+}
+
+/** "Giảm giá đơn": số tiền, hoặc phần trăm quy ra tiền trên tiền hàng sau giảm dòng; không vượt tiền hàng. */
+function readOrderDiscount(
+  raw: CellValue,
+  row: number,
+  subtotal: number,
+  fail: Fail,
+): number | undefined {
+  const text = textOf(raw);
+  if (!text) return undefined;
+  if (!text.includes('%')) {
+    const amount = readAmount(raw, 'orderDiscount', row, fail);
+    if (amount !== undefined && amount > subtotal) {
+      fail(
+        row,
+        'orderDiscount',
+        `Giảm giá đơn (${amount.toLocaleString('vi-VN')}) lớn hơn tiền hàng sau giảm dòng (${subtotal.toLocaleString('vi-VN')})`,
+      );
+      return undefined;
+    }
+    return amount;
+  }
+  const percent = numberOf(text);
+  if (percent === null || percent <= 0 || percent > 100) {
+    fail(
+      row,
+      'orderDiscount',
+      `Giảm giá đơn theo phần trăm phải lớn hơn 0% và không quá 100% (đang là "${text}")`,
+    );
+    return undefined;
+  }
+  if (hasMoreThanTwoDecimals(percent)) {
+    fail(row, 'orderDiscount', 'Phần trăm giảm có tối đa 2 chữ số thập phân');
+    return undefined;
+  }
+  return Math.round((subtotal * percent) / 100);
 }
 
 function buildOrder(
@@ -476,12 +657,16 @@ function buildOrder(
       'Khách đến lấy không có phí giao hàng - để trống ô này',
     );
   }
-  const orderDiscount = readAmount(
-    raw('orderDiscount'),
-    'orderDiscount',
-    rowOf('orderDiscount'),
-    failOrder,
-  );
+  // Tiền hàng chỉ đủ khi mọi dòng đọc được; dòng hỏng đã có lỗi riêng nên khỏi so giảm giá đơn với một tổng thiếu.
+  const orderDiscount =
+    draft.items.length === draft.rows.length
+      ? readOrderDiscount(
+          raw('orderDiscount'),
+          rowOf('orderDiscount'),
+          draft.subtotal,
+          failOrder,
+        )
+      : undefined;
   const deposit = readAmount(
     raw('deposit'),
     'deposit',

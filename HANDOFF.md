@@ -822,3 +822,20 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng / còn lại**
 - Chưa mở trên trình duyệt; chưa thử file thật do người dùng điền trong Excel / Google Sheets (ô ngày, số điện thoại dạng số).
 
+
+
+## 2026-11-27 - Nhập đơn hàng: dòng làm riêng và giảm giá đơn theo %
+
+**Đã làm**
+- Cột "Giảm giá đơn" nhận số tiền hoặc phần trăm (`10%`, `12,5%`; ô số Excel định dạng `%` cũng đọc được). Phần trăm quy ra tiền ngay trong parser, trên tiền hàng sau giảm từng dòng (làm tròn từng dòng như `lineTotalOf`, đơn giá trống thì lấy giá bán lẻ), và chỉ lưu số tiền, giống form. Giảm vượt tiền hàng là lỗi dòng, không để server lặng lẽ cắt bớt. Cột trong file mẫu chuyển sang ô dạng chữ.
+- Các cột tiền khác (phí giao, cọc, đơn giá, giảm giá dòng) báo lỗi khi có `%`. Trước đây `numberOf` bỏ dấu `%`, nên `10%` thành 10 đồng.
+- Dòng làm riêng: thêm cột "Thông số làm riêng" (`Tên: giá trị; ...`) và "Ghi chú làm riêng". Parser dựng khối `customization` giống hộp thoại của form:
+  - tên trùng thuộc tính của hàng hoá → đổi thuộc tính (`attributeId`), bỏ đơn vị ghi kèm giá trị, bỏ qua nếu trùng giá trị gốc;
+  - tên khác → thông số thêm.
+  `write` gọi `OrderCustomizationService.apply` như form, nên dòng có SKU riêng. Chỉ cho mặt hàng PRODUCT; combo / dịch vụ báo lỗi. Thêm thông báo cho `ORDER_ITEM_NOT_CUSTOMIZABLE`.
+- File mẫu: `MẪU-1` có giảm 5%, `MẪU-2` có một dòng làm riêng; trang Hướng dẫn thêm hai quy tắc. FE: cập nhật gợi ý trong hộp thoại nhập đơn.
+- Test: parser spec 15 (thêm 8: %, làm tròn, chặn vượt, `%` ở cột tiền, khớp thuộc tính / đơn vị / giá trị gốc, chỉ ghi chú, thông số sai, combo). E2e `order-import` 7/7 (thêm: SKU riêng, specs có `baseValue`, SKU gốc giữ nguyên, giảm 10% = 290.000). Unit toàn bộ: chỉ 8 suite `*.excel.spec.ts` fail sẵn.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa thử trên trình duyệt và với file người dùng tự gõ `10%` trong Excel / Google Sheets (đã xử lý ô định dạng `%` nhưng chưa thử file thật).
+- Không nhập ảnh mẫu, không làm riêng từng món trong combo từ file.

@@ -67,6 +67,8 @@ const PREPARE_MESSAGES: Partial<Record<string, string>> = {
   [ErrorCode.ORDER_SELLER_INVALID]:
     'Nhân viên bán hàng không phải tài khoản đang hoạt động của cửa hàng',
   [ErrorCode.ORDER_COMBO_INVALID]: 'Có mặt hàng không bán riêng được',
+  [ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE]:
+    'Có dòng làm riêng không phải mặt hàng thường (combo / dịch vụ)',
   [ErrorCode.ORDER_LINE_DISCOUNT_EXCEEDS_TOTAL]:
     'Giảm giá dòng lớn hơn thành tiền của dòng',
   [ErrorCode.ORDER_DEPOSIT_EXCEEDS_TOTAL]: 'Tiền cọc vượt tổng giá trị đơn',
@@ -262,8 +264,8 @@ export class OrderImportService {
   }
 
   /**
-   * Hai đơn mẫu ngay trong trang nhập để người dùng thấy cách điền: một đơn giao tận nơi hai mặt hàng có cọc, một đơn
-   * khách đến lấy. Chữ nghiêng màu xám và mã nhóm bắt đầu bằng `SAMPLE_GROUP_PREFIX`, mà bộ đọc từ chối.
+   * Hai đơn mẫu ngay trong trang nhập để người dùng thấy cách điền: một đơn giao tận nơi hai mặt hàng có cọc và giảm
+   * 5% cả đơn, một đơn khách đến lấy có dòng làm riêng. Chữ nghiêng màu xám và mã nhóm bắt đầu bằng `SAMPLE_GROUP_PREFIX`, mà bộ đọc từ chối.
    */
   private writeSamples(
     sheet: ExcelJS.Worksheet,
@@ -282,6 +284,7 @@ export class OrderImportService {
         customerName: 'Nguyễn Văn Mẫu',
         deliveryAddress: '12 Láng Hạ, Đống Đa, Hà Nội',
         shippingFee: 30000,
+        orderDiscount: '5%',
         deposit: 200000,
         depositMethod: DEPOSIT_METHOD_LABELS.BANK_TRANSFER,
         note: 'Gọi trước khi giao',
@@ -301,6 +304,8 @@ export class OrderImportService {
         assignee: sample.assignee,
         sku: sku(2),
         quantity: 1,
+        customSpecs: 'Kích thước: 200x180 cm; Màu: Trắng kem',
+        customNote: 'Bo góc tròn, sơn mờ',
       },
     ];
     rows.forEach((values, index) => {
@@ -345,7 +350,9 @@ export class OrderImportService {
       'Đơn được tạo ở trạng thái "Xác nhận", giống tạo đơn trên màn hình: chưa giữ hàng, chưa xuất kho. Hàng lấy theo SKU, giá bỏ trống thì lấy giá bán lẻ hiện tại.',
       'Khách hàng khớp theo số điện thoại; chưa có thì tạo khách mới (cần tên). Bỏ trống cả SĐT lẫn tên là khách vãng lai.',
       'Giao tận nơi cần người nhận, SĐT người nhận và địa chỉ; bỏ trống người nhận / SĐT thì lấy theo khách. Khách đến lấy không có phí giao hàng.',
-      'Tiền cọc là tiền đã thu: ghi vào sổ thu chi ngay khi nhập. Không nhập khuyến mãi và đơn may theo số đo - làm trên màn hình đơn sau khi nhập.',
+      'Giảm giá đơn ghi số tiền (100000) hoặc phần trăm (5%). Phần trăm tính trên tiền hàng sau giảm từng dòng, chưa gồm phí giao, và được lưu thành số tiền. Giảm giá đơn không vượt tiền hàng.',
+      'Dòng làm riêng theo yêu cầu khách: điền "Thông số làm riêng" dạng "Tên: giá trị; Tên: giá trị" và/hoặc "Ghi chú làm riêng". Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó, tên khác là thông số thêm. Hệ thống tạo SKU riêng cho dòng, hàng phải đặt xưởng. Combo / dịch vụ không làm riêng từ file; ảnh mẫu thêm trên màn hình đơn.',
+      'Tiền cọc là tiền đã thu: ghi vào sổ thu chi ngay khi nhập. Không nhập khuyến mãi - áp trên màn hình đơn sau khi nhập.',
       `Tối đa ${MAX_ORDER_IMPORT_ROWS} dòng và ${MAX_ORDER_IMPORT_ORDERS} đơn mỗi lần, file .xlsx không quá ${MAX_ORDER_IMPORT_BYTES / 1024 / 1024}MB.`,
       'Hệ thống kiểm tra toàn bộ file trước khi tạo: chỉ cần một dòng sai là không có đơn nào được tạo, mọi lỗi được liệt kê theo dòng để sửa một lần.',
       `Trang "${ORDER_IMPORT_SHEET}" có sẵn vài đơn mẫu (chữ nghiêng màu xám, mã nhóm "${SAMPLE_GROUP_PREFIX}1", "${SAMPLE_GROUP_PREFIX}2") dùng chính chi nhánh, nhân viên và SKU của cửa hàng. Xoá các dòng này hoặc ghi đè bằng đơn thật trước khi nhập.`,
@@ -396,7 +403,7 @@ export class OrderImportService {
 
     row++;
     sheet.getCell(row++, 1).value =
-      'VÍ DỤ (đơn DH1 hai mặt hàng giao tận nơi có cọc, đơn DH2 khách đến lấy) - minh hoạ cách điền, không được nhập vào hệ thống:';
+      'VÍ DỤ (đơn DH1 hai mặt hàng giao tận nơi có cọc và giảm 5% cả đơn, đơn DH2 khách đến lấy một bàn làm riêng) - minh hoạ cách điền, không được nhập vào hệ thống:';
     sheet.getCell(row - 1, 1).font = { bold: true };
     const example: Partial<Record<OrderImportColumn['key'], string>>[] = [
       {
@@ -410,6 +417,7 @@ export class OrderImportService {
         shippingFee: '50000',
         deposit: '1000000',
         depositMethod: DEPOSIT_METHOD_LABELS.CASH,
+        orderDiscount: '5%',
         sku: 'BAN-SOI-NAU',
         quantity: '1',
       },
@@ -421,6 +429,8 @@ export class OrderImportService {
         assignee: 'Nguyễn Văn A - 0901234567',
         sku: 'BAN-SOI-TRANG',
         quantity: '1',
+        customSpecs: 'Dài: 200 cm; Màu: Óc chó',
+        customNote: 'Chân sắt sơn đen',
       },
     ];
     sheet.getRow(row++).values = ORDER_IMPORT_COLUMNS.map(orderHeaderLabel);
@@ -598,7 +608,12 @@ export class OrderImportService {
       const cells: OrderImportRow['cells'] = {};
       let filled = false;
       for (const [col, column] of columnAt) {
-        const value = cellValue(row.getCell(col));
+        const cell = row.getCell(col);
+        let value = cellValue(cell);
+        // Gõ "10%" vào ô số, Excel lưu 0,1 với định dạng %: trả lại dạng chữ để bộ đọc biết đó là phần trăm.
+        if (typeof value === 'number' && cell.numFmt?.includes('%')) {
+          value = `${Number((value * 100).toFixed(4))}%`;
+        }
         if (textOf(value)) filled = true;
         cells[column.key] = value;
       }
@@ -646,7 +661,18 @@ export class OrderImportService {
         select: {
           id: true,
           sku: true,
-          product: { select: { status: true } },
+          itemType: true,
+          retailPrice: true,
+          details: {
+            where: { attributeId: { not: null } },
+            select: { attributeId: true, value: true },
+          },
+          product: {
+            select: {
+              status: true,
+              attributes: { select: { id: true, name: true, unit: true } },
+            },
+          },
         },
       }),
     ]);
@@ -690,6 +716,14 @@ export class OrderImportService {
             {
               id: item.id,
               sellable: item.product.status === ProductStatus.ACTIVE,
+              itemType: item.itemType,
+              retailPrice: Number(item.retailPrice),
+              attributes: item.product.attributes,
+              attributeValues: new Map(
+                item.details
+                  .filter((d) => d.attributeId && d.value)
+                  .map((d) => [d.attributeId as string, d.value as string]),
+              ),
             },
           ]),
       ),

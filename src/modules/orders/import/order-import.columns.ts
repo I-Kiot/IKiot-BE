@@ -44,7 +44,9 @@ export type OrderImportColumnKey =
   | 'sku'
   | 'quantity'
   | 'unitPrice'
-  | 'lineDiscount';
+  | 'lineDiscount'
+  | 'customSpecs'
+  | 'customNote';
 
 export interface OrderImportColumn {
   key: OrderImportColumnKey;
@@ -225,10 +227,11 @@ export const ORDER_IMPORT_COLUMNS: readonly OrderImportColumn[] = [
     required: false,
     level: 'order',
     width: 14,
-    format: 'Số tiền (đồng)',
-    example: '',
-    note: 'Giảm trên cả đơn (ngoài giảm giá từng dòng).',
-    money: true,
+    format: 'Số tiền (đồng) hoặc phần trăm (vd. 10%)',
+    example: '5%',
+    note: 'Giảm trên cả đơn, sau giảm giá từng dòng. Ghi số tiền (50000) hoặc phần trăm (10%); phần trăm tính trên tiền hàng sau giảm dòng (chưa gồm phí giao) và lưu thành số tiền. Không vượt tiền hàng.',
+    // Ô dạng chữ để "10%" không bị Excel đổi thành 0,1.
+    text: true,
   },
   {
     key: 'deposit',
@@ -304,6 +307,26 @@ export const ORDER_IMPORT_COLUMNS: readonly OrderImportColumn[] = [
     example: '',
     note: 'Giảm trên dòng này (tổng, không phải mỗi chiếc).',
     money: true,
+  },
+  {
+    key: 'customSpecs',
+    header: 'Thông số làm riêng',
+    required: false,
+    level: 'line',
+    width: 36,
+    format: 'Tên: giá trị; Tên: giá trị',
+    example: 'Màu: Trắng; Kích thước: 200x180 cm',
+    note: `Điền khi dòng này làm riêng theo yêu cầu khách: hệ thống tạo SKU riêng cho dòng (cần đặt xưởng). Mỗi thông số dạng "Tên: giá trị", cách nhau bằng dấu ; hoặc xuống dòng. Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó; tên khác là thông số thêm. Chỉ cho mặt hàng thường, không cho combo / dịch vụ.`,
+  },
+  {
+    key: 'customNote',
+    header: 'Ghi chú làm riêng',
+    required: false,
+    level: 'line',
+    width: 30,
+    format: 'Chữ',
+    example: 'Bo góc tròn, sơn mờ',
+    note: 'Ghi chú cho xưởng của dòng làm riêng. Điền ghi chú mà không có thông số thì dòng vẫn là làm riêng. Ảnh mẫu / bản vẽ thêm trên màn hình đơn sau khi nhập.',
   },
 ];
 

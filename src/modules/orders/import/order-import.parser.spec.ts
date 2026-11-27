@@ -5,7 +5,22 @@ import {
   phoneText,
   staffKeys,
 } from './order-import.parser';
-import type { OrderImportLookups, OrderImportRow } from './order-import.parser';
+import type {
+  OrderImportItem,
+  OrderImportLookups,
+  OrderImportRow,
+} from './order-import.parser';
+
+function item(id: string, retailPrice: number): OrderImportItem {
+  return {
+    id,
+    sellable: true,
+    itemType: 'PRODUCT',
+    retailPrice,
+    attributes: [],
+    attributeValues: new Map(),
+  };
+}
 
 const staff = new Map<string, string[]>();
 for (const key of staffKeys('Nguyễn Văn A', '0901234567')) {
@@ -15,10 +30,25 @@ for (const key of staffKeys('Nguyễn Văn A', '0901234567')) {
 const lookups: OrderImportLookups = {
   branches: buildNameIndex([{ id: 'B1', names: ['CN Hà Nội'] }]),
   staff,
-  items: new Map([
-    ['SKU-1', { id: 'I1', sellable: true }],
-    ['SKU-2', { id: 'I2', sellable: true }],
-    ['OLD', { id: 'I3', sellable: false }],
+  items: new Map<string, OrderImportItem>([
+    ['SKU-1', item('I1', 100_000)],
+    ['SKU-2', item('I2', 500_000)],
+    ['OLD', { ...item('I3', 1000), sellable: false }],
+    [
+      'BAN',
+      {
+        ...item('I4', 2_000_000),
+        attributes: [
+          { id: 'A-COLOR', name: 'Màu', unit: null },
+          { id: 'A-LEN', name: 'Dài', unit: 'cm' },
+        ],
+        attributeValues: new Map([
+          ['A-COLOR', 'Nâu'],
+          ['A-LEN', '160'],
+        ]),
+      },
+    ],
+    ['COMBO', { ...item('I5', 3_000_000), itemType: 'COMBO' }],
   ]),
   customersByPhone: new Map([
     ['0912345678', { id: 'C1', name: 'Trần Thị B', phone: '0912345678' }],
@@ -209,6 +239,128 @@ describe('parseOrderImportRows', () => {
       note: 'Gọi trước',
       items: [{ productItemId: 'I1', quantity: 1, discountAmount: 5000 }],
     });
+  });
+});
+
+describe('order discount', () => {
+  beforeEach(() => {
+    n = 1;
+  });
+  const order = (orderDiscount: string | number, more = {}) =>
+    parseOrderImportRows(
+      [
+        row({ group: 'P', ...head, orderDiscount, sku: 'SKU-1', quantity: 3 }),
+        row({
+          group: 'P',
+          sku: 'SKU-2',
+          quantity: 1,
+          unitPrice: 450_000,
+          ...more,
+        }),
+      ],
+      lookups,
+    );
+
+  it('turns a percentage into an amount on the goods after line discounts', () => {
+    // 3 x 100.000 + 450.000 - 50.000 = 700.000; 10% = 70.000.
+    const { orders, errors } = order('10%', { lineDiscount: 50_000 });
+    expect(errors).toEqual([]);
+    expect(orders[0].dto).toMatchObject({
+      discountType: 'ORDER',
+      discountValue: 70_000,
+    });
+  });
+
+  it('reads 12,5% the Vietnamese way and rounds to the đồng', () => {
+    // 750.000 x 12,5% = 93.750.
+    expect(order('12,5%').orders[0].dto.discountValue).toBe(93_750);
+  });
+
+  it('refuses a percentage out of range and an amount above the goods', () => {
+    expect(order('0%').errors[0].message).toMatch(/lớn hơn 0%/);
+    expect(order('120%').errors[0].message).toMatch(/không quá 100%/);
+    const { orders, errors } = order(800_000);
+    expect(orders).toEqual([]);
+    expect(errors[0].column).toBe('Giảm giá đơn');
+    expect(errors[0].message).toMatch(/lớn hơn tiền hàng sau giảm dòng/);
+  });
+
+  it('does not read a percentage in an amount-only column as đồng', () => {
+    const { errors } = order(0, { lineDiscount: '10%' });
+    expect(errors[0]).toMatchObject({
+      column: 'Giảm giá dòng',
+      message: 'Giảm giá dòng chỉ ghi số tiền, không ghi phần trăm',
+    });
+  });
+});
+
+describe('custom-made lines', () => {
+  beforeEach(() => {
+    n = 1;
+  });
+  const line = (cells: OrderImportRow['cells']) =>
+    parseOrderImportRows(
+      [row({ group: 'C', ...head, sku: 'BAN', quantity: 1, ...cells })],
+      lookups,
+    );
+
+  it('maps attribute names to attribute changes and the rest to extra specs', () => {
+    const { orders, errors } = line({
+      customSpecs: 'màu: Trắng; Dài: 200 cm\nĐệm: Mút cao su',
+      customNote: 'Bo góc tròn',
+    });
+    expect(errors).toEqual([]);
+    expect(orders[0].dto.items[0].customization).toEqual({
+      specs: [
+        { attributeId: 'A-COLOR', name: 'Màu', value: 'Trắng' },
+        { attributeId: 'A-LEN', name: 'Dài', value: '200', unit: 'cm' },
+        { name: 'Đệm', value: 'Mút cao su' },
+      ],
+      note: 'Bo góc tròn',
+    });
+  });
+
+  it('skips an attribute written with the value the SKU already has, as the form does', () => {
+    const { orders } = line({ customSpecs: 'Màu: Nâu; Dài: 180' });
+    expect(orders[0].dto.items[0].customization).toEqual({
+      specs: [{ attributeId: 'A-LEN', name: 'Dài', value: '180', unit: 'cm' }],
+    });
+    expect(line({ customSpecs: 'Màu: nâu' }).errors[0].message).toMatch(
+      /giống hệt mặt hàng gốc/,
+    );
+  });
+
+  it('accepts a workshop note alone and leaves plain lines without customization', () => {
+    expect(
+      line({ customNote: 'Sơn mờ' }).orders[0].dto.items[0].customization,
+    ).toEqual({ note: 'Sơn mờ' });
+    expect(line({}).orders[0].dto.items[0]).not.toHaveProperty('customization');
+  });
+
+  it('reports malformed specs and refuses a combo line', () => {
+    const messages = line({
+      customSpecs: 'Trắng; Dài:; dài: 1; Dài: 2',
+    }).errors.map((e) => e.message);
+    expect(messages).toEqual([
+      'Thông số "Trắng" phải ghi dạng Tên: giá trị',
+      'Thông số "Dài" chưa có giá trị',
+      'Thông số "Dài" bị lặp lại trên cùng một dòng',
+    ]);
+    const combo = parseOrderImportRows(
+      [
+        row({
+          group: 'K',
+          ...head,
+          sku: 'COMBO',
+          quantity: 1,
+          customNote: 'x',
+        }),
+      ],
+      lookups,
+    );
+    expect(combo.orders).toEqual([]);
+    expect(combo.errors[0].column).toBe('Ghi chú làm riêng');
+    expect(combo.errors[0].message).toMatch(/combo không làm riêng được/);
   });
 });
 

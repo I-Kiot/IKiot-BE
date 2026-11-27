@@ -309,6 +309,88 @@ describe('POST /orders/import – OrderImportService', () => {
     ).toBe(2);
   });
 
+  it('makes a custom line its own SKU and turns a percentage discount into an amount', async () => {
+    // Hàng hoá có thuộc tính Màu, bàn đang là Nâu: "Màu: Trắng" là đổi thuộc tính, "Đệm" là thông số thêm.
+    const color = await prisma.productAttribute.create({
+      data: { tenantId, productId, name: 'Màu' },
+    });
+    await prisma.productItemDetail.create({
+      data: {
+        productItemId: tableId,
+        attributeId: color.id,
+        name: 'Màu',
+        value: 'Nâu',
+      },
+    });
+    const result = await importer.import(
+      owner,
+      tenantId,
+      await fileOf([
+        {
+          group: 'LR',
+          branch: `CN Hà Nội ${suffix}`,
+          fulfillmentType: 'Khách đến lấy',
+          assignee,
+          orderDiscount: '10%',
+          sku: table(),
+          quantity: 1,
+          customSpecs: 'Màu: Trắng; Đệm: Mút cao su',
+          customNote: 'Bo góc tròn',
+        },
+        { group: 'LR', sku: chair(), quantity: 2, lineDiscount: 100000 },
+      ]),
+    );
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: result.data.orderIds[0] },
+      include: {
+        items: {
+          include: {
+            customization: {
+              include: { specs: { orderBy: { position: 'asc' } } },
+            },
+          },
+        },
+      },
+    });
+    // Tiền hàng 2.000.000 + 2 × 500.000 - 100.000 = 2.900.000; 10% = 290.000.
+    expect(order.discountType).toBe('ORDER');
+    expect(Number(order.discountValue)).toBe(290_000);
+    expect(Number(order.grandTotal)).toBe(2_610_000);
+
+    const custom = order.items.find((i) => i.isCustom)!;
+    expect(custom).toBeDefined();
+    expect(custom.productItemId).not.toBe(tableId);
+    expect(custom.customization?.note).toBe('Bo góc tròn');
+    expect(
+      custom.customization?.specs.map((sp) => [
+        sp.name,
+        sp.value,
+        sp.attributeId,
+        sp.baseValue,
+      ]),
+    ).toEqual([
+      ['Màu', 'Trắng', color.id, 'Nâu'],
+      ['Đệm', 'Mút cao su', null, null],
+    ]);
+    const details = await prisma.productItemDetail.findMany({
+      where: { productItemId: custom.productItemId },
+      select: { name: true, value: true },
+    });
+    expect(details).toEqual(
+      expect.arrayContaining([
+        { name: 'Màu', value: 'Trắng' },
+        { name: 'Đệm', value: 'Mút cao su' },
+      ]),
+    );
+    expect(details).not.toContainEqual({ name: 'Màu', value: 'Nâu' });
+    // SKU gốc giữ nguyên.
+    expect(
+      await prisma.productItemDetail.count({
+        where: { productItemId: tableId, value: 'Nâu' },
+      }),
+    ).toBe(1);
+  });
+
   it('matches an existing customer by phone the second time', async () => {
     const result = await importer.import(
       owner,
