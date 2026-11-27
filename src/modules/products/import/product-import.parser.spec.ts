@@ -408,4 +408,97 @@ describe('parseImportRows', () => {
       sku: undefined,
     });
   });
+
+  describe('opening stock', () => {
+    const HN = 'Tồn kho - CN Hà Nội';
+    const WH = 'Tồn kho - Kho tổng';
+    const stockRow = (
+      cells: ImportRow['cells'],
+      stock: Record<string, unknown>,
+    ): ImportRow => ({
+      ...row(cells),
+      stock: Object.entries(stock).map(([header, value]) => ({
+        header,
+        locationId: header === HN ? 'loc-hn' : 'loc-wh',
+        value: value as ImportRow['cells']['name'],
+      })),
+    });
+
+    it('attaches each SKU its own stock per location, skipping blanks and zeroes', () => {
+      const { products, errors } = parseImportRows(
+        [
+          stockRow(
+            {
+              name: 'Ghế',
+              retailPrice: 100,
+              costPrice: 50,
+              attrName1: 'Màu',
+              attrValue1: 'Đen',
+            },
+            { [HN]: 3, [WH]: 1200 },
+          ),
+          stockRow(
+            {
+              name: 'Ghế',
+              retailPrice: 100,
+              costPrice: 50,
+              attrName1: 'Màu',
+              attrValue1: 'Trắng',
+            },
+            { [HN]: '', [WH]: 0 },
+          ),
+        ],
+        lookups(),
+      );
+      expect(errors).toEqual([]);
+      expect(products[0].itemStock).toEqual([
+        [
+          { locationId: 'loc-hn', quantity: 3 },
+          { locationId: 'loc-wh', quantity: 1200 },
+        ],
+        [],
+      ]);
+    });
+
+    it('rejects a negative, fractional or non-numeric quantity on its own column', () => {
+      const { products, errors } = parseImportRows(
+        [
+          stockRow({ name: 'A', retailPrice: 1, costPrice: 1 }, { [HN]: -1 }),
+          stockRow({ name: 'B', retailPrice: 1, costPrice: 1 }, { [HN]: 1.5 }),
+          stockRow(
+            { name: 'C', retailPrice: 1, costPrice: 1 },
+            { [WH]: 'nhiều' },
+          ),
+        ],
+        lookups(),
+      );
+      expect(products).toEqual([]);
+      expect(errors).toEqual([
+        { row: 2, column: HN, message: containing('số nguyên không âm') },
+        { row: 3, column: HN, message: containing('số nguyên không âm') },
+        { row: 4, column: WH, message: containing('số nguyên không âm') },
+      ]);
+    });
+
+    it('refuses stock on a service', () => {
+      const { products, errors } = parseImportRows(
+        [
+          stockRow(
+            {
+              name: 'Lắp đặt',
+              productType: 'Dịch vụ',
+              retailPrice: 1,
+              costPrice: 0,
+            },
+            { [HN]: 2 },
+          ),
+        ],
+        lookups(),
+      );
+      expect(products).toEqual([]);
+      expect(errors).toEqual([
+        { row: 2, column: HN, message: containing('Dịch vụ không có tồn kho') },
+      ]);
+    });
+  });
 });

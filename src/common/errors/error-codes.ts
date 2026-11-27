@@ -469,6 +469,8 @@ export const ErrorCode = {
   PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
   /** Có dòng không hợp lệ trong file nhập, không tạo gì. */
   PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
+  /** File có tồn kho ở địa điểm người nhập không được điều chỉnh tồn, hoặc thiếu quyền duyệt điều chỉnh. */
+  PRODUCT_IMPORT_STOCK_DENIED: 'PRODUCT_IMPORT_STOCK_DENIED',
   ORDER_IMPORT_FILE_INVALID: 'ORDER_IMPORT_FILE_INVALID',
   ORDER_IMPORT_ROWS_INVALID: 'ORDER_IMPORT_ROWS_INVALID',
   /** File xuất Excel vượt số dòng cho phép; lọc hẹp lại rồi xuất. */
