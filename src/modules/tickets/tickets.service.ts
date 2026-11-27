@@ -24,12 +24,12 @@ import type { CreateTicketDto, ReplyTicketDto } from './dto/ticket.dto';
 import { DEFAULT_TICKET_PRIORITY, TicketStatus } from './ticket.constants';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** Messages come back oldest-first so the thread reads top-to-bottom; the old embedded array got insertion order for free, here it has to be asked for. */
+/** Tin nhắn cũ nhất trước. */
 const WITH_MESSAGES = {
   messages: { orderBy: { createdAt: 'asc' } },
 } as const;
 
-/** Support threads between a shop and the platform operators. Two things carried over unchanged: a ticket belongs to the shop rather than the person who filed it (so `/tickets/my` filters on `tenantId`), and `isDeletedByTenant` is the only delete - it hides the thread from the shop while operators keep seeing it. What changed: the old routes ran on bare `verifyJwt`, so any authenticated account could read or soft-delete any ticket it could name. */
+/** Ticket hỗ trợ giữa shop và admin; shop xoá là ẩn. */
 @Injectable()
 export class TicketService {
   constructor(
@@ -38,12 +38,10 @@ export class TicketService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
-  /** How a sender is labelled on a message. The expression is ported as written, but the old JWT payload carried neither `profile` nor `email`, so every production message is stamped with a phone number; it resolves properly here only because `JwtStrategy` re-reads the user each request. */
+  /** Nhãn người gửi tin nhắn. */
   private senderName(user: AuthUser): string {
     return user.displayName ?? user.email ?? user.phoneNumber;
   }
-
-  // ─── Shop side ─────────────────────────────────────────────────────────────
 
   async create(tenantId: string, user: AuthUser, dto: CreateTicketDto) {
     const tenant = await this.prisma.tenant.findUnique({
@@ -52,10 +50,10 @@ export class TicketService {
     });
     const tenantName = tenant?.name ?? 'Unknown Store';
 
-    // The old scheme recycled every ~16.7 minutes against a unique column; this is the same generator every other reference code uses.
+    // Sinh mã ticket.
     const ticketId = generateReference(REFERENCE_PREFIX.TICKET);
 
-    // The opening description is stored twice on purpose: on the ticket, where the list view reads it, and as the first message, so the thread is self-contained.
+    // Lưu nội dung mở đầu trên ticket và là tin nhắn đầu.
     const ticket = await this.prisma.ticket.create({
       data: {
         ticketId,
@@ -89,7 +87,6 @@ export class TicketService {
     return ticket;
   }
 
-  /** Every thread the shop can still see, most recently active first. */
   findMine(tenantId: string) {
     return this.prisma.ticket.findMany({
       where: { tenantId, isDeletedByTenant: false },
@@ -120,7 +117,7 @@ export class TicketService {
       });
     }
 
-    // Back to OPEN: the shop has said something, so the thread needs an operator again.
+    // Shop vừa nhắn nên đưa về OPEN để operator xử lý lại.
     const ticket = await this.appendMessage(
       id,
       user,
@@ -131,8 +128,6 @@ export class TicketService {
     this.realtime.emitToRoom('admin', 'ticket-update', ticket);
     return ticket;
   }
-
-  // ─── Shared by both sides ──────────────────────────────────────────────────
 
   async findOne(user: AuthUser, id: string) {
     const ticket = await this.prisma.ticket.findUnique({
@@ -148,7 +143,7 @@ export class TicketService {
     return ticket;
   }
 
-  /** Soft delete. The old controller set `isDeletedByTenant` whoever the caller was, so an operator deleting a thread also hides it from the shop - ported as-is, with the admin list as the counterweight. */
+  /** Xoá mềm ticket. */
   async remove(user: AuthUser, id: string) {
     const found = await this.prisma.ticket.findUnique({
       where: { id },
@@ -167,7 +162,7 @@ export class TicketService {
       include: WITH_MESSAGES,
     });
 
-    // Two different events: the shop's list drops the row, the admin's list re-renders it with a "deleted" badge.
+    // Hai event khác nhau: danh sách shop bỏ dòng này, danh sách admin hiển thị lại với badge "đã xoá".
     this.realtime.emitToRoom(`tenant:${ticket.tenantId}`, 'ticket-delete', {
       id,
     });
@@ -176,9 +171,7 @@ export class TicketService {
     return { message: 'Đã xoá yêu cầu hỗ trợ', data: ticket };
   }
 
-  // ─── Operator side ─────────────────────────────────────────────────────────
-
-  /** Deliberately unfiltered, including threads the shop has deleted - operators need the whole history, and the admin UI renders deleted ones with a badge. */
+  /** Danh sách ticket cho admin, kể cả đã xoá. */
   async findAllAdmin(query: PaginationQueryDto) {
     const { page, limit } = query;
     const [tickets, total] = await Promise.all([
@@ -210,7 +203,7 @@ export class TicketService {
       ticket,
     );
 
-    // The owner filed this and went back to running a shop, so the socket event only lands if the app is open - the inbox row is what actually reaches them.
+    // Ghi vào hộp thư cho chủ shop.
     const owners = await this.notifications.tenantOwners(ticket.tenantId);
     await this.notifications.notify({
       tenantId: ticket.tenantId,
@@ -241,9 +234,7 @@ export class TicketService {
     return ticket;
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
-
-  /** One write for the message plus the status the sender's turn implies. The status is always written even when unchanged, so `@updatedAt` bumps and the thread rises to the top of both lists. */
+  /** Ghi tin nhắn và trạng thái ticket. */
   private appendMessage(
     id: string,
     user: AuthUser,
@@ -279,7 +270,6 @@ export class TicketService {
       });
   }
 
-  /** A platform operator reaches every thread; anyone else only their own shop's. */
   private assertCanReach(user: AuthUser, ownerTenantId: string): void {
     if (user.systemRole === SystemRole.ADMIN) return;
     if (user.tenantId !== ownerTenantId) {

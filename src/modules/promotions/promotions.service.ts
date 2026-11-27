@@ -1,3 +1,4 @@
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ForbiddenException,
@@ -8,7 +9,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SystemRole } from '../../common/constants/system-role';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
-import { ApplicableRuleType, PromotionStatus } from './promotion.constants';
+import {
+  ApplicableRuleType,
+  DiscountType,
+  PromotionStatus,
+} from './promotion.constants';
 import {
   buildCandidateList,
   resolveSelectedPromotions,
@@ -27,6 +32,16 @@ import {
 } from './dto/promotion.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { WALK_IN_CUSTOMER_CODE } from '../../common/constants/walk-in-customer';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
+
+/** Log không thuộc đơn này. `orderId: { not }` một mình bỏ luôn log không gắn đơn (NULL <> x là NULL trong SQL). */
+function notThisOrder(orderId: string): Prisma.PromotionLogWhereInput {
+  return { OR: [{ orderId: null }, { orderId: { not: orderId } }] };
+}
 
 const PROMOTION_INCLUDE = {
   branches: { select: { branchId: true } },
@@ -38,12 +53,10 @@ type PromotionRow = Prisma.PromotionGetPayload<{
   include: typeof PROMOTION_INCLUDE;
 }>;
 
-/** Real port of PromotionService - the half that touches the database, while the arithmetic stays in `pricing-engine.ts`. Branch scoping is a substitution for the old role branch: an owner sees everything, a STAFF account sees tenant-wide promotions plus those scoped to their posting, and creating one is simply `promotions:create`. */
+/** Service khuyến mãi: phạm vi chi nhánh, tính toán ở `pricing-engine.ts`. */
 @Injectable()
 export class PromotionService {
   constructor(private readonly prisma: PrismaService) {}
-
-  // ─── CRUD ──────────────────────────────────────────────────────────────────
 
   async create(tenantId: string, dto: CreatePromotionDto) {
     this.assertDateOrder(dto.startDate, dto.endDate);
@@ -132,13 +145,17 @@ export class PromotionService {
     const existing = await this.findRow(tenantId, id);
     this.assertBranchAccess(user, existing);
 
-    // The conditional rules read sibling fields, so they are re-checked against the merged result rather than the request on its own.
+    // Rule có điều kiện đọc field khác, nên được kiểm lại trên kết quả đã gộp chứ không chỉ trên request.
     const discountType = dto.discountType ?? existing.discountType;
-    const maxDiscountAmount =
-      dto.maxDiscountAmount ??
-      (existing.maxDiscountAmount === null
-        ? undefined
-        : Number(existing.maxDiscountAmount));
+    // Đổi sang số tiền cố định thì bỏ trần đang lưu, thay vì để nó gây lỗi.
+    const clearsCap =
+      discountType !== DiscountType.PERCENT && dto.maxDiscountAmount == null;
+    const maxDiscountAmount = clearsCap
+      ? undefined
+      : (dto.maxDiscountAmount ??
+        (existing.maxDiscountAmount === null
+          ? undefined
+          : Number(existing.maxDiscountAmount)));
     this.assertCapOnlyForPercent(discountType, maxDiscountAmount);
     this.assertDateOrder(
       dto.startDate ?? existing.startDate,
@@ -184,7 +201,7 @@ export class PromotionService {
           description: dto.description,
           discountType: dto.discountType,
           discountValue: dto.discountValue,
-          maxDiscountAmount: dto.maxDiscountAmount,
+          maxDiscountAmount: clearsCap ? null : dto.maxDiscountAmount,
           minOrderValue: dto.minOrderValue,
           applicableRuleType: dto.applicableRule?.type,
           startDate: dto.startDate ? new Date(dto.startDate) : undefined,
@@ -193,7 +210,7 @@ export class PromotionService {
           usageLimit: dto.usageLimit,
           usageLimitPerCustomer: dto.usageLimitPerCustomer,
           status: dto.status,
-          // usedCount is deliberately not writable - see UpdatePromotionDto.
+          // usedCount cố ý không cho ghi - xem UpdatePromotionDto.
         },
         include: PROMOTION_INCLUDE,
       });
@@ -202,7 +219,7 @@ export class PromotionService {
     return this.toResponse(updated);
   }
 
-  /** Soft delete to INACTIVE: order rows and promotion logs point at a promotion, and a discount that was genuinely given has to stay explainable months later. */
+  /** Xoá mềm về INACTIVE. */
   async deactivate(user: AuthUser, tenantId: string, id: string) {
     const existing = await this.findRow(tenantId, id);
     this.assertBranchAccess(user, existing);
@@ -231,7 +248,7 @@ export class PromotionService {
         include: {
           order: { select: { id: true, paymentReference: true } },
           customer: { select: { id: true, name: true, phone: true } },
-          branch: { select: { id: true, name: true } },
+          branch: BRANCH_NAME_SELECT,
         },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
@@ -242,6 +259,7 @@ export class PromotionService {
 
     const data = rows.map(({ discountAmount, ...log }) => ({
       ...log,
+      branch: namedBranch(log.branch),
       discountAmount: Number(discountAmount),
       paymentReference: log.order?.paymentReference ?? null,
     }));
@@ -249,9 +267,6 @@ export class PromotionService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  // ─── Pricing ───────────────────────────────────────────────────────────────
-
-  /** Every promotion that could apply to this cart, split into branch-specific and tenant-wide, each with eligibility and a standalone preview. */
   async listCandidates(tenantId: string, dto: PriceCartDto) {
     const { cart, candidates, usage } = await this.resolveCart(tenantId, dto);
     const entries = buildCandidateList(candidates, cart, new Date(), usage);
@@ -271,7 +286,7 @@ export class PromotionService {
       previewDiscount: entry.previewDiscount,
     });
 
-    // Usable ones first, biggest saving first within each group - the order a cashier scans the list in.
+    // Sắp: dùng được trước, giảm nhiều trước.
     const byUsefulness = (a: (typeof entries)[number], b: typeof a) =>
       a.eligible !== b.eligible
         ? a.eligible
@@ -291,7 +306,7 @@ export class PromotionService {
     };
   }
 
-  /** Read-only preview: no log, no usedCount change, nothing persisted. */
+  /** Chỉ xem trước: không ghi log, không đổi usedCount, không lưu gì. */
   async calculate(tenantId: string, dto: PriceCartDto): Promise<PricingResult> {
     const { cart, candidates, usage } = await this.resolveCart(tenantId, dto);
     return resolveSelectedPromotions(
@@ -303,7 +318,10 @@ export class PromotionService {
     );
   }
 
-  /** Commits the discount against an order: bumps `usedCount` and writes one PromotionLog per promotion. Both usage caps are re-checked inside the transaction, since two tills can both pass the preview - the global cap by a conditional increment, the per-customer one by re-counting logs, with `@@unique([orderId, promotionId])` as the backstop. */
+  /**
+   * Ghi lượt dùng khuyến mãi cho một đơn đã tạo. Từ 2026-11-27 tạo đơn (`POST /orders`, đơn quầy) tự ghi lượt trong
+   * transaction của đơn, nên route này chỉ còn cho client cũ: lượt đã ghi cho đơn thì bỏ qua, không tính hai lần.
+   */
   async apply(
     tenantId: string,
     userId: string,
@@ -315,6 +333,7 @@ export class PromotionService {
         message: 'orderId is required to apply a promotion',
       });
     }
+    const orderId = dto.orderId;
 
     const { cart, candidates, usage } = await this.resolveCart(tenantId, dto);
     const result = resolveSelectedPromotions(
@@ -326,80 +345,226 @@ export class PromotionService {
     );
     if (result.appliedPromotions.length === 0) return result;
 
-    const byId = new Map(candidates.map((p) => [p.id, p]));
-
-    await this.prisma.$transaction(async (tx) => {
-      for (const applied of result.appliedPromotions) {
-        const claimed = await tx.promotion.updateMany({
-          where: {
-            id: applied.promotionId,
-            tenantId,
-            OR: [
-              { usageLimit: null },
-              { usedCount: { lt: this.prisma.promotion.fields.usageLimit } },
-            ],
-          },
-          data: { usedCount: { increment: 1 } },
-        });
-        if (claimed.count === 0) {
-          throw new BadRequestException({
-            code: ErrorCode.PROMOTION_USAGE_EXHAUSTED,
-            message: `Promotion "${applied.promoName}" has no uses left`,
-          });
-        }
-
-        // Always present: the ids came out of `candidates` in the first place.
-        const cap = byId.get(applied.promotionId)!.usageLimitPerCustomer;
-        if (cap !== null && cart.customerId) {
-          const used = await tx.promotionLog.count({
-            where: {
-              tenantId,
-              promotionId: applied.promotionId,
-              customerId: cart.customerId,
-            },
-          });
-          if (used >= cap) {
-            throw new BadRequestException({
-              code: ErrorCode.PROMOTION_CUSTOMER_USAGE_EXHAUSTED,
-              message: `This customer has no uses left for promotion "${applied.promoName}"`,
-            });
-          }
-        }
-
-        await tx.promotionLog.create({
-          data: {
-            tenantId,
-            promotionId: applied.promotionId,
-            orderId: dto.orderId,
-            branchId: cart.branchId,
-            customerId: cart.customerId,
-            discountAmount: applied.discountAmount,
-            createdById: userId,
-            description: `Áp dụng khuyến mãi "${applied.promoName}" cho đơn hàng`,
-          },
-        });
-      }
-    });
-
+    await this.prisma.$transaction((tx) =>
+      this.recordUsage(tx, tenantId, {
+        orderId,
+        branchId: cart.branchId,
+        customerId: cart.customerId,
+        applied: result.appliedPromotions,
+        userId,
+      }),
+    );
     return result;
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
+  /**
+   * Một lượt dùng cho mỗi khuyến mãi của đơn, trong transaction của bên gọi (tạo đơn, sửa đơn, `/apply`). Đây là nơi
+   * duy nhất tăng `usedCount` và ghi `promotion_logs`, nên tính tiền và đếm lượt không thể lệch nhau: đơn rollback thì
+   * lượt cũng rollback.
+   *
+   * Hai giới hạn được kiểm lại ở đây vì số đọc lúc tính giá có thể đã cũ (hai quầy, một khách mở hai tab):
+   * - giới hạn chung qua `updateMany` có điều kiện, chỉ tăng khi còn lượt;
+   * - giới hạn theo khách bằng cách đếm lại log của khách, không tính đơn này. Khách vãng lai (null hoặc dòng
+   *   `KH_VANGLAI`) không dùng được khuyến mãi có giới hạn này. Khách mới tạo cùng đơn có 0 log nên lượt đầu qua.
+   *
+   * Khuyến mãi đã có log cho đơn thì bỏ qua: gọi lại không tính lượt lần hai.
+   */
+  async recordUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: {
+      orderId: string;
+      branchId: string | null;
+      customerId: string | null;
+      applied: readonly {
+        promotionId: string;
+        promoName: string;
+        discountAmount: number;
+      }[];
+      userId: string | null;
+    },
+  ): Promise<void> {
+    if (input.applied.length === 0) return;
+    const ids = input.applied.map((p) => p.promotionId);
+    const [logged, promotions, customerId] = await Promise.all([
+      tx.promotionLog.findMany({
+        where: { orderId: input.orderId, promotionId: { in: ids } },
+        select: { promotionId: true },
+      }),
+      tx.promotion.findMany({
+        where: { tenantId, id: { in: ids } },
+        select: { id: true, usageLimitPerCustomer: true },
+      }),
+      this.realCustomerId(tx, tenantId, input.customerId),
+    ]);
+    const done = new Set(logged.map((l) => l.promotionId));
+    const capOf = new Map(
+      promotions.map((p) => [p.id, p.usageLimitPerCustomer]),
+    );
 
-  /** Everything the pricing engine needs in one place: the cart with each line's category resolved, the promotions that could apply, and this customer's usage counts. */
+    for (const applied of input.applied) {
+      if (done.has(applied.promotionId)) continue;
+      const claimed = await tx.promotion.updateMany({
+        where: {
+          id: applied.promotionId,
+          tenantId,
+          OR: [
+            { usageLimit: null },
+            { usedCount: { lt: this.prisma.promotion.fields.usageLimit } },
+          ],
+        },
+        data: { usedCount: { increment: 1 } },
+      });
+      if (claimed.count === 0) {
+        throw new BadRequestException({
+          code: ErrorCode.PROMOTION_USAGE_EXHAUSTED,
+          message: `Promotion "${applied.promoName}" has no uses left`,
+        });
+      }
+
+      const cap = capOf.get(applied.promotionId) ?? null;
+      if (cap !== null) {
+        if (!customerId) {
+          throw new BadRequestException({
+            code: ErrorCode.PROMOTION_CUSTOMER_REQUIRED,
+            message: `Promotion "${applied.promoName}" is limited per customer and cannot go to a walk-in customer`,
+          });
+        }
+        const used = await tx.promotionLog.count({
+          where: {
+            tenantId,
+            promotionId: applied.promotionId,
+            customerId,
+            ...notThisOrder(input.orderId),
+          },
+        });
+        if (used >= cap) {
+          throw new BadRequestException({
+            code: ErrorCode.PROMOTION_CUSTOMER_USAGE_EXHAUSTED,
+            message: `This customer has no uses left for promotion "${applied.promoName}"`,
+          });
+        }
+      }
+
+      await tx.promotionLog.create({
+        data: {
+          tenantId,
+          promotionId: applied.promotionId,
+          orderId: input.orderId,
+          branchId: input.branchId,
+          customerId,
+          discountAmount: applied.discountAmount,
+          createdById: input.userId,
+          description: `Áp dụng khuyến mãi "${applied.promoName}" cho đơn hàng`,
+        },
+      });
+    }
+  }
+
+  /**
+   * Đưa lượt dùng của một đơn về đúng các khuyến mãi đơn đang mang (sửa đơn). Khuyến mãi bị bỏ, hoặc mọi khuyến mãi khi
+   * khách đổi, được trả lượt (giảm `usedCount`, xoá log); khuyến mãi còn lại cập nhật số tiền giảm; khuyến mãi mới đi
+   * qua `recordUsage` với khách hiện tại.
+   */
+  async syncOrderUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: {
+      orderId: string;
+      branchId: string | null;
+      customerId: string | null;
+      applied: readonly {
+        promotionId: string;
+        promoName: string;
+        discountAmount: number;
+      }[];
+      userId: string | null;
+    },
+  ): Promise<void> {
+    const [logs, customerId] = await Promise.all([
+      tx.promotionLog.findMany({
+        where: { tenantId, orderId: input.orderId },
+        select: {
+          id: true,
+          promotionId: true,
+          customerId: true,
+          discountAmount: true,
+        },
+      }),
+      this.realCustomerId(tx, tenantId, input.customerId),
+    ]);
+    const wanted = new Map(input.applied.map((p) => [p.promotionId, p]));
+    for (const log of logs) {
+      const keep = wanted.get(log.promotionId);
+      if (keep && log.customerId === customerId) {
+        if (Number(log.discountAmount) !== keep.discountAmount) {
+          await tx.promotionLog.update({
+            where: { id: log.id },
+            data: { discountAmount: keep.discountAmount },
+          });
+        }
+        continue;
+      }
+      // Trả lượt: chặn dưới 0 phòng dữ liệu cũ có log mà chưa từng tăng usedCount.
+      await tx.promotion.updateMany({
+        where: { id: log.promotionId, tenantId, usedCount: { gt: 0 } },
+        data: { usedCount: { decrement: 1 } },
+      });
+      await tx.promotionLog.delete({ where: { id: log.id } });
+    }
+    await this.recordUsage(tx, tenantId, { ...input, customerId });
+  }
+
+  /** Khách thật của đơn, hoặc null cho khách vãng lai (chưa gắn khách, hoặc dòng `KH_VANGLAI`). */
+  private async realCustomerId(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    customerId: string | null,
+  ): Promise<string | null> {
+    if (!customerId) return null;
+    const customer = await tx.customer.findFirst({
+      where: { id: customerId, tenantId },
+      select: { customerCode: true },
+    });
+    return customer && customer.customerCode !== WALK_IN_CUSTOMER_CODE
+      ? customerId
+      : null;
+  }
+
   private async resolveCart(tenantId: string, dto: PriceCartDto) {
     await this.assertCartRefs(tenantId, dto);
     const cart = await this.buildCartContext(tenantId, dto);
+    cart.customerId = await this.realCustomerId(
+      this.prisma,
+      tenantId,
+      cart.customerId,
+    );
+    // Chỉ khi chưa có khách: có `customerId` thì đó là khách thật hoặc vãng lai, không phải khách mới.
+    cart.newCustomer = !dto.customerId && dto.newCustomer === true;
     const candidates = await this.findCandidates(tenantId, cart.branchId);
+    // Tính lại một đơn đã có khuyến mãi (sửa đơn): lượt của chính đơn đó không được tính là đã dùng hết.
+    if (dto.orderId) {
+      const own = await this.prisma.promotionLog.findMany({
+        where: { tenantId, orderId: dto.orderId },
+        select: { promotionId: true },
+      });
+      const mine = new Set(own.map((l) => l.promotionId));
+      for (const promotion of candidates) {
+        if (mine.has(promotion.id)) {
+          promotion.usedCount = Math.max(0, promotion.usedCount - 1);
+        }
+      }
+    }
     const usage = await this.customerUsageCounts(
       tenantId,
       cart.customerId,
       candidates,
+      dto.orderId,
     );
     return { cart, candidates, usage };
   }
 
-  /** Every id the client names on a cart has to belong to this tenant. `branchId`, `customerId` and `orderId` are plain foreign keys, and `GET /promotions/:id/logs` joins the customer's name and phone back out - so an unchecked id was a way to read another shop's customer list one row at a time. All four endpoints go through here, since a preview picked by a foreign `branchId` would quietly disagree with the sale. */
+  /** Kiểm mọi id trong giỏ thuộc tenant. */
   private async assertCartRefs(tenantId: string, dto: PriceCartDto) {
     const [branch, customer, order] = await Promise.all([
       dto.branchId
@@ -441,7 +606,7 @@ export class PromotionService {
     }
   }
 
-  /** A promotion can target a category, but a cart line names a variant whose parent product carries it - one query resolves the whole hop. */
+  /** Lấy danh mục cho từng dòng giỏ. */
   private async buildCartContext(
     tenantId: string,
     dto: PriceCartDto,
@@ -451,7 +616,7 @@ export class PromotionService {
       where: { tenantId, id: { in: ids } },
       select: {
         id: true,
-        // Priced here, not by the caller: a preview trusting a client-supplied price would quote a discount the order then refuses to honour, and `/apply` writes a usage log against that quote.
+        // Giá lấy từ server.
         retailPrice: true,
         product: { select: { categoryId: true } },
       },
@@ -464,7 +629,7 @@ export class PromotionService {
     }
     const byId = new Map(variants.map((v) => [v.id, v]));
 
-    // The index IS the line identity: `dto.items` order is preserved through the engine and back out as `itemBreakdown`, which is what lets the caller join positionally.
+    // Index là định danh dòng.
     const items: CartItem[] = dto.items.map((item, lineId) => {
       const unitPrice = Number(byId.get(item.productItemId)!.retailPrice);
       return {
@@ -485,7 +650,6 @@ export class PromotionService {
     };
   }
 
-  /** Live promotions for this tenant - tenant-wide ones plus this branch's. */
   private async findCandidates(
     tenantId: string,
     branchId: string | null,
@@ -507,11 +671,12 @@ export class PromotionService {
     return rows.map((row) => this.toPricingPromotion(row));
   }
 
-  /** How many times this customer has already used each capped promotion; only capped ones are counted, and it is handed in as a map so the engine stays database-free. */
+  /** Số lần khách đã dùng các khuyến mãi có giới hạn. */
   private async customerUsageCounts(
     tenantId: string,
     customerId: string | null,
     candidates: PricingPromotion[],
+    exceptOrderId?: string,
   ): Promise<Record<string, number>> {
     const capped = candidates
       .filter((p) => p.usageLimitPerCustomer !== null)
@@ -520,7 +685,12 @@ export class PromotionService {
 
     const rows = await this.prisma.promotionLog.groupBy({
       by: ['promotionId'],
-      where: { tenantId, customerId, promotionId: { in: capped } },
+      where: {
+        tenantId,
+        customerId,
+        promotionId: { in: capped },
+        ...(exceptOrderId ? notThisOrder(exceptOrderId) : {}),
+      },
       _count: { _all: true },
     });
 
@@ -542,8 +712,6 @@ export class PromotionService {
     return promotion;
   }
 
-  // ─── Guards ────────────────────────────────────────────────────────────────
-
   private assertDateOrder(start: Date | string, end: Date | string): void {
     if (new Date(end) <= new Date(start)) {
       throw new BadRequestException({
@@ -553,9 +721,13 @@ export class PromotionService {
     }
   }
 
-  /** A ceiling on a fixed amount is just a smaller fixed amount - reject the confusion. */
-  private assertCapOnlyForPercent(discountType: string, cap?: number): void {
-    if (cap !== undefined && discountType !== 'PERCENT') {
+  /** Trần cho số tiền cố định chỉ là một số tiền cố định nhỏ hơn; từ chối để tránh nhầm lẫn. */
+  private assertCapOnlyForPercent(
+    discountType: string,
+    cap?: number | null,
+  ): void {
+    // `null` cũng nghĩa là "không có trần" như `undefined`: form gửi null khi ô để trống.
+    if (cap != null && discountType !== 'PERCENT') {
       throw new BadRequestException({
         code: ErrorCode.PROMOTION_MAX_DISCOUNT_INVALID,
         message: 'maxDiscountAmount is only valid for a percentage discount',
@@ -567,7 +739,11 @@ export class PromotionService {
     const unique = [...new Set(branchIds)];
     if (unique.length === 0) return;
     const found = await this.prisma.branch.count({
-      where: { tenantId, id: { in: unique } },
+      where: {
+        tenantId,
+        id: { in: unique },
+        location: { type: LocationType.BRANCH },
+      },
     });
     if (found !== unique.length) {
       throw new NotFoundException({
@@ -577,7 +753,6 @@ export class PromotionService {
     }
   }
 
-  /** Whatever the rule points at has to exist in this tenant. */
   private async assertRuleTargetsExist(
     tenantId: string,
     rule: { type: string; categoryIds?: string[]; productItemIds?: string[] },
@@ -608,7 +783,6 @@ export class PromotionService {
     }
   }
 
-  /** The list-level half of branch scoping - see the class comment. */
   private branchScope(
     user: AuthUser,
     requestedBranchId?: string,
@@ -628,10 +802,9 @@ export class PromotionService {
     };
   }
 
-  /** The single-row counterpart, for endpoints that fetch by id. */
   private assertBranchAccess(user: AuthUser, promotion: PromotionRow): void {
     if (this.seesEveryBranch(user)) return;
-    if (promotion.branches.length === 0) return; // tenant-wide
+    if (promotion.branches.length === 0) return;
     const inScope = promotion.branches.some(
       (link) => link.branchId === user.branchId,
     );
@@ -650,9 +823,6 @@ export class PromotionService {
     );
   }
 
-  // ─── Shapes ────────────────────────────────────────────────────────────────
-
-  /** Prisma row → the plain shape the pricing engine understands. */
   private toPricingPromotion(row: PromotionRow): PricingPromotion {
     return {
       id: row.id,
@@ -679,7 +849,6 @@ export class PromotionService {
     };
   }
 
-  /** Decimals become numbers, and the join rows become the nested shape the API had. */
   private toResponse(row: PromotionRow) {
     const {
       branches,

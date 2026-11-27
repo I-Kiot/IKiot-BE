@@ -1,31 +1,19 @@
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 
-/** `POST /auth/refresh` - public, the token is the credential. */
 export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty({ message: 'Refresh token không được để trống' })
   refreshToken: string;
 }
 
-/** `POST /auth/logout`. The refresh token is optional, as in the old controller - the user id always comes from the access token, never the body. */
+/** Refresh token không bắt buộc (như controller cũ); userId luôn lấy từ access token, không từ body. */
 export class LogoutDto {
   @IsOptional()
   @IsString()
   refreshToken?: string;
 }
 
-/** `POST /auth/verify-forgot-password-otp`. */
-export class VerifyForgotPasswordOtpDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Số điện thoại không được để trống' })
-  phoneNumber: string;
-
-  @IsString()
-  @IsNotEmpty({ message: 'Mã OTP không được để trống' })
-  otpCode: string;
-}
-
-/** `POST /auth/reset-password` - `token` is the one minted by the step above. */
 export class ResetPasswordDto {
   @IsString()
   @IsNotEmpty({
@@ -33,17 +21,21 @@ export class ResetPasswordDto {
   })
   token: string;
 
-  // 6, the old service's floor - kept in step with register and changePassword, since one of the three moving is how they drift apart.
+  // Mật khẩu tối thiểu 6 ký tự.
   @IsString()
   @MinLength(6, { message: 'Mật khẩu mới phải có ít nhất 6 ký tự' })
   newPassword: string;
 }
 
-/** `POST /auth/check-availability` - both fields optional, so the form can ask about whichever one the user has just finished typing. */
+/** Mọi trường đều tuỳ chọn, để form kiểm tra trường nào người dùng vừa nhập xong. */
 export class CheckAvailabilityDto {
   @IsOptional()
   @IsString()
   phoneNumber?: string;
+
+  @IsOptional()
+  @NormalizeEmail()
+  email?: string;
 
   @IsOptional()
   @IsString()

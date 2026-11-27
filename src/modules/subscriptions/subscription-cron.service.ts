@@ -20,14 +20,14 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The statuses the clock can still move; EXPIRED and CANCELLED never change on their own. */
+/** Các trạng thái mà đồng hồ vẫn có thể chuyển; EXPIRED và CANCELLED không tự đổi. */
 const TRANSITIONABLE = [
   SubscriptionStatus.TRIAL,
   SubscriptionStatus.ACTIVE,
   SubscriptionStatus.PAST_DUE,
 ];
 
-// Ported from subscriptionJob.js using @nestjs/schedule: same daily 02:00 schedule, same two-step run (status transitions, then expiry reminders), skipped in tests.
+// Cron gói dịch vụ: đổi trạng thái rồi nhắc hết hạn.
 @Injectable()
 export class SubscriptionCronService {
   private readonly logger = new Logger(SubscriptionCronService.name);
@@ -38,7 +38,7 @@ export class SubscriptionCronService {
     private readonly email: EmailService,
   ) {}
 
-  // 02:00 in Vietnam, not on whatever clock the host runs: every question below is about a local calendar day, and on a UTC host an untimed 2 AM fires at 09:00 Vietnam time and moves each answer by a day.
+  // 02:00 giờ Việt Nam.
   @Cron(CronExpression.EVERY_DAY_AT_2AM, { timeZone: VIETNAM_TIMEZONE })
   async runDailyJob() {
     if (process.env.NODE_ENV === 'test') return;
@@ -55,11 +55,11 @@ export class SubscriptionCronService {
     }
   }
 
-  /** Nightly sweep of everything whose term has run out. The decision comes from `nextSubscriptionStatus`, the same function applied lazily on read - this job only finds the candidates and writes the answer down. */
+  /** Quét các gói đã hết hạn và cập nhật trạng thái. */
   async runSubscriptionStatusCheck() {
     const now = new Date();
 
-    // Anything already settled is skipped by the date filter, so this stays a small set even on a big instance.
+    // Gói đã xử lý xong bị bộ lọc ngày loại ra, nên tập này vẫn nhỏ kể cả với instance lớn.
     const candidates = await this.prisma.subscription.findMany({
       where: {
         status: { in: TRANSITIONABLE },
@@ -98,7 +98,7 @@ export class SubscriptionCronService {
       this.logger.log(`Moved ${ids.length} subscription(s) to ${status}`);
     }
 
-    // A trial running out and a paid term running out read very differently to the owner, so they get different copy even though both land on EXPIRED.
+    // Nội dung riêng cho hết dùng thử và hết kỳ trả phí.
     const expired = transitions.filter(
       ({ nextStatus }) => nextStatus === SubscriptionStatus.EXPIRED,
     );
@@ -171,7 +171,7 @@ export class SubscriptionCronService {
     }
   }
 
-  /** Owner account per tenant, in one query for the whole batch. `Tenant.tenantOwnerId` is an unenforced scalar (a relation would be a circular FK at creation time), so the owner is found by role. */
+  /** Chủ shop của từng tenant trong một truy vấn. */
   private async ownersOf(tenantIds: string[]) {
     const owners = await this.prisma.user.findMany({
       where: {

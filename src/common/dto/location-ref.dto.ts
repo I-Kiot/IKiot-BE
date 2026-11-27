@@ -1,59 +1,102 @@
-import {
-  IsIn,
-  IsNotEmpty,
-  IsOptional,
-  IsUUID,
-  ValidateIf,
-} from 'class-validator';
+import { NotFoundException } from '@nestjs/common';
+import { IsIn, IsOptional, IsUUID } from 'class-validator';
 import { LocationType, LOCATION_TYPES } from '../constants/location-type';
+import { ErrorCode } from '../errors/error-codes';
+import type { Prisma } from '../../../generated/prisma/client';
 
-/** A "branch or warehouse" reference in the shape the API speaks; this file is the only place that maps it to the `branch_id`/`warehouse_id` FK pair. */
-export class LocationRefDto {
-  @IsUUID()
-  @IsNotEmpty({ message: 'Thiếu địa điểm' })
-  locationId: string;
+// Cách tham chiếu địa điểm; Branch và Warehouse dùng chung id với Location.
 
-  @IsIn(LOCATION_TYPES, {
-    message: `locationType phải là ${LOCATION_TYPES.join(' hoặc ')}`,
-  })
-  locationType: string;
-}
-
-/** The same reference as a filter: both fields may be absent, but a location id without its type never resolves. */
+/** Bộ lọc địa điểm cho API đọc tồn kho: theo id, theo loại, hoặc cả hai. */
 export class LocationRefQueryDto {
   @IsOptional()
   @IsUUID()
   locationId?: string;
 
-  // Not @IsOptional(): once either field is present, locationType has to be a real value.
-  @ValidateIf(
-    (q: LocationRefQueryDto) =>
-      q.locationId !== undefined || q.locationType !== undefined,
-  )
+  @IsOptional()
   @IsIn(LOCATION_TYPES, {
-    message: `locationType phải là ${LOCATION_TYPES.join(' hoặc ')} (bắt buộc khi có locationId)`,
+    message: `locationType phải là ${LOCATION_TYPES.join(' hoặc ')}`,
   })
   locationType?: string;
 }
 
-/** The pair of nullable FKs as Prisma writes them. Exactly one is ever set. */
+/** Hình dạng địa điểm trong response tồn kho, dưới dạng include fragment: `location: LOCATION_SELECT`. */
+export const LOCATION_SELECT = {
+  select: { id: true, type: true, name: true },
+} as const satisfies Prisma.LocationDefaultArgs;
+
+export type LocationRef = Prisma.LocationGetPayload<typeof LOCATION_SELECT>;
+
+/** Địa điểm client gửi khi ghi tồn kho, chỉ cần id. */
+export class LocationIdDto {
+  @IsUUID()
+  locationId: string;
+}
+
+/** Thứ có thể đọc địa điểm - `this.prisma` hoặc transaction client đều được. */
+type LocationReader = Pick<Prisma.TransactionClient, 'location'>;
+
+/** Một đầu của thao tác kho, theo đúng những gì rule cần: địa điểm nào và loại gì. */
+export interface LocationEnd {
+  id: string;
+  type: string;
+}
+
+/** Kiểm mọi địa điểm trong request thuộc tenant của người gọi. */
+export async function resolveLocations(
+  db: LocationReader,
+  tenantId: string,
+  ids: (string | null | undefined)[],
+): Promise<Map<string, LocationEnd>> {
+  const wanted = [...new Set(ids.filter((id): id is string => !!id))];
+  if (wanted.length === 0) return new Map();
+
+  const rows = await db.location.findMany({
+    where: { tenantId, id: { in: wanted } },
+    select: { id: true, type: true },
+  });
+  if (rows.length !== wanted.length) {
+    throw new NotFoundException({
+      code: ErrorCode.LOCATION_NOT_FOUND,
+      message: 'Location not found',
+    });
+  }
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+/** Tham chiếu địa điểm trong bộ nhớ, luôn chỉ một bên chi nhánh hoặc kho có giá trị. */
 export interface LocationColumns {
   branchId: string | null;
   warehouseId: string | null;
 }
 
-/** Nested request shape -> flat columns, for a write. */
-export function toLocationColumns(ref: LocationRefDto): LocationColumns {
-  return ref.locationType === LocationType.BRANCH
-    ? { branchId: ref.locationId, warehouseId: null }
-    : { branchId: null, warehouseId: ref.locationId };
+/** Select fragment cho quan hệ `location`, đủ dữ liệu cho {@link columnsOfLocation}. */
+export const LOCATION_TYPE_SELECT = {
+  select: { id: true, type: true },
+} as const;
+
+/** Quan hệ `location` đã load bằng {@link LOCATION_TYPE_SELECT}. */
+export interface LocationTypeRow {
+  id: string;
+  type: string;
 }
 
-/** Flat columns -> the API's pair. Null when the row somehow names neither. */
-export function toLocationRef(row: {
-  branchId: string | null;
-  warehouseId: string | null;
-}): { locationId: string; locationType: LocationType } | null {
+/** Quan hệ `location` đã load -> cặp trong bộ nhớ. */
+export function columnsOfLocation(
+  location: LocationTypeRow | null | undefined,
+): LocationColumns {
+  if (location?.type === LocationType.BRANCH) {
+    return { branchId: location.id, warehouseId: null };
+  }
+  if (location?.type === LocationType.WAREHOUSE) {
+    return { branchId: null, warehouseId: location.id };
+  }
+  return { branchId: null, warehouseId: null };
+}
+
+/** Đổi cặp chi nhánh/kho thành `{ locationId, locationType }`, null khi không có. */
+export function toLocationRef(
+  row: LocationColumns,
+): { locationId: string; locationType: LocationType } | null {
   if (row.branchId) {
     return { locationId: row.branchId, locationType: LocationType.BRANCH };
   }
@@ -66,84 +109,87 @@ export function toLocationRef(row: {
   return null;
 }
 
-/** The same reference as a Prisma `where` fragment - spread it into a filter; it narrows by location, by kind, or not at all. */
-export function locationWhere(query: LocationRefQueryDto): {
-  branchId?: string | { not: null };
-  warehouseId?: string | { not: null };
-} {
-  const { locationId, locationType } = query;
-  if (locationId) {
-    // locationType is guaranteed present here by LocationRefQueryDto's validation.
-    return locationType === LocationType.WAREHOUSE
-      ? { warehouseId: locationId }
-      : { branchId: locationId };
-  }
-  if (locationType === LocationType.BRANCH) return { branchId: { not: null } };
-  if (locationType === LocationType.WAREHOUSE) {
-    return { warehouseId: { not: null } };
-  }
-  return {};
+/** Quan hệ `location` đã load, đi thẳng ra tham chiếu của API. */
+export function locationRefOf(location: LocationTypeRow | null | undefined) {
+  return toLocationRef(columnsOfLocation(location));
 }
 
-/**
- * The same narrowing as `locationWhere`, but as a predicate over rows already in memory.
- *
- * Reads that report "stock here" *and* "stock across the chain" load every location's rows
- * in one query and split them afterwards, so the split has to follow exactly the rule the
- * `where` fragment above would have applied - which is why it lives next to it rather than
- * being spelled out at the call site.
- */
+/** Đổi bộ lọc địa điểm thành `where` của Prisma. */
+export function locationWhere(
+  query: LocationRefQueryDto,
+): Pick<Prisma.InventoryWhereInput, 'locationId' | 'location'> {
+  const where: Pick<Prisma.InventoryWhereInput, 'locationId' | 'location'> = {};
+  if (query.locationId) where.locationId = query.locationId;
+  if (query.locationType) where.location = { type: query.locationType };
+  return where;
+}
+
+/** Bộ lọc địa điểm trên dữ liệu đã tải, cùng quy tắc với `locationWhere`. */
 export function locationMatcher(
   query: LocationRefQueryDto,
-): (row: LocationColumns) => boolean {
-  const { locationId, locationType } = query;
-  if (locationId) {
-    // locationType is guaranteed present here by LocationRefQueryDto's validation.
-    return locationType === LocationType.WAREHOUSE
-      ? (row) => row.warehouseId === locationId
-      : (row) => row.branchId === locationId;
+): (row: { locationId: string; location: { type: string } }) => boolean {
+  return (row) =>
+    (!query.locationId || row.locationId === query.locationId) &&
+    (!query.locationType || row.location.type === query.locationType);
+}
+
+/** Select tên chi nhánh (tên nằm ở Location), dùng với `namedBranch`. */
+export const BRANCH_NAME_SELECT = {
+  select: { id: true, location: { select: { name: true } } },
+} as const;
+
+/** `{ id, location: { name } }` -> `{ id, name }` mà API vẫn trả về từ trước tới nay. */
+export function namedBranch(
+  branch: { id: string; location: { name: string } } | null | undefined,
+): { id: string; name: string } | null {
+  return branch ? { id: branch.id, name: branch.location.name } : null;
+}
+
+/** Select nơi làm việc của user để đọc lại `branchId`/`warehouseId`. */
+export const USER_POSTING_SELECT = { location: LOCATION_TYPE_SELECT } as const;
+
+/** Thêm lại `branchId`/`warehouseId` vào user đã tải. */
+export function withPosting<T extends { location: LocationTypeRow | null }>(
+  row: T,
+): Omit<T, 'location'> & LocationColumns {
+  const { location, ...rest } = row;
+  return { ...rest, ...columnsOfLocation(location) };
+}
+
+/** Đổi phạm vi chi nhánh/kho thành bộ lọc trên `locationId`. */
+export function postingWhere(scope: {
+  branchId?: string | null;
+  warehouseId?: string | null;
+}): { AND?: { locationId: string }[] } {
+  const ids = [scope.branchId, scope.warehouseId].filter((id): id is string =>
+    Boolean(id),
+  );
+  return ids.length > 0
+    ? { AND: ids.map((locationId) => ({ locationId })) }
+    : {};
+}
+
+/** Như `withPosting`, kèm thông tin nơi làm việc lồng trong `branch` / `warehouse`. */
+export function withNamedPosting<
+  T extends { location: LocationTypeRow | null },
+>(
+  row: T,
+): Omit<T, 'location'> &
+  LocationColumns & {
+    branch: Omit<NonNullable<T['location']>, 'type'> | null;
+    warehouse: Omit<NonNullable<T['location']>, 'type'> | null;
+  } {
+  const { location, ...rest } = row;
+  const columns = columnsOfLocation(location);
+  let place: Omit<NonNullable<T['location']>, 'type'> | null = null;
+  if (location) {
+    const { type, ...fields } = location as NonNullable<T['location']>;
+    place = fields;
   }
-  if (locationType === LocationType.BRANCH)
-    return (row) => row.branchId !== null;
-  if (locationType === LocationType.WAREHOUSE) {
-    return (row) => row.warehouseId !== null;
-  }
-  return () => true;
-}
-
-/** The same pair under StockMovementRequest's `from`/`to` prefixes, so call sites never spell out the four columns. */
-export function toSourceColumns(ref: LocationRefDto): {
-  fromBranchId: string | null;
-  fromWarehouseId: string | null;
-} {
-  const { branchId, warehouseId } = toLocationColumns(ref);
-  return { fromBranchId: branchId, fromWarehouseId: warehouseId };
-}
-
-export function toDestinationColumns(ref: LocationRefDto): {
-  toBranchId: string | null;
-  toWarehouseId: string | null;
-} {
-  const { branchId, warehouseId } = toLocationColumns(ref);
-  return { toBranchId: branchId, toWarehouseId: warehouseId };
-}
-
-export function sourceRef(row: {
-  fromBranchId: string | null;
-  fromWarehouseId: string | null;
-}) {
-  return toLocationRef({
-    branchId: row.fromBranchId,
-    warehouseId: row.fromWarehouseId,
-  });
-}
-
-export function destinationRef(row: {
-  toBranchId: string | null;
-  toWarehouseId: string | null;
-}) {
-  return toLocationRef({
-    branchId: row.toBranchId,
-    warehouseId: row.toWarehouseId,
-  });
+  return {
+    ...rest,
+    ...columns,
+    branch: columns.branchId ? place : null,
+    warehouse: columns.warehouseId ? place : null,
+  };
 }

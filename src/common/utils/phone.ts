@@ -1,4 +1,4 @@
-/** A Vietnamese phone number in E.164, used for keying (the OTP store) rather than storage - `User.phoneNumber` keeps whatever the user typed. */
+/** Chuẩn hoá SĐT Việt Nam về E.164 để làm khoá. */
 export function normalizePhone(phone: string | null | undefined): string {
   if (!phone) return '';
   const cleaned = String(phone)

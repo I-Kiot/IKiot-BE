@@ -1,9 +1,11 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
+import { SUPPLIER_TYPES } from '../../../common/constants/inventory-ledger';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export class QuerySupplierDto extends PaginationQueryDto {
-  /** Partial, case-insensitive match on supplier name or phone number. */
+  /** Khớp một phần, không phân biệt hoa thường, theo tên hoặc SĐT NCC. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -11,11 +13,12 @@ export class QuerySupplierDto extends PaginationQueryDto {
   )
   search?: string;
 
-  /** `hasDebt=true` narrows the list to suppliers still owed money. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === true || value === 'true',
-  )
-  @IsBoolean()
+  /** `hasDebt=true` chỉ lấy NCC còn nợ. */
+  @BooleanQuery()
   hasDebt?: boolean;
+
+  /** `type=WORKSHOP` liệt kê các thợ có thể nhận yêu cầu sản xuất. */
+  @IsOptional()
+  @IsIn(SUPPLIER_TYPES)
+  type?: string;
 }

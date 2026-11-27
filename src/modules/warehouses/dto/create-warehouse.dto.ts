@@ -1,4 +1,3 @@
-import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
@@ -6,11 +5,10 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  ValidateNested,
 } from 'class-validator';
-import { AttendanceLocationDto } from '../../../common/dto/attendance-location.dto';
+import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
-// Mirrors CreateBranchDto: a tenant now runs several warehouses, so one carries the same contact details and validation rules a branch does - `phoneNumber` and `email` are new since the 2026-08-19 migration.
+// Body tạo kho.
 export class CreateWarehouseDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên kho không được để trống' })
@@ -20,6 +18,7 @@ export class CreateWarehouseDto {
   @ArrayNotEmpty({ message: 'Kho phải có ít nhất một số điện thoại' })
   @IsString({ each: true })
   @IsNotEmpty({ each: true })
+  @IsContactPhone({ each: true })
   phoneNumber: string[];
 
   @IsOptional()
@@ -29,9 +28,4 @@ export class CreateWarehouseDto {
   @IsOptional()
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
-
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => AttendanceLocationDto)
-  attendanceTakingLocation?: AttendanceLocationDto;
 }

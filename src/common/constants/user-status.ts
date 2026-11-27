@@ -1,4 +1,4 @@
-/** User account lifecycle. DELETED is a soft delete (`User.deletedAt` set alongside), since orders, attendances, audit logs and payslips hold FKs. */
+/** Trạng thái tài khoản; DELETED là xoá mềm. */
 export const UserStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',
@@ -8,14 +8,14 @@ export const UserStatus = {
 
 export type UserStatus = (typeof UserStatus)[keyof typeof UserStatus];
 
-/** Statuses that refuse a login and invalidate an issued token - checked at login and on every request, so suspending locks out a running session. */
+/** Trạng thái bị chặn đăng nhập và vô hiệu token đang dùng. */
 export const INACTIVE_USER_STATUSES: ReadonlySet<string> = new Set([
   UserStatus.SUSPENDED,
   UserStatus.INACTIVE,
   UserStatus.DELETED,
 ]);
 
-/** What a client may set directly on a user - DELETED is reachable only via DELETE. */
+/** Trạng thái client được đặt trực tiếp cho user - DELETED chỉ qua DELETE. */
 export const SETTABLE_USER_STATUSES: readonly string[] = [
   UserStatus.ACTIVE,
   UserStatus.INACTIVE,

@@ -1,4 +1,4 @@
-/** What a stock movement is for: `IMPORT` (goods from a supplier, the only type that moves their debt), `EXPORT` (between our own locations), `RETURN` (the same move back to a warehouse, kept separate because the paperwork and reporting differ) and `ADJUST` (a stocktake correcting the recorded number at one location). */
+/** Loại phiếu kho: nhập, xuất, trả, kiểm kê. */
 export const MovementType = {
   IMPORT: 'IMPORT',
   EXPORT: 'EXPORT',
@@ -10,7 +10,7 @@ export type MovementType = (typeof MovementType)[keyof typeof MovementType];
 
 export const MOVEMENT_TYPES: readonly string[] = Object.values(MovementType);
 
-/** The lifecycle of a request. `DRAFT → OPENING → CLOSED → IN_TRANSIT → RECEIVED` is the transfer path; IMPORT and ADJUST start at `PENDING`, since there is nothing to pick and pack, and ADJUST finishes at `COMPLETED` because nothing arrived. */
+/** Trạng thái phiếu kho. */
 export const MovementStatus = {
   DRAFT: 'DRAFT',
   PENDING: 'PENDING',
@@ -28,7 +28,7 @@ export type MovementStatus =
 export const MOVEMENT_STATUSES: readonly string[] =
   Object.values(MovementStatus);
 
-/** Statuses in which a movement still expects to touch its items; `ProductService` reads this to refuse discontinuing a product caught up in unfinished paperwork. */
+/** Trạng thái phiếu còn dở. */
 export const OPEN_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.DRAFT,
   MovementStatus.PENDING,
@@ -36,12 +36,9 @@ export const OPEN_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.IN_TRANSIT,
 ];
 
-/** Nothing moves a request out of these - cancelling one is refused. */
+/** Không thao tác nào đưa phiếu ra khỏi các trạng thái này; huỷ bị từ chối. */
 export const FINAL_MOVEMENT_STATUSES: readonly string[] = [
   MovementStatus.RECEIVED,
   MovementStatus.COMPLETED,
   MovementStatus.CANCELLED,
 ];
-
-/** How much of a supplier's credit limit has to be used before the owners are warned - the hardcoded `0.75` from the old receive path, fired once on the receipt that crosses the line. */
-export const CREDIT_WARNING_RATIO = 0.75;

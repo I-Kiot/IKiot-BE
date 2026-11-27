@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,9 +9,30 @@ import { NotificationService } from '../notifications/notifications.service';
 import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
 import { PaymentMethod } from '../../common/constants/payment-method';
 import {
+  CashFlowCategory,
+  fundOf,
+} from '../../common/constants/cash-flow-category';
+import {
+  IMPORT_SOURCE_FOR_SUPPLIER_TYPE,
+  ImportSource,
+  SupplierType,
+} from '../../common/constants/inventory-ledger';
+import type { NotificationContent } from '../notifications/notification-content.type';
+import { crossedCreditWarning } from './credit-warning';
+import {
+  SupplierDebtEntryType,
+  SupplierDebtRefType,
+  type SupplierDebtRef,
+} from '../../common/constants/supplier-debt';
+import { toDong } from '../../common/utils/money';
+import { canActAt } from '../../common/utils/location-access';
+import type { AuthUser } from '../../common/types/auth-user.type';
+import { QuerySupplierDebtEntryDto } from './dto/query-supplier-debt-entry.dto';
+import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
+import { withNestedProfile } from '../../common/utils/user-profile';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
@@ -19,7 +41,7 @@ import { PaySupplierDebtDto } from './dto/pay-supplier-debt.dto';
 import { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Ported from iKiotMS-BE's SupplierService + SupplierController.
+// Port từ SupplierService + SupplierController của iKiotMS-BE (bản cũ).
 @Injectable()
 export class SupplierService {
   constructor(
@@ -37,6 +59,9 @@ export class SupplierService {
     }
     if (query.hasDebt) {
       where.outstandingDebt = { gt: 0 };
+    }
+    if (query.type) {
+      where.type = query.type;
     }
 
     const [data, total] = await Promise.all([
@@ -69,19 +94,40 @@ export class SupplierService {
       data: {
         tenantId,
         supplierName: dto.supplierName,
+        type: dto.type ?? SupplierType.GOODS,
         contactName: dto.contactName,
         phoneNumber: dto.phoneNumber,
         email: dto.email,
         address: dto.address,
         creditLimit: dto.creditLimit ?? 0,
-        outstandingDebt: 0, // always starts at zero - only stock movements raise it
+        outstandingDebt: 0, // Luôn bắt đầu bằng 0; chỉ nhận hàng mới làm nợ tăng.
       },
     });
   }
 
   async update(tenantId: string, id: string, dto: UpdateSupplierDto) {
-    await this.findOne(tenantId, id);
+    const supplier = await this.findOne(tenantId, id);
+    if (dto.type && dto.type !== supplier.type) {
+      await this.assertTypeIsFree(id);
+    }
     return this.prisma.supplier.update({ where: { id }, data: dto });
+  }
+
+  /** Không đổi loại NCC khi đã có phiếu gắn vào. */
+  private async assertTypeIsFree(supplierId: string): Promise<void> {
+    const [movements, requests] = await Promise.all([
+      this.prisma.stockMovementRequest.count({
+        where: { fromSupplierId: supplierId },
+      }),
+      this.prisma.productionRequest.count({ where: { supplierId } }),
+    ]);
+    if (movements + requests > 0) {
+      throw new ConflictException({
+        code: ErrorCode.SUPPLIER_TYPE_LOCKED,
+        message:
+          'The supplier type cannot change once an import or a production request names it',
+      });
+    }
   }
 
   async remove(tenantId: string, id: string) {
@@ -94,15 +140,16 @@ export class SupplierService {
       });
     }
 
-    // Supplier has no status column, so this is a hard delete - the rows pointing at it have to be checked first, or Postgres answers with a foreign key violation Nest can only turn into a 500.
-    const [items, movements, flows] = await Promise.all([
+    // Kiểm các dòng đang trỏ tới trước khi xoá.
+    const [items, movements, flows, requests] = await Promise.all([
       this.prisma.productItemSupplier.count({ where: { supplierId: id } }),
       this.prisma.stockMovementRequest.count({
         where: { fromSupplierId: id },
       }),
       this.prisma.cashFlow.count({ where: { supplierId: id } }),
+      this.prisma.productionRequest.count({ where: { supplierId: id } }),
     ]);
-    if (items + movements + flows > 0) {
+    if (items + movements + flows + requests > 0) {
       throw new BadRequestException({
         code: ErrorCode.SUPPLIER_HAS_TRANSACTIONS,
         message:
@@ -113,14 +160,24 @@ export class SupplierService {
     return this.prisma.supplier.delete({ where: { id } });
   }
 
-  /** Record a payment against a supplier's outstanding debt: lower the debt and write the matching EXPENSE cash flow in one transaction, then notify the owners. The flow is recorded at tenant level, because paying a supplier is not a branch's till. */
+  /** Trả nợ NCC: giảm nợ, ghi sổ công nợ và phiếu chi. */
   async payDebt(
     tenantId: string,
-    actorId: string,
+    user: AuthUser,
     supplierId: string,
     dto: PaySupplierDebtDto,
   ) {
-    const amount = new Prisma.Decimal(dto.amount);
+    const actorId = user.userId;
+    const amount = new Prisma.Decimal(toDong(dto.amount));
+    if (amount.lte(0)) {
+      throw new BadRequestException({
+        code: ErrorCode.SUPPLIER_PAYMENT_EXCEEDS_DEBT,
+        message: 'The payment must be at least 1 dong',
+      });
+    }
+    const drawer = dto.locationId
+      ? await this.requireDrawerLocation(tenantId, user, dto.locationId)
+      : null;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const supplier = await tx.supplier.findFirst({
@@ -132,7 +189,7 @@ export class SupplierService {
           message: 'Supplier not found',
         });
 
-      // Conditional update rather than read-check-write: two payments submitted at once would both pass a plain comparison and overdraw the debt.
+      // Giảm nợ bằng UPDATE có điều kiện.
       const decremented = await tx.supplier.updateMany({
         where: { id: supplierId, tenantId, outstandingDebt: { gte: amount } },
         data: { outstandingDebt: { decrement: amount } },
@@ -152,6 +209,12 @@ export class SupplierService {
         data: {
           tenantId,
           flowType: 'EXPENSE',
+          category: CashFlowCategory.SUPPLIER_PAYMENT,
+          // Tiền mặt trả NCC mặc định là tiền của chủ.
+          fund: fundOf(dto.paymentMethod ?? PaymentMethod.CASH, {
+            toOwner: !drawer,
+          }),
+          locationId: drawer?.id ?? null,
           amount,
           paymentMethod: dto.paymentMethod ?? PaymentMethod.CASH,
           createdById: actorId,
@@ -163,10 +226,25 @@ export class SupplierService {
         },
       });
 
+      await tx.supplierDebtEntry.create({
+        data: {
+          tenantId,
+          supplierId,
+          entryType: SupplierDebtEntryType.PAYMENT,
+          amount: amount.negated(),
+          balanceAfter: updated.outstandingDebt,
+          referenceType: SupplierDebtRefType.CASH_FLOW,
+          referenceId: cashFlow.id,
+          referenceCode: cashFlow.paymentReference,
+          cashFlowId: cashFlow.id,
+          createdById: actorId,
+        },
+      });
+
       return { supplier: updated, paymentTransaction: cashFlow };
     });
 
-    // After the commit - notify() never throws, and a failed notification must not undo a recorded payment.
+    // Sau commit: notify() không ném lỗi, và thông báo lỗi không được làm mất khoản trả đã ghi.
     const owners = (await this.notifications.tenantOwners(tenantId)).filter(
       (id) => id !== actorId,
     );
@@ -176,7 +254,7 @@ export class SupplierService {
         recipientIds: owners,
         ...SupplierNotificationTemplates.debtPaid(
           result.supplier.supplierName,
-          dto.amount,
+          amount.toNumber(),
           result.supplier.outstandingDebt.toNumber(),
         ),
         referenceId: result.paymentTransaction.id,
@@ -184,5 +262,230 @@ export class SupplierService {
     }
 
     return result;
+  }
+
+  // Ghi công nợ khi nhận hàng từ NCC hoặc xưởng.
+
+  /** Kiểm NCC của phiếu nhập thuộc tenant và đúng luồng. */
+  async requireForImport(
+    tenantId: string,
+    supplierId: string | null | undefined,
+    source: ImportSource,
+  ) {
+    if (!supplierId) {
+      throw new BadRequestException({
+        code: ErrorCode.STOCK_MOVEMENT_SUPPLIER_REQUIRED,
+        message: 'An import must have a supplier',
+      });
+    }
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id: supplierId, tenantId },
+    });
+    if (!supplier) {
+      throw new NotFoundException({
+        code: ErrorCode.SUPPLIER_NOT_FOUND,
+        message: 'Supplier not found',
+      });
+    }
+    const feeds =
+      IMPORT_SOURCE_FOR_SUPPLIER_TYPE[supplier.type as SupplierType];
+    if (feeds !== source) {
+      if (source === ImportSource.WORKSHOP) {
+        throw new BadRequestException({
+          code: ErrorCode.SUPPLIER_NOT_WORKSHOP,
+          message: 'A production request must be sent to a workshop',
+        });
+      }
+      if (feeds === ImportSource.WORKSHOP) {
+        throw new BadRequestException({
+          code: ErrorCode.IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST,
+          message:
+            "A workshop's goods are received through its production request, not a stock movement",
+        });
+      }
+      throw new BadRequestException({
+        code: ErrorCode.IMPORT_SOURCE_SUPPLIER_MISMATCH,
+        message: `This supplier cannot feed a ${source} import`,
+      });
+    }
+    return supplier;
+  }
+
+  /** Kiểm sơ bộ hạn mức công nợ. */
+  assertCreditHeadroom(
+    supplier: { creditLimit: Prisma.Decimal; outstandingDebt: Prisma.Decimal },
+    amount: number,
+  ): void {
+    const limit = Number(supplier.creditLimit);
+    if (limit <= 0) return;
+
+    const projected = Number(supplier.outstandingDebt) + amount;
+    if (projected > limit) {
+      throw new BadRequestException({
+        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
+        message: `Credit limit exceeded. Current debt: ${Number(supplier.outstandingDebt)}, this movement: ${amount}, limit: ${limit}`,
+      });
+    }
+  }
+
+  /** Tăng công nợ khi nhận hàng, vượt hạn mức thì rollback. */
+  async charge(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    supplierId: string,
+    amountRaw: number,
+    receivedItemIds: string[],
+    ref: SupplierDebtRef,
+  ): Promise<NotificationContent | null> {
+    const amount = toDong(amountRaw);
+    if (receivedItemIds.length > 0) {
+      // Idempotent: nhận hai lần từ cùng NCC không được lỗi ở dòng nối.
+      await tx.productItemSupplier.createMany({
+        data: receivedItemIds.map((productItemId) => ({
+          productItemId,
+          supplierId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+    if (amount <= 0) return null;
+
+    const supplier = await tx.supplier.update({
+      where: { id: supplierId },
+      data: { outstandingDebt: { increment: amount } },
+      select: {
+        supplierName: true,
+        creditLimit: true,
+        outstandingDebt: true,
+        tenantId: true,
+      },
+    });
+    if (supplier.tenantId !== tenantId) {
+      throw new NotFoundException({
+        code: ErrorCode.SUPPLIER_NOT_FOUND,
+        message: 'Supplier not found',
+      });
+    }
+
+    // Ghi một dòng sổ cho mỗi lần nợ tăng.
+    await tx.supplierDebtEntry.create({
+      data: {
+        tenantId,
+        supplierId,
+        entryType: SupplierDebtEntryType.CHARGE,
+        amount,
+        balanceAfter: supplier.outstandingDebt,
+        referenceType: ref.type,
+        referenceId: ref.id,
+        referenceCode: ref.code ?? null,
+        createdById: ref.actorId,
+      },
+    });
+
+    const limit = Number(supplier.creditLimit);
+    if (limit <= 0) return null;
+
+    const debt = Number(supplier.outstandingDebt);
+    if (debt > limit) {
+      throw new BadRequestException({
+        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
+        message: `Credit limit exceeded on receipt. New debt: ${debt}, limit: ${limit}`,
+      });
+    }
+
+    return crossedCreditWarning(debt, amount, limit)
+      ? SupplierNotificationTemplates.creditLimitWarning(
+          supplier.supplierName,
+          debt,
+          limit,
+        )
+      : null;
+  }
+
+  /** Kiểm nơi tiền mặt đi ra khi trả NCC. */
+  private async requireDrawerLocation(
+    tenantId: string,
+    user: AuthUser,
+    locationId: string,
+  ) {
+    const location = await this.prisma.location.findFirst({
+      where: { id: locationId, tenantId },
+      select: { id: true, type: true },
+    });
+    if (!location) {
+      throw new NotFoundException({
+        code: ErrorCode.LOCATION_NOT_FOUND,
+        message: 'Location not found',
+      });
+    }
+    if (!canActAt(user, location)) {
+      throw new NotFoundException({
+        code: ErrorCode.LOCATION_NOT_FOUND,
+        message: 'Location not found',
+      });
+    }
+    return location;
+  }
+
+  /** Sổ công nợ của một NCC, mới nhất trước (`GET /suppliers/:id/debt-entries`). */
+  async debtEntries(
+    tenantId: string,
+    supplierId: string,
+    query: QuerySupplierDebtEntryDto,
+  ) {
+    const supplier = await this.findOne(tenantId, supplierId);
+    const where: Prisma.SupplierDebtEntryWhereInput = {
+      tenantId,
+      supplierId,
+      ...(query.entryType ? { entryType: query.entryType } : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.supplierDebtEntry.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              phoneNumber: true,
+              profileFirstName: true,
+              profileLastName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.supplierDebtEntry.count({ where }),
+    ]);
+    const data = rows.map(({ createdBy, ...row }) => ({
+      ...row,
+      createdBy: createdBy ? withNestedProfile(createdBy) : null,
+    }));
+    return {
+      ...paginate(data, total, query.page, query.limit),
+      supplier: {
+        id: supplier.id,
+        supplierName: supplier.supplierName,
+        outstandingDebt: supplier.outstandingDebt,
+      },
+    };
+  }
+
+  /** Gửi cảnh báo công nợ cho chủ shop sau commit. */
+  async notifyCreditWarning(
+    tenantId: string,
+    actorId: string,
+    supplierId: string,
+    warning: NotificationContent | null,
+  ): Promise<void> {
+    if (!warning) return;
+    const owners = await this.notifications.tenantOwners(tenantId);
+    await this.notifications.notify({
+      tenantId,
+      recipientIds: owners.filter((ownerId) => ownerId !== actorId),
+      referenceId: supplierId,
+      ...warning,
+    });
   }
 }

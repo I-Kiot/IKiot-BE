@@ -6,7 +6,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { resolveTenantScope } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Read-only by design: iKiotMS-BE never exposed a route that wrote a `CashFlow` row - the ledger is written by the events that moved money. The generated `POST`/`PATCH`/`DELETE` were a way to book revenue that never happened, so they are removed and the matching catalog pairs stay unused. */
+/** Sổ quỹ chỉ đọc. */
 @ApiTags('cash-flows')
 @ApiBearerAuth('bearer')
 @Controller('cash-flows')

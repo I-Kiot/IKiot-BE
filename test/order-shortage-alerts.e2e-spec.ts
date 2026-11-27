@@ -1,0 +1,322 @@
+import 'dotenv/config';
+import { InvoiceService } from './../src/modules/invoices/invoices.service';
+import { randomUUID } from 'crypto';
+import { Test } from '@nestjs/testing';
+import { PrismaModule } from './../src/prisma/prisma.module';
+import { PrismaService } from './../src/prisma/prisma.service';
+import { OrderService } from './../src/modules/orders/orders.service';
+import { OrderPricingService } from './../src/modules/orders/order-pricing.service';
+import { ManualOrderService } from './../src/modules/orders/manual-order.service';
+import { OrderCustomizationService } from './../src/modules/orders/order-customization.service';
+import { OrderShortageAlerts } from './../src/modules/orders/order-shortage-alerts';
+import { OrderEditService } from './../src/modules/orders/order-edit.service';
+import { OrderReadService } from './../src/modules/orders/order-read.service';
+import { SepayOrderService } from './../src/modules/orders/sepay-order.service';
+import { ProductionListService } from './../src/modules/production-requests/production-list.service';
+import { CustomerService } from './../src/modules/customers/customers.service';
+import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { NotificationService } from './../src/modules/notifications/notifications.service';
+import { PromotionService } from './../src/modules/promotions/promotions.service';
+import { RealtimeGateway } from './../src/common/realtime/realtime.gateway';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from './../src/common/constants/inventory-ledger';
+import { SystemRole } from './../src/common/constants/system-role';
+import { UserStatus } from './../src/common/constants/user-status';
+import type { AuthUser } from './../src/common/types/auth-user.type';
+import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
+
+type NotifyArgs = {
+  type: string;
+  recipientIds: string[];
+  referenceId: string;
+};
+
+/** Kiểm cảnh báo thiếu hàng phía đơn chỉ báo một lần (Postgres thật). */
+describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
+  let prisma: PrismaService;
+  let manual: ManualOrderService;
+  let edits: OrderEditService;
+  let customizations: OrderCustomizationService;
+  let productionList: ProductionListService;
+  const notify = jest.fn<Promise<void>, [NotifyArgs]>();
+
+  const tenantId = randomUUID();
+  const ownerId = randomUUID();
+  const managerId = randomUUID();
+  const branchId = randomUUID();
+  const warehouseId = randomUUID();
+  const productId = randomUUID();
+  const sofaId = randomUUID();
+  const tableId = randomUUID();
+  const customerId = randomUUID();
+
+  const owner = {
+    userId: ownerId,
+    tenantId,
+    systemRole: SystemRole.TENANT_OWNER,
+    permissions: new Set<string>(),
+    branchId: null,
+    warehouseId: null,
+  } as unknown as AuthUser;
+
+  const createOrder = async (over: Partial<CreateOrderDto> = {}) =>
+    (
+      await manual.create(owner, tenantId, {
+        branchId,
+        customerId,
+        assigneeId: ownerId,
+        fulfillmentType: 'HOME_DELIVERY',
+        recipientName: 'Khách e2e',
+        recipientPhone: '0912345678',
+        deliveryAddress: '1 Tràng Tiền, Hà Nội',
+        items: [{ productItemId: sofaId, quantity: 1 }],
+        ...over,
+      })
+    ).id;
+
+  /** Các cảnh báo thiếu hàng đã gửi từ lần reset gần nhất, dạng (SKU, người nhận). */
+  const shortageAlerts = () =>
+    notify.mock.calls
+      .map(([args]) => args)
+      .filter((args) => args.type === 'PRODUCTION_SHORTAGE');
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [PrismaModule],
+      providers: [
+        InvoiceService,
+        OrderService,
+        OrderPricingService,
+        ManualOrderService,
+        OrderCustomizationService,
+        OrderShortageAlerts,
+        ProductionListService,
+        OrderEditService,
+        OrderReadService,
+        CustomerService,
+        InventoryService,
+        {
+          provide: NotificationService,
+          useValue: {
+            managersOfLocation: () => Promise.resolve([managerId]),
+            notify,
+          },
+        },
+        { provide: RealtimeGateway, useValue: {} },
+        { provide: SepayOrderService, useValue: {} },
+        { provide: PromotionService, useValue: {} },
+      ],
+    }).compile();
+    await moduleRef.init();
+    prisma = moduleRef.get(PrismaService);
+    manual = moduleRef.get(ManualOrderService);
+    edits = moduleRef.get(OrderEditService);
+    customizations = moduleRef.get(OrderCustomizationService);
+    productionList = moduleRef.get(ProductionListService);
+    const inventory = moduleRef.get(InventoryService);
+
+    await prisma.tenant.create({ data: { id: tenantId, name: 'short-e2e' } });
+    for (const [id, role] of [
+      [ownerId, SystemRole.TENANT_OWNER],
+      [managerId, SystemRole.STAFF],
+    ] as const) {
+      await prisma.user.create({
+        data: {
+          id,
+          tenantId,
+          phoneNumber: `short-${id}`,
+          systemRole: role,
+          status: UserStatus.ACTIVE,
+        },
+      });
+    }
+    await prisma.location.create({
+      data: { id: warehouseId, tenantId, name: 'Kho', type: 'WAREHOUSE' },
+    });
+    await prisma.warehouse.create({
+      data: { id: warehouseId, tenantId, locationId: warehouseId },
+    });
+    await prisma.location.create({
+      data: {
+        id: branchId,
+        tenantId,
+        name: 'CN',
+        type: 'BRANCH',
+        defaultFulfillmentLocationId: warehouseId,
+      },
+    });
+    await prisma.branch.create({
+      data: { id: branchId, tenantId, locationId: branchId },
+    });
+    await prisma.product.create({
+      data: {
+        id: productId,
+        tenantId,
+        name: 'Nội thất',
+        isManufacturable: true,
+      },
+    });
+    for (const [id, name] of [
+      [sofaId, 'Sofa'],
+      [tableId, 'Bàn'],
+    ] as const) {
+      await prisma.productItem.create({
+        data: {
+          id,
+          tenantId,
+          productId,
+          productName: name,
+          productCode: `SHORT-${id}`,
+          sku: `SHORT-${id.slice(0, 8)}`,
+          retailPrice: 5_000_000,
+          costPrice: 3_000_000,
+        },
+      });
+    }
+    await prisma.customer.create({
+      data: { id: customerId, tenantId, name: 'Khách' },
+    });
+    await prisma.$transaction((tx) =>
+      inventory.openLot(tx, {
+        tenantId,
+        locationId: warehouseId,
+        productItemId: sofaId,
+        quantity: 3,
+        sourceType: LotSourceType.SUPPLIER,
+        ledger: {
+          type: InventoryTxType.IMPORT,
+          referenceType: InventoryRefType.STOCK_MOVEMENT,
+          referenceId: 'short-e2e',
+        },
+      }),
+    );
+  });
+
+  beforeEach(() => {
+    notify.mockReset();
+    notify.mockResolvedValue(undefined);
+  });
+
+  afterAll(async () => {
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.payment.deleteMany({ where: { tenantId } });
+    await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
+    await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.orderItemCustomization.deleteMany({ where: { tenantId } });
+    await prisma.invoice.deleteMany({ where: { tenantId } });
+    await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
+    await prisma.order.deleteMany({ where: { tenantId } });
+    await prisma.inventory.deleteMany({ where: { tenantId } });
+    await prisma.customer.deleteMany({ where: { tenantId } });
+    await prisma.productItem.deleteMany({ where: { tenantId } });
+    await prisma.product.deleteMany({ where: { tenantId } });
+    await prisma.branch.deleteMany({ where: { tenantId } });
+    await prisma.warehouse.deleteMany({ where: { tenantId } });
+    await prisma.location.updateMany({
+      where: { tenantId },
+      data: { defaultFulfillmentLocationId: null },
+    });
+    await prisma.location.deleteMany({ where: { tenantId } });
+    await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.tenant.delete({ where: { id: tenantId } });
+    await prisma.$disconnect();
+  });
+
+  // Thứ tự quan trọng: mỗi test để lại nhu cầu trên danh sách cho test sau.
+
+  it('says nothing while the shelf covers the order', async () => {
+    await createOrder({ items: [{ productItemId: sofaId, quantity: 2 }] });
+    expect(shortageAlerts()).toEqual([]);
+  });
+
+  it('tells the location’s managers when an order tips a SKU to short', async () => {
+    await createOrder({ items: [{ productItemId: sofaId, quantity: 2 }] });
+    const alerts = shortageAlerts();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      referenceId: sofaId,
+      recipientIds: [managerId],
+    });
+  });
+
+  it('does not repeat itself for a SKU already short', async () => {
+    await createOrder({ items: [{ productItemId: sofaId, quantity: 1 }] });
+    expect(shortageAlerts()).toEqual([]);
+  });
+
+  it('fires when an edit of the lines tips a SKU to short', async () => {
+    const id = await createOrder({
+      items: [{ productItemId: tableId, quantity: 1 }],
+    });
+    // Bàn chưa có tồn nên chính lúc tạo đơn đã làm nó thiếu.
+    expect(shortageAlerts().map((a) => a.referenceId)).toEqual([tableId]);
+    notify.mockReset();
+
+    // Bàn đã thiếu sẵn: đổi số lượng không tạo cảnh báo mới.
+    const line = await prisma.orderItem.findFirstOrThrow({
+      where: { orderId: id },
+    });
+    await edits.update(owner, tenantId, id, {
+      items: [{ id: line.id, productItemId: tableId, quantity: 4 }],
+    });
+    expect(shortageAlerts()).toEqual([]);
+  });
+
+  it('fires for a line made to measure, which moves to a SKU with no stock', async () => {
+    // SKU mới cũng thiếu.
+    const benchId = randomUUID();
+    await prisma.productItem.create({
+      data: {
+        id: benchId,
+        tenantId,
+        productId,
+        productName: 'Ghế dài',
+        productCode: `SHORT-${benchId}`,
+        sku: `SHORT-${benchId.slice(0, 8)}`,
+        retailPrice: 2_000_000,
+        costPrice: 1_000_000,
+      },
+    });
+    const id = await createOrder({
+      items: [{ productItemId: benchId, quantity: 1 }],
+    });
+    notify.mockReset();
+
+    const line = await prisma.orderItem.findFirstOrThrow({
+      where: { orderId: id },
+    });
+    await customizations.customize(owner, tenantId, id, line.id, {
+      lengthCm: 150,
+    });
+    const custom = await prisma.orderItem.findUniqueOrThrow({
+      where: { id: line.id },
+    });
+    expect(shortageAlerts().map((a) => a.referenceId)).toEqual([
+      custom.productItemId,
+    ]);
+  });
+
+  it('never fails the order when the alert does', async () => {
+    notify.mockRejectedValue(new Error('push down'));
+    const id = await createOrder({
+      items: [{ productItemId: tableId, quantity: 50 }],
+    });
+    expect(await prisma.order.count({ where: { id } })).toBe(1);
+  });
+
+  it('opens the production list on the one SKU a notification links to', async () => {
+    const page = await productionList.list(owner, {
+      page: 1,
+      limit: 50,
+      locationId: warehouseId,
+      productItemId: tableId,
+    });
+    expect(page.data.length).toBeGreaterThan(0);
+    expect(page.data.every((row) => row.productItemId === tableId)).toBe(true);
+    expect(page.data[0].shortQuantity).toBeGreaterThan(0);
+  });
+});

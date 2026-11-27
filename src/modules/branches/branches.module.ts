@@ -4,7 +4,7 @@ import { BranchService } from './branches.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  // SubscriptionModule provides the plan quota gate applied when creating a branch.
+  // SubscriptionModule cung cấp cổng hạn mức gói khi tạo chi nhánh.
   imports: [SubscriptionModule],
   controllers: [BranchController],
   providers: [BranchService],

@@ -8,7 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Ported from the plan-management half of SubscriptionService. Deliberately no create()/remove(): the old system never exposed those either, since plans are managed directly against the database.
+// Service gói dịch vụ, không có tạo/xoá.
 @Injectable()
 export class PlanService {
   constructor(private readonly prisma: PrismaService) {}

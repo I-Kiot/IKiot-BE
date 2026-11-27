@@ -9,15 +9,15 @@ import {
 import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 import { StaffProfileDto } from './update-user.dto';
 
-/** Puts a person on the books, INACTIVE and with no password: hiring someone and giving them a login are separate acts, so `POST /users/:id/account` is a separate call, and `deactivateAccount` parks somebody back in this state. Everything `UpdateUserDto` accepts is accepted here too - the first NestJS pass carried only seven fields, so the hire form's citizen ID, address, pay scheme and the rest were silently dropped by `whitelist: true` behind an HTTP 200. */
+/** Body tuyển nhân viên, tạo ở trạng thái INACTIVE chưa có mật khẩu. */
 export class CreateUserDto {
-  /** Shape is checked in the service by `validateVietnamPhoneNumber`: it is the login handle and the OTP destination, so it has to be a number that can actually receive an SMS. */
+  /** Số điện thoại đăng nhập, kiểm trong service. */
   @IsString()
   phoneNumber: string;
 
-  @IsOptional()
+  /** Bắt buộc, duy nhất toàn nền tảng: OTP đăng nhập lần đầu gửi tới đây. */
   @NormalizeEmail()
-  email?: string;
+  email: string;
 
   @IsUUID()
   roleId: string;
@@ -29,6 +29,11 @@ export class CreateUserDto {
   @IsOptional()
   @IsUUID()
   warehouseId?: string;
+
+  /** Xưởng mà nhân viên làm việc; `production:deliver` tự cấp khi gắn xưởng. */
+  @IsOptional()
+  @IsUUID()
+  workshopId?: string;
 
   @IsOptional()
   @IsString()
@@ -42,12 +47,7 @@ export class CreateUserDto {
   @IsDateString()
   hireDate?: string;
 
-  /** Which pay scheme this person is on. Must be an ACTIVE paysheet in the tenant. */
-  @IsOptional()
-  @IsUUID()
-  paysheetId?: string;
-
-  /** The personal details, the same nested object `PATCH /users/:id` takes. `firstName`/`lastName` are also accepted flat, as the old `StaffDTO` spelled them, and the service prefers whichever is set. */
+  /** Thông tin cá nhân. */
   @IsOptional()
   @ValidateNested()
   @Type(() => StaffProfileDto)

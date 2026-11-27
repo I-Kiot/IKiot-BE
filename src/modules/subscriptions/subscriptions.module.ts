@@ -18,7 +18,7 @@ import { EmailModule } from '../../common/email/email.module';
     SubscriptionCronService,
     SubscriptionAuditTemplate,
   ],
-  // Only SubscriptionService is exported - other modules gate features on the subscription, and nobody outside raises an invoice. SubscriptionAuditTemplate needs no export either; AuditInterceptor discovers it by decorator.
+  // Chỉ xuất SubscriptionService.
   exports: [SubscriptionService],
 })
 export class SubscriptionModule {}

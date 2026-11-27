@@ -19,7 +19,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Five routes at the old paths, gated on `schedules:*` rather than a resource of their own - a shift template is part of scheduling, as the old routes had it. */
+/** Controller ca mẫu, quyền `schedules:*`. */
 @ApiTags('shift-templates')
 @ApiBearerAuth('bearer')
 @Controller('shift-templates')

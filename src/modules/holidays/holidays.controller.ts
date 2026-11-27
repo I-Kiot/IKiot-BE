@@ -25,7 +25,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Six routes at the old paths and permissions (`:holidayId` renamed `:id` to match every other module); the sync route is gated on `holidays:update`, since it refreshes rows the tenant already owns. */
+/** Controller ngày lễ. */
 @ApiTags('holidays')
 @ApiBearerAuth('bearer')
 @Controller('holidays')
@@ -47,7 +47,7 @@ export class HolidayController {
     return this.service.create(requireTenantId(user), dto);
   }
 
-  // Declared above `:id` - `sync` would otherwise be matched as a holiday id.
+  // Khai báo trên `:id`, nếu không `sync` sẽ bị hiểu là id ngày lễ.
   @Permissions('holidays', 'update')
   @HttpCode(HttpStatus.OK)
   @Post('sync/vietnam')

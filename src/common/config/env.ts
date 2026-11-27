@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 
-/** What the server needs before accepting traffic - fail at boot, not on the first request that needs the value. */
+/** Biến môi trường bắt buộc, thiếu thì dừng ngay lúc khởi động. */
 const REQUIRED = [['DATABASE_URL', 'Postgres connection string']] as const;
 
-/** Access-token key: ACCESS_TOKEN_SECRET then JWT_SECRET (iKiotMS-BE's precedence), resolved once so signer and verifier cannot disagree. */
+/** Khoá access token: ưu tiên ACCESS_TOKEN_SECRET rồi tới JWT_SECRET. */
 export function accessTokenSecret(): string {
   return (
     process.env.ACCESS_TOKEN_SECRET?.trim() ||
@@ -12,19 +12,22 @@ export function accessTokenSecret(): string {
   );
 }
 
-/** Refresh tokens may have their own key; they fall back to the access one, as before. */
+/** Refresh token có thể có khoá riêng; không có thì dùng khoá access như trước. */
 export function refreshTokenSecret(): string {
   return process.env.REFRESH_TOKEN_SECRET?.trim() || accessTokenSecret();
 }
 
-/** Vars the app runs without: each is logged at boot naming the feature it disables. */
+/** Biến tuỳ chọn: app vẫn chạy khi thiếu; mỗi biến thiếu được log lúc boot kèm tính năng bị tắt. */
 const OPTIONAL = [
   [
     'REDIS_URL',
     'refresh tokens and OTP codes fall back to in-memory / no sessions',
   ],
   ['CLOUDINARY_CLOUD_NAME', 'file uploads are disabled'],
-  ['MAIL_HOST', 'subscription reminders and announcements are not sent'],
+  [
+    'MAIL_HOST',
+    'subscription reminders and announcements are not sent, OTP codes are only logged (dev) or answered with 503 (production)',
+  ],
   ['GEMINI_API_KEY', 'the AI assistant answers 503'],
   ['GOOGLE_CALENDAR_API_KEY', 'the holiday sync cron is skipped'],
   ['FIREBASE_PRIVATE_KEY', 'Firebase login and FCM push are disabled'],
@@ -32,9 +35,14 @@ const OPTIONAL = [
     'SEPAY_WEBHOOK_API_KEY',
     'the subscription payment webhook rejects everything',
   ],
+  [
+    'SEPAY_ORDER_WEBHOOK_API_KEY',
+    'the shared order webhook is off - only shops with their own webhook key can take QR payments',
+  ],
+  ['SEPAY_API_KEY', 'shops are never marked as linked to SePay automatically'],
 ] as const;
 
-/** Browser origins allowed over HTTP and Socket.IO: comma-separated `CORS_ORIGIN`, else `FRONTEND_URL`, else `true` (dev only). */
+/** Origin được gọi API và Socket.IO: `CORS_ORIGIN`, rồi `FRONTEND_URL`, không có thì `true` (dev). */
 export function corsOrigins(): string[] | true {
   const configured =
     process.env.CORS_ORIGIN?.trim() || process.env.FRONTEND_URL?.trim();
@@ -45,13 +53,13 @@ export function corsOrigins(): string[] | true {
     .filter(Boolean);
 }
 
-/** Socket.IO wants `*` rather than `true` for "any origin"; otherwise identical. */
+/** Socket.IO cần `*` thay vì `true` để nghĩa là "mọi origin"; còn lại giống nhau. */
 export function socketCorsOrigins(): string[] | string {
   const origins = corsOrigins();
   return origins === true ? '*' : origins;
 }
 
-/** Called from bootstrap() before Nest is created: throws on a missing required var, and in production refuses an open CORS policy. */
+/** Gọi từ bootstrap() trước khi tạo Nest: throw nếu thiếu biến bắt buộc; ở production từ chối CORS mở. */
 export function validateEnv(logger = new Logger('Env')): void {
   const missing = REQUIRED.filter(([key]) => !process.env[key]?.trim());
   if (missing.length > 0) {
@@ -65,7 +73,7 @@ export function validateEnv(logger = new Logger('Env')): void {
     );
   }
 
-  // Asks the same resolver the app uses - a check that disagreed with it is worse than no check.
+  // Hỏi đúng bộ resolve mà app dùng - kiểm tra lệch với nó còn tệ hơn không kiểm tra.
   if (process.env.NODE_ENV === 'production' && corsOrigins() === true) {
     throw new Error(
       'CORS_ORIGIN (or FRONTEND_URL) must be set in production - with both unset any origin may make credentialed requests.',

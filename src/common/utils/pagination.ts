@@ -1,4 +1,4 @@
-// The list envelope every ported list endpoint returns - the `{ data, pagination }` shape the frontend's tables already read.
+// Envelope danh sách `{ data, pagination }`.
 export interface Paginated<T> {
   data: T[];
   pagination: {
@@ -26,7 +26,7 @@ export function paginate<T>(
   };
 }
 
-/** `skip` for a 1-based page number. */
+/** `skip` cho số trang đánh từ 1. */
 export function skipFor(page: number, limit: number): number {
   return (page - 1) * limit;
 }

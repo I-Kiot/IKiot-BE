@@ -15,28 +15,25 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { RealtimeModule } from './common/realtime/realtime.module';
+import { ChangeFeedInterceptor } from './common/realtime/change-feed.interceptor';
 import { RedisModule } from './common/redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { AIChatHistoryModule } from './modules/ai-chat-histories/ai-chat-histories.module';
-import { AttendanceModule } from './modules/attendances/attendances.module';
 import { AuditLogModule } from './modules/audit-logs/audit-logs.module';
 import { BranchModule } from './modules/branches/branches.module';
 import { BrandModule } from './modules/brands/brands.module';
 import { CashDrawerSessionModule } from './modules/cash-drawer-sessions/cash-drawer-sessions.module';
 import { CashFlowModule } from './modules/cash-flows/cash-flows.module';
+import { SepayTransactionModule } from './modules/sepay-transactions/sepay-transactions.module';
 import { CategoryModule } from './modules/categories/categories.module';
 import { CustomerModule } from './modules/customers/customers.module';
 import { HolidayModule } from './modules/holidays/holidays.module';
 import { InventoryModule } from './modules/inventories/inventories.module';
-import { LeaveRequestModule } from './modules/leave-requests/leave-requests.module';
 import { NotificationModule } from './modules/notifications/notifications.module';
 import { OrderModule } from './modules/orders/orders.module';
-import { PayrollPeriodModule } from './modules/payroll-periods/payroll-periods.module';
-import { PayrollSettingModule } from './modules/payroll-settings/payroll-settings.module';
-import { PaysheetModule } from './modules/paysheets/paysheets.module';
-import { PayslipModule } from './modules/payslips/payslips.module';
+import { InvoiceModule } from './modules/invoices/invoices.module';
 import { PlanModule } from './modules/plans/plans.module';
 import { ProductModule } from './modules/products/products.module';
 import { PromotionModule } from './modules/promotions/promotions.module';
@@ -52,13 +49,17 @@ import { UploadModule } from './modules/uploads/uploads.module';
 import { UserModule } from './modules/users/users.module';
 import { WarehouseModule } from './modules/warehouses/warehouses.module';
 import { WorkingScheduleModule } from './modules/working-schedules/working-schedules.module';
+import { FulfillmentModule } from './modules/fulfillments/fulfillments.module';
+import { OrderReturnModule } from './modules/order-returns/order-returns.module';
+import { ProductionRequestModule } from './modules/production-requests/production-requests.module';
+import { SalesChannelModule } from './modules/sales-channels/sales-channels.module';
+import { ShipmentModule } from './modules/shipments/shipments.module';
 import { SentryModule } from '@sentry/nestjs/setup';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
-    // Lets AuditInterceptor find every @AuditTemplate() provider on its own.
     DiscoveryModule,
     PrismaModule,
     RedisModule,
@@ -66,23 +67,19 @@ import { SentryModule } from '@sentry/nestjs/setup';
     AuthModule,
     RolesModule,
     AIChatHistoryModule,
-    AttendanceModule,
     AuditLogModule,
     BranchModule,
     BrandModule,
     CashDrawerSessionModule,
     CashFlowModule,
+    SepayTransactionModule,
     CategoryModule,
     CustomerModule,
     HolidayModule,
     InventoryModule,
-    LeaveRequestModule,
     NotificationModule,
     OrderModule,
-    PayrollPeriodModule,
-    PayrollSettingModule,
-    PaysheetModule,
-    PayslipModule,
+    InvoiceModule,
     PlanModule,
     ProductModule,
     PromotionModule,
@@ -98,19 +95,26 @@ import { SentryModule } from '@sentry/nestjs/setup';
     UserModule,
     WarehouseModule,
     WorkingScheduleModule,
+    FulfillmentModule,
+    OrderReturnModule,
+    ProductionRequestModule,
+    SalesChannelModule,
+    ShipmentModule,
     SentryModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [
     AppService,
-    // Order matters: JwtAuthGuard populates request.user before PermissionsGuard reads it.
+    // Thứ tự quan trọng: JwtAuthGuard phải điền request.user trước khi PermissionsGuard đọc.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
-    // Registered first so it wraps last: AuditInterceptor's tap must still see the raw login body it reads the actor from.
+    // Đăng ký đầu tiên để bọc ngoài cùng, AuditInterceptor vẫn thấy body đăng nhập thô.
     { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
-    // Domain audit descriptions come from @AuditTemplate() providers; this interceptor stays generic.
+    // Mô tả audit theo từng domain lấy từ provider @AuditTemplate(); interceptor này giữ tính chung.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
-    // Last line of defence: turns Prisma and other non-HttpException errors into real status codes.
+    // Đăng ký sau AuditInterceptor để thấy body thô của handler khi phát `entity:changed`.
+    { provide: APP_INTERCEPTOR, useClass: ChangeFeedInterceptor },
+    // Lớp cuối cùng: đổi lỗi Prisma và các lỗi không phải HttpException thành status code thật.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

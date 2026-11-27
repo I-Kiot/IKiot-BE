@@ -14,7 +14,7 @@ export interface NotifyInput extends NotificationContent {
   referenceId?: string;
 }
 
-// Ported from notificationService.js (fan-out) + the notification module (inbox API), merged here. Put new notification copy in a `templates/*.templates.ts` file, never inline.
+// Service thông báo: hộp thư, socket, push.
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -25,9 +25,7 @@ export class NotificationService {
     private readonly push: PushService,
   ) {}
 
-  // ─── Fan-out ───────────────────────────────────────────────────────────────
-
-  // Never throws - a notification failing must not break the transaction that triggered it. Three channels in one call: the Notification row (the inbox and unread badge), a Socket.IO emit for an open tab, and an FCM push for a closed one. The push is awaited, as in iKiotMS-BE: notify() runs after the transaction has committed, so it delays a response rather than holding a lock, and the ordering stays testable.
+  // Gửi thông báo qua hộp thư, Socket.IO và FCM; không bao giờ ném lỗi.
   async notify(input: NotifyInput): Promise<{ notified: number }> {
     try {
       const ids = [
@@ -37,7 +35,7 @@ export class NotificationService {
       ];
       if (ids.length === 0) return { notified: 0 };
 
-      // Independent inserts, deliberately not in a transaction - one recipient's write failing shouldn't roll back a notification the others already received.
+      // Mỗi người nhận một insert riêng.
       const docs = await Promise.all(
         ids.map((recipientId) =>
           this.prisma.notification.create({
@@ -80,7 +78,7 @@ export class NotificationService {
     }
   }
 
-  /** A notification for the platform operators: the same table with `tenantId` and `recipientId` both null, broadcast to the `admin` Socket.IO room. Never throws, same invariant as `notify()`. */
+  /** Thông báo hệ thống cho admin, không ném lỗi. */
   async notifySystem(
     content: NotificationContent & { referenceId?: string },
   ): Promise<void> {
@@ -126,89 +124,99 @@ export class NotificationService {
     }
   }
 
-  /** Who to tell about something that happened at one branch or warehouse. The old BRANCH_MANAGER/WAREHOUSE_MANAGER roles are gone, so this reads the location's `managerId`, falling back to the tenant's owners - where the old version returned an empty list and sent a low-stock warning to nobody. */
+  /** Người cần báo tại một địa điểm: quản lý, không có thì chủ shop. */
   async managersOfLocation(args: {
     tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
+    /** Id của Location, cũng là id của Branch hoặc Warehouse tương ứng. */
+    locationId: string | null;
   }): Promise<string[]> {
+    if (!args.locationId) return this.tenantOwners(args.tenantId);
+    const byLocation = await this.managersOfLocations([
+      { tenantId: args.tenantId, locationId: args.locationId },
+    ]);
+    return byLocation.get(args.locationId) ?? [];
+  }
+
+  /** Quản lý của nhiều địa điểm cùng lúc. */
+  async managersOfLocations(
+    pairs: { tenantId: string; locationId: string }[],
+  ): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    if (pairs.length === 0) return result;
     try {
-      const location = args.branchId
-        ? await this.prisma.branch.findFirst({
-            where: { id: args.branchId, tenantId: args.tenantId },
-            select: { managerId: true },
-          })
-        : args.warehouseId
-          ? await this.prisma.warehouse.findFirst({
-              where: { id: args.warehouseId, tenantId: args.tenantId },
-              select: { managerId: true },
-            })
-          : null;
-
-      if (!location?.managerId) return this.tenantOwners(args.tenantId);
-
-      // An appointed manager who has since been suspended shouldn't be the only recipient.
-      const manager = await this.prisma.user.findFirst({
-        where: { id: location.managerId, status: UserStatus.ACTIVE },
-        select: { id: true },
+      const locations = await this.prisma.location.findMany({
+        where: { id: { in: [...new Set(pairs.map((p) => p.locationId))] } },
+        select: { id: true, tenantId: true, managerId: true },
       });
-      return manager ? [manager.id] : this.tenantOwners(args.tenantId);
+      const locationById = new Map(locations.map((l) => [l.id, l]));
+      // Địa điểm phải thuộc đúng tenant được hỏi, như `findFirst({ id, tenantId })` của bản cũ.
+      const managerIdOf = (pair: { tenantId: string; locationId: string }) => {
+        const location = locationById.get(pair.locationId);
+        return location?.tenantId === pair.tenantId ? location.managerId : null;
+      };
+
+      const managerIds = [
+        ...new Set(pairs.map(managerIdOf).filter((id): id is string => !!id)),
+      ];
+      // Manager đã bị khóa không được là người nhận duy nhất.
+      const activeManagers = new Set(
+        managerIds.length === 0
+          ? []
+          : (
+              await this.prisma.user.findMany({
+                where: { id: { in: managerIds }, status: UserStatus.ACTIVE },
+                select: { id: true },
+              })
+            ).map((u) => u.id),
+      );
+
+      const needOwners = [
+        ...new Set(
+          pairs
+            .filter((p) => {
+              const managerId = managerIdOf(p);
+              return !managerId || !activeManagers.has(managerId);
+            })
+            .map((p) => p.tenantId),
+        ),
+      ];
+      const ownersByTenant = new Map<string, string[]>();
+      if (needOwners.length > 0) {
+        const owners = await this.prisma.user.findMany({
+          where: {
+            tenantId: { in: needOwners },
+            systemRole: SystemRole.TENANT_OWNER,
+            status: UserStatus.ACTIVE,
+          },
+          select: { id: true, tenantId: true },
+        });
+        for (const owner of owners) {
+          if (!owner.tenantId) continue;
+          ownersByTenant.set(owner.tenantId, [
+            ...(ownersByTenant.get(owner.tenantId) ?? []),
+            owner.id,
+          ]);
+        }
+      }
+
+      for (const pair of pairs) {
+        const managerId = managerIdOf(pair);
+        result.set(
+          pair.locationId,
+          managerId && activeManagers.has(managerId)
+            ? [managerId]
+            : (ownersByTenant.get(pair.tenantId) ?? []),
+        );
+      }
+      return result;
     } catch (error) {
       this.logger.error(
         'managersOfLocation lookup failed',
         error instanceof Error ? error.stack : error,
       );
-      return [];
+      return new Map();
     }
   }
-
-  /** Who signs off on this person's requests: whoever is appointed manager of the location they work at, falling back to the owners. The requester is always removed, so a manager filing their own leave is never their own approver. */
-  async approversOf(user: {
-    userId: string;
-    tenantId: string;
-    branchId: string | null;
-    warehouseId: string | null;
-  }): Promise<string[]> {
-    const managers = await this.managersOfLocation({
-      tenantId: user.tenantId,
-      branchId: user.branchId,
-      warehouseId: user.warehouseId,
-    });
-    const others = managers.filter((id) => id !== user.userId);
-    if (others.length > 0) return others;
-
-    // They manage the place themselves (or it has no manager): escalate to the owners.
-    const owners = await this.tenantOwners(user.tenantId);
-    return owners.filter((id) => id !== user.userId);
-  }
-
-  /** A person's name for notification copy, falling back through email and phone to a generic word; never throws, since a vague name beats a failed transaction. */
-  async displayName(userId: string): Promise<string> {
-    try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          profileFirstName: true,
-          profileLastName: true,
-          email: true,
-          phoneNumber: true,
-        },
-      });
-      if (!user) return 'Nhân viên';
-
-      const full =
-        `${user.profileFirstName ?? ''} ${user.profileLastName ?? ''}`.trim();
-      return full || user.email || user.phoneNumber || 'Nhân viên';
-    } catch (error) {
-      this.logger.error(
-        'displayName lookup failed',
-        error instanceof Error ? error.stack : error,
-      );
-      return 'Nhân viên';
-    }
-  }
-
-  // ─── Inbox (ported from iKiotMS-BE's NotificationController) ───────────────
 
   private inboxFilter(user: AuthUser) {
     return {
@@ -284,7 +292,7 @@ export class NotificationService {
   }
 
   async registerDeviceToken(userId: string, token: string, userAgent?: string) {
-    // Pull the token off every account that currently holds it first, so a token that migrated to a new login doesn't stay registered against the old one.
+    // Gỡ token khỏi tài khoản cũ trước.
     await this.prisma.userFcmToken.deleteMany({ where: { token } });
     await this.prisma.userFcmToken.create({
       data: { userId, token, userAgent },

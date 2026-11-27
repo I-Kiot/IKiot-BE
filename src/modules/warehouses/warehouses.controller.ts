@@ -20,28 +20,29 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Ported from iKiotMS-BE's warehouse module - same route surface as branches.
+// Port từ module kho của iKiotMS-BE, cùng bề mặt route với chi nhánh.
 @ApiTags('warehouses')
 @ApiBearerAuth('bearer')
 @Controller('warehouses')
 export class WarehouseController {
   constructor(private readonly service: WarehouseService) {}
 
-  @Permissions('warehouses', 'read')
+  // `read_own` chỉ thấy nơi của mình.
+  @Permissions('warehouses', 'read', 'read_own')
   @Get()
   @ApiOperation({ summary: 'Danh sách kho (phân trang, tìm kiếm)' })
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryWarehouseDto) {
-    return this.service.findAll(requireTenantId(user), query);
+    return this.service.findAll(user, requireTenantId(user), query);
   }
 
-  @Permissions('warehouses', 'read')
+  @Permissions('warehouses', 'read', 'read_own')
   @Get(':id')
   @ApiOperation({ summary: 'Chi tiết kho' })
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(requireTenantId(user), id);
+    return this.service.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('warehouses', 'create')

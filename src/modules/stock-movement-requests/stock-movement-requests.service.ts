@@ -7,25 +7,34 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
+import { actualStockOf } from '../inventories/low-stock';
 import { NotificationService } from '../notifications/notifications.service';
 import { StockMovementNotificationTemplates } from '../notifications/templates/stock-movement.templates';
-import { SupplierNotificationTemplates } from '../notifications/templates/supplier.templates';
-import { SystemRole } from '../../common/constants/system-role';
+import { SupplierService } from '../suppliers/suppliers.service';
 import {
-  destinationRef,
-  sourceRef,
-  toLocationColumns,
+  LOCATION_SELECT,
+  resolveLocations,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefDto } from '../../common/dto/location-ref.dto';
+import type { LocationEnd } from '../../common/dto/location-ref.dto';
+import { isReturnDirection } from '../../common/constants/location-type';
+import {
+  ImportSource,
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from '../../common/constants/inventory-ledger';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
-import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
+import {
+  canActAt,
+  isPostedAt,
+  postingOf,
+} from '../../common/utils/location-access';
 import {
   FINAL_MOVEMENT_STATUSES,
   MovementStatus,
   MovementType,
 } from './stock-movement.constants';
-import { crossedCreditWarning } from './credit-warning';
 import {
   CreateStockMovementDto,
   MovementItemDto,
@@ -35,12 +44,19 @@ import {
 } from './dto/stock-movement.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { SupplierDebtRefType } from '../../common/constants/supplier-debt';
+import { toDong } from '../../common/utils/money';
+import { withNestedProfile } from '../../common/utils/user-profile';
+import { assertHoldsStock } from '../inventories/stockable';
 
-/** The pair of nullable FKs naming one end of a movement. */
-interface LocationColumns {
-  branchId: string | null;
-  warehouseId: string | null;
-}
+/** Người trong payload của phiếu: nested qua `withNestedProfile` ở `toResponse`. */
+const PERSON_SELECT = {
+  id: true,
+  phoneNumber: true,
+  email: true,
+  profileFirstName: true,
+  profileLastName: true,
+} as const;
 
 const DETAIL_INCLUDE = {
   details: {
@@ -50,59 +66,62 @@ const DETAIL_INCLUDE = {
       quantity: true,
       importPrice: true,
       receivedQuantity: true,
+      // Số lỗi của phiếu nhập xưởng.
+      defectQuantity: true,
       note: true,
       productItem: {
-        select: { id: true, sku: true, productName: true, productCode: true },
+        select: {
+          id: true,
+          sku: true,
+          productName: true,
+          productCode: true,
+          itemType: true,
+        },
       },
     },
   },
   fromSupplier: { select: { id: true, supplierName: true } },
-  fromBranch: { select: { id: true, name: true } },
-  fromWarehouse: { select: { id: true, name: true } },
-  toBranch: { select: { id: true, name: true } },
-  toWarehouse: { select: { id: true, name: true } },
-  createdBy: {
-    select: {
-      id: true,
-      phoneNumber: true,
-      email: true,
-      profileFirstName: true,
-      profileLastName: true,
-    },
-  },
+  fromLocation: LOCATION_SELECT,
+  toLocation: LOCATION_SELECT,
+  createdBy: { select: PERSON_SELECT },
+  // Ai đã mở / xuất / nhận / duyệt / huỷ phiếu: các cột này chỉ do chính bước đó ghi (xem `claim`).
+  shippedBy: { select: PERSON_SELECT },
+  receivedBy: { select: PERSON_SELECT },
+  approvedBy: { select: PERSON_SELECT },
+  cancelledBy: { select: PERSON_SELECT },
 } as const satisfies Prisma.StockMovementRequestInclude;
 
 type MovementRow = Prisma.StockMovementRequestGetPayload<{
   include: typeof DETAIL_INCLUDE;
 }>;
 
-/** Real port of StockMovementService. Two rules run through all of it: stock changes and the status change share one transaction, and notifications plus low-stock warnings are sent after it commits and never throw. Access is a substitution for the old manager roles - an owner acts anywhere, a STAFF account where it is posted, plus `managedScheduleAccess` while supervising a shift, which enters through `canActAt()` alone. The old "branch managers cannot create IMPORTs / EXPORT to a warehouse" rules are dropped: the first is now who holds `stock_movement:create`, the second survives in `assertTransferMakesSense`. */
+/** Service phiếu kho: tồn và trạng thái đổi chung transaction. */
 @Injectable()
 export class StockMovementService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly notifications: NotificationService,
+    private readonly suppliers: SupplierService,
   ) {}
-
-  // ─── Reads ─────────────────────────────────────────────────────────────────
 
   async findAll(user: AuthUser, query: QueryStockMovementDto) {
     const tenantId = this.tenantOf(user);
     const where: Prisma.StockMovementRequestWhereInput = { tenantId };
     if (query.status) where.status = query.status;
     if (query.movementType) where.movementType = query.movementType;
+    if (query.importSource) where.importSource = query.importSource;
 
-    // A staff account sees the movements that touch their own location, from either end.
+    // Tài khoản nhân viên thấy phiếu chạm tới địa điểm của mình, ở cả hai đầu.
     const own = this.postingOf(user);
     if (own) {
-      if (!own.branchId && !own.warehouseId) {
-        // Posted nowhere: there is no location whose movements they could be looking at, and matching the columns directly would quietly match rows where both are null.
+      if (!own.locationId) {
+        // Không được phân công nơi nào: so khớp trực tiếp cột sẽ âm thầm khớp các dòng null.
         return paginate([], 0, query.page, query.limit);
       }
       where.OR = [
-        { fromBranchId: own.branchId, fromWarehouseId: own.warehouseId },
-        { toBranchId: own.branchId, toWarehouseId: own.warehouseId },
+        { fromLocationId: own.locationId },
+        { toLocationId: own.locationId },
       ];
     }
 
@@ -127,7 +146,7 @@ export class StockMovementService {
 
   async findOne(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
-    // Viewable from either end - the sender and the receiver both need to see it.
+    // Xem được từ cả hai đầu: bên gửi và bên nhận đều cần thấy.
     if (
       !this.canActAt(user, this.source(request)) &&
       !this.canActAt(user, this.destination(request))
@@ -140,21 +159,23 @@ export class StockMovementService {
     return this.toResponse(request);
   }
 
-  // ─── Create ────────────────────────────────────────────────────────────────
-
   async create(user: AuthUser, dto: CreateStockMovementDto) {
     const tenantId = this.tenantOf(user);
     this.assertNoDuplicateItems(dto.details);
 
-    const from = this.resolveSource(user, dto);
-    const to = dto.toLocation ? this.columnsOf(dto.toLocation) : null;
-    // An IMPORT has no source, so `resolveSource` checks nothing - which left the movement unscoped and let a staff account file goods in against any warehouse.
+    // Kiểm hai đầu phiếu trong một truy vấn.
+    const fromId = this.resolveSourceId(user, dto);
+    const ends = await resolveLocations(this.prisma, tenantId, [
+      fromId,
+      dto.toLocationId,
+    ]);
+    const from = fromId ? ends.get(fromId)! : null;
+    const to = dto.toLocationId ? ends.get(dto.toLocationId)! : null;
+    // IMPORT không có nguồn nên lọc theo đích; bỏ qua thì nhân viên có thể nhập hàng vào kho bất kỳ.
     if (dto.movementType === MovementType.IMPORT) {
       if (to) this.assertCanActAt(user, to);
     } else if (this.isTransferType(dto.movementType)) {
-      // Either end may raise a transfer: the sender pushing goods out, or the receiver
-      // asking for them. Only one endpoint has to be the actor's - the other is whoever
-      // they are trading with. Every later step still checks the end that acts.
+      // Bên gửi hoặc bên nhận đều tạo được phiếu chuyển.
       if (!this.canActAt(user, from) && !this.canActAt(user, to)) {
         throw new ForbiddenException({
           code: ErrorCode.STOCK_MOVEMENT_LOCATION_DENIED,
@@ -163,10 +184,10 @@ export class StockMovementService {
         });
       }
     } else if (from) {
-      // ADJUST counts stock at one location, so it is only ever filed there.
+      // ADJUST đếm tồn tại một nơi, nên chỉ lập tại đó.
       this.assertCanActAt(user, from);
     }
-    await this.assertEndpointsValid(tenantId, dto.movementType, from, to);
+    this.assertEndpointsValid(dto.movementType, from, to);
 
     const details = await this.prepareLines(
       tenantId,
@@ -179,10 +200,16 @@ export class StockMovementService {
       dto.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (dto.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(tenantId, dto.fromSupplierId, totalPrice);
+      // Hàng của xưởng chỉ về qua yêu cầu sản xuất (contract §3).
+      const supplier = await this.suppliers.requireForImport(
+        tenantId,
+        dto.fromSupplierId,
+        ImportSource.SUPPLIER,
+      );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
-    // IMPORT and ADJUST have nothing to pick and pack, so they open at PENDING.
+    // IMPORT và ADJUST không có gì để chọn và đóng gói, nên mở ở PENDING.
     const status =
       dto.movementType === MovementType.IMPORT ||
       dto.movementType === MovementType.ADJUST
@@ -193,23 +220,24 @@ export class StockMovementService {
       data: {
         tenantId,
         movementType: dto.movementType,
+        // Phiếu nhập phải có nguồn.
+        importSource:
+          dto.movementType === MovementType.IMPORT
+            ? ImportSource.SUPPLIER
+            : null,
         status,
         note: dto.note,
         createdById: user.userId,
         totalPrice,
         fromSupplierId: dto.fromSupplierId,
-        fromBranchId: from?.branchId ?? null,
-        fromWarehouseId: from?.warehouseId ?? null,
-        toBranchId: to?.branchId ?? null,
-        toWarehouseId: to?.warehouseId ?? null,
+        fromLocationId: from?.id ?? null,
+        toLocationId: to?.id ?? null,
         details: { create: details },
       },
       include: DETAIL_INCLUDE,
     });
 
-    // A transfer raised by the end that wants the goods is a request, not paperwork about
-    // a shipment already agreed - so the source hears a different sentence. Who is told
-    // does not change: the source is the side that has to pick and pack either way.
+    // Báo bên gửi khi bên nhận xin hàng.
     const pulledIn =
       this.isTransferType(created.movementType) &&
       this.isPostedAt(user, this.destination(created)) &&
@@ -222,7 +250,7 @@ export class StockMovementService {
             created.id,
             created.movementType,
           )),
-      // An import is awaited by the place receiving it; a transfer is actioned by the place sending it.
+      // Import do nơi nhận chờ; chuyển do nơi gửi xử lý.
       notifyFrom: created.movementType !== MovementType.IMPORT,
       notifyTo: created.movementType === MovementType.IMPORT,
     });
@@ -230,9 +258,7 @@ export class StockMovementService {
     return this.toResponse(created);
   }
 
-  // ─── State transitions ─────────────────────────────────────────────────────
-
-  /** Replace the lines. Allowed while the request is still being written up. */
+  /** Thay các dòng. Chỉ được khi phiếu còn đang soạn. */
   async updateDetails(
     user: AuthUser,
     id: string,
@@ -246,7 +272,7 @@ export class StockMovementService {
 
     if (isTransfer) {
       this.assertStatus(request, [MovementStatus.OPENING]);
-      // Either end may still correct the list while it is open.
+      // Hai đầu vẫn sửa được danh sách khi phiếu còn mở.
       if (
         !this.canActAt(user, this.source(request)) &&
         !this.canActAt(user, this.destination(request))
@@ -276,20 +302,23 @@ export class StockMovementService {
       request.movementType === MovementType.ADJUST ? 0 : this.totalOf(details);
 
     if (request.movementType === MovementType.IMPORT) {
-      await this.assertCreditHeadroom(
+      const supplier = await this.suppliers.requireForImport(
         tenantId,
         request.fromSupplierId,
-        totalPrice,
+        ImportSource.SUPPLIER,
       );
+      this.suppliers.assertCreditHeadroom(supplier, totalPrice);
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Chiếm phiếu trước khi thay dòng.
+      await this.claim(tx, tenantId, id, [request.status], { totalPrice });
       await tx.stockMovementRequestItem.deleteMany({
         where: { requestId: id },
       });
       return tx.stockMovementRequest.update({
         where: { id },
-        data: { totalPrice, details: { create: details } },
+        data: { details: { create: details } },
         include: DETAIL_INCLUDE,
       });
     });
@@ -297,17 +326,24 @@ export class StockMovementService {
     return this.toResponse(updated);
   }
 
-  /** DRAFT → OPENING: the sending location starts picking. */
+  /** DRAFT → OPENING: nơi gửi bắt đầu soạn hàng. */
   async open(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
     this.assertCanActAt(user, this.source(request));
     this.assertStatus(request, [MovementStatus.DRAFT]);
     await this.assertSourceStock(this.prisma, request);
 
-    return this.toResponse(await this.setStatus(id, MovementStatus.OPENING));
+    return this.toResponse(
+      await this.setStatus(
+        this.tenantOf(user),
+        id,
+        [MovementStatus.DRAFT],
+        MovementStatus.OPENING,
+      ),
+    );
   }
 
-  /** OPENING → CLOSED: picking is finished and the list is final. */
+  /** OPENING → CLOSED: soạn xong, danh sách chốt. */
   async close(user: AuthUser, id: string) {
     const request = await this.findRow(this.tenantOf(user), id);
     this.assertCanActAt(user, this.source(request));
@@ -320,45 +356,67 @@ export class StockMovementService {
     }
     await this.assertSourceStock(this.prisma, request);
 
-    return this.toResponse(await this.setStatus(id, MovementStatus.CLOSED));
+    return this.toResponse(
+      await this.setStatus(
+        this.tenantOf(user),
+        id,
+        [MovementStatus.OPENING],
+        MovementStatus.CLOSED,
+      ),
+    );
   }
 
-  /** → IN_TRANSIT: the goods physically leave, so the source decrement and the status change share one transaction. */
+  /** → IN_TRANSIT: hàng rời kho thật, nên trừ nguồn và đổi trạng thái chung một transaction. */
   async ship(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
     this.assertCanActAt(user, this.source(request));
     this.assertStatus(request, [MovementStatus.CLOSED, MovementStatus.PENDING]);
+    // Lý do như `receive`, sớm hơn: hàng rời nguồn tại đây, và dòng combo sau đó không bao giờ nhận được.
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
     const isTransfer = this.isTransferType(request.movementType);
 
     const { shipped, crossings } = await this.prisma.$transaction(
       async (tx) => {
+        // Chiếm phiếu trước khi trừ kho: hai lần "xuất" cùng lúc thì chỉ một lần trừ.
+        await this.claim(
+          tx,
+          tenantId,
+          id,
+          [MovementStatus.CLOSED, MovementStatus.PENDING],
+          {
+            status: MovementStatus.IN_TRANSIT,
+            shippedById: user.userId,
+            shippedAt: new Date(),
+          },
+        );
         const lowStock: (Inventory | null)[] = [];
 
         if (isTransfer) {
-          const from = this.source(request);
+          const from = this.source(request)!;
           for (const line of request.details) {
             const quantity = Number(line.quantity);
-            // `deductStock` is the check as well as the write: the `assertSourceStock` calls elsewhere are advisory, and this is what stops two shipments emptying the same shelf twice.
+            // Trừ tồn có kiểm tra.
             const after = await this.inventory.deductStock(tx, {
               tenantId,
               productItemId: line.productItemId,
-              branchId: from.branchId,
-              warehouseId: from.warehouseId,
+              locationId: from.id,
               quantity,
               label: line.productItem.sku ?? line.productItemId,
+              ledger: {
+                type: InventoryTxType.TRANSFER_OUT,
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+                createdById: user.userId,
+              },
             });
             lowStock.push(this.inventory.lowStockCrossing(after, -quantity));
           }
         }
 
         return {
-          shipped: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.IN_TRANSIT },
-            include: DETAIL_INCLUDE,
-          }),
+          shipped: await this.reload(tx, id),
           crossings: lowStock,
         };
       },
@@ -373,18 +431,19 @@ export class StockMovementService {
     return this.toResponse(shipped);
   }
 
-  /** → RECEIVED: the destination confirms what turned up, line by line. Received quantities move stock, not ordered ones, so a short delivery is simply never added - and for an IMPORT this is where the supplier's debt goes up, so the credit limit is re-checked here too. */
+  /** Nhận hàng: tăng tồn theo số thực nhận; phiếu nhập thì tăng công nợ NCC. */
   async receive(user: AuthUser, id: string, dto: ReceiveMovementDto) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
     this.assertCanActAt(user, this.destination(request));
-
     this.assertStatus(
       request,
       request.movementType === MovementType.IMPORT
         ? [MovementStatus.PENDING, MovementStatus.IN_TRANSIT]
         : [MovementStatus.IN_TRANSIT],
     );
+    // Chặn combo / dịch vụ.
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
     const receivedByItem = new Map(
       dto.details.map((line) => [line.productItemId, line.receivedQuantity]),
@@ -399,7 +458,7 @@ export class StockMovementService {
       });
     }
 
-    // Nobody can receive more than was sent: the figure feeds both the stock write and the supplier charge, so an IMPORT of one unit received as a million would conjure inventory and a matching debt. Short deliveries stay allowed; over-delivery needs its own paperwork.
+    // Không nhận quá số đã gửi.
     const over = request.details.find(
       (line) =>
         (receivedByItem.get(line.productItemId) ?? 0) > Number(line.quantity),
@@ -423,9 +482,23 @@ export class StockMovementService {
       });
     }
 
-    const to = this.destination(request);
+    const to = this.destination(request)!;
     const { received, creditWarning } = await this.prisma.$transaction(
       async (tx) => {
+        // Chiếm phiếu trước khi ghi tồn và công nợ.
+        await this.claim(
+          tx,
+          tenantId,
+          id,
+          request.movementType === MovementType.IMPORT
+            ? [MovementStatus.PENDING, MovementStatus.IN_TRANSIT]
+            : [MovementStatus.IN_TRANSIT],
+          {
+            status: MovementStatus.RECEIVED,
+            receivedById: user.userId,
+            receivedAt: new Date(),
+          },
+        );
         let importCost = 0;
 
         for (const line of request.details) {
@@ -436,21 +509,48 @@ export class StockMovementService {
           });
 
           if (quantity <= 0) continue;
+          const ledger = {
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
           if (request.movementType === MovementType.IMPORT) {
-            importCost += quantity * Number(line.importPrice ?? 0);
+            importCost += toDong(quantity * Number(line.importPrice ?? 0));
+            // Mỗi dòng nhập là một lô theo giá nhập.
+            await this.inventory.openLot(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              locationId: to.id,
+              quantity,
+              unitCost:
+                line.importPrice === null
+                  ? undefined
+                  : Number(line.importPrice),
+              sourceType: LotSourceType.SUPPLIER,
+              supplierId: request.fromSupplierId,
+              importItemId: line.id,
+              ledger: { ...ledger, type: InventoryTxType.IMPORT },
+            });
+          } else {
+            // Hàng chuyển về thành lô con của lô nguồn.
+            await this.inventory.returnDrawn(tx, {
+              tenantId,
+              productItemId: line.productItemId,
+              toLocationId: to.id,
+              quantity,
+              drawnBy: {
+                referenceType: InventoryRefType.STOCK_MOVEMENT,
+                referenceId: request.id,
+              },
+              ledger: { ...ledger, type: InventoryTxType.TRANSFER_IN },
+              ifNeverDrawn: { sourceType: LotSourceType.OPENING },
+            });
           }
-          await this.inventory.adjustStock(tx, {
-            tenantId,
-            productItemId: line.productItemId,
-            branchId: to.branchId,
-            warehouseId: to.warehouseId,
-            delta: quantity,
-          });
         }
 
         const warning =
           request.movementType === MovementType.IMPORT && request.fromSupplierId
-            ? await this.chargeSupplier(
+            ? await this.suppliers.charge(
                 tx,
                 tenantId,
                 request.fromSupplierId,
@@ -460,28 +560,28 @@ export class StockMovementService {
                     (line) => (receivedByItem.get(line.productItemId) ?? 0) > 0,
                   )
                   .map((line) => line.productItemId),
+                {
+                  actorId: user.userId,
+                  type: SupplierDebtRefType.STOCK_MOVEMENT,
+                  id: request.id,
+                },
               )
             : null;
 
         return {
-          received: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.RECEIVED },
-            include: DETAIL_INCLUDE,
-          }),
+          received: await this.reload(tx, id),
           creditWarning: warning,
         };
       },
     );
 
-    if (creditWarning) {
-      const owners = await this.notifications.tenantOwners(tenantId);
-      await this.notifications.notify({
+    if (request.fromSupplierId) {
+      await this.suppliers.notifyCreditWarning(
         tenantId,
-        recipientIds: owners.filter((ownerId) => ownerId !== user.userId),
-        referenceId: request.fromSupplierId ?? undefined,
-        ...creditWarning,
-      });
+        user.userId,
+        request.fromSupplierId,
+        creditWarning,
+      );
     }
 
     await this.notifyMovement(received, user.userId, {
@@ -493,7 +593,7 @@ export class StockMovementService {
     return this.toResponse(received);
   }
 
-  /** ADJUST PENDING → COMPLETED: apply the counted numbers, delta `counted - recorded`. An adjustment that would take a line below zero is refused rather than clamped - a count implying negative stock is wrong, or something moved while it was open. */
+  /** Áp số kiểm kê; từ chối nếu ra tồn âm. */
   async approveAdjust(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
@@ -506,8 +606,9 @@ export class StockMovementService {
       });
     }
     this.assertStatus(request, [MovementStatus.PENDING]);
+    assertHoldsStock(request.details.map((line) => line.productItem));
 
-    const from = this.source(request);
+    const from = this.source(request)!;
     const changes = request.details.map((line) => {
       if (line.receivedQuantity === null) {
         throw new BadRequestException({
@@ -532,6 +633,11 @@ export class StockMovementService {
 
     const { completed, crossings } = await this.prisma.$transaction(
       async (tx) => {
+        await this.claim(tx, tenantId, id, [MovementStatus.PENDING], {
+          status: MovementStatus.COMPLETED,
+          approvedById: user.userId,
+          approvedAt: new Date(),
+        });
         const lowStock: (Inventory | null)[] = [];
 
         for (const change of changes) {
@@ -542,8 +648,7 @@ export class StockMovementService {
               where: {
                 tenantId,
                 productItemId: change.productItemId,
-                branchId: from.branchId,
-                warehouseId: from.warehouseId,
+                locationId: from.id,
               },
               select: { stock: true },
             });
@@ -556,22 +661,39 @@ export class StockMovementService {
             }
           }
 
-          const after = await this.inventory.adjustStock(tx, {
+          // Thừa thì mở lô mới, thiếu thì rút lô FIFO.
+          const key = {
             tenantId,
             productItemId: change.productItemId,
-            branchId: from.branchId,
-            warehouseId: from.warehouseId,
-            delta: change.delta,
-          });
+            locationId: from.id,
+          };
+          const ledger = {
+            type: InventoryTxType.ADJUST,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: request.id,
+            createdById: user.userId,
+          };
+          const after =
+            change.delta > 0
+              ? (
+                  await this.inventory.openLot(tx, {
+                    ...key,
+                    quantity: change.delta,
+                    sourceType: LotSourceType.ADJUSTMENT,
+                    ledger,
+                  })
+                ).inventory
+              : await this.inventory.deductStock(tx, {
+                  ...key,
+                  quantity: -change.delta,
+                  label: change.label,
+                  ledger,
+                });
           lowStock.push(this.inventory.lowStockCrossing(after, change.delta));
         }
 
         return {
-          completed: await tx.stockMovementRequest.update({
-            where: { id },
-            data: { status: MovementStatus.COMPLETED },
-            include: DETAIL_INCLUDE,
-          }),
+          completed: await this.reload(tx, id),
           crossings: lowStock,
         };
       },
@@ -581,12 +703,12 @@ export class StockMovementService {
     return this.toResponse(completed);
   }
 
-  /** Cancel, returning stock that had already left: a transfer cancelled IN_TRANSIT is put back, while anything RECEIVED or COMPLETED can only be corrected with a new movement. */
+  /** Huỷ phiếu, trả lại hàng đã rời kho. */
   async cancel(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);
     const request = await this.findRow(tenantId, id);
 
-    // Either end may call it off.
+    // Hai đầu đều huỷ được.
     if (
       !this.canActAt(user, this.source(request)) &&
       !this.canActAt(user, this.destination(request))
@@ -608,24 +730,38 @@ export class StockMovementService {
       this.isTransferType(request.movementType);
 
     const cancelled = await this.prisma.$transaction(async (tx) => {
+      // Chiếm phiếu trước khi trả hàng về nguồn.
+      await this.claim(tx, tenantId, id, [request.status], {
+        status: MovementStatus.CANCELLED,
+        cancelledAt: new Date(),
+        cancelledById: user.userId,
+      });
       if (shouldReturnStock) {
-        const from = this.source(request);
+        const from = this.source(request)!;
+        // Trả về đúng các lô đã rời.
         for (const line of request.details) {
-          await this.inventory.adjustStock(tx, {
+          await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            branchId: from.branchId,
-            warehouseId: from.warehouseId,
-            delta: Number(line.quantity),
+            toLocationId: from.id,
+            quantity: Number(line.quantity),
+            drawnBy: {
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+            },
+            ledger: {
+              type: InventoryTxType.TRANSFER_IN,
+              referenceType: InventoryRefType.STOCK_MOVEMENT,
+              referenceId: request.id,
+              createdById: user.userId,
+              note: 'Huỷ phiếu đang vận chuyển',
+            },
+            ifNeverDrawn: { sourceType: LotSourceType.OPENING },
           });
         }
       }
 
-      return tx.stockMovementRequest.update({
-        where: { id },
-        data: { status: MovementStatus.CANCELLED },
-        include: DETAIL_INCLUDE,
-      });
+      return this.reload(tx, id);
     });
 
     await this.notifyMovement(cancelled, user.userId, {
@@ -638,9 +774,9 @@ export class StockMovementService {
     return this.toResponse(cancelled);
   }
 
-  // ─── Line preparation ──────────────────────────────────────────────────────
+  // ─── Chuẩn bị dòng ───
 
-  /** IMPORT lines need both a price and a quantity, and the import price may not exceed the variant's retail price - buying above what you sell at is a data-entry error that silently poisons every margin report. */
+  /** Dòng nhập cần giá và số lượng, giá nhập không vượt giá bán lẻ. */
   private async prepareImportLines(tenantId: string, lines: MovementItemDto[]) {
     const items = await this.itemsById(tenantId, lines);
 
@@ -673,10 +809,10 @@ export class StockMovementService {
     });
   }
 
-  /** EXPORT/RETURN lines: price defaults to cost, and the source must hold the stock. */
+  /** Dòng xuất/trả: giá mặc định là giá vốn, nguồn phải đủ hàng. */
   private async prepareTransferLines(
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
@@ -701,18 +837,17 @@ export class StockMovementService {
     return prepared;
   }
 
-  /** ADJUST lines: `receivedQuantity` is the counted figure and is required, while `quantity` is what the system thinks and is filled from inventory when absent, so the difference is against the number at count time. */
+  /** Dòng kiểm kê: số kiểm đếm và số hệ thống. */
   private async prepareAdjustLines(
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: MovementItemDto[],
   ) {
     const items = await this.itemsById(tenantId, lines);
     const stock = await this.prisma.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: from.id,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
       select: { productItemId: true, stock: true },
@@ -742,7 +877,13 @@ export class StockMovementService {
     const ids = [...new Set(lines.map((line) => line.productItemId))];
     const items = await this.prisma.productItem.findMany({
       where: { tenantId, id: { in: ids } },
-      select: { id: true, sku: true, retailPrice: true, costPrice: true },
+      select: {
+        id: true,
+        sku: true,
+        retailPrice: true,
+        costPrice: true,
+        itemType: true,
+      },
     });
     if (items.length !== ids.length) {
       throw new NotFoundException({
@@ -750,10 +891,12 @@ export class StockMovementService {
         message: 'Product item not found',
       });
     }
+    // Đọc dòng phiếu.
+    assertHoldsStock(items);
     return new Map(items.map((item) => [item.id, item]));
   }
 
-  // ─── Guards ────────────────────────────────────────────────────────────────
+  // ─── Kiểm tra ───
 
   private assertNoDuplicateItems(lines: MovementItemDto[]): void {
     const ids = lines.map((line) => line.productItemId);
@@ -774,13 +917,12 @@ export class StockMovementService {
     }
   }
 
-  /** Which fields a movement type needs, in one place - every branch of the state machine downstream assumes these hold. */
-  private async assertEndpointsValid(
-    tenantId: string,
+  /** Kiểm các trường bắt buộc theo loại phiếu. */
+  private assertEndpointsValid(
     movementType: string,
-    from: LocationColumns | null,
-    to: LocationColumns | null,
-  ): Promise<void> {
+    from: LocationEnd | null,
+    to: LocationEnd | null,
+  ): void {
     if (movementType === MovementType.IMPORT) {
       if (!to)
         throw new BadRequestException({
@@ -794,7 +936,7 @@ export class StockMovementService {
           message: 'This movement must have a source location',
         });
       if (movementType === MovementType.ADJUST) {
-        // A stocktake happens at one place; a destination would be meaningless.
+        // Kiểm kê không có nơi nhận.
         if (to) {
           throw new BadRequestException({
             code: ErrorCode.STOCK_MOVEMENT_ADJUST_HAS_DESTINATION,
@@ -810,20 +952,13 @@ export class StockMovementService {
         this.assertTransferMakesSense(movementType, from, to);
       }
     }
-
-    await this.inventory.assertLocationsExist(
-      tenantId,
-      [from, to].filter(
-        (columns): columns is LocationColumns => columns !== null,
-      ),
-    );
   }
 
-  /** Builds the lines for whichever movement type this is; `from` is only ever null for an IMPORT, the one type whose lines don't depend on a source location. */
+  /** Dựng dòng theo loại phiếu. */
   private async prepareLines(
     tenantId: string,
     movementType: string,
-    from: LocationColumns | null,
+    from: LocationEnd | null,
     lines: MovementItemDto[],
   ) {
     if (movementType === MovementType.IMPORT) {
@@ -839,13 +974,13 @@ export class StockMovementService {
       : this.prepareTransferLines(tenantId, from, lines);
   }
 
-  /** A transfer must actually go somewhere else, and stock moving from a branch back to a warehouse is a RETURN, not an EXPORT - the old rule was phrased as a role restriction, but the direction is what makes it a return. */
+  /** Phiếu chuyển phải đến nơi khác; chiều trả hàng thì dùng RETURN. */
   private assertTransferMakesSense(
     movementType: string,
-    from: LocationColumns,
-    to: LocationColumns,
+    from: LocationEnd,
+    to: LocationEnd,
   ): void {
-    if (from.branchId === to.branchId && from.warehouseId === to.warehouseId) {
+    if (from.id === to.id) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SAME_LOCATION,
         message: 'The source and destination locations must be different',
@@ -853,8 +988,7 @@ export class StockMovementService {
     }
     if (
       movementType === MovementType.EXPORT &&
-      from.branchId &&
-      to.warehouseId
+      isReturnDirection(from.type, to.type)
     ) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SHOULD_BE_RETURN,
@@ -864,7 +998,7 @@ export class StockMovementService {
     }
   }
 
-  /** The source must hold every quantity on the request as it stands. */
+  /** Nguồn phải đủ hàng cho mọi dòng. */
   private async assertSourceStock(
     client: Prisma.TransactionClient | PrismaService,
     request: MovementRow,
@@ -878,7 +1012,7 @@ export class StockMovementService {
     await this.assertStockCovers(
       client,
       request.tenantId,
-      this.source(request),
+      this.source(request)!, // phiếu xuất/trả luôn có nguồn
       request.details.map((line) => ({
         productItemId: line.productItemId,
         quantity: Number(line.quantity),
@@ -889,7 +1023,7 @@ export class StockMovementService {
   private async assertStockCovers(
     client: Prisma.TransactionClient | PrismaService,
     tenantId: string,
-    from: LocationColumns,
+    from: LocationEnd,
     lines: { productItemId: string; quantity: number }[],
   ): Promise<void> {
     if (lines.length === 0) return;
@@ -897,14 +1031,14 @@ export class StockMovementService {
     const rows = await client.inventory.findMany({
       where: {
         tenantId,
-        branchId: from.branchId,
-        warehouseId: from.warehouseId,
+        locationId: from.id,
         productItemId: { in: lines.map((line) => line.productItemId) },
       },
-      select: { productItemId: true, stock: true },
+      select: { productItemId: true, stock: true, lockedStock: true },
     });
+    // Chỉ hàng trên kệ được chuyển.
     const stockByItem = new Map(
-      rows.map((row) => [row.productItemId, row.stock]),
+      rows.map((row) => [row.productItemId, actualStockOf(row)]),
     );
 
     for (const line of lines) {
@@ -912,104 +1046,13 @@ export class StockMovementService {
       if (line.quantity > available) {
         throw new BadRequestException({
           code: ErrorCode.INSUFFICIENT_STOCK,
-          message: `A quantity of ${line.quantity} exceeds the ${available} in stock at the source location`,
+          message: `A quantity of ${line.quantity} exceeds the ${available} on the shelf at the source location`,
         });
       }
     }
   }
 
-  /** Refuses an import that would push the supplier past their credit limit; a limit of 0 means no limit, matching how the field is seeded. */
-  private async assertCreditHeadroom(
-    tenantId: string,
-    supplierId: string | null | undefined,
-    amount: number,
-  ): Promise<void> {
-    if (!supplierId) {
-      throw new BadRequestException({
-        code: ErrorCode.STOCK_MOVEMENT_SUPPLIER_REQUIRED,
-        message: 'An import must have a supplier',
-      });
-    }
-    const supplier = await this.prisma.supplier.findFirst({
-      where: { id: supplierId, tenantId },
-      select: { creditLimit: true, outstandingDebt: true },
-    });
-    if (!supplier)
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return;
-
-    const projected = Number(supplier.outstandingDebt) + amount;
-    if (projected > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded. Current debt: ${Number(supplier.outstandingDebt)}, this movement: ${amount}, limit: ${limit}`,
-      });
-    }
-  }
-
-  /** Books received goods against the supplier: debt up, and the variants recorded as things this supplier sells us. The limit is re-checked after the increment and throws to roll the receipt back, since several imports can be open at once; returns the warning to send after commit, or null. */
-  private async chargeSupplier(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    supplierId: string,
-    amount: number,
-    receivedItemIds: string[],
-  ) {
-    if (receivedItemIds.length > 0) {
-      // Idempotent: receiving twice from the same supplier must not fail on the join row.
-      await tx.productItemSupplier.createMany({
-        data: receivedItemIds.map((productItemId) => ({
-          productItemId,
-          supplierId,
-        })),
-        skipDuplicates: true,
-      });
-    }
-    if (amount <= 0) return null;
-
-    const supplier = await tx.supplier.update({
-      where: { id: supplierId },
-      data: { outstandingDebt: { increment: amount } },
-      select: {
-        supplierName: true,
-        creditLimit: true,
-        outstandingDebt: true,
-        tenantId: true,
-      },
-    });
-    if (supplier.tenantId !== tenantId) {
-      throw new NotFoundException({
-        code: ErrorCode.SUPPLIER_NOT_FOUND,
-        message: 'Supplier not found',
-      });
-    }
-
-    const limit = Number(supplier.creditLimit);
-    if (limit <= 0) return null;
-
-    const debt = Number(supplier.outstandingDebt);
-    if (debt > limit) {
-      throw new BadRequestException({
-        code: ErrorCode.SUPPLIER_CREDIT_LIMIT_EXCEEDED,
-        message: `Credit limit exceeded on receipt. New debt: ${debt}, limit: ${limit}`,
-      });
-    }
-
-    return crossedCreditWarning(debt, amount, limit)
-      ? SupplierNotificationTemplates.creditLimitWarning(
-          supplier.supplierName,
-          debt,
-          limit,
-        )
-      : null;
-  }
-
-  // ─── Access ────────────────────────────────────────────────────────────────
+  // ─── Quyền ───
 
   private tenantOf(user: AuthUser): string {
     if (!user.tenantId) {
@@ -1021,29 +1064,17 @@ export class StockMovementService {
     return user.tenantId;
   }
 
-  /** The one location a staff account may act at, or `null` for an account that may act anywhere in the tenant. */
-  private postingOf(user: AuthUser): LocationColumns | null {
-    if (
-      user.systemRole === SystemRole.TENANT_OWNER ||
-      user.systemRole === SystemRole.ADMIN
-    ) {
-      return null;
-    }
-    return { branchId: user.branchId, warehouseId: user.warehouseId };
+  /** Nơi nhân viên được gán, null nếu làm được mọi nơi. */
+  private postingOf(user: AuthUser): { locationId: string | null } | null {
+    return postingOf(user);
   }
 
-  /** A TENANT_OWNER acts anywhere in the tenant, a STAFF account where it is posted - or where the shift it is currently supervising reaches. That clause only ever widens to a location the supervisor is already posted at, so it is about when they may act, not where. */
-  private canActAt(user: AuthUser, location: LocationColumns | null): boolean {
-    const own = this.postingOf(user);
-    if (!own) return true;
-    if (!location) return false;
-    if (supervisesLocation(user.shiftSupervision, location)) return true;
-    if (location.branchId) return own.branchId === location.branchId;
-    if (location.warehouseId) return own.warehouseId === location.warehouseId;
-    return false;
+  /** Người dùng có được thao tác tại địa điểm này không. */
+  private canActAt(user: AuthUser, location: LocationEnd | null): boolean {
+    return canActAt(user, location);
   }
 
-  /** A movement between two of our own locations - the only kind with a source *and* a destination that both belong to us, and so the only kind either end may raise. */
+  /** Phiếu chuyển giữa hai địa điểm của mình. */
   private isTransferType(movementType: string): boolean {
     return (
       movementType === MovementType.EXPORT ||
@@ -1051,19 +1082,13 @@ export class StockMovementService {
     );
   }
 
-  /** Whether this is literally where the actor works. `canActAt` is about permission and answers true everywhere for an owner, which cannot tell us which end of a transfer raised it. */
-  private isPostedAt(
-    user: AuthUser,
-    location: LocationColumns | null,
-  ): boolean {
-    const own = this.postingOf(user);
-    if (!own || !location) return false;
-    if (location.branchId) return own.branchId === location.branchId;
-    if (location.warehouseId) return own.warehouseId === location.warehouseId;
-    return false;
+  /** Có đúng nơi người dùng làm việc không. */
+  private isPostedAt(user: AuthUser, location: LocationEnd | null): boolean {
+    return isPostedAt(user, location);
   }
 
-  private assertCanActAt(user: AuthUser, location: LocationColumns): void {
+  /** Thiếu địa điểm thì từ chối. */
+  private assertCanActAt(user: AuthUser, location: LocationEnd | null): void {
     if (!this.canActAt(user, location)) {
       throw new ForbiddenException({
         code: ErrorCode.STOCK_MOVEMENT_LOCATION_DENIED,
@@ -1072,45 +1097,35 @@ export class StockMovementService {
     }
   }
 
-  /** Where the movement takes stock from: a staff account that omitted it gets their own posting, and a TENANT_OWNER has to name one. Access is not checked here - a transfer may be raised from either end, so `create()` decides which endpoint has to match. */
-  private resolveSource(
+  /** Nguồn trừ hàng: nhân viên bỏ trống thì lấy nơi được gán. */
+  private resolveSourceId(
     user: AuthUser,
     dto: CreateStockMovementDto,
-  ): LocationColumns | null {
+  ): string | null {
     if (dto.movementType === MovementType.IMPORT) return null;
-    if (dto.fromLocation) {
-      return this.columnsOf(dto.fromLocation);
-    }
+    if (dto.fromLocationId) return dto.fromLocationId;
 
     const own = this.postingOf(user);
-    if (!own || (!own.branchId && !own.warehouseId)) {
+    if (!own?.locationId) {
       throw new BadRequestException({
         code: ErrorCode.STOCK_MOVEMENT_SOURCE_REQUIRED,
-        message: 'This movement must have a source location (fromLocation)',
+        message: 'This movement must have a source location (fromLocationId)',
       });
     }
-    return own;
+    return own.locationId;
   }
 
-  private columnsOf(ref: LocationRefDto): LocationColumns {
-    return toLocationColumns(ref);
+  /** Nơi xuất của phiếu, null với phiếu nhập. */
+  private source(request: MovementRow): LocationEnd | null {
+    return request.fromLocation;
   }
 
-  private source(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.fromBranchId,
-      warehouseId: request.fromWarehouseId,
-    };
+  /** Nơi nhận của phiếu, null với phiếu kiểm kê. */
+  private destination(request: MovementRow): LocationEnd | null {
+    return request.toLocation;
   }
 
-  private destination(request: MovementRow): LocationColumns {
-    return {
-      branchId: request.toBranchId,
-      warehouseId: request.toWarehouseId,
-    };
-  }
-
-  // ─── Plumbing ──────────────────────────────────────────────────────────────
+  // ─── Tiện ích ───
 
   private async findRow(tenantId: string, id: string): Promise<MovementRow> {
     const request = await this.prisma.stockMovementRequest.findFirst({
@@ -1125,10 +1140,43 @@ export class StockMovementService {
     return request;
   }
 
-  private setStatus(id: string, status: string) {
-    return this.prisma.stockMovementRequest.update({
+  /** Đổi trạng thái đơn thuần (mở, chốt) bằng lệnh chiếm có điều kiện, trong transaction. */
+  private setStatus(
+    tenantId: string,
+    id: string,
+    from: readonly string[],
+    status: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.claim(tx, tenantId, id, from, { status });
+      return this.reload(tx, id);
+    });
+  }
+
+  /** Chiếm phiếu theo trạng thái hiện tại, đầu mọi transaction đổi phiếu. */
+  private async claim(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    id: string,
+    from: readonly string[],
+    data: Prisma.StockMovementRequestUncheckedUpdateManyInput,
+  ): Promise<void> {
+    const claimed = await tx.stockMovementRequest.updateMany({
+      where: { id, tenantId, status: { in: [...from] } },
+      data,
+    });
+    if (claimed.count !== 1) {
+      throw new ConflictException({
+        code: ErrorCode.STOCK_MOVEMENT_CONFLICT,
+        message:
+          'The stock movement has just been changed by someone else, please reload',
+      });
+    }
+  }
+
+  private reload(tx: Prisma.TransactionClient, id: string) {
+    return tx.stockMovementRequest.findUniqueOrThrow({
       where: { id },
-      data: { status },
       include: DETAIL_INCLUDE,
     });
   }
@@ -1140,7 +1188,7 @@ export class StockMovementService {
     );
   }
 
-  /** Tells the people who need to know, after the work is done. The actor is always removed - nobody needs telling about the thing they just did - and `notify()` de-duplicates, so someone who is both creator and receiving manager gets one message. */
+  /** Báo người liên quan sau khi xong, bỏ người thao tác. */
   private async notifyMovement(
     request: MovementRow,
     actorId: string,
@@ -1163,7 +1211,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.source(request),
+          locationId: request.fromLocationId,
         })),
       );
     }
@@ -1171,7 +1219,7 @@ export class StockMovementService {
       recipients.push(
         ...(await this.notifications.managersOfLocation({
           tenantId,
-          ...this.destination(request),
+          locationId: request.toLocationId,
         })),
       );
     }
@@ -1184,29 +1232,30 @@ export class StockMovementService {
     });
   }
 
-  /** Decimals become numbers, and the two location pairs become the API's ref objects. */
+  /** Đổi phiếu sang dạng response. */
   private toResponse(request: MovementRow) {
     const {
-      fromBranchId,
-      fromWarehouseId,
-      toBranchId,
-      toWarehouseId,
-      fromBranch,
-      fromWarehouse,
-      toBranch,
-      toWarehouse,
+      fromLocationId,
+      toLocationId,
       totalPrice,
       details,
+      createdBy,
+      shippedBy,
+      receivedBy,
+      approvedBy,
+      cancelledBy,
       ...rest
     } = request;
 
     return {
       ...rest,
+      // User lồng `profile`.
+      createdBy: createdBy ? withNestedProfile(createdBy) : createdBy,
+      shippedBy: shippedBy ? withNestedProfile(shippedBy) : null,
+      receivedBy: receivedBy ? withNestedProfile(receivedBy) : null,
+      approvedBy: approvedBy ? withNestedProfile(approvedBy) : null,
+      cancelledBy: cancelledBy ? withNestedProfile(cancelledBy) : null,
       totalPrice: Number(totalPrice),
-      fromLocation: sourceRef({ fromBranchId, fromWarehouseId }),
-      fromLocationName: (fromBranch ?? fromWarehouse)?.name ?? null,
-      toLocation: destinationRef({ toBranchId, toWarehouseId }),
-      toLocationName: (toBranch ?? toWarehouse)?.name ?? null,
       details: details.map((line) => ({
         ...line,
         quantity: Number(line.quantity),

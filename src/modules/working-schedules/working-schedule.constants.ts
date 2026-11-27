@@ -1,11 +1,4 @@
-/** NORMAL is a rostered shift; OVERTIME is extra time and is never counted as "late". */
-export const ScheduleType = {
-  NORMAL: 'NORMAL',
-  OVERTIME: 'OVERTIME',
-} as const;
-
-export const SCHEDULE_TYPES = Object.values(ScheduleType);
-
+/** Loại ca (NORMAL / OVERTIME) đã bỏ 2026-11-26: nó chỉ có nghĩa với bảng lương, đã ra khỏi phạm vi. */
 export const ScheduleStatus = {
   SCHEDULED: 'SCHEDULED',
   COMPLETED: 'COMPLETED',
@@ -13,18 +6,15 @@ export const ScheduleStatus = {
   DELETED: 'DELETED',
 } as const;
 
-/** What a client may filter by - DELETED is not a state anyone asks to see. */
+/** Client chỉ được lọc các trạng thái này; DELETED không ai cần xem. */
 export const FILTERABLE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,
   ScheduleStatus.CANCELLED,
 ];
 
-/** Statuses that still occupy a person's time; a CANCELLED or DELETED shift clashes with nothing, which is what makes rescheduling after a cancellation possible. */
+/** Trạng thái lịch còn chiếm giờ của người. */
 export const LIVE_SCHEDULE_STATUSES = [
   ScheduleStatus.SCHEDULED,
   ScheduleStatus.COMPLETED,
 ];
-
-/** The fallback when a tenant has no PayrollSetting yet - the old service's default. */
-export const DEFAULT_LATE_GRACE_MINUTES = 15;

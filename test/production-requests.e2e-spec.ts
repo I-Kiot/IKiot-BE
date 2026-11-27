@@ -1,0 +1,856 @@
+import 'dotenv/config';
+import { randomUUID } from 'crypto';
+import { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { AppModule } from './../src/app.module';
+import { PrismaService } from './../src/prisma/prisma.service';
+import { ProductionRequestService } from './../src/modules/production-requests/production-requests.service';
+import { ProductionListService } from './../src/modules/production-requests/production-list.service';
+import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
+import { QueryStockMovementDto } from './../src/modules/stock-movement-requests/dto/stock-movement.dto';
+import { SupplierService } from './../src/modules/suppliers/suppliers.service';
+import { SystemRole } from './../src/common/constants/system-role';
+import { ErrorCode } from './../src/common/errors/error-codes';
+import type { AuthUser } from './../src/common/types/auth-user.type';
+
+// Kiểm danh sách cần sản xuất và nhận hàng xưởng (Postgres thật).
+describe('production list, production requests and workshop receipts', () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+  let requests: ProductionRequestService;
+  let list: ProductionListService;
+  let movements: StockMovementService;
+  let suppliers: SupplierService;
+
+  const tenantId = randomUUID();
+  const ownerId = randomUUID();
+  const staffId = randomUUID();
+  const branchId = randomUUID();
+  const warehouseId = randomUUID();
+  const workshopId = randomUUID();
+  const goodsSupplierId = randomUUID();
+  const customerId = randomUUID();
+  const productId = randomUUID();
+  const cabinetId = randomUUID();
+  const comboId = randomUUID();
+  // Chỉ mua từ nhà cung cấp (isManufacturable = false), và một món bị tắt cờ giữa chừng test.
+  const boughtProductId = randomUUID();
+  const chairId = randomUUID();
+  const flippedProductId = randomUUID();
+  const shelfId = randomUUID();
+  const orderId = randomUUID();
+  const orderItemId = randomUUID();
+
+  const baseUser = {
+    tenantId,
+    roleId: null,
+    permissions: new Set<string>(),
+    shiftSupervision: null,
+    email: null,
+  };
+  const owner: AuthUser = {
+    ...baseUser,
+    userId: ownerId,
+    systemRole: SystemRole.TENANT_OWNER,
+    branchId: null,
+    warehouseId: null,
+    displayName: 'Owner',
+    phoneNumber: `prod-owner-${ownerId}`,
+  };
+  // Gửi tới kho, không phải chi nhánh.
+  const warehouseStaff: AuthUser = {
+    ...baseUser,
+    userId: staffId,
+    systemRole: SystemRole.STAFF,
+    branchId: null,
+    warehouseId,
+    displayName: 'Kho',
+    phoneNumber: `prod-staff-${staffId}`,
+  };
+
+  async function codeOf(promise: Promise<unknown>): Promise<string> {
+    try {
+      await promise;
+    } catch (error) {
+      const response = (
+        error as { getResponse?: () => unknown }
+      ).getResponse?.();
+      return (response as { code?: string })?.code ?? String(error);
+    }
+    throw new Error('expected the call to be refused');
+  }
+
+  async function stockAt(locationId: string) {
+    const row = await prisma.inventory.findFirst({
+      where: { tenantId, locationId, productItemId: cabinetId },
+    });
+    const lots = await prisma.inventoryLot.aggregate({
+      where: {
+        tenantId,
+        locationId,
+        productItemId: cabinetId,
+        isSellable: true,
+      },
+      _sum: { remainingQuantity: true },
+    });
+    expect(lots._sum.remainingQuantity ?? 0).toBe(row?.stock ?? 0);
+    return row?.stock ?? 0;
+  }
+
+  /** Hàng hỏng (2026-11-26): lô `isSellable = false` tại địa điểm, ngoài stock. */
+  async function damagedAt(locationId: string) {
+    const lots = await prisma.inventoryLot.aggregate({
+      where: {
+        tenantId,
+        locationId,
+        productItemId: cabinetId,
+        isSellable: false,
+      },
+      _sum: { remainingQuantity: true },
+    });
+    return lots._sum.remainingQuantity ?? 0;
+  }
+
+  const listRows = async (
+    user: AuthUser,
+    query: { locationId?: string; onlyShort?: boolean } = {},
+  ) => (await list.list(user, { page: 1, limit: 100, ...query })).data;
+
+  async function cabinetRow() {
+    const rows = await listRows(owner);
+    return rows.find(
+      (row) => row.productItemId === cabinetId && row.location?.id === branchId,
+    );
+  }
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+    prisma = app.get(PrismaService);
+    requests = app.get(ProductionRequestService);
+    list = app.get(ProductionListService);
+    movements = app.get(StockMovementService);
+    suppliers = app.get(SupplierService);
+
+    await prisma.tenant.create({ data: { id: tenantId, name: 'prod-e2e' } });
+    await prisma.user.createMany({
+      data: [
+        {
+          id: ownerId,
+          tenantId,
+          phoneNumber: owner.phoneNumber,
+          systemRole: SystemRole.TENANT_OWNER,
+        },
+        {
+          id: staffId,
+          tenantId,
+          phoneNumber: warehouseStaff.phoneNumber,
+          systemRole: SystemRole.STAFF,
+        },
+      ],
+    });
+    await prisma.location.create({
+      data: {
+        id: branchId,
+        tenantId,
+        name: 'Chi nhánh',
+        type: 'BRANCH',
+      },
+    });
+    await prisma.location.create({
+      data: { id: warehouseId, tenantId, name: 'Kho tổng', type: 'WAREHOUSE' },
+    });
+    await prisma.branch.create({
+      data: { id: branchId, tenantId, locationId: branchId },
+    });
+    await prisma.warehouse.createMany({
+      data: [{ id: warehouseId, tenantId, locationId: warehouseId }],
+    });
+    await prisma.supplier.createMany({
+      data: [
+        {
+          id: workshopId,
+          tenantId,
+          supplierName: 'Xưởng mộc',
+          type: 'WORKSHOP',
+        },
+        { id: goodsSupplierId, tenantId, supplierName: 'NCC thường' },
+      ],
+    });
+    await prisma.product.createMany({
+      data: [
+        { id: productId, tenantId, name: 'Tủ', isManufacturable: true },
+        { id: boughtProductId, tenantId, name: 'Ghế nhựa' },
+        {
+          id: flippedProductId,
+          tenantId,
+          name: 'Kệ sách',
+          isManufacturable: true,
+        },
+      ],
+    });
+    await prisma.productItem.createMany({
+      data: [
+        {
+          id: cabinetId,
+          tenantId,
+          productId,
+          productName: 'Tủ',
+          productCode: `PR-${cabinetId}`,
+          sku: `PR-${cabinetId}`,
+          retailPrice: 5000,
+          costPrice: 1000,
+        },
+        {
+          id: comboId,
+          tenantId,
+          productId,
+          productName: 'Combo góc làm việc',
+          productCode: `PRC-${comboId}`,
+          sku: `PRC-${comboId}`,
+          retailPrice: 9000,
+          costPrice: 0,
+          itemType: 'COMBO',
+        },
+        {
+          id: chairId,
+          tenantId,
+          productId: boughtProductId,
+          productName: 'Ghế nhựa',
+          productCode: `PRG-${chairId}`,
+          sku: `PRG-${chairId}`,
+          retailPrice: 300,
+          costPrice: 100,
+        },
+        {
+          id: shelfId,
+          tenantId,
+          productId: flippedProductId,
+          productName: 'Kệ sách',
+          productCode: `PRK-${shelfId}`,
+          sku: `PRK-${shelfId}`,
+          retailPrice: 2000,
+          costPrice: 800,
+        },
+      ],
+    });
+    await prisma.customer.create({
+      data: { id: customerId, tenantId, name: 'Khách e2e' },
+    });
+    // Đơn tay xác nhận tại chi nhánh, tồn 0 - ví dụ của hành trình.
+    await prisma.order.create({
+      data: {
+        id: orderId,
+        tenantId,
+        code: `DH-${orderId}`,
+        status: 'CONFIRMED',
+        priority: 'HIGH',
+        branchId,
+        customerId,
+        assigneeId: staffId,
+        grandTotal: 10000,
+        items: {
+          create: {
+            id: orderItemId,
+            productItemId: cabinetId,
+            sourceLocationId: branchId,
+            quantity: 3,
+            listUnitPrice: 5000,
+            unitPrice: 5000,
+            lineTotal: 15000,
+          },
+        },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    try {
+      await cleanup();
+    } finally {
+      await app?.close();
+    }
+  });
+
+  async function cleanup() {
+    if (!prisma) return;
+    const where = { tenantId };
+    await prisma.inventoryTransaction.deleteMany({ where });
+    await prisma.inventoryLot.deleteMany({ where });
+    await prisma.stockMovementRequest.deleteMany({ where });
+    await prisma.productionRequest.deleteMany({ where });
+    await prisma.order.deleteMany({ where });
+    await prisma.customer.deleteMany({ where });
+    await prisma.inventory.deleteMany({ where });
+    await prisma.notification.deleteMany({ where });
+    await prisma.productItemSupplier.deleteMany({
+      where: { supplierId: { in: [workshopId, goodsSupplierId] } },
+    });
+    await prisma.supplier.deleteMany({ where });
+    await prisma.productItem.deleteMany({ where });
+    await prisma.product.deleteMany({ where });
+    await prisma.branch.deleteMany({ where });
+    await prisma.warehouse.deleteMany({ where });
+    await prisma.location.deleteMany({ where });
+    await prisma.user.deleteMany({ where });
+    await prisma.tenant.deleteMany({ where: { id: tenantId } });
+  }
+
+  let requestId: string;
+  let lineId: string;
+
+  it('lists the confirmed order as short, grouped under the cabinet at its branch', async () => {
+    const row = await cabinetRow();
+    expect(row).toMatchObject({
+      stock: 0,
+      demandQuantity: 3,
+      onOrderQuantity: 0,
+      draftQuantity: 0,
+      shortQuantity: 3,
+    });
+    expect(row?.orders).toEqual([
+      expect.objectContaining({ orderItemId, quantity: 3, priority: 'HIGH' }),
+    ]);
+    expect(row?.orders[0].assignee?.id).toBe(staffId);
+  });
+
+  it('answers 404 for a location that is not the shop’s, instead of an empty list', async () => {
+    expect(await codeOf(listRows(owner, { locationId: randomUUID() }))).toBe(
+      ErrorCode.LOCATION_NOT_FOUND,
+    );
+    expect(
+      await codeOf(
+        requests.findAll(owner, {
+          page: 1,
+          limit: 20,
+          locationId: randomUUID(),
+        }),
+      ),
+    ).toBe(ErrorCode.LOCATION_NOT_FOUND);
+  });
+
+  it('lists every producible SKU at every sellable location, short or not', async () => {
+    const rows = await listRows(owner);
+    // Tủ ở kho không có đơn và không có tồn nhưng vẫn hiện - món nào cũng đặt được.
+    expect(
+      rows.find(
+        (row) =>
+          row.productItemId === cabinetId && row.location?.id === warehouseId,
+      ),
+    ).toMatchObject({ demandQuantity: 0, shortQuantity: 0 });
+    // Combo được đặt qua các thành phần.
+    expect(rows.some((row) => row.productItemId === comboId)).toBe(false);
+    // Chỉ mua từ nhà cung cấp: không có gì để đặt từ xưởng nên không hiện trong danh mục.
+    expect(rows.some((row) => row.productItemId === chairId)).toBe(false);
+    expect(
+      rows.find((row) => row.productItemId === cabinetId)?.isManufacturable,
+    ).toBe(true);
+    // Dòng thiếu đứng trước.
+    expect(rows[0]).toMatchObject({
+      productItemId: cabinetId,
+      shortQuantity: 3,
+    });
+
+    const page = await list.list(owner, {
+      page: 1,
+      limit: 100,
+      onlyShort: true,
+    });
+    expect(page.data).toHaveLength(1);
+    expect(page.summary.shortRows).toBe(1);
+  });
+
+  it('keeps another location out of a staff account’s list', async () => {
+    expect(
+      await codeOf(listRows(warehouseStaff, { locationId: branchId })),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_LOCATION_DENIED);
+    const own = await listRows(warehouseStaff);
+    expect(own.every((row) => row.location?.id === warehouseId)).toBe(true);
+  });
+
+  it('refuses a goods supplier and a combo', async () => {
+    const line = { productItemId: cabinetId, quantity: 1 };
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: goodsSupplierId,
+          locationId: branchId,
+          items: [line],
+        }),
+      ),
+    ).toBe(ErrorCode.SUPPLIER_NOT_WORKSHOP);
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: workshopId,
+          locationId: branchId,
+          items: [{ productItemId: comboId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_PRODUCIBLE);
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: workshopId,
+          locationId: branchId,
+          items: [{ productItemId: chairId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE);
+  });
+
+  it('keeps a line already on a draft when its product stops being manufacturable, but takes no new one', async () => {
+    const draft = await requests.create(owner, {
+      supplierId: workshopId,
+      locationId: branchId,
+      items: [{ productItemId: shelfId, quantity: 2 }],
+    });
+    await prisma.product.update({
+      where: { id: flippedProductId },
+      data: { isManufacturable: false },
+    });
+
+    // Sửa nháp sẽ gửi lại các dòng: phần trên kệ đã có trong đó nên giữ nguyên.
+    const edited = await requests.update(owner, draft.id, {
+      items: [{ productItemId: shelfId, quantity: 3 }],
+    });
+    expect(edited.items).toEqual([
+      expect.objectContaining({ productItemId: shelfId, quantity: 3 }),
+    ]);
+    // Tạo yêu cầu mới cho món này bị từ chối.
+    expect(
+      await codeOf(
+        requests.create(owner, {
+          supplierId: workshopId,
+          locationId: branchId,
+          items: [{ productItemId: shelfId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE);
+
+    await requests.remove(owner, draft.id);
+  });
+
+  it('refuses a workshop on a plain supplier import', async () => {
+    expect(
+      await codeOf(
+        movements.create(owner, {
+          movementType: 'IMPORT',
+          fromSupplierId: workshopId,
+          toLocationId: branchId,
+          details: [{ productItemId: cabinetId, quantity: 1, importPrice: 10 }],
+        }),
+      ),
+    ).toBe(ErrorCode.IMPORT_WORKSHOP_VIA_PRODUCTION_REQUEST);
+  });
+
+  it('creates a DRAFT with the next YCSX code, counted as drafted on the list', async () => {
+    const created = await requests.create(owner, {
+      supplierId: workshopId,
+      locationId: branchId,
+      expectedReadyDate: '2026-10-20',
+      items: [{ productItemId: cabinetId, quantity: 2, orderItemId }],
+    });
+    requestId = created.id;
+    lineId = created.items[0].id;
+    expect(created.status).toBe('DRAFT');
+    expect(created.code).toMatch(/^YCSX\d{6}$/);
+    expect(created.items[0].orderItem?.id).toBe(orderItemId);
+
+    // "Thêm vào yêu cầu" cho cùng một dòng sẽ cộng vào, không tạo trùng.
+    const added = await requests.addItem(owner, requestId, {
+      productItemId: cabinetId,
+      quantity: 1,
+      orderItemId,
+    });
+    expect(added.items).toHaveLength(1);
+    expect(added.items[0].quantity).toBe(3);
+
+    // Dòng đơn đã được YCSX gắn nhận hết nên không còn nhu cầu để liệt kê (2026-11-19).
+    const covered = await cabinetRow();
+    expect(covered).toMatchObject({
+      demandQuantity: 0,
+      draftQuantity: 0,
+      shortQuantity: 0,
+    });
+    expect(covered?.orders).toEqual([]);
+  });
+
+  it('refuses to receive before the request is sent, then counts it as on order', async () => {
+    expect(
+      await codeOf(
+        requests.receive(owner, requestId, {
+          items: [{ productionRequestItemId: lineId, receivedQuantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID);
+
+    const sent = await requests.updateStatus(owner, requestId, {
+      status: 'SENT',
+    });
+    expect(sent.status).toBe('SENT');
+    expect(sent.sentAt).not.toBeNull();
+    expect(
+      await codeOf(requests.update(owner, requestId, { note: 'quá muộn' })),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_LOCKED);
+
+    expect(await cabinetRow()).toMatchObject({
+      demandQuantity: 0,
+      onOrderQuantity: 0,
+      draftQuantity: 0,
+      shortQuantity: 0,
+    });
+  });
+
+  it('keeps the warehouse staff from receiving goods delivered to the branch', async () => {
+    expect(
+      await codeOf(
+        requests.receive(warehouseStaff, requestId, {
+          items: [{ productionRequestItemId: lineId, receivedQuantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_LOCATION_DENIED);
+  });
+
+  it('receives 2 (1 defective): stock +1 at the branch, +1 damaged lot at the same branch, one WORKSHOP import, debt for the good one', async () => {
+    const received = await requests.receive(owner, requestId, {
+      items: [
+        {
+          productionRequestItemId: lineId,
+          receivedQuantity: 2,
+          defectQuantity: 1,
+          unitCost: 1200,
+        },
+      ],
+    });
+    expect(received.status).toBe('PARTIALLY_RECEIVED');
+    expect(received.items[0].receivedQuantity).toBe(2);
+    expect(received.receipts).toHaveLength(1);
+
+    expect(await stockAt(branchId)).toBe(1);
+    expect(await damagedAt(branchId)).toBe(1);
+
+    const movement = await prisma.stockMovementRequest.findUniqueOrThrow({
+      where: { id: received.stockMovementId },
+      include: { details: true },
+    });
+    expect(movement).toMatchObject({
+      movementType: 'IMPORT',
+      importSource: 'WORKSHOP',
+      status: 'RECEIVED',
+      fromSupplierId: workshopId,
+      toLocationId: branchId,
+      receivedById: ownerId,
+    });
+    expect(movement.details[0]).toMatchObject({
+      productionRequestItemId: lineId,
+      receivedQuantity: 2,
+      defectQuantity: 1,
+      defectLocationId: branchId,
+    });
+
+    const lots = await prisma.inventoryLot.findMany({
+      where: { tenantId, productItemId: cabinetId },
+      include: { transactions: true },
+    });
+    expect(lots).toHaveLength(2);
+    for (const lot of lots) {
+      expect(lot).toMatchObject({
+        sourceType: 'WORKSHOP',
+        supplierId: workshopId,
+        productionRequestItemId: lineId,
+        // Dòng đơn thường không giữ lô.
+        orderItemId: null,
+      });
+      expect(Number(lot.unitCost)).toBe(1200);
+    }
+    expect(
+      lots.flatMap((lot) => lot.transactions.map((tx) => tx.type)).sort(),
+    ).toEqual(['DEFECT', 'IMPORT']);
+
+    const workshop = await prisma.supplier.findUniqueOrThrow({
+      where: { id: workshopId },
+    });
+    expect(Number(workshop.outstandingDebt)).toBe(1200);
+
+    // Tồn 1 + đặt 1 so với cần 3: vẫn thiếu 1.
+    const partly = await cabinetRow();
+    expect(partly).toMatchObject({
+      stock: 1,
+      demandQuantity: 2,
+      onOrderQuantity: 0,
+      shortQuantity: 1,
+    });
+    expect(partly?.orders[0]).toMatchObject({
+      quantity: 3,
+      remainingQuantity: 2,
+      coveredQuantity: 1,
+    });
+  });
+
+  // Màn Nhập hàng lọc nguồn ở server: tab Nhà cung cấp không được lẫn phiếu sinh ra từ nhận hàng xưởng.
+  it('filters the import list by source, and rejects an unknown source', async () => {
+    const workshopImport = await prisma.stockMovementRequest.findFirstOrThrow({
+      where: { tenantId, importSource: 'WORKSHOP' },
+    });
+    // Còn PENDING nên không đụng tới tồn mà các test sau đang đếm.
+    const supplierImport = await movements.create(owner, {
+      movementType: 'IMPORT',
+      fromSupplierId: goodsSupplierId,
+      toLocationId: branchId,
+      details: [{ productItemId: cabinetId, quantity: 1, importPrice: 100 }],
+    });
+
+    const idsFor = async (importSource: string) =>
+      (
+        await movements.findAll(owner, {
+          page: 1,
+          limit: 100,
+          movementType: 'IMPORT',
+          importSource,
+        })
+      ).data.map((row) => row.id);
+
+    const fromSuppliers = await idsFor('SUPPLIER');
+    const fromWorkshops = await idsFor('WORKSHOP');
+    expect(fromSuppliers).toContain(supplierImport.id);
+    expect(fromSuppliers).not.toContain(workshopImport.id);
+    expect(fromWorkshops).toContain(workshopImport.id);
+    expect(fromWorkshops).not.toContain(supplierImport.id);
+
+    const errors = await validate(
+      plainToInstance(QueryStockMovementDto, { importSource: 'NOPE' }),
+    );
+    expect(errors.map((error) => error.property)).toContain('importSource');
+  });
+
+  it('refuses to receive more than was ordered, and to cancel after a receipt', async () => {
+    expect(
+      await codeOf(
+        requests.receive(owner, requestId, {
+          items: [{ productionRequestItemId: lineId, receivedQuantity: 2 }],
+        }),
+      ),
+    ).toBe(ErrorCode.IMPORT_PRODUCTION_QTY_EXCEEDS);
+    expect(
+      await codeOf(
+        requests.updateStatus(owner, requestId, { status: 'CANCELLED' }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_HAS_RECEIPTS);
+  });
+
+  it('completes on the last piece and locks the workshop type', async () => {
+    const done = await requests.receive(owner, requestId, {
+      items: [{ productionRequestItemId: lineId, receivedQuantity: 1 }],
+    });
+    expect(done.status).toBe('COMPLETED');
+    expect(done.closedShort).toBe(false);
+    expect(done.receipts).toHaveLength(2);
+    expect(await stockAt(branchId)).toBe(2);
+    // Tính theo giá vốn SKU khi không có giá xưởng.
+    expect(
+      Number(
+        (await prisma.supplier.findUniqueOrThrow({ where: { id: workshopId } }))
+          .outstandingDebt,
+      ),
+    ).toBe(2200);
+
+    expect(
+      await codeOf(suppliers.update(tenantId, workshopId, { type: 'GOODS' })),
+    ).toBe(ErrorCode.SUPPLIER_TYPE_LOCKED);
+  });
+
+  it('closes a partly delivered request short: the rest stops counting as on order', async () => {
+    const created = await requests.create(owner, {
+      supplierId: workshopId,
+      locationId: branchId,
+      items: [{ productItemId: cabinetId, quantity: 3 }],
+    });
+    await requests.updateStatus(owner, created.id, { status: 'SENT' });
+    // Chưa nhận gì: đây là hủy chứ không phải đóng thiếu.
+    expect(
+      await codeOf(
+        requests.updateStatus(owner, created.id, {
+          status: 'COMPLETED',
+          note: 'thử',
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID);
+
+    await requests.receive(owner, created.id, {
+      items: [
+        { productionRequestItemId: created.items[0].id, receivedQuantity: 1 },
+      ],
+    });
+    expect((await cabinetRow())?.onOrderQuantity).toBe(2);
+
+    expect(
+      await codeOf(
+        requests.updateStatus(owner, created.id, { status: 'COMPLETED' }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_CLOSE_REASON_REQUIRED);
+
+    const closed = await requests.updateStatus(owner, created.id, {
+      status: 'COMPLETED',
+      note: 'Xưởng ngừng làm mẫu này',
+    });
+    expect(closed).toMatchObject({ status: 'COMPLETED', closedShort: true });
+    expect(closed.note).toContain('Đóng thiếu: Xưởng ngừng làm mẫu này');
+    expect(closed.items[0]).toMatchObject({ quantity: 3, receivedQuantity: 1 });
+    expect((await cabinetRow())?.onOrderQuantity).toBe(0);
+
+    // Phần đã nhận giữ nguyên; không nhận thêm được nữa.
+    expect(closed.receipts).toHaveLength(1);
+    expect(
+      await codeOf(
+        requests.receive(owner, created.id, {
+          items: [
+            {
+              productionRequestItemId: created.items[0].id,
+              receivedQuantity: 1,
+            },
+          ],
+        }),
+      ),
+    ).toBe(ErrorCode.PRODUCTION_REQUEST_STATUS_INVALID);
+  });
+
+  it('deletes only a DRAFT', async () => {
+    expect(await codeOf(requests.remove(owner, requestId))).toBe(
+      ErrorCode.PRODUCTION_REQUEST_LOCKED,
+    );
+    const draft = await requests.create(owner, {
+      supplierId: workshopId,
+      locationId: branchId,
+      items: [{ productItemId: cabinetId, quantity: 1 }],
+    });
+    expect(draft.code).not.toBe(
+      (await requests.findOne(owner, requestId)).code,
+    );
+    await requests.remove(owner, draft.id);
+    expect(
+      await prisma.productionRequest.count({ where: { id: draft.id } }),
+    ).toBe(0);
+  });
+  describe('attributes changed on a line (2026-10-16)', () => {
+    let colorId: string;
+
+    beforeAll(async () => {
+      const color = await prisma.productAttribute.create({
+        data: { tenantId, productId, name: 'Màu', position: 0 },
+      });
+      colorId = color.id;
+      await prisma.productItemDetail.create({
+        data: {
+          productItemId: cabinetId,
+          attributeId: colorId,
+          name: 'Màu',
+          value: 'Óc chó',
+        },
+      });
+    });
+
+    it('moves the line to a new SKU copied from the base, priced as ticked, base untouched', async () => {
+      const created = await requests.create(owner, {
+        supplierId: workshopId,
+        locationId: branchId,
+        items: [
+          {
+            productItemId: cabinetId,
+            quantity: 1,
+            attributeValues: [{ attributeId: colorId, value: 'Trắng' }],
+            retailPrice: 6000,
+          },
+        ],
+      });
+      const [line] = created.items;
+      expect(line.productItemId).not.toBe(cabinetId);
+      expect(line.sku).toBe(`PR-${cabinetId}-V1`);
+      expect(line.retailPrice).toBe(6000);
+      expect(line.attributes).toEqual([
+        { attributeId: colorId, name: 'Màu', value: 'Trắng' },
+      ]);
+      const variant = await prisma.productItem.findUniqueOrThrow({
+        where: { id: line.productItemId },
+      });
+      expect(Number(variant.costPrice)).toBe(1000);
+      const base = await prisma.productItem.findUniqueOrThrow({
+        where: { id: cabinetId },
+      });
+      expect(Number(base.retailPrice)).toBe(5000);
+    });
+
+    it('reuses the SKU that already carries those values (case and Unicode form do not matter)', async () => {
+      const before = await prisma.productItem.count({ where: { productId } });
+      const created = await requests.create(owner, {
+        supplierId: workshopId,
+        locationId: branchId,
+        items: [
+          {
+            productItemId: cabinetId,
+            quantity: 1,
+            attributeValues: [{ attributeId: colorId, value: 'trắng' }],
+          },
+        ],
+      });
+      expect(created.items[0].sku).toBe(`PR-${cabinetId}-V1`);
+      expect(await prisma.productItem.count({ where: { productId } })).toBe(
+        before,
+      );
+    });
+
+    it('refuses to create a SKU for someone without products:create', async () => {
+      expect(
+        await codeOf(
+          requests.create(warehouseStaff, {
+            supplierId: workshopId,
+            locationId: warehouseId,
+            items: [
+              {
+                productItemId: cabinetId,
+                quantity: 1,
+                attributeValues: [{ attributeId: colorId, value: 'Đen' }],
+              },
+            ],
+          }),
+        ),
+      ).toBe(ErrorCode.PERMISSION_DENIED);
+    });
+
+    it('refuses attribute changes on a line made for an order line', async () => {
+      expect(
+        await codeOf(
+          requests.create(owner, {
+            supplierId: workshopId,
+            locationId: branchId,
+            items: [
+              {
+                productItemId: cabinetId,
+                quantity: 1,
+                orderItemId,
+                attributeValues: [{ attributeId: colorId, value: 'Đen' }],
+              },
+            ],
+          }),
+        ),
+      ).toBe(ErrorCode.PRODUCTION_REQUEST_LINE_FIXED_BY_ORDER);
+    });
+
+    it('refuses ordering more than the order line still needs', async () => {
+      expect(
+        await codeOf(
+          requests.create(owner, {
+            supplierId: workshopId,
+            locationId: branchId,
+            items: [{ productItemId: cabinetId, quantity: 99, orderItemId }],
+          }),
+        ),
+      ).toBe(ErrorCode.PRODUCTION_EXCEEDS_ORDER_SHORTAGE);
+    });
+  });
+});

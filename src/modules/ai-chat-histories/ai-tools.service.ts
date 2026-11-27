@@ -14,10 +14,7 @@ import { BranchService } from '../branches/branches.service';
 import { WarehouseService } from '../warehouses/warehouses.service';
 import { SupplierService } from '../suppliers/suppliers.service';
 import { UserService } from '../users/users.service';
-import { AttendanceService } from '../attendances/attendances.service';
-import { LeaveRequestService } from '../leave-requests/leave-requests.service';
 import { WorkingScheduleService } from '../working-schedules/working-schedules.service';
-import { PaysheetService } from '../paysheets/paysheets.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { OrderService } from '../orders/orders.service';
 import { PromotionService } from '../promotions/promotions.service';
@@ -39,10 +36,7 @@ import { QueryUserDto } from '../users/dto/query-user.dto';
 import { QueryInventoryDto } from '../inventories/dto/query-inventory.dto';
 import { QueryOrderDto } from '../orders/dto/order.dto';
 import { QueryPromotionDto } from '../promotions/dto/promotion.dto';
-import { QueryAttendanceDto } from '../attendances/dto/attendance.dto';
-import { QueryLeaveRequestDto } from '../leave-requests/dto/leave-request.dto';
 import { QueryWorkingScheduleDto } from '../working-schedules/dto/working-schedule.dto';
-import { QueryPaysheetDto } from '../paysheets/dto/paysheet.dto';
 import { QueryStockMovementDto } from '../stock-movement-requests/dto/stock-movement.dto';
 import { QueryCashDrawerDto } from '../cash-drawer-sessions/dto/cash-drawer.dto';
 import {
@@ -50,6 +44,7 @@ import {
   InventoryStatsQueryDto,
   RevenueSeriesQueryDto,
   StatsQueryDto,
+  RevenueByStaffQueryDto,
   TopProductsQueryDto,
 } from '../stats/dto/stats-query.dto';
 
@@ -58,7 +53,7 @@ type Ctor<T> = new () => T;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Every tool's required permission - the security boundary of the whole AI feature: the old implementation ran every tool as TENANT_OWNER, making the assistant a back door around every read rule. */
+/** Quyền cần có cho từng tool. */
 const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   searchProducts: ['products', 'read'],
   getProductStockLevel: ['products', 'read'],
@@ -69,11 +64,8 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getBranchList: ['branches', 'read'],
   getWarehouseList: ['warehouses', 'read'],
   getSupplierList: ['suppliers', 'read'],
-  getStaffList: ['staff', 'read'],
-  getStaffAttendanceReport: ['attendances', 'read'],
-  getLeaveRequests: ['leaveRequests', 'read'],
+  getStaffList: ['users', 'read'],
   getStaffWorkingSchedule: ['schedules', 'read'],
-  getPayrollSummary: ['paysheets', 'read'],
   getActivePromotions: ['promotions', 'read'],
   getTenantSubscriptionInfo: ['subscriptions', 'read'],
   getInventoryList: ['inventory', 'read'],
@@ -92,7 +84,7 @@ const TOOL_PERMISSIONS: Record<string, [resource: string, action: string]> = {
   getTenantTickets: ['tickets', 'read'],
 };
 
-/** The thirty read-only lookups the assistant can make: each delegates to the module that owns the question, and model arguments are coerced through the same DTO the REST endpoint validates. */
+/** Các tool tra cứu chỉ đọc, gọi qua service sở hữu dữ liệu. */
 @Injectable()
 export class AiToolsService {
   private readonly logger = new Logger(AiToolsService.name);
@@ -107,10 +99,7 @@ export class AiToolsService {
     private readonly warehouses: WarehouseService,
     private readonly suppliers: SupplierService,
     private readonly users: UserService,
-    private readonly attendances: AttendanceService,
-    private readonly leaveRequests: LeaveRequestService,
     private readonly schedules: WorkingScheduleService,
-    private readonly paysheets: PaysheetService,
     private readonly inventories: InventoryService,
     private readonly orders: OrderService,
     private readonly promotions: PromotionService,
@@ -121,7 +110,7 @@ export class AiToolsService {
     private readonly stats: StatsService,
   ) {}
 
-  /** Run one tool call. Never throws - the loop needs a value to hand back either way, and "you have no permission" is something the model can usefully say. */
+  /** Chạy một tool call, không bao giờ ném lỗi. */
   async run(
     user: AuthUser,
     name: string,
@@ -153,7 +142,6 @@ export class AiToolsService {
     const tenantId = requireTenantId(user);
 
     switch (name) {
-      // ─── Catalogue ───────────────────────────────────────────────────────
       case 'searchProducts':
         return this.products.findAll(
           tenantId,
@@ -186,7 +174,6 @@ export class AiToolsService {
           await this.dto(QueryInventoryDto, args),
         );
 
-      // ─── Customers ───────────────────────────────────────────────────────
       case 'searchCustomers':
         return this.customers.findAll(
           tenantId,
@@ -199,7 +186,7 @@ export class AiToolsService {
           this.str(args.customerId),
         );
         const customer = await this.customers.findOne(tenantId, customerId);
-        // Orders go through OrderService so the caller's posting narrows them, exactly as on `GET /orders`.
+        // Đơn đi qua OrderService để phạm vi quyền của người gọi thu hẹp kết quả, giống hệt `GET /orders`.
         const history = await this.orders.findAll(
           user,
           tenantId,
@@ -216,12 +203,15 @@ export class AiToolsService {
         };
       }
 
-      // ─── Org ─────────────────────────────────────────────────────────────
       case 'getBranchList':
-        return this.branches.findAll(tenantId, this.locationQuery(args));
+        return this.branches.findAll(user, tenantId, this.locationQuery(args));
 
       case 'getWarehouseList':
-        return this.warehouses.findAll(tenantId, this.locationQuery(args));
+        return this.warehouses.findAll(
+          user,
+          tenantId,
+          this.locationQuery(args),
+        );
 
       case 'getSupplierList':
         return this.suppliers.findAll(
@@ -229,24 +219,11 @@ export class AiToolsService {
           await this.dto(QuerySupplierDto, args),
         );
 
-      // ─── People ──────────────────────────────────────────────────────────
       case 'getStaffList':
         return this.users.findAll(
           tenantId,
           user.userId,
           await this.dto(QueryUserDto, args),
-        );
-
-      case 'getStaffAttendanceReport':
-        return this.attendances.findAll(
-          user,
-          await this.dto(QueryAttendanceDto, args),
-        );
-
-      case 'getLeaveRequests':
-        return this.leaveRequests.findAll(
-          user,
-          await this.dto(QueryLeaveRequestDto, args),
         );
 
       case 'getStaffWorkingSchedule':
@@ -255,13 +232,6 @@ export class AiToolsService {
           await this.dto(QueryWorkingScheduleDto, args),
         );
 
-      case 'getPayrollSummary':
-        return this.paysheets.findAll(
-          tenantId,
-          await this.dto(QueryPaysheetDto, args),
-        );
-
-      // ─── Selling ─────────────────────────────────────────────────────────
       case 'searchOrders':
         return this.orders.findAll(
           user,
@@ -303,7 +273,6 @@ export class AiToolsService {
           await this.dto(QueryStockMovementDto, args),
         );
 
-      // ─── Reporting ───────────────────────────────────────────────────────
       case 'getRevenueOverview':
         return this.stats.getOverview(
           user,
@@ -325,7 +294,7 @@ export class AiToolsService {
       case 'getRevenueByStaff':
         return this.stats.getRevenueByStaff(
           user,
-          await this.dto(StatsQueryDto, this.withMonthToDate(args)),
+          await this.dto(RevenueByStaffQueryDto, this.withMonthToDate(args)),
         );
 
       case 'getTopProducts':
@@ -356,12 +325,11 @@ export class AiToolsService {
         };
       }
 
-      // ─── Housekeeping ────────────────────────────────────────────────────
       case 'getTenantSubscriptionInfo':
         return this.subscriptions.checkTrialStatus(tenantId);
 
       case 'getTenantTickets': {
-        // TicketService has no filtered list, so the tool narrows the result itself rather than adding a route nothing else needs.
+        // Tự lọc danh sách ticket.
         const all = await this.tickets.findMine(tenantId);
         const status = this.str(args.status, false);
         const filtered = status
@@ -386,9 +354,7 @@ export class AiToolsService {
     }
   }
 
-  // ─── Argument handling ─────────────────────────────────────────────────────
-
-  /** Model output -> a validated DTO instance, using the same class the HTTP layer validates, so a tool can never be looser than its endpoint. */
+  /** Ép tham số của model qua DTO đã validate. */
   private async dto<T extends object>(
     ctor: Ctor<T>,
     args: ToolArgs,
@@ -410,7 +376,7 @@ export class AiToolsService {
     return instance;
   }
 
-  /** Branches and warehouses take a plain paginated search, not a generated DTO. */
+  /** Chi nhánh và kho dùng tìm kiếm phân trang đơn giản, không dùng DTO sinh ra. */
   private locationQuery(args: ToolArgs) {
     return {
       search: this.str(args.search, false),
@@ -419,7 +385,7 @@ export class AiToolsService {
     };
   }
 
-  /** Reports default to month-to-date rather than the stats module's rolling 30 days: "doanh thu tháng này" is the question people actually ask an assistant. */
+  /** Mặc định từ đầu tháng tới nay. */
   private withMonthToDate(args: ToolArgs): ToolArgs {
     if (args.fromDate && args.toDate) return args;
     const now = new Date();
@@ -442,8 +408,7 @@ export class AiToolsService {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
-  // ─── Fuzzy id resolution ───────────────────────────────────────────────────
-  // The model is handed names and codes rather than uuids, so each of these accepts either.
+  // Model nhận tên và mã thay vì uuid, nên mỗi hàm dưới đây chấp nhận cả hai.
 
   private async resolveProductId(tenantId: string, term: string) {
     if (UUID.test(term)) return term;
@@ -467,7 +432,7 @@ export class AiToolsService {
     return first.id;
   }
 
-  /** An order code (`paymentReference`) is unique across every tenant, so the tenant filter here is what stops one shop reading another's order by guessing a code. */
+  /** Lọc theo tenant khi tìm đơn theo mã. */
   private async resolveOrderId(tenantId: string, term: string) {
     if (UUID.test(term)) return term;
     const order = await this.prisma.order.findFirst({

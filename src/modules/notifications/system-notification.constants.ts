@@ -1,19 +1,23 @@
-/** What the platform operators' inbox is made of: a row is a system notification when `tenantId` and `recipientId` are both null, and this type whitelist is a second, narrower gate so a new `notifySystem` type never silently changes what an operator sees. */
+/** Các loại thông báo hệ thống được hiện trong feed admin. */
 export const SystemNotificationType = {
   TRANSACTION: 'SYSTEM_TRANSACTION',
   TENANT_CREATED: 'SYSTEM_TENANT_CREATED',
   TICKET_CREATED: 'SYSTEM_TICKET_CREATED',
   TENANT_BANK_UPDATED: 'SYSTEM_TENANT_BANK_UPDATED',
+  /** Tiền SePay về tài khoản không thuộc shop nào (sổ `sepay_transactions` không có tenant). */
+  SEPAY_UNMATCHED: 'SYSTEM_SEPAY_UNMATCHED',
+  /** Tiền gói về tài khoản iKiot nhưng không kích hoạt được gói. */
+  PLATFORM_TRANSFER_NEEDS_ACTION: 'SYSTEM_PLATFORM_TRANSFER_NEEDS_ACTION',
 } as const;
 
 export const SYSTEM_NOTIFICATION_TYPES: string[] = Object.values(
   SystemNotificationType,
 );
 
-/** Announcements are not system events and never appear in that feed - an operator wrote this one, and the row exists to record that it was sent. */
+/** Thông báo gửi chủ shop, không vào feed. */
 export const ANNOUNCEMENT_TYPE = 'ANNOUNCEMENT';
 
-/** Who an announcement goes to. `SELECTION` is the only one that reads `targetTenants`. */
+/** Đối tượng nhận thông báo. Chỉ `SELECTION` mới đọc `targetTenants`. */
 export const AnnouncementTarget = {
   ALL: 'ALL',
   SELECTION: 'SELECTION',
@@ -21,7 +25,7 @@ export const AnnouncementTarget = {
 
 export const ANNOUNCEMENT_TARGETS: string[] = Object.values(AnnouncementTarget);
 
-/** The four categories the admin UI offers - documentation, not a validation whitelist, since the value is free text printed straight into the email subject line. */
+/** Gợi ý loại thông báo cho admin UI. */
 export const KNOWN_ANNOUNCEMENT_CATEGORIES = [
   'Maintenance',
   'New feature',

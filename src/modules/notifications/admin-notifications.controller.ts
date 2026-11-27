@@ -16,18 +16,17 @@ import {
   ListSystemNotificationsDto,
 } from './dto/announcement.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Seven routes at the old paths: `/admin/notifications` is the announcement outbox, `/admin/system-notifications` the event feed. `AdminOnlyGuard` replaces the seven hand-copied `role === 'SUPER_ADMIN'` checks, so the eighth route cannot forget it. */
+/** Route thông báo cho admin nền tảng. */
 @ApiTags('admin-notifications')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)
 @Controller()
 export class AdminNotificationController {
   constructor(private readonly service: AdminNotificationService) {}
-
-  // ─── Announcements ─────────────────────────────────────────────────────────
 
   @Post('admin/notifications')
   compose(@CurrentUser() user: AuthUser, @Body() dto: ComposeAnnouncementDto) {
@@ -39,29 +38,31 @@ export class AdminNotificationController {
     return this.service.listAnnouncements(query);
   }
 
-  // ─── System event feed ─────────────────────────────────────────────────────
-
   @Get('admin/system-notifications')
   listSystem(@Query() query: ListSystemNotificationsDto) {
     return this.service.listSystem(query);
   }
 
-  /** One segment deep against `:id/read`'s two, so these two never compete for a match. */
+  /** Đường dẫn ngắn hơn `:id/read` một đoạn, nên hai route không tranh khớp nhau. */
+  @SkipAudit()
   @Patch('admin/system-notifications/mark-all-read')
   markAllRead() {
     return this.service.markAllSystemRead();
   }
 
+  @SkipAudit()
   @Patch('admin/system-notifications/:id/read')
   markRead(@Param('id') id: string) {
     return this.service.markSystemRead(id);
   }
 
+  @SkipAudit()
   @Delete('admin/system-notifications')
   removeAll() {
     return this.service.removeAllSystem();
   }
 
+  @SkipAudit()
   @Delete('admin/system-notifications/:id')
   remove(@Param('id') id: string) {
     return this.service.removeSystem(id);

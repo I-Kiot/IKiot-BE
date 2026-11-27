@@ -1,9 +1,4 @@
-// Seeds the fixed PermissionCatalog every tenant-defined Role draws from. This taxonomy
-// started as iKiotMS-BE's src/config/permissions.json (the union of every resource+action
-// pair listed for the old 6 static roles) and has since grown - see the "added for the
-// NestJS port" notes in CATALOG below. It is the app's contract, not tenant-editable data.
-// Every `@Permissions(resource, action)` in code must have a row here or no role can ever
-// be granted it. Run with `prisma db seed`.
+// Seed danh mục quyền cố định; mọi `@Permissions` phải có ở đây.
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
@@ -11,9 +6,7 @@ import * as bcrypt from 'bcryptjs';
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 
-// Dev-only platform admin. phoneNumber has no DB-level unique constraint (matches
-// iKiotMS-BE - uniqueness is enforced app-side, see AuthService.register), so this uses
-// find-then-create instead of upsert() to stay idempotent across re-seeds.
+// Admin dev nội bộ, tìm trước rồi tạo.
 const ADMIN_PHONE = '0000000000';
 const ADMIN_PASSWORD = 'password123';
 
@@ -29,24 +22,24 @@ async function seedAdminUser() {
   const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
   await prisma.user.create({
     data: {
-      tenantId: null, // ADMIN is platform-level, not scoped to any tenant
+      tenantId: null, // ADMIN thuộc cấp nền tảng, không gắn tenant
       phoneNumber: ADMIN_PHONE,
       password: passwordHash,
       systemRole: 'ADMIN',
       status: 'ACTIVE',
+      // Tài khoản dev không có email để nhận OTP: coi như đã xác minh để đăng nhập thẳng.
+      emailVerifiedAt: new Date(),
     },
   });
   console.log(`Seeded ADMIN account (phone ${ADMIN_PHONE}).`);
 }
 
-// Ported from iKiotMS-BE's src/seeders/plans.seeder.js - same 5 plans, same prices.
-// Subscription's free-trial/upgrade/renew flows all fail without at least TRIAL existing.
+// Luồng dùng thử/nâng cấp/gia hạn của Subscription đều lỗi nếu chưa có gói TRIAL.
 const ALL_PLAN_FEATURES = [
   'stock_movement',
   'sales',
   'reports',
   'hr_management',
-  'payroll',
 ];
 
 const PLANS = [
@@ -92,7 +85,7 @@ const PLANS = [
       'Tối đa 1.000 sản phẩm',
       'Tối đa 5 nhân viên',
       'Quản lý kho & chuyển kho chi nhánh',
-      'Quản lý nhân sự & bảng lương',
+      'Quản lý nhân sự & lịch làm việc',
     ],
     isPopular: true,
     isActive: true,
@@ -116,7 +109,7 @@ const PLANS = [
       'Tối đa 1.000 sản phẩm',
       'Tối đa 5 nhân viên',
       'Quản lý kho & chuyển kho chi nhánh',
-      'Quản lý nhân sự & bảng lương',
+      'Quản lý nhân sự & lịch làm việc',
     ],
     isPopular: true,
     isActive: true,
@@ -180,7 +173,11 @@ async function seedPlans() {
   console.log(`Seeded ${PLANS.length} plans.`);
 }
 
-const CATALOG: Record<string, { actions: string[]; label: string }> = {
+/** Mô tả quyền hiện ở màn Vai trò. */
+const CATALOG: Record<
+  string,
+  { actions: string[]; label: string; descriptions?: Record<string, string> }
+> = {
   users: {
     actions: [
       'create',
@@ -191,18 +188,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'create_staff',
     ],
     label: 'Tài khoản',
-  },
-  staff: {
-    actions: [
-      'create',
-      'read',
-      'update',
-      'delete',
-      'assign_role',
-      'suspend',
-      'inactive',
-    ],
-    label: 'Nhân viên',
   },
   tenants: {
     actions: ['create', 'read', 'update', 'delete', 'suspend'],
@@ -225,22 +210,65 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Nhà cung cấp',
   },
   branches: {
-    actions: ['create', 'read', 'update', 'delete', 'assign_manager'],
+    // `read_own` là quyền nền nhân viên, màn Vai trò ẩn.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'assign_manager',
+      'read_own',
+    ],
     label: 'Chi nhánh',
   },
   warehouses: {
-    actions: ['create', 'read', 'update', 'delete', 'assign_manager'],
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'assign_manager',
+      'read_own',
+    ],
     label: 'Kho',
   },
   orders: {
-    // 'delete' added for the NestJS port - the generated orders module exposes DELETE.
-    actions: ['create', 'read', 'update', 'delete', 'view_all', 'pay_offline'],
+    // 'confirm' và 'assign' là hai quyền riêng.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'view_all',
+      'pay_offline',
+      'confirm',
+      'assign',
+      // 'pack', 'ship', 'confirm_cash' là ba quyền riêng.
+      'pack',
+      'ship',
+      'confirm_cash',
+    ],
     label: 'Đơn hàng',
+    descriptions: {
+      // Người phụ trách không được miễn ở bước này (ASSIGNEE_MAY_SHIP).
+      ship: 'Bấm "Bắt đầu vận chuyển" ở đơn hàng (Đã lấy hàng → Đang vận chuyển), tức xác nhận hàng đã giao cho ĐVVC: trừ tồn kho và gỡ phần hàng đang giữ cho đơn. Chỉ làm được tại kho xuất mình được phân công. Người phụ trách đơn cũng cần quyền này.',
+    },
   },
   inventory: {
-    // 'create'/'delete' added for the NestJS port.
-    actions: ['create', 'read', 'update', 'delete', 'view_all', 'manage'],
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'view_all',
+      'manage',
+      'manage_damaged',
+    ],
     label: 'Tồn kho',
+    descriptions: {
+      manage_damaged:
+        'Đánh dấu hàng hỏng, xác nhận sửa xong và huỷ / thanh lý hàng hỏng tại nơi mình làm việc. Hàng hỏng nằm ngoài tồn bán được.',
+    },
   },
   subscriptions: {
     actions: ['read', 'update', 'manage'],
@@ -250,36 +278,9 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     actions: ['create', 'read', 'update', 'delete', 'calculate', 'apply'],
     label: 'Khuyến mãi',
   },
-  notifications: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Thông báo',
-  },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
-  attendances: {
-    // 'delete' added for the NestJS port.
-    actions: ['create', 'read', 'update', 'delete', 'read_own'],
-    label: 'Chấm công',
-  },
-  leaveRequests: {
-    actions: [
-      'create',
-      'read',
-      'update',
-      'delete',
-      'read_all',
-      'read_mine',
-      'readBR',
-      'readWH',
-      'approve',
-      'reject',
-      'cancel',
-      'create_emergency',
-    ],
-    label: 'Đơn nghỉ phép',
-  },
   cash_drawers: {
-    // 'create'/'update'/'delete' added for the NestJS port - the old system only ever
-    // opened and finalised a session, never edited one directly.
+    // Hệ thống cũ chỉ mở và chốt ca, không sửa ca trực tiếp.
     actions: [
       'create',
       'read',
@@ -291,10 +292,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
       'read_own',
     ],
     label: 'Ca thu ngân',
-  },
-  paysheets: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Bảng lương mẫu',
   },
   schedules: {
     actions: [
@@ -310,7 +307,6 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Lịch làm việc',
   },
   stock_movement: {
-    // 'delete' added for the NestJS port.
     actions: [
       'create',
       'read',
@@ -322,31 +318,13 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     ],
     label: 'Xuất/nhập kho',
   },
-  payrollSettings: {
-    // 'delete' added for the NestJS port.
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Cấu hình lương',
-  },
-  payroll: {
-    actions: ['create', 'read', 'update', 'delete'],
-    label: 'Kỳ lương',
-  },
-  payslips: {
-    // Only 'read_own' existed before - an employee reading their own payslip. The generated
-    // payslips module is full CRUD (HR issuing/correcting them), hence the rest.
-    actions: ['create', 'read', 'update', 'delete', 'read_own'],
-    label: 'Phiếu lương',
-  },
   holidays: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Ngày lễ',
   },
   profile: { actions: ['read'], label: 'Hồ sơ cá nhân' },
 
-  // ── Resources with no equivalent in iKiotMS-BE's permissions.json ──────────────────
-  // These modules had routes but no authorize() call at all in the old system - every
-  // logged-in user could reach them. They get a real resource here so a tenant-defined
-  // role can actually be scoped away from them.
+  // ── Resource mới, cũ không kiểm quyền ──
   customers: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Khách hàng',
@@ -356,9 +334,7 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Yêu cầu hỗ trợ',
   },
   cash_flows: {
-    // Distinct from cash_drawers: a drawer is one cashier's shift, cash_flows is every
-    // movement of tenant money (payroll payouts, supplier payments, ...). The old system
-    // only ever exposed it read-only under reports ('/stats/cashflow').
+    // Mọi dòng tiền của tenant.
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Dòng tiền',
   },
@@ -366,12 +342,50 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Lịch sử chat AI',
   },
+
+  // ── Hành trình đơn hàng ──
+  production_requests: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Yêu cầu sản xuất',
+  },
+  production: {
+    // 'receive' tăng tồn khi nhận hàng xưởng; 'deliver' tự cấp cho tài khoản gắn xưởng.
+    actions: ['receive', 'deliver'],
+    label: 'Nhập hàng sản xuất',
+  },
+  fulfillments: {
+    // 'verify' = xác nhận hàng đã đóng còn nguyên vẹn; đây là bước trừ tồn kho.
+    actions: ['create', 'read', 'update', 'verify'],
+    label: 'Đóng hàng',
+  },
+  shipments: {
+    actions: ['create', 'read', 'update', 'deliver'],
+    label: 'Giao hàng',
+  },
+  returns: {
+    // Người phụ trách đơn cũng được mở đơn hoàn mà không cần 'create'.
+    actions: ['create', 'read', 'inspect', 'cancel'],
+    label: 'Hoàn hàng',
+  },
+  sales_channels: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Kênh bán (Shopee)',
+  },
+  payments: {
+    actions: ['create', 'read', 'refund'],
+    label: 'Thanh toán đơn',
+  },
 };
 
 async function main() {
   const rows = Object.entries(CATALOG).flatMap(
-    ([resource, { actions, label }]) =>
-      actions.map((action) => ({ resource, action, label })),
+    ([resource, { actions, label, descriptions }]) =>
+      actions.map((action) => ({
+        resource,
+        action,
+        label,
+        description: descriptions?.[action] ?? null,
+      })),
   );
 
   for (const row of rows) {
@@ -379,7 +393,7 @@ async function main() {
       where: {
         resource_action: { resource: row.resource, action: row.action },
       },
-      update: { label: row.label },
+      update: { label: row.label, description: row.description },
       create: row,
     });
   }

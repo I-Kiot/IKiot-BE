@@ -1,0 +1,61 @@
+name: Deploy Check
+
+# Rehearses Deploy Dev on every PR into dev, without touching the VPS: build the same image,
+# run `prisma migrate deploy` from it against a fresh Postgres, boot it and wait for /health/ready.
+# Required by the dev branch protection, so a PR that would break the dev deploy cannot merge.
+on:
+  pull_request:
+    branches: [dev]
+
+jobs:
+  deploy-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ikiot
+          POSTGRES_PASSWORD: ikiot
+          POSTGRES_DB: ikiot_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ikiot" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    env:
+      IMAGE: ikiot-be:pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (same Dockerfile as Deploy Dev)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+
+      - name: Write runtime env
+        run: |
+          cat > ci.env <<'ENV'
+          NODE_ENV=production
+          PORT=3001
+          DATABASE_URL=postgresql://ikiot:ikiot@localhost:5432/ikiot_ci
+          REDIS_URL=redis://localhost:6379
+          ACCESS_TOKEN_SECRET=ci-only-secret
+          CORS_ORIGIN=http://localhost:3000
+          ENV
+
+      # Every migration from scratch: catches a migration that clashes with an earlier one (e.g. #30).
+      - name: prisma migrate deploy
+        run: docker run --rm --network host --env-file ci.env $IMAGE npx --no-install prisma migrate deploy
+
+      - name: Boot and wait for /health/ready
+        run: |
+          docker run -d --name api --network host --env-file ci.env $IMAGE
+          for i in $(seq 1 24); do
+            curl -fsS http://localhost:3001/health/ready && exit 0
+            sleep 5
+          done
+          docker logs api
+          exit 1

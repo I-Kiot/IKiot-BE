@@ -1,14 +1,21 @@
 import { Module } from '@nestjs/common';
 import { ProductController } from './products.controller';
 import { ProductService } from './products.service';
+import { ProductVariantService } from './product-variant.service';
+import { ProductImportService } from './import/product-import.service';
+import { ProductExportService } from './export/product-export.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  // SubscriptionModule for the product quota. No InventoryModule: creating a product writes
-  // no stock rows - they appear at a location when a stock movement first puts goods there.
+  // Module sản phẩm; dùng SubscriptionModule cho hạn mức.
   imports: [SubscriptionModule],
   controllers: [ProductController],
-  providers: [ProductService],
-  exports: [ProductService],
+  providers: [
+    ProductService,
+    ProductVariantService,
+    ProductImportService,
+    ProductExportService,
+  ],
+  exports: [ProductService, ProductVariantService],
 })
 export class ProductModule {}

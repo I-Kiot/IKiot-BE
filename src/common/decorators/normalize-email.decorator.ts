@@ -2,7 +2,7 @@ import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
 import { IsEmail } from 'class-validator';
 
-/** Email that is also a lookup key: validated, lowercased and trimmed during plainToInstance, so every write path stores the same canonical form. */
+/** Chuẩn hoá email: kiểm tra, chữ thường, bỏ khoảng trắng. */
 export function NormalizeEmail(): PropertyDecorator {
   return applyDecorators(
     Transform(({ value }: { value: unknown }) =>

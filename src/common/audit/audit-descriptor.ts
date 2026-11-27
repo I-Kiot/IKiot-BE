@@ -13,11 +13,11 @@ export interface AuditDescribed {
   details: string;
 }
 
-/** Per-route audit description, implemented in the owning domain module so AuditInterceptor never learns about feature modules. */
+/** Mô tả audit cho từng route, khai báo ở module sở hữu route. */
 export interface AuditDescriptor {
   matches(path: string): boolean;
   describe(ctx: AuditDescribeContext): AuditDescribed | Promise<AuditDescribed>;
 }
 
-/** Marks a provider as an AuditDescriptor; AuditInterceptor discovers them at startup, so there is no central list to update. */
+/** Đánh dấu provider là AuditDescriptor để AuditInterceptor tự dò lúc khởi động. */
 export const AuditTemplate = DiscoveryService.createDecorator<void>();

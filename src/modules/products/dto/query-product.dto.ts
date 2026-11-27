@@ -1,6 +1,10 @@
+import { applyDecorators } from '@nestjs/common';
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsIn,
   IsInt,
   IsOptional,
@@ -8,13 +12,29 @@ import {
   IsUUID,
   Max,
   Min,
-  MinLength,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
-import { FILTERABLE_PRODUCT_STATUSES } from '../../../common/constants/product-status';
+import {
+  FILTERABLE_PRODUCT_STATUSES,
+  PRODUCT_TYPES,
+  ProductType,
+} from '../../../common/constants/product-status';
 
-/** The filters `GET /products` and `GET /products/search` share. */
+/** `?productType=PRODUCT,SERVICE`, một giá trị hoặc danh sách phẩy. Bỏ trống = mọi loại. */
+function ProductTypesQuery(): PropertyDecorator {
+  return applyDecorators(
+    IsOptional(),
+    Transform(({ value }: { value: unknown }) =>
+      typeof value === 'string' ? value.split(',').filter(Boolean) : value,
+    ),
+    IsIn(PRODUCT_TYPES, {
+      each: true,
+      message: `productType phải là ${PRODUCT_TYPES.join(', ')}`,
+    }),
+  );
+}
+
 export class ProductFilterDto extends IntersectionType(
   PaginationQueryDto,
   LocationRefQueryDto,
@@ -23,7 +43,6 @@ export class ProductFilterDto extends IntersectionType(
   @IsUUID()
   categoryId?: string;
 
-  /** Products with at least one variant supplied by this supplier. */
   @IsOptional()
   @IsUUID()
   supplierId?: string;
@@ -33,11 +52,21 @@ export class ProductFilterDto extends IntersectionType(
     message: `status phải là ${FILTERABLE_PRODUCT_STATUSES.join(', ')}`,
   })
   status?: string;
+
+  /** `isManufacturable=true` chỉ lấy hàng đặt xưởng được (ô tìm của form YCSX). Bỏ trống = không lọc. */
+  @BooleanQuery()
+  isManufacturable?: boolean;
+
+  /** Lọc theo loại sản phẩm, không có mặc định. */
+  @ProductTypesQuery()
+  productType?: ProductType[];
 }
 
-/** Ported from iKiotMS-BE's ProductQueryDTO. */
 export class QueryProductDto extends ProductFilterDto {
-  /** Partial, case-insensitive match on the product name. */
+  /** Chỉ sản phẩm có lô hỏng còn hàng tại địa điểm đang chọn. */
+  @BooleanQuery()
+  hasDamaged?: boolean;
+
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -46,19 +75,28 @@ export class QueryProductDto extends ProductFilterDto {
   search?: string;
 }
 
-/** Ported from ProductSearchQueryDTO - the POS lookup, matching one term against the product name and every variant's code/SKU/barcode, with the variants returned inline. */
+/** Từ khoá tìm nhanh cho POS: tên, mã, SKU, barcode. */
 export class SearchProductDto extends ProductFilterDto {
-  /** At least two characters: a one-character prefix matches most of the catalogue, which is why the old DTO rejected it too. */
+  /** Tối thiểu một ký tự. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
-  @MinLength(2, { message: 'Từ khoá tìm kiếm phải có ít nhất 2 ký tự' })
   q?: string;
+
+  /** Chỉ lấy sản phẩm chứa các phiên bản này (tối đa 100). */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.split(',').filter(Boolean) : value,
+  )
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  itemIds?: string[];
 }
 
-/** Ported from `listAllProductItems`: a flat list of variants for pickers that reference a specific SKU, since `GET /products` deliberately doesn't attach variants. */
+/** Danh sách phẳng các phiên bản cho bộ chọn theo SKU, vì `GET /products` cố ý không gắn phiên bản. */
 export class QueryProductItemDto {
   @IsOptional()
   @IsString()
@@ -67,7 +105,7 @@ export class QueryProductItemDto {
   )
   search?: string;
 
-  /** Attaches each variant's stock at these branches as `stock` (0 when the branch has no row yet). It does not narrow the list - a picker has to be able to reach goods the branch has never carried. */
+  /** Gắn tồn tại các chi nhánh này, không lọc danh sách. */
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.split(',').filter(Boolean) : value,
@@ -75,7 +113,14 @@ export class QueryProductItemDto {
   @IsUUID('4', { each: true })
   branchIds?: string[];
 
-  // Not PaginationQueryDto: this feeds a dropdown, not a table - no page, just the same 200/500 default and cap the old service applied.
+  /** Bỏ phiên bản của hàng đã ngừng bán. */
+  @BooleanQuery()
+  excludeDiscontinued?: boolean;
+
+  @ProductTypesQuery()
+  productType?: ProductType[];
+
+  // Danh sách cho dropdown, không phân trang.
   @IsOptional()
   @Type(() => Number)
   @IsInt()

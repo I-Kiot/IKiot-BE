@@ -2,19 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { LocationService } from '../locations/location.service';
-import { MANAGER_SELECT } from '../locations/location.types';
 import type { LocationConfig } from '../locations/location.types';
-import type { Prisma } from '../../../generated/prisma/client';
+import { LocationType } from '../../common/constants/location-type';
 
-type BranchRow = Prisma.BranchGetPayload<{
-  include: { manager: { select: typeof MANAGER_SELECT } };
-}>;
-
-/** Everything that makes a branch a branch rather than a warehouse. */
 const BRANCH_CONFIG: LocationConfig = {
+  kind: LocationType.BRANCH,
+  specialization: 'branch',
   quotaField: 'quotaSnapshotMaxBranches',
-  postingField: 'branchId',
-  otherPostingField: 'warehouseId',
   messages: {
     notFound: 'Branch not found',
     alreadyDeleted: 'This branch has already been deleted',
@@ -27,14 +21,14 @@ const BRANCH_CONFIG: LocationConfig = {
   },
 };
 
-// Ported from BranchService + BranchController; the CRUD and manager appointment live in LocationService, shared with WarehouseService, because the two were 90% identical text and drifted apart in the old codebase.
+// Service chi nhánh, dùng chung LocationService với kho.
 @Injectable()
-export class BranchService extends LocationService<BranchRow> {
+export class BranchService extends LocationService {
   constructor(prisma: PrismaService, subscriptions: SubscriptionService) {
-    super(prisma, subscriptions, prisma.branch, BRANCH_CONFIG);
+    super(prisma, subscriptions, BRANCH_CONFIG);
   }
 
-  /** Thin wrapper so the response keeps the `branchId` key the old API returned. */
+  /** Giữ khoá `branchId` trong response. */
   async assignManager(tenantId: string, branchId: string, staffId: string) {
     const manager = await this.appointManager(tenantId, branchId, staffId);
     return { branchId, manager };

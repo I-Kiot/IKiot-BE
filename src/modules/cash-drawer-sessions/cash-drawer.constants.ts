@@ -11,7 +11,7 @@ export type CashDrawerStatus =
 export const CASH_DRAWER_STATUSES: readonly string[] =
   Object.values(CashDrawerStatus);
 
-/** A shift log is written when a cashier takes the drawer (START) and hands it back (END). An END naming a `nextStaffId` is a handover; an END naming nobody is what makes the session finalizable. */
+/** Loại sổ ca: START nhận két, END trả két. */
 export const ShiftLogType = {
   START: 'START',
   END: 'END',
@@ -21,5 +21,5 @@ export type ShiftLogType = (typeof ShiftLogType)[keyof typeof ShiftLogType];
 
 export const SHIFT_LOG_TYPES: readonly string[] = Object.values(ShiftLogType);
 
-/** Which day a drawer belongs to is a question about the shop's local calendar, not UTC - this alias only says what `VIETNAM_TIMEZONE` means here, since `businessDate` takes the zone as a parameter. */
+/** Múi giờ dùng để tính ngày của két. */
 export const BUSINESS_TIMEZONE = VIETNAM_TIMEZONE;

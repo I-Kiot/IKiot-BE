@@ -4,10 +4,14 @@ import { SystemRole } from '../../common/constants/system-role';
 import { UserStatus } from '../../common/constants/user-status';
 import { ScheduleStatus } from './working-schedule.constants';
 import type { ShiftSupervisorAccess } from '../../common/types/auth-user.type';
+import {
+  LOCATION_TYPE_SELECT,
+  columnsOfLocation,
+} from '../../common/dto/location-ref.dto';
 
-/** The extra permissions a STAFF account holds only while the shift they are running is actually running (iKiotMS-BE's `managedScheduleAccess`): whoever is `managedBy` on a live schedule can open the till, receive stock and settle supplier paperwork at their own location without a permanent grant. Three things keep it narrow - only SCHEDULED shifts whose window contains now, only the fixed `TEMPORARY_PERMISSIONS` set, and only locations on both the shift and the supervisor's own posting. `suppliers` is the exception to the last, since supplier records are tenant-wide. */
+/** Quyền tạm của người quản lý ca đang chạy, tại địa điểm của ca. */
 
-/** Exactly the old `TEMPORARY_PERMISSIONS`. Widening this widens what a shift can grant. */
+/** Đúng bằng `TEMPORARY_PERMISSIONS` cũ. Nới rộng danh sách này là nới rộng những gì một ca được cấp. */
 export const TEMPORARY_PERMISSIONS: Readonly<
   Record<string, readonly string[]>
 > = Object.freeze({
@@ -23,7 +27,6 @@ export const TEMPORARY_PERMISSIONS: Readonly<
   ]),
 });
 
-/** Every `"<resource>:<action>"` a live shift can add. */
 const TEMPORARY_KEYS: ReadonlySet<string> = new Set(
   Object.entries(TEMPORARY_PERMISSIONS).flatMap(([resource, actions]) =>
     actions.map((action) => `${resource}:${action}`),
@@ -34,12 +37,11 @@ const TEMPORARY_KEYS: ReadonlySet<string> = new Set(
 export class ShiftSupervisorService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Whether a pair is one a shift could ever grant - cheap pre-check before querying. */
   static grants(resource: string, action: string): boolean {
     return TEMPORARY_KEYS.has(`${resource}:${action}`);
   }
 
-  /** Resolves the caller's live supervision, or `null`. Called from `JwtStrategy` on every request, so it is one query plus the posting `JwtStrategy` already has and passes in. */
+  /** Gọi từ `JwtStrategy` ở mọi request nên chỉ tốn một query, dùng posting mà `JwtStrategy` đã có sẵn. */
   async resolve(
     user: {
       userId: string;
@@ -67,23 +69,24 @@ export class ShiftSupervisorService {
         startAt: true,
         endAt: true,
         assignedUsers: {
-          select: { user: { select: { branchId: true, warehouseId: true } } },
+          select: { user: { select: { location: LOCATION_TYPE_SELECT } } },
         },
       },
     });
     if (schedules.length === 0) return null;
 
-    // Where the shift's people work…
+    // Nơi những người trong ca làm việc…
     const branchIds = new Set<string>();
     const warehouseIds = new Set<string>();
     for (const schedule of schedules) {
       for (const { user: member } of schedule.assignedUsers) {
-        if (member.branchId) branchIds.add(member.branchId);
-        if (member.warehouseId) warehouseIds.add(member.warehouseId);
+        const posting = columnsOfLocation(member.location);
+        if (posting.branchId) branchIds.add(posting.branchId);
+        if (posting.warehouseId) warehouseIds.add(posting.warehouseId);
       }
     }
 
-    // …intersected with where the supervisor themselves works: supervising a shift that includes somebody from another branch must not reach into that branch.
+    // Chỉ trong nơi người giám sát làm việc.
     for (const branchId of branchIds) {
       if (branchId !== user.branchId) branchIds.delete(branchId);
     }
@@ -104,7 +107,6 @@ export class ShiftSupervisorService {
     };
   }
 
-  /** The permission keys a resolved supervision contributes. */
   static keysFor(access: ShiftSupervisorAccess | null): string[] {
     if (!access) return [];
     return [
@@ -115,7 +117,7 @@ export class ShiftSupervisorService {
   }
 }
 
-/** May this account act at this location because of a shift it is running right now? The one seam `StockMovementService.canActAt()` and `CashDrawerSessionService.resolveBranch()` widen through. */
+/** Nới quyền theo ca đang chạy. */
 export function supervisesLocation(
   access: ShiftSupervisorAccess | null | undefined,
   location: { branchId: string | null; warehouseId: string | null },

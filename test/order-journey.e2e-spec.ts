@@ -1,0 +1,715 @@
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import type { App } from 'supertest/types';
+import { AppModule } from './../src/app.module';
+import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
+import { PrismaService } from './../src/prisma/prisma.service';
+import { assertMoneyInvariants } from './helpers/money-invariants';
+import { businessDate } from '../src/modules/cash-drawer-sessions/business-date';
+
+/** Kiểm toàn bộ hành trình đơn qua HTTP (Postgres thật); các test chạy theo thứ tự. */
+jest.setTimeout(120_000);
+
+const RUN = Date.now().toString().slice(-7);
+const PHONE_OWNER = `090${RUN}`;
+const TENANT_NAME = `Journey ${RUN}`;
+const SOFA_PRICE = 10_000_000;
+
+describe('F-1 order journey, end to end over HTTP', () => {
+  let app: INestApplication<App>;
+  let prisma: PrismaService;
+  let http: () => request.Agent;
+
+  let token = '';
+  let ownerId = '';
+  let tenantId = '';
+  let branchId = '';
+  let warehouseId = '';
+  let workshopId = '';
+  let sofaId = '';
+  let customerId = '';
+  let orderId = '';
+  let lineId = '';
+  let requestId = '';
+  let shipmentId = '';
+  let returnId = '';
+  let againId = '';
+  let saleBefore: Record<string, unknown> | null = null;
+
+  const auth = () => ({ Authorization: `Bearer ${token}` });
+  const order = async () =>
+    (await http().get(`/orders/${orderId}`).set(auth()).expect(200)).body.data;
+  const stockAt = async (locationId: string) =>
+    prisma.inventory.findFirst({
+      where: { tenantId, locationId, productItemId: sofaId },
+      select: { stock: true, lockedStock: true },
+    });
+  // Hàng hỏng (2026-11-26): lô isSellable = false tại chính kho, ngoài stock.
+  const damagedAt = async (locationId: string) =>
+    (
+      await prisma.inventoryLot.aggregate({
+        where: {
+          tenantId,
+          locationId,
+          productItemId: sofaId,
+          isSellable: false,
+        },
+        _sum: { remainingQuantity: true },
+      })
+    )._sum.remainingQuantity ?? 0;
+  const shortRow = async () => {
+    const list = await http()
+      .get('/production-list')
+      .query({ locationId: warehouseId, productItemId: sofaId })
+      .set(auth())
+      .expect(200);
+    return list.body.data[0] as {
+      shortQuantity: number;
+      onOrderQuantity: number;
+      demandQuantity: number;
+    };
+  };
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
+    app.useGlobalFilters(new AllExceptionsFilter());
+    await app.init();
+    prisma = app.get(PrismaService);
+    http = () => request(app.getHttpServer());
+  });
+
+  afterAll(async () => {
+    if (tenantId) await cleanup(tenantId);
+    await app?.close();
+  });
+
+  async function cleanup(t: string) {
+    await prisma.orderReturnItem.deleteMany({
+      where: { orderReturn: { tenantId: t } },
+    });
+    await prisma.orderReturn.updateMany({
+      where: { tenantId: t },
+      data: { replacementOrderId: null },
+    });
+    await prisma.orderReturn.deleteMany({ where: { tenantId: t } });
+    await prisma.shipmentEvent.deleteMany({
+      where: { shipment: { tenantId: t } },
+    });
+    await prisma.shipment.deleteMany({ where: { tenantId: t } });
+    await prisma.fulfillmentPackage.deleteMany({ where: { tenantId: t } });
+    await prisma.fulfillmentItem.deleteMany({
+      where: { fulfillment: { tenantId: t } },
+    });
+    await prisma.fulfillment.deleteMany({ where: { tenantId: t } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
+    await prisma.payment.deleteMany({
+      where: { tenantId: t, refundOfPaymentId: { not: null } },
+    });
+    await prisma.payment.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryTransaction.deleteMany({ where: { tenantId: t } });
+    await prisma.inventoryLot.deleteMany({ where: { tenantId: t } });
+    await prisma.stockMovementRequestItem.deleteMany({
+      where: { request: { tenantId: t } },
+    });
+    await prisma.stockMovementRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.productionRequestItem.deleteMany({
+      where: { productionRequest: { tenantId: t } },
+    });
+    await prisma.productionRequest.deleteMany({ where: { tenantId: t } });
+    await prisma.invoice.deleteMany({ where: { tenantId: tenantId } });
+    await prisma.orderItem.deleteMany({
+      where: { order: { tenantId: t }, parentItemId: { not: null } },
+    });
+    await prisma.orderItem.deleteMany({ where: { order: { tenantId: t } } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId: t } });
+    await prisma.order.deleteMany({ where: { tenantId: t } });
+    await prisma.inventory.deleteMany({ where: { tenantId: t } });
+    await prisma.customer.deleteMany({ where: { tenantId: t } });
+    await prisma.productItemSupplier.deleteMany({
+      where: { productItem: { tenantId: t } },
+    });
+    await prisma.productItemDetail.deleteMany({
+      where: { productItem: { tenantId: t } },
+    });
+    await prisma.productItem.deleteMany({ where: { tenantId: t } });
+    await prisma.product.deleteMany({ where: { tenantId: t } });
+    await prisma.supplier.deleteMany({ where: { tenantId: t } });
+    await prisma.notification.deleteMany({ where: { tenantId: t } });
+    await prisma.auditLog.deleteMany({ where: { tenantId: t } });
+    await prisma.subscriptionHistoryLog.deleteMany({
+      where: { subscription: { tenantId: t } },
+    });
+    await prisma.subscriptionInvoice.deleteMany({ where: { tenantId: t } });
+    await prisma.subscription.deleteMany({ where: { tenantId: t } });
+    await prisma.location.updateMany({
+      where: { tenantId: t },
+      data: {
+        managerId: null,
+        defaultFulfillmentLocationId: null,
+      },
+    });
+    await prisma.user.updateMany({
+      where: { tenantId: t },
+      data: { roleId: null, locationId: null },
+    });
+    await prisma.user.deleteMany({ where: { tenantId: t } });
+    await prisma.location.deleteMany({ where: { tenantId: t } });
+    await prisma.tenant.deleteMany({ where: { id: t } });
+  }
+
+  it('sets up a shop: branch, warehouse, a workshop, a sofa, a customer', async () => {
+    const registered = await http()
+      .post('/auth/register')
+      .send({
+        tenantName: TENANT_NAME,
+        phoneNumber: PHONE_OWNER,
+        email: 'journey-owner@journey.example.com',
+        password: 'password123',
+      })
+      .expect(201);
+    // Chủ shop mới chưa xác minh email: đổi challenge lấy token bằng DEV_BYPASS (NODE_ENV=test).
+    const verified = await http()
+      .post('/auth/login/verify-otp')
+      .send({
+        challengeToken: registered.body.data.challengeToken,
+        otpCode: 'DEV_BYPASS',
+      })
+      .expect(201);
+    token = verified.body.data.accessToken;
+    tenantId = registered.body.data.user.tenantId;
+    ownerId = registered.body.data.user.id;
+    await http()
+      .post('/subscription/free-trial')
+      .set(auth())
+      .send()
+      .expect(201);
+
+    branchId = (
+      await http()
+        .post('/branches')
+        .set(auth())
+        .send({ name: 'CN Quận 1', phoneNumber: [`091${RUN}`] })
+        .expect(201)
+    ).body.data.id;
+    warehouseId = (
+      await http()
+        .post('/warehouses')
+        .set(auth())
+        .send({
+          name: 'Kho tổng',
+          phoneNumber: [`093${RUN}`],
+        })
+        .expect(201)
+    ).body.data.id;
+    workshopId = (
+      await http()
+        .post('/suppliers')
+        .set(auth())
+        .send({
+          supplierName: 'Xưởng Mộc An',
+          type: 'WORKSHOP',
+          creditLimit: 100_000_000,
+        })
+        .expect(201)
+    ).body.data.id;
+    const product = await http()
+      .post('/products')
+      .set(auth())
+      .send({
+        name: 'Sofa băng',
+        isManufacturable: true,
+        items: [
+          {
+            productName: 'Sofa băng 1m8',
+            productCode: `SOFA-${RUN}`,
+            sku: `SOFA-${RUN}`,
+            retailPrice: SOFA_PRICE,
+            costPrice: 6_000_000,
+          },
+        ],
+      })
+      .expect(201);
+    sofaId = product.body.data.items[0].id;
+    customerId = (
+      await http()
+        .post('/customers')
+        .set(auth())
+        .send({ name: 'Chị Lan', phone: `094${RUN}` })
+        .expect(201)
+    ).body.data.id;
+  });
+
+  it('takes a manual order with a deposit; nothing in stock, nothing held', async () => {
+    const created = await http()
+      .post('/orders')
+      .set(auth())
+      .send({
+        branchId,
+        customerId,
+        assigneeId: ownerId,
+        fulfillmentType: 'HOME_DELIVERY',
+        priority: 'HIGH',
+        items: [
+          { productItemId: sofaId, quantity: 2, sourceLocationId: warehouseId },
+        ],
+        deposit: { type: 'AMOUNT', value: 6_000_000, method: 'CASH' },
+        recipientName: 'Chị Lan',
+        recipientPhone: `094${RUN}`,
+        deliveryAddress: '12 Lê Lợi, Q1',
+      })
+      .expect(201);
+    orderId = created.body.data.id;
+
+    const detail = await order();
+    lineId = detail.items[0].id;
+    expect(detail.status).toBe('CONFIRMED');
+    expect(detail.grandTotal).toBe(2 * SOFA_PRICE);
+    expect(detail.amountDue).toBe(2 * SOFA_PRICE - 6_000_000);
+    expect(detail.items[0].stockCheck).toMatchObject({
+      status: 'OUT',
+      shortQuantity: 2,
+    });
+
+    const journey = await http()
+      .get('/orders')
+      .query({ excludePos: true })
+      .set(auth())
+      .expect(200);
+    expect(journey.body.data.map((o: { id: string }) => o.id)).toContain(
+      orderId,
+    );
+  });
+
+  it('cannot pack what is not on the shelf', async () => {
+    const refused = await http()
+      .post(`/orders/${orderId}/pack`)
+      .set(auth())
+      .send({})
+      .expect(400);
+    expect(refused.body.code).toBe('INSUFFICIENT_STOCK');
+  });
+
+  it('shows the sofa as short on the production list, and raises a production request for it', async () => {
+    expect(await shortRow()).toMatchObject({
+      shortQuantity: 2,
+      onOrderQuantity: 0,
+    });
+
+    const created = await http()
+      .post('/production-requests')
+      .set(auth())
+      .send({
+        supplierId: workshopId,
+        locationId: warehouseId,
+        // 2 cho dòng đơn + 1 dự phòng trên kệ (sẽ bị lỗi).
+        items: [
+          { productItemId: sofaId, quantity: 2, orderItemId: lineId },
+          { productItemId: sofaId, quantity: 1 },
+        ],
+      })
+      .expect(201);
+    requestId = created.body.data.id;
+    expect(created.body.data.status).toBe('DRAFT');
+
+    const sent = await http()
+      .patch(`/production-requests/${requestId}/status`)
+      .set(auth())
+      .send({ status: 'SENT' })
+      .expect(200);
+    expect(sent.body.data.status).toBe('SENT');
+    // Dòng đơn (2) được YCSX gắn nhận hết; còn 1 đặt chung ở lại danh sách.
+    expect(await shortRow()).toMatchObject({
+      shortQuantity: 0,
+      onOrderQuantity: 1,
+      demandQuantity: 0,
+    });
+  });
+
+  it('receives the workshop delivery: good pieces on the shelf, the defect as a damaged lot in the same warehouse', async () => {
+    const requestItems = (
+      await http()
+        .get(`/production-requests/${requestId}`)
+        .set(auth())
+        .expect(200)
+    ).body.data.items as { id: string; orderItem: { id: string } | null }[];
+    const orderedLine = requestItems.find((l) => l.orderItem)!;
+    const spareLine = requestItems.find((l) => !l.orderItem)!;
+    const received = await http()
+      .post(`/production-requests/${requestId}/receive`)
+      .set(auth())
+      .send({
+        items: [
+          {
+            productionRequestItemId: orderedLine.id,
+            receivedQuantity: 2,
+            defectQuantity: 0,
+            unitCost: 5_500_000,
+          },
+          {
+            productionRequestItemId: spareLine.id,
+            receivedQuantity: 1,
+            defectQuantity: 1,
+            unitCost: 5_500_000,
+          },
+        ],
+      })
+      .expect(201);
+    expect(received.body.data.status).toBe('COMPLETED');
+    expect(received.body.data.receipts).toHaveLength(1);
+
+    expect(await stockAt(warehouseId)).toEqual({ stock: 2, lockedStock: 0 });
+    expect(await damagedAt(warehouseId)).toBe(1);
+    expect((await order()).items[0].stockCheck.status).toBe('ENOUGH');
+  });
+
+  it('packs the order, locking the goods without moving stock', async () => {
+    await http()
+      .post(`/orders/${orderId}/pack`)
+      .set(auth())
+      .send({})
+      .expect(200);
+    expect((await order()).status).toBe('PACKED');
+    expect(await stockAt(warehouseId)).toEqual({ stock: 2, lockedStock: 2 });
+  });
+
+  it('assigns our own shipper, who picks it up, then ships it - stock leaves here', async () => {
+    const shipment = await http()
+      .post('/shipments')
+      .set(auth())
+      .send({ orderId, carrierType: 'INTERNAL', driverId: ownerId })
+      .expect(201);
+    shipmentId = shipment.body.data.id;
+    // Gán shipper chưa phải lấy hàng (chốt 2026-10-15): đơn chờ shipper xác nhận.
+    expect((await order()).status).toBe('PACKED');
+
+    await http()
+      .post(`/shipments/${shipmentId}/pick-up`)
+      .set(auth())
+      .send({})
+      .expect(200);
+    expect((await order()).status).toBe('PICKED_UP');
+
+    await http()
+      .post(`/orders/${orderId}/ship`)
+      .set(auth())
+      .send({})
+      .expect(200);
+    expect((await order()).status).toBe('SHIPPING');
+    expect(await stockAt(warehouseId)).toEqual({ stock: 0, lockedStock: 0 });
+  });
+
+  it('is delivered and the shipper collects the rest in cash; the owner confirms all of it', async () => {
+    const due = (await order()).amountDue;
+    await http()
+      .post(`/shipments/${shipmentId}/deliver`)
+      .set(auth())
+      .send({
+        proofPhotoUrls: ['https://cdn.example.com/giao.jpg'],
+        paymentMethod: 'CASH',
+        collectedAmount: due,
+      })
+      .expect(200);
+    const received = await order();
+    expect(received.status).toBe('RECEIVED');
+    expect(received.collection).toMatchObject({
+      method: 'CASH',
+      amount: due,
+      cashRemittanceStatus: 'PENDING',
+    });
+
+    const short = await http()
+      .post(`/orders/${orderId}/confirm-remittance`)
+      .set(auth())
+      .send({ amount: due - 100_000 })
+      .expect(400);
+    expect(short.body.code).toBe('ORDER_REMITTANCE_AMOUNT_MISMATCH');
+
+    await http()
+      .post(`/orders/${orderId}/confirm-remittance`)
+      .set(auth())
+      .send({ amount: due })
+      .expect(200);
+    const completed = await order();
+    expect(completed.status).toBe('COMPLETED');
+    expect(completed.collection.cashRemittanceStatus).toBe('RECEIVED');
+  });
+
+  it('posts exactly one SALE journal entry when the order completes, costed from the lots', async () => {
+    const done = await prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const sales = await prisma.salesJournalEntry.findMany({
+      where: { orderId, entryType: 'SALE' },
+      include: { lines: true },
+    });
+    expect(sales).toHaveLength(1);
+    const sale = sales[0];
+    expect(sale.businessDate.toISOString().slice(0, 10)).toBe(
+      businessDate(done.completedAt!).toISOString().slice(0, 10),
+    );
+    expect(Number(sale.totalAmount)).toBe(Number(done.grandTotal));
+    expect(Number(sale.goodsAmount) + Number(sale.shippingAmount)).toBe(
+      Number(sale.totalAmount),
+    );
+    // Giá vốn = Σ(-số lượng × giá lô) của các dòng sổ kho SALE của đơn, không phải giá vốn danh mục.
+    const ledger = await prisma.inventoryTransaction.findMany({
+      where: { orderItem: { orderId }, type: 'SALE' },
+    });
+    const expectedCogs = ledger.reduce(
+      (sum, row) => sum - row.quantity * Number(row.unitCost ?? 0),
+      0,
+    );
+    expect(expectedCogs).toBeGreaterThan(0);
+    expect(Number(sale.cogsAmount)).toBe(Math.round(expectedCogs));
+    expect(sale.lines.reduce((s, l) => s + Number(l.amount), 0)).toBe(
+      Number(sale.goodsAmount),
+    );
+    saleBefore = JSON.parse(JSON.stringify(sale)) as Record<string, unknown>;
+  });
+
+  it('takes back a damaged piece as a damaged lot where it shipped from', async () => {
+    const created = await http()
+      .post('/order-returns')
+      .set(auth())
+      .send({
+        orderId,
+        reason: 'CUSTOMER_RETURN',
+        items: [{ orderItemId: lineId, quantity: 1 }],
+      })
+      .expect(201);
+    returnId = created.body.data.id;
+    await http()
+      .post(`/order-returns/${returnId}/receive`)
+      .set(auth())
+      .send({})
+      .expect(200);
+    // Đơn đã thu đủ nên phải nêu số hoàn.
+    const reading = await http()
+      .get(`/order-returns/${returnId}`)
+      .set(auth())
+      .expect(200);
+    const { suggested, max } = reading.body.data.refundSuggestion;
+    expect(suggested).toBeGreaterThan(0);
+    expect(max).toBeGreaterThanOrEqual(suggested);
+    await http()
+      .post(`/order-returns/${returnId}/inspect`)
+      .set(auth())
+      .send({ items: [{ orderItemId: lineId, condition: 'DAMAGED' }] })
+      .expect(400);
+    const inspected = await http()
+      .post(`/order-returns/${returnId}/inspect`)
+      .set(auth())
+      .send({
+        items: [{ orderItemId: lineId, condition: 'DAMAGED' }],
+        refund: { amount: suggested, method: 'CASH', note: 'Hoàn một chiếc' },
+      })
+      .expect(200);
+    expect(inspected.body.data.status).toBe('COMPLETED');
+    const refund = await prisma.payment.findFirstOrThrow({
+      where: { orderId, kind: 'REFUND' },
+    });
+    expect(Number(refund.amount)).toBe(suggested);
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: orderId } }))
+        .paymentStatus,
+    ).toBe('PARTIALLY_REFUNDED');
+
+    expect(await damagedAt(warehouseId)).toBe(2);
+    expect(await stockAt(warehouseId)).toEqual({ stock: 0, lockedStock: 0 });
+    // Trả một phần: đơn vẫn hoàn thành.
+    expect((await order()).status).toBe('COMPLETED');
+  });
+
+  it('books the damaged return as a negative RETURN entry dated at inspection and leaves the SALE row untouched', async () => {
+    const entries = await prisma.salesJournalEntry.findMany({
+      where: { orderId },
+      include: { lines: true },
+      orderBy: { postedAt: 'asc' },
+    });
+    expect(entries.map((e) => e.entryType)).toEqual(['SALE', 'RETURN']);
+    expect(JSON.parse(JSON.stringify(entries[0]))).toEqual(saleBefore);
+    const ret = entries[1];
+    expect(ret.orderReturnId).toBe(returnId);
+    expect(Number(ret.totalAmount)).toBeLessThan(0);
+    expect(Number(ret.shippingAmount)).toBe(0);
+    expect(Number(ret.goodsAmount)).toBe(Number(ret.totalAmount));
+    expect(Number(ret.cogsAmount)).toBeLessThan(0);
+    expect(ret.lines).toHaveLength(1);
+    expect(ret.lines[0].quantity).toBe(-1);
+    expect(ret.businessDate.toISOString().slice(0, 10)).toBe(
+      businessDate(new Date()).toISOString().slice(0, 10),
+    );
+    // Cùng một quy tắc với hoàn tiền và hoá đơn: lát giá trị trả = giá trị gợi ý hoàn.
+    const refund = await prisma.payment.findFirstOrThrow({
+      where: { orderId, kind: 'REFUND' },
+    });
+    expect(-Number(ret.goodsAmount)).toBe(Number(refund.amount));
+  });
+
+  it('refuses to update a journal row (append-only)', async () => {
+    await expect(
+      prisma.$executeRaw`UPDATE sales_journal_entries SET total_amount = 1 WHERE order_id = ${orderId}`,
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prisma.$executeRaw`UPDATE sales_journal_lines SET amount = 1 WHERE entry_id IN (SELECT id FROM sales_journal_entries WHERE order_id = ${orderId})`,
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('sells the customer a new sofa and links it to the return as its buy-again order', async () => {
+    const again = await http()
+      .post('/orders')
+      .set(auth())
+      .send({
+        branchId,
+        customerId,
+        assigneeId: ownerId,
+        fulfillmentType: 'HOME_DELIVERY',
+        recipientName: 'Khách e2e',
+        recipientPhone: '0912345678',
+        deliveryAddress: '1 Tràng Tiền, Hà Nội',
+        items: [
+          { productItemId: sofaId, quantity: 1, sourceLocationId: warehouseId },
+        ],
+      })
+      .expect(201);
+    againId = again.body.data.id;
+    const linked = await http()
+      .patch(`/order-returns/${returnId}/replacement-order`)
+      .set(auth())
+      .send({ orderId: againId })
+      .expect(200);
+    expect(linked.body.data.replacementOrder).toMatchObject({
+      id: again.body.data.id,
+    });
+    // Sofa mới lại thiếu nên quay lại danh sách sản xuất.
+    expect((await shortRow()).shortQuantity).toBe(1);
+  });
+
+  it('leaves an action trail: one event per step that happened, none for the refused ones', async () => {
+    const events = async (id: string) =>
+      prisma.orderEvent.findMany({
+        where: { orderId: id },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+
+    const trail = await events(orderId);
+    // Đóng gói thiếu hàng và nộp tiền thiếu bị từ chối trước khi ghi gì nên không để lại sự kiện.
+    expect(trail.map((e) => e.type)).toEqual([
+      'CREATED',
+      'DEPOSIT_RECORDED',
+      'PRODUCTION_REQUESTED',
+      'PRODUCTION_RECEIVED',
+      'PACKED',
+      'SHIPMENT_CREATED',
+      'PICKED_UP',
+      'SHIPPED',
+      'DELIVERED',
+      'REMITTANCE_CONFIRMED',
+      'RETURN_CREATED',
+      'RETURN_RECEIVED',
+      'RETURN_INSPECTED',
+      'REFUNDED',
+      'REPLACEMENT_LINKED',
+    ]);
+    for (const event of trail) {
+      expect(event).toMatchObject({
+        tenantId,
+        source: 'USER',
+        actorId: ownerId,
+        actorRole: 'TENANT_OWNER',
+      });
+      expect(event.actorName).toBeTruthy();
+    }
+    const at = (type: string) => trail.find((e) => e.type === type)!;
+    expect(at('CREATED')).toMatchObject({
+      fromStatus: null,
+      toStatus: 'CONFIRMED',
+    });
+    expect(at('DEPOSIT_RECORDED').metadata).toMatchObject({
+      amount: 6_000_000,
+      method: 'CASH',
+    });
+    expect(at('PRODUCTION_REQUESTED').metadata).toMatchObject({
+      refType: 'PRODUCTION_REQUEST',
+      refId: requestId,
+    });
+    expect(at('PACKED')).toMatchObject({
+      fromStatus: 'CONFIRMED',
+      toStatus: 'PACKED',
+    });
+    // Giao nội bộ: gán shipper chưa đổi trạng thái đơn, shipper bấm lấy hàng mới đổi.
+    expect(at('SHIPMENT_CREATED')).toMatchObject({
+      fromStatus: null,
+      toStatus: null,
+    });
+    expect(at('SHIPMENT_CREATED').metadata).toMatchObject({
+      refType: 'SHIPMENT',
+      refId: shipmentId,
+      carrierType: 'INTERNAL',
+    });
+    expect(at('PICKED_UP')).toMatchObject({
+      fromStatus: 'PACKED',
+      toStatus: 'PICKED_UP',
+    });
+    expect(at('DELIVERED')).toMatchObject({
+      fromStatus: 'SHIPPING',
+      toStatus: 'RECEIVED',
+    });
+    expect(at('REMITTANCE_CONFIRMED')).toMatchObject({
+      fromStatus: 'RECEIVED',
+      toStatus: 'COMPLETED',
+    });
+    // Trả một phần: đơn không đổi trạng thái.
+    expect(at('RETURN_INSPECTED')).toMatchObject({
+      fromStatus: null,
+      toStatus: null,
+    });
+    expect(at('RETURN_INSPECTED').metadata).toMatchObject({
+      refType: 'ORDER_RETURN',
+      refId: returnId,
+      good: 0,
+      damaged: 1,
+    });
+    expect(at('REPLACEMENT_LINKED').metadata).toMatchObject({
+      refType: 'ORDER',
+      refId: againId,
+      returnId,
+    });
+
+    // Đơn mua lại thấy liên kết ngược về phiếu hoàn.
+    expect((await events(againId)).map((e) => e.type)).toEqual([
+      'CREATED',
+      'REPLACEMENT_LINKED',
+    ]);
+
+    // Route đọc trả đúng nhật ký, cũ nhất trước, trong envelope chuẩn.
+    const read = await http()
+      .get(`/orders/${orderId}/events`)
+      .set(auth())
+      .expect(200);
+    expect(read.body.success).toBe(true);
+    expect(read.body.data.map((e: { type: string }) => e.type)).toEqual(
+      trail.map((e) => e.type),
+    );
+    expect(read.body.data[0]).toMatchObject({
+      type: 'CREATED',
+      source: 'USER',
+      actorId: ownerId,
+      actorRole: 'TENANT_OWNER',
+      changes: null,
+    });
+    expect(typeof read.body.data[0].occurredAt).toBe('string');
+  });
+
+  // Cuối suite: sổ tiền của tenant này đúng mọi bất biến (test/helpers/money-invariants.ts).
+  it('leaves the money ledger consistent', async () => {
+    await assertMoneyInvariants(prisma, tenantId);
+  });
+});

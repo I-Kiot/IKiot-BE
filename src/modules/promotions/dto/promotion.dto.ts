@@ -26,7 +26,7 @@ import {
   PROMOTION_STATUSES,
 } from '../promotion.constants';
 
-/** What the promotion applies to. Mongo stored this as a subdocument; the API keeps it. */
+/** Phạm vi áp dụng. Bản Mongo cũ lưu dạng subdocument; API giữ nguyên hình dạng này. */
 export class ApplicableRuleDto {
   @IsIn(APPLICABLE_RULE_TYPES, {
     message: `applicableRule.type phải là ${APPLICABLE_RULE_TYPES.join(', ')}`,
@@ -46,7 +46,7 @@ export class ApplicableRuleDto {
   productItemIds?: string[];
 }
 
-/** Ported from CreatePromotionRequestDTO. `usedCount` is server-managed and `status` is reached through DELETE, which is what deactivates a promotion. */
+/** Body tạo khuyến mãi. */
 export class CreatePromotionDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên khuyến mãi không được để trống' })
@@ -56,7 +56,7 @@ export class CreatePromotionDto {
   @IsString()
   description?: string;
 
-  /** Empty (or omitted) = applies tenant-wide. Non-empty = only at these branches. */
+  /** Rỗng hoặc bỏ trống = áp dụng toàn chuỗi; có giá trị = chỉ tại các chi nhánh này. */
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
@@ -70,20 +70,20 @@ export class CreatePromotionDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01, { message: 'Giá trị giảm phải lớn hơn 0' })
-  // A percentage over 100 would pay the customer; the engine clamps, but a plan that says 150% is a typo worth rejecting at the door.
+  // Giảm tối đa 100%.
   @ValidateIf(
     (p: CreatePromotionDto) => p.discountType === DiscountType.PERCENT,
   )
   @Max(100, { message: 'Giảm theo phần trăm không được vượt quá 100' })
   discountValue: number;
 
-  /** Only meaningful for PERCENT - a cap on a fixed amount is just a smaller fixed amount. */
+  /** Chỉ có nghĩa với PERCENT - trần cho số tiền cố định chỉ là một số tiền cố định nhỏ hơn. */
   @IsOptional()
   @ValidateIf((p: CreatePromotionDto) => p.maxDiscountAmount !== undefined)
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01, { message: 'maxDiscountAmount phải lớn hơn 0' })
-  maxDiscountAmount?: number;
+  maxDiscountAmount?: number | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -118,7 +118,7 @@ export class CreatePromotionDto {
   usageLimitPerCustomer?: number;
 }
 
-/** Ported from UpdatePromotionRequestDTO, not `PartialType(CreatePromotionDto)`: the conditional rules read sibling fields that may be absent on a partial update, so the service re-checks the merged result instead. */
+/** Body sửa khuyến mãi, kiểm lại trên dữ liệu đã gộp. */
 export class UpdatePromotionDto {
   @IsOptional()
   @IsString()
@@ -148,7 +148,7 @@ export class UpdatePromotionDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  maxDiscountAmount?: number;
+  maxDiscountAmount?: number | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -190,7 +190,7 @@ export class UpdatePromotionDto {
   status?: string;
 }
 
-/** Ported from PromotionQueryDTO (`recordPerPage` → `limit`, as elsewhere). */
+/** Port từ PromotionQueryDTO (`recordPerPage` đổi thành `limit`, như các module khác). */
 export class QueryPromotionDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
@@ -208,7 +208,6 @@ export class QueryPromotionDto extends PaginationQueryDto {
   branchId?: string;
 }
 
-/** One line of the cart being priced. */
 export class CartItemDto {
   @IsUUID()
   productItemId: string;
@@ -218,10 +217,10 @@ export class CartItemDto {
   @Min(1, { message: 'Số lượng phải từ 1 trở lên' })
   quantity: number;
 
-  // No `unitPrice`: the price is read from `ProductItem.retailPrice` server-side, and anything sent is dropped by the global whitelist.
+  // Dòng giỏ không có giá, giá lấy từ server.
 }
 
-/** Ported from PromotionCalculateRequestDTO - the payload behind `/candidates`, `/calculate` and `/apply`. */
+/** Port từ PromotionCalculateRequestDTO - payload dùng cho `/candidates`, `/calculate` và `/apply`. */
 export class PriceCartDto {
   @IsOptional()
   @IsUUID()
@@ -231,7 +230,15 @@ export class PriceCartDto {
   @IsUUID()
   customerId?: string;
 
-  /** Required by `/apply` only - the order the discount is being committed against. */
+  /**
+   * Giỏ của khách sẽ được tạo cùng đơn (chưa có id): coi như chưa dùng lượt nào. Bỏ qua khi có `customerId`. Không có
+   * cả hai là khách vãng lai, không dùng được khuyến mãi giới hạn lượt theo khách.
+   */
+  @IsOptional()
+  @IsBoolean()
+  newCustomer?: boolean;
+
+  /** `/apply`: đơn mà lượt dùng được ghi vào. Khi tính lại một đơn có sẵn: lượt của chính đơn đó không bị tính. */
   @IsOptional()
   @IsUUID()
   orderId?: string;
@@ -242,7 +249,7 @@ export class PriceCartDto {
   @Type(() => CartItemDto)
   items: CartItemDto[];
 
-  /** The exact promotions the user picked. Empty is valid and means "no discount". */
+  /** Đúng các khuyến mãi khách đã chọn. Rỗng là hợp lệ, nghĩa là không giảm giá. */
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })

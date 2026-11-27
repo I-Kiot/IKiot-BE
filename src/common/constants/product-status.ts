@@ -1,4 +1,4 @@
-/** Product lifecycle. DISCONTINUED is the soft delete, since order items, stock movements and inventory all point at variants. */
+/** Vòng đời sản phẩm. DISCONTINUED là xoá mềm, vì dòng đơn, phiếu kho và tồn kho vẫn trỏ tới biến thể. */
 export const ProductStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',
@@ -7,21 +7,51 @@ export const ProductStatus = {
 
 export type ProductStatus = (typeof ProductStatus)[keyof typeof ProductStatus];
 
-/** What a client may set directly - DISCONTINUED is reachable only via DELETE. */
+/** Trạng thái client được đặt trực tiếp - DISCONTINUED chỉ đạt được qua DELETE. */
 export const SETTABLE_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
 ];
 
-/** What a list endpoint may be filtered by. */
 export const FILTERABLE_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
   ProductStatus.DISCONTINUED,
 ];
 
-/** Statuses that still count against the plan's `maxProducts` quota - a discontinued product frees its slot. */
+/** Trạng thái còn tính vào hạn mức `maxProducts` của gói - sản phẩm ngừng bán thì trả lại suất. */
 export const QUOTA_COUNTED_PRODUCT_STATUSES: readonly string[] = [
   ProductStatus.ACTIVE,
   ProductStatus.INACTIVE,
 ];
+
+/** Loại SKU: chỉ PRODUCT giữ kho, COMBO giữ qua thành phần, SERVICE không cần hàng. */
+export const ProductItemType = {
+  PRODUCT: 'PRODUCT',
+  COMBO: 'COMBO',
+  SERVICE: 'SERVICE',
+} as const;
+
+export type ProductItemType =
+  (typeof ProductItemType)[keyof typeof ProductItemType];
+
+/** Loại sản phẩm, cố định khi tạo. */
+export const ProductType = {
+  PRODUCT: 'PRODUCT',
+  COMBO: 'COMBO',
+  SERVICE: 'SERVICE',
+} as const;
+
+export type ProductType = (typeof ProductType)[keyof typeof ProductType];
+
+export const PRODUCT_TYPES: readonly string[] = Object.values(ProductType);
+
+/** Loại SKU bắt buộc theo loại sản phẩm. */
+export function itemTypeFor(productType: ProductType): ProductItemType {
+  return productType;
+}
+
+/** Loại SKU có được giữ tồn kho và lô không. */
+export function holdsStock(itemType: string): boolean {
+  return itemType === ProductItemType.PRODUCT;
+}

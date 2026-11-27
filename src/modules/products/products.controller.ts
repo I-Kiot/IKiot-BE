@@ -3,17 +3,39 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
+  StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiProduces,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ProductService } from './products.service';
+import {
+  ProductImportService,
+  XLSX_MIME,
+} from './import/product-import.service';
+import { MAX_IMPORT_BYTES } from './import/product-import.columns';
+import { ProductExportService } from './export/product-export.service';
+import { ExportProductsDto } from './dto/export-products.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { CreateProductItemDto } from './dto/product-item.dto';
+import {
+  CreateProductItemDto,
+  ProductAttributeDto,
+} from './dto/product-item.dto';
 import { UpdateProductItemDto } from './dto/update-product-item.dto';
 import { AddSupplierToItemDto } from './dto/add-supplier.dto';
 import {
@@ -21,23 +43,29 @@ import {
   QueryProductItemDto,
   SearchProductDto,
 } from './dto/query-product.dto';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Real port of ProductController. Every route here is newly permission-gated - the old module registered all eleven on bare `verifyJwt`, so any logged-in account, a CUSTOMER included, could edit the whole catalogue. Two paths drop their `/delete` suffix, which nothing else used. */
+/** Controller sản phẩm, mỗi route có quyền riêng. */
 @ApiTags('products')
 @ApiBearerAuth('bearer')
 @Controller('products')
 export class ProductController {
-  constructor(private readonly service: ProductService) {}
+  constructor(
+    private readonly service: ProductService,
+    private readonly importer: ProductImportService,
+    private readonly exporter: ProductExportService,
+  ) {}
 
   @Permissions('products', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateProductDto) {
-    return this.service.create(requireTenantId(user), dto);
+    return this.service.create(requireTenantId(user), dto, user.userId);
   }
 
   @Permissions('products', 'read')
@@ -46,7 +74,58 @@ export class ProductController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  // `items` and `search` must stay above `:id` or the router matches them as a product id and every call 404s.
+  /** Tải file Excel mẫu để nhập hàng hoá. */
+  @Permissions('products', 'create')
+  @Get('import/template')
+  @ApiProduces(XLSX_MIME)
+  async importTemplate(@CurrentUser() user: AuthUser) {
+    const buffer = await this.importer.buildTemplate(requireTenantId(user));
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="mau-nhap-hang-hoa.xlsx"',
+    });
+  }
+
+  /** Nhập hàng hoá từ file mẫu. */
+  @Permissions('products', 'create')
+  @Post('import')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  // Multer chặn file quá lớn ngay khi đọc socket; service kiểm lại để trả lỗi có `code`.
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_BYTES + 1 } }),
+  )
+  importProducts(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.importer.import(requireTenantId(user), file, user.userId);
+  }
+
+  /** Xuất hàng hoá theo khuôn file mẫu nhập; POST vì danh sách hàng đã tích có thể dài. */
+  @Permissions('products', 'read')
+  @Post('export')
+  @HttpCode(HttpStatus.OK)
+  @SkipAudit()
+  @ApiProduces(XLSX_MIME)
+  async exportProducts(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ExportProductsDto,
+  ) {
+    const buffer = await this.exporter.export(requireTenantId(user), dto);
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="hang-hoa.xlsx"',
+    });
+  }
+
+  // Route tĩnh phải khai báo trên `:id`.
   @Permissions('products', 'read')
   @Get('items')
   listItems(
@@ -82,7 +161,17 @@ export class ProductController {
     return this.service.update(requireTenantId(user), id, dto);
   }
 
-  /** Soft delete - sets status to DISCONTINUED. See ProductService.discontinue. */
+  /** Thêm thuộc tính cho sản phẩm; trùng tên thì trả thuộc tính có sẵn. */
+  @Permissions('products', 'update')
+  @Post(':id/attributes')
+  addAttribute(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ProductAttributeDto,
+  ) {
+    return this.service.addAttribute(requireTenantId(user), id, dto);
+  }
+
   @Permissions('products', 'delete')
   @Delete(':id')
   discontinue(
@@ -92,9 +181,17 @@ export class ProductController {
     return this.service.discontinue(requireTenantId(user), id);
   }
 
-  // ─── Variants ──────────────────────────────────────────────────────────────
+  // Route ba đoạn nên không đụng `/products/:id`; chỉ `GET items` và `GET search` cần đặt trên.
+  @Permissions('products', 'read')
+  @Get('items/:itemId/price-history')
+  priceHistory(
+    @CurrentUser() user: AuthUser,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Query() query: QueryPriceHistoryDto,
+  ) {
+    return this.service.priceHistory(requireTenantId(user), itemId, query);
+  }
 
-  // These are three segments deep, so they can't collide with the two-segment `/products/:id` whatever the declaration order - only `GET items` and `GET search` needed hoisting.
   @Permissions('products', 'update')
   @Patch('items/:itemId')
   updateItem(
@@ -102,7 +199,12 @@ export class ProductController {
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateProductItemDto,
   ) {
-    return this.service.updateItem(requireTenantId(user), itemId, dto);
+    return this.service.updateItem(
+      requireTenantId(user),
+      itemId,
+      dto,
+      user.userId,
+    );
   }
 
   @Permissions('products', 'delete')
@@ -135,6 +237,11 @@ export class ProductController {
     @Param('productId', ParseUUIDPipe) productId: string,
     @Body() dto: CreateProductItemDto,
   ) {
-    return this.service.createItem(requireTenantId(user), productId, dto);
+    return this.service.createItem(
+      requireTenantId(user),
+      productId,
+      dto,
+      user.userId,
+    );
   }
 }

@@ -1,0 +1,15 @@
+import { Module } from '@nestjs/common';
+import { OrderReturnController } from './order-returns.controller';
+import { OrderReturnService } from './order-returns.service';
+import { InventoryModule } from '../inventories/inventories.module';
+import { OrderModule } from '../orders/orders.module';
+import { InvoiceModule } from '../invoices/invoices.module';
+
+@Module({
+  // InventoryModule cho `returnDrawn`; OrderModule cho phạm vi chi nhánh mà mọi đọc phía đơn dùng chung.
+  imports: [InventoryModule, OrderModule, InvoiceModule],
+  controllers: [OrderReturnController],
+  providers: [OrderReturnService],
+  exports: [OrderReturnService],
+})
+export class OrderReturnModule {}

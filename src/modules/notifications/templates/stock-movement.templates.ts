@@ -2,7 +2,6 @@ import type { NotificationContent } from '../notification-content.type';
 
 const link = (requestId: string) => `/stock-movements/${requestId}`;
 
-/** Notification copy for the stock-movement domain. */
 export const StockMovementNotificationTemplates = {
   created: (requestId: string, movementType: string): NotificationContent => ({
     type: 'STOCK_MOVEMENT_CREATED',
@@ -11,7 +10,7 @@ export const StockMovementNotificationTemplates = {
     link: link(requestId),
   }),
 
-  /** Raised by the receiving end: the source is being asked for goods, not told about a shipment they already agreed to. */
+  /** Do bên nhận gửi: bên nguồn đang được yêu cầu hàng, không phải được báo về một chuyến đã thống nhất. */
   requested: (requestId: string): NotificationContent => ({
     type: 'STOCK_MOVEMENT_REQUESTED',
     title: 'Yêu cầu nhận hàng mới',

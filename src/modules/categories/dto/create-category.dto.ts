@@ -11,7 +11,7 @@ export class CreateCategoryDto {
   @IsNotEmpty({ message: 'Tên danh mục không được để trống' })
   name: string;
 
-  /** Omit (or send null) for a top-level category. */
+  /** Bỏ trống (hoặc gửi null) cho danh mục cấp gốc. */
   @IsOptional()
   @IsUUID()
   parentId?: string | null;

@@ -1,0 +1,34 @@
+import {
+  IsIn,
+  IsLatitude,
+  IsLongitude,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+import { ShipmentStatus } from '../../../common/constants/shipment-status';
+
+/** Trạng thái của sự kiện nhật trình. */
+export const LOGGABLE_SHIPMENT_STATUSES: readonly string[] = [
+  ShipmentStatus.OUT_FOR_DELIVERY,
+];
+
+export class AddShipmentEventDto {
+  @IsIn(LOGGABLE_SHIPMENT_STATUSES, {
+    message: 'Nhật trình chỉ ghi được trạng thái "Đang đi giao"',
+  })
+  status: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500, { message: 'Ghi chú tối đa 500 ký tự' })
+  note?: string;
+
+  @IsOptional()
+  @IsLatitude({ message: 'Vĩ độ không hợp lệ' })
+  latitude?: number;
+
+  @IsOptional()
+  @IsLongitude({ message: 'Kinh độ không hợp lệ' })
+  longitude?: number;
+}

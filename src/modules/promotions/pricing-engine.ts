@@ -7,13 +7,13 @@ import {
 } from './promotion.constants';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-/** The discount calculator, with no database access by design: the caller fetches the candidate promotions, resolves each line's category and pre-loads this customer's usage counts, then hands it all in - so every rule a cashier has to defend is testable without a connection. Applying a promotion is always explicit; this module never guesses a "best" combination, since a till that picks a different discount than the one tapped is a support call. */
+/** Bộ tính khuyến mãi không truy cập DB; khuyến mãi luôn được chọn tường minh. */
 
-/** A promotion, in the shape this module needs. The service maps Prisma rows into it. */
+/** Khuyến mãi theo hình dạng module này cần. Service map từ dòng Prisma sang. */
 export interface PricingPromotion {
   id: string;
   promoName: string;
-  /** Carried for the picker's benefit only - no rule below reads it. */
+  /** Chỉ để hiển thị cho người chọn; không rule nào dưới đây đọc trường này. */
   description: string | null;
   status: string;
   startDate: Date;
@@ -26,7 +26,7 @@ export interface PricingPromotion {
   usageLimit: number | null;
   usageLimitPerCustomer: number | null;
   usedCount: number;
-  /** Empty = applies tenant-wide. Non-empty = only at these branches. */
+  /** Rỗng = áp dụng toàn chuỗi; có giá trị = chỉ tại các chi nhánh này. */
   branchIds: string[];
   applicableRuleType: string;
   ruleCategoryIds: string[];
@@ -34,7 +34,7 @@ export interface PricingPromotion {
 }
 
 export interface CartItem {
-  /** Which line of the cart this is. A cart may hold the same `productItemId` on more than one line, so the variant id does not identify a line - allocating per variant id and reading back per line multiplied the discount and took orders to 0đ. */
+  /** Số thứ tự dòng trong giỏ. */
   lineId: number;
   productItemId: string;
   categoryId: string | null;
@@ -45,7 +45,13 @@ export interface CartItem {
 
 export interface CartContext {
   branchId: string | null;
+  /** Khách thật của giỏ; null là khách vãng lai hoặc chưa có khách. */
   customerId: string | null;
+  /**
+   * Giỏ của một khách sẽ được tạo cùng đơn (chưa có id): chưa dùng lượt nào, nên khuyến mãi giới hạn theo khách vẫn
+   * áp được. Chỉ có nghĩa khi `customerId` null.
+   */
+  newCustomer?: boolean;
   subtotal: number;
   items: CartItem[];
 }
@@ -74,7 +80,7 @@ export interface PricingResult {
   grandTotal: number;
 }
 
-/** Money is stored to 2dp but discounts are whole đồng - round once, at the edges. */
+/** Tiền lưu 2 chữ số thập phân nhưng giảm giá là đồng nguyên - chỉ làm tròn một lần, ở biên. */
 const round = (amount: number): number => Math.round(amount);
 
 const vnd = (amount: number) => amount.toLocaleString('vi-VN');
@@ -116,7 +122,7 @@ export function matchedSubtotal(matchedItems: CartItem[]): number {
   return matchedItems.reduce((sum, item) => sum + item.lineTotal, 0);
 }
 
-/** What one promotion is worth on its own, before any stacking clamp; a FIXED_AMOUNT discount never exceeds what the matched items are worth, or a 100k voucher on a 40k item would pay the customer. */
+/** Mức giảm của một khuyến mãi, không vượt giá trị hàng khớp. */
 export function rawDiscount(
   promotion: PricingPromotion,
   matchedItems: CartItem[],
@@ -135,7 +141,7 @@ export function rawDiscount(
   return round(Math.min(promotion.discountValue, subtotal));
 }
 
-/** Can this promotion be used on this cart, and if not, why not? The reason is shown to the cashier, so every branch returns one; `customerUsageCounts` needs an entry only for promotions that cap per customer. */
+/** Khuyến mãi có dùng được cho giỏ không và lý do. */
 export function evaluateEligibility(
   promotion: PricingPromotion,
   cart: CartContext,
@@ -170,14 +176,16 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'Khuyến mãi đã hết lượt sử dụng' };
   }
   if (promotion.usageLimitPerCustomer !== null) {
-    // A per-customer cap means nothing without knowing who the customer is, so an anonymous cart is excluded rather than waved through.
-    if (!cart.customerId) {
+    // Giới hạn theo khách vô nghĩa nếu không biết khách là ai, nên giỏ vãng lai bị loại thay vì cho qua.
+    // Khách mới (tạo cùng đơn) thì đã biết là ai và chưa dùng lượt nào.
+    if (!cart.customerId && !cart.newCustomer) {
       return {
         eligible: false,
-        reason: 'Cần chọn khách hàng để áp dụng khuyến mãi này',
+        reason:
+          'Khách vãng lai không dùng được khuyến mãi giới hạn lượt theo khách - chọn hoặc tạo khách hàng',
       };
     }
-    const used = customerUsageCounts[promotion.id] ?? 0;
+    const used = cart.customerId ? (customerUsageCounts[promotion.id] ?? 0) : 0;
     if (used >= promotion.usageLimitPerCustomer) {
       return {
         eligible: false,
@@ -194,7 +202,7 @@ export function evaluateEligibility(
   return { eligible: true, reason: null };
 }
 
-/** Every candidate promotion with its eligibility and a standalone preview of what it would take off - ineligible ones included, with the reason, because "why can't I use this voucher" is the question being asked. */
+/** Mọi khuyến mãi ứng viên kèm điều kiện và mức giảm xem trước. */
 export function buildCandidateList(
   promotions: PricingPromotion[],
   cart: CartContext,
@@ -219,7 +227,7 @@ export function buildCandidateList(
   });
 }
 
-/** Spreads each promotion's discount across the lines it matched in proportion to what each contributes, then clamps each line's accumulated discount to its own total - without the clamp, two stackable promotions on one SKU would leave the order owing the customer money. */
+/** Chia mức giảm cho các dòng, kẹp về thành tiền dòng. */
 export function allocatePerItemDiscount(
   applied: { matchedItems: CartItem[]; discount: number }[],
 ): Map<number, number> {
@@ -256,7 +264,7 @@ function emptyResult(cart: CartContext): PricingResult {
   };
 }
 
-/** Resolves the exact set of promotions the user chose against the cart, throwing a 400 when one is unknown, ineligible or breaks the stacking rules: quietly dropping one would charge the customer more than the screen said. */
+/** Áp các khuyến mãi đã chọn; ném 400 khi có cái không hợp lệ. */
 export function resolveSelectedPromotions(
   promotions: PricingPromotion[],
   selectedIds: string[],
@@ -318,7 +326,7 @@ export function resolveSelectedPromotions(
   });
 
   const perLine = allocatePerItemDiscount(computed);
-  // One entry per cart line, in cart order - the caller joins it back positionally, the only join that survives the same variant appearing twice.
+  // Một phần tử cho mỗi dòng giỏ, theo thứ tự.
   const itemBreakdown = cart.items.map((item) => ({
     productItemId: item.productItemId,
     discountAmount: perLine.get(item.lineId) ?? 0,

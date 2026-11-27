@@ -2,13 +2,115 @@ import type { NotificationContent } from '../notification-content.type';
 
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')}đ`;
 
-/** Notification copy for the sales domain. */
 export const OrderNotificationTemplates = {
-  /** A SePay transfer landing is the one order event genuinely worth a push: it arrives minutes after the customer walked up, when the cashier is no longer looking at that screen. */
+  /** Tiền chuyển khoản SePay đã về. */
   paid: (paymentReference: string, amount: number): NotificationContent => ({
     type: 'ORDER_PAID',
     title: 'Khách đã thanh toán',
     description: `Đơn hàng ${paymentReference} đã nhận được ${vnd(amount)} qua chuyển khoản.`,
     link: '/sales/invoices',
+  }),
+
+  /** Shipper thu tiền mặt khi giao: tiền đang ở tay shipper, chủ cần xác nhận khi nhận đủ (A-10). */
+  cashAwaitingRemittance: (
+    orderId: string,
+    orderCode: string,
+    amount: number,
+  ): NotificationContent => ({
+    type: 'ORDER_CASH_AWAITING_REMITTANCE',
+    title: 'Shipper đang giữ tiền mặt',
+    description: `Đơn ${orderCode} đã giao, shipper thu ${vnd(amount)} tiền mặt - chờ nộp lại cho chủ.`,
+    // Trang đơn mở hộp thoại "Xác nhận đã nhận tiền" nhờ flag này (OrderActions).
+    link: `/sales/orders/${orderId}?confirmCash=1`,
+  }),
+
+  /** Gửi người vừa được giao phụ trách đơn, trừ khi họ tự nhận. */
+  assigned: (orderId: string, orderCode: string): NotificationContent => ({
+    type: 'ORDER_ASSIGNED',
+    title: 'Bạn được giao phụ trách đơn',
+    description: `Bạn là người phụ trách đơn ${orderCode} từ bây giờ.`,
+    link: `/sales/orders/${orderId}`,
+  }),
+
+  /** Gửi người vừa thôi phụ trách đơn, trừ khi chính họ giao lại. */
+  unassigned: (orderId: string, orderCode: string): NotificationContent => ({
+    type: 'ORDER_UNASSIGNED',
+    title: 'Bạn không còn phụ trách đơn',
+    description: `Đơn ${orderCode} đã được giao cho người khác phụ trách.`,
+    link: `/sales/orders/${orderId}`,
+  }),
+
+  deliveryTransferReceived: (
+    orderCode: string,
+    amount: number,
+  ): NotificationContent => ({
+    type: 'ORDER_DELIVERY_TRANSFER_RECEIVED',
+    title: 'Tiền giao hàng đã về',
+    description: `Đơn ${orderCode} đã nhận ${vnd(amount)} qua chuyển khoản - đơn hoàn thành.`,
+    link: '/shipments',
+  }),
+
+  /** Tiền chuyển khoản về nhưng không chốt được, cần hoàn hoặc đối soát. */
+  lateTransferNeedsAction: (
+    orderId: string,
+    orderCode: string,
+    amount: number,
+    sepayTransactionId: string | null,
+    isPos: boolean,
+  ): NotificationContent => ({
+    type: 'ORDER_LATE_TRANSFER',
+    title: 'Tiền về sau khi mã QR hết hạn',
+    description: `Đơn ${orderCode} nhận ${vnd(amount)} chuyển khoản (mã giao dịch SePay ${sepayTransactionId ?? 'không rõ'}) sau khi mã QR đã hết hạn hoặc đơn đã thu/huỷ - cần hoàn tiền hoặc đối soát.`,
+    link: isPos ? '/sales/invoices' : `/sales/orders/${orderId}`,
+  }),
+
+  /** Khách chuyển thiếu, cần thu nốt. */
+  partialTransfer: (
+    orderId: string,
+    orderCode: string,
+    amount: number,
+    due: number,
+    isPos: boolean,
+  ): NotificationContent => ({
+    type: 'ORDER_PARTIAL_TRANSFER',
+    title: 'Khách chuyển thiếu tiền',
+    description: `Đơn ${orderCode} nhận ${vnd(amount)} chuyển khoản, còn thiếu ${vnd(due)} - thu nốt phần còn lại.`,
+    link: isPos ? '/check-out' : `/sales/orders/${orderId}`,
+  }),
+
+  /** Khách chuyển dư so với đơn: chủ shop hoàn lại phần dư. */
+  overpaid: (
+    orderId: string,
+    orderCode: string,
+    overpaidBy: number,
+  ): NotificationContent => ({
+    type: 'ORDER_OVERPAID',
+    title: 'Khách trả dư tiền',
+    description: `Đơn ${orderCode} khách đã trả dư ${vnd(overpaidBy)} - cần hoàn lại phần dư.`,
+    link: `/sales/orders/${orderId}`,
+  }),
+
+  /** Tiền về không gắn được đơn nào. */
+  unmatchedTransfer: (
+    amount: number,
+    content: string | null,
+    sepayTransactionId: string | null,
+  ): NotificationContent => ({
+    type: 'ORDER_UNMATCHED_TRANSFER',
+    title: 'Tiền về không gắn được đơn',
+    description: `Nhận ${vnd(amount)} chuyển khoản (mã giao dịch SePay ${sepayTransactionId ?? 'không rõ'}, nội dung "${content ?? ''}") nhưng không khớp đơn nào - cần đối soát hoặc hoàn tiền.`,
+    link: '/cashflow',
+  }),
+
+  /** Gửi operator: tiền vào một tài khoản không thuộc shop nào (webhook dùng key dùng chung). */
+  unmatchedSystemTransfer: (
+    amount: number,
+    accountNumber: string | null,
+    content: string | null,
+  ): NotificationContent => ({
+    type: 'SYSTEM_SEPAY_UNMATCHED',
+    title: 'SePay: tiền về tài khoản không thuộc shop nào',
+    description: `Nhận ${vnd(amount)} vào tài khoản ${accountNumber ?? 'không rõ'} (nội dung "${content ?? ''}") nhưng không có shop nào dùng tài khoản này.`,
+    link: '/admin/notifications',
   }),
 };

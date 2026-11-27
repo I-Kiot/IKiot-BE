@@ -1,10 +1,10 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '../../../generated/prisma/client';
+import { AUTO_GRANTED_PERMISSIONS } from '../../common/constants/system-role';
+import { UserStatus } from '../../common/constants/user-status';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
@@ -19,7 +19,10 @@ export class RolesService {
       where: { tenantId },
       include: {
         permissions: { select: { resource: true, action: true } },
-        _count: { select: { users: true } },
+        // Tài khoản đã xoá mềm vẫn giữ roleId; số "đang dùng" không được tính chúng.
+        _count: {
+          select: { users: { where: { status: { not: UserStatus.DELETED } } } },
+        },
       },
       orderBy: { name: 'asc' },
     });
@@ -38,65 +41,89 @@ export class RolesService {
     return role;
   }
 
-  permissionCatalog() {
-    return this.prisma.permissionCatalog.findMany({
+  async permissionCatalog() {
+    const rows = await this.prisma.permissionCatalog.findMany({
       orderBy: [{ resource: 'asc' }, { action: 'asc' }],
     });
+    return rows.filter(
+      (row) => !AUTO_GRANTED_PERMISSIONS.has(`${row.resource}:${row.action}`),
+    );
+  }
+
+  private grantable(
+    permissions: { resource: string; action: string }[],
+  ): { resource: string; action: string }[] {
+    return permissions
+      .filter((p) => !AUTO_GRANTED_PERMISSIONS.has(`${p.resource}:${p.action}`))
+      .map((p) => ({ resource: p.resource, action: p.action }));
+  }
+
+  /** Từ chối tên vai trò đã có trong shop; `exceptId` là vai trò đang sửa. */
+  private async assertNameAvailable(
+    tenantId: string,
+    name: string,
+    exceptId?: string,
+  ) {
+    const taken = await this.prisma.role.findFirst({
+      where: {
+        tenantId,
+        name,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.ROLE_NAME_TAKEN,
+        message: 'A role with this name already exists',
+      });
+    }
   }
 
   async create(tenantId: string, dto: CreateRoleDto) {
-    try {
-      return await this.prisma.role.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          description: dto.description,
-          permissions: {
-            create: dto.permissions.map((p) => ({
-              resource: p.resource,
-              action: p.action,
-            })),
-          },
-        },
-        include: { permissions: { select: { resource: true, action: true } } },
-      });
-    } catch (error) {
-      throw this.translatePrismaError(error);
-    }
+    await this.assertNameAvailable(tenantId, dto.name);
+    return this.prisma.role.create({
+      data: {
+        tenantId,
+        name: dto.name,
+        description: dto.description,
+        permissions: { create: this.grantable(dto.permissions) },
+      },
+      include: { permissions: { select: { resource: true, action: true } } },
+    });
   }
 
   async update(tenantId: string, id: string, dto: UpdateRoleDto) {
-    await this.findOne(tenantId, id); // 404s if missing or belongs to another tenant
-
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        if (dto.permissions) {
-          await tx.rolePermission.deleteMany({ where: { roleId: id } });
-          await tx.rolePermission.createMany({
-            data: dto.permissions.map((p) => ({
-              roleId: id,
-              resource: p.resource,
-              action: p.action,
-            })),
-          });
-        }
-        return tx.role.update({
-          where: { id },
-          data: { name: dto.name, description: dto.description },
-          include: {
-            permissions: { select: { resource: true, action: true } },
-          },
-        });
-      });
-    } catch (error) {
-      throw this.translatePrismaError(error);
+    await this.findOne(tenantId, id);
+    if (dto.name !== undefined) {
+      await this.assertNameAvailable(tenantId, dto.name, id);
     }
+
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.permissions) {
+        await tx.rolePermission.deleteMany({ where: { roleId: id } });
+        await tx.rolePermission.createMany({
+          data: this.grantable(dto.permissions).map((p) => ({
+            roleId: id,
+            ...p,
+          })),
+        });
+      }
+      return tx.role.update({
+        where: { id },
+        data: { name: dto.name, description: dto.description },
+        include: {
+          permissions: { select: { resource: true, action: true } },
+        },
+      });
+    });
   }
 
   async remove(tenantId: string, id: string) {
     const role = await this.findOne(tenantId, id);
+    // Chỉ tài khoản còn hoạt động mới chặn xoá role.
     const assignedCount = await this.prisma.user.count({
-      where: { roleId: role.id },
+      where: { roleId: role.id, status: { not: UserStatus.DELETED } },
     });
     if (assignedCount > 0) {
       throw new ConflictException({
@@ -104,19 +131,13 @@ export class RolesService {
         message: `Cannot delete a role assigned to ${assignedCount} user(s) - reassign them first`,
       });
     }
-    await this.prisma.role.delete({ where: { id } });
+    await this.prisma.$transaction([
+      this.prisma.user.updateMany({
+        where: { roleId: role.id, status: UserStatus.DELETED },
+        data: { roleId: null },
+      }),
+      this.prisma.role.delete({ where: { id } }),
+    ]);
     return { success: true };
-  }
-
-  private translatePrismaError(error: unknown) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === 'P2003')
-        return new BadRequestException(
-          'One of the given (resource, action) pairs is not a recognized permission',
-        );
-      if (error.code === 'P2002')
-        return new ConflictException('A role with this name already exists');
-    }
-    return error;
   }
 }

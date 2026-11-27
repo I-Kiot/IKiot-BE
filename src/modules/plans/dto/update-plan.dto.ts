@@ -11,7 +11,7 @@ import {
 } from 'class-validator';
 import { VALID_PLAN_FEATURES } from '../../subscriptions/subscription.constants';
 
-// planCode and billingCycle are intentionally absent - they are stable keys the upgrade/renew flow and the frontend's tier logic depend on, never editable after creation.
+// Không sửa planCode và billingCycle.
 export class UpdatePlanDto {
   @IsOptional()
   @IsString()
@@ -34,7 +34,7 @@ export class UpdatePlanDto {
 
   @IsOptional()
   @IsInt()
-  @Min(-1) // -1 = unlimited
+  @Min(-1) // -1 = không giới hạn
   maxBranches?: number;
 
   @IsOptional()

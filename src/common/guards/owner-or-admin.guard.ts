@@ -8,7 +8,7 @@ import type { AuthUser } from '../types/auth-user.type';
 import { SystemRole } from '../constants/system-role';
 import { ErrorCode } from '../errors/error-codes';
 
-// Bypasses the Role/RolePermission catalog on purpose: role definitions must stay outside what a custom role could grant itself, so only ADMIN/TENANT_OWNER pass.
+// Chỉ ADMIN / TENANT_OWNER được qua, bỏ qua quyền theo role.
 @Injectable()
 export class OwnerOrAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {

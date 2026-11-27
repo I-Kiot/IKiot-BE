@@ -15,6 +15,12 @@ import {
 import { CASHFLOW_PREFIXES } from '../../../common/utils/reference-generator';
 import { PAYMENT_METHODS } from '../../../common/constants/payment-method';
 import {
+  CASH_FLOW_CATEGORIES,
+  CASH_FLOW_FUNDS,
+} from '../../../common/constants/cash-flow-category';
+import { SalesJournalEntryType } from '../../../common/constants/sales-journal';
+import {
+  ADMIN_GROUP_BY_VALUES,
   DEFAULT_LOW_STOCK_THRESHOLD,
   FLOW_TYPES,
   GROUP_BY_VALUES,
@@ -29,20 +35,21 @@ const upper = () =>
     typeof value === 'string' ? value.toUpperCase() : value,
   );
 
-/** `fromDate` must not come after `toDate` - a range validator rather than a field one, because neither bound is wrong on its own. */
+/** Kiểm `fromDate` không sau `toDate`. */
 @ValidatorConstraint({ name: 'rangeIsForwards' })
 class RangeIsForwards implements ValidatorConstraintInterface {
   validate(_: unknown, args: ValidationArguments): boolean {
     const { fromDate, toDate } = args.object as StatsQueryDto;
     if (!fromDate || !toDate) return true;
-    return new Date(fromDate).getTime() <= new Date(toDate).getTime();
+    const range = resolveRange(fromDate, toDate);
+    return range.fromDate.getTime() <= range.toDate.getTime();
   }
   defaultMessage(): string {
     return 'fromDate phải trước toDate';
   }
 }
 
-/** The query every dashboard endpoint shares, split per route so each documents only what it reads (the old single DTO is why `?sortBy=` silently did nothing on `/stats/overview`). Both bounds take a full ISO timestamp or a bare `YYYY-MM-DD`, which means the whole local day - truncating `toDate` to midnight would drop a day of sales. */
+/** Query dùng chung cho các endpoint dashboard. */
 export class StatsQueryDto {
   @IsOptional()
   @IsISO8601({ strict: false }, { message: 'fromDate không hợp lệ' })
@@ -57,7 +64,7 @@ export class StatsQueryDto {
   @IsString()
   branchId?: string;
 
-  /** Resolved defaults - call this instead of reading the two raw strings. */
+  /** Khoảng đã áp mặc định - gọi hàm này thay vì đọc hai chuỗi thô. */
   range(): DateRange {
     return resolveRange(this.fromDate, this.toDate);
   }
@@ -71,7 +78,7 @@ export class RevenueSeriesQueryDto extends StatsQueryDto {
   groupBy?: GroupBy = GroupBy.DAY;
 }
 
-/** Cashflow endpoints add a warehouse filter - money moves at warehouses too, sales don't. */
+/** Endpoint dòng tiền thêm bộ lọc kho - tiền cũng đi qua kho, còn bán hàng thì không. */
 export class CashflowQueryDto extends StatsQueryDto {
   @IsOptional()
   @IsString()
@@ -90,16 +97,35 @@ export class CashflowQueryDto extends StatsQueryDto {
     message: `flowType phải là ${FLOW_TYPES.join(' hoặc ')}`,
   })
   flowType?: string;
+
+  /** Loại tiền (`cash_flows.category`). */
+  @IsOptional()
+  @upper()
+  @IsIn(CASH_FLOW_CATEGORIES, {
+    message: `category phải là ${CASH_FLOW_CATEGORIES.join(', ')}`,
+  })
+  category?: string;
+
+  /** Quỹ nơi tiền nằm (`cash_flows.fund`): DRAWER | OWNER | BANK. */
+  @IsOptional()
+  @upper()
+  @IsIn(CASH_FLOW_FUNDS, {
+    message: `fund phải là ${CASH_FLOW_FUNDS.join(', ')}`,
+  })
+  fund?: string;
 }
 
-export class CashflowListQueryDto extends CashflowQueryDto {
+/** Bộ lọc của Sổ thu chi, dùng chung cho danh sách và file xuất. */
+export class CashflowExportQueryDto extends CashflowQueryDto {
   @IsOptional()
   @upper()
   @IsIn(PAYMENT_METHODS, {
     message: `paymentMethod phải là ${PAYMENT_METHODS.join(', ')}`,
   })
   paymentMethod?: string;
+}
 
+export class CashflowListQueryDto extends CashflowExportQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -112,6 +138,160 @@ export class CashflowListQueryDto extends CashflowQueryDto {
   @Min(1)
   @Max(100)
   limit: number = 10;
+}
+
+export const STAFF_GROUP_BY_VALUES: readonly string[] = [
+  'seller',
+  'assignee',
+  'creator',
+  'collector',
+];
+
+/** `/stats/revenue-by-staff`: doanh thu gắn với ai. */
+export class RevenueByStaffQueryDto extends StatsQueryDto {
+  /** Gom doanh thu theo nhân viên bán hàng, người phụ trách, người lên đơn hoặc người thu tiền. */
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  groupBy: string = 'seller';
+
+  /** Trang (từ 1), chỉ phân trang khi có `limit`. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+/** Giá trị `userId` cho phần doanh thu không gắn nhân viên. */
+export const NO_STAFF_ID = 'none';
+
+/** `/stats/revenue-by-staff/entries`: từng bút toán / khoản thu tạo nên một dòng của báo cáo nhân viên. */
+export class RevenueByStaffEntriesQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  groupBy: string = 'seller';
+
+  /** Id nhân viên, hoặc `none` cho phần không gắn nhân viên. */
+  @IsString()
+  userId!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 50;
+}
+
+/** `/stats/revenue-by-branch`: cùng cách phân trang tuỳ chọn như theo nhân viên. */
+export class RevenueByBranchQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+/** Các báo cáo của trang Báo cáo, mỗi mục một tab; dùng cho `section` của file xuất. */
+export const REPORT_SECTIONS: readonly string[] = [
+  'result',
+  'time',
+  'product',
+  'branch',
+  'staff',
+  'customer',
+  'orders',
+  'cash',
+  'inventory',
+];
+
+/** Bộ lọc sổ doanh thu, lọc theo `business_date`. */
+export class SalesJournalExportQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @upper()
+  @IsIn(Object.values(SalesJournalEntryType), {
+    message: `entryType phải là ${Object.values(SalesJournalEntryType).join(', ')}`,
+  })
+  entryType?: string;
+
+  @IsOptional()
+  @IsString()
+  orderId?: string;
+}
+
+/** `/stats/sales-journal`: đọc thẳng các bút toán doanh thu, phân trang. */
+export class SalesJournalQueryDto extends SalesJournalExportQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 20;
+}
+
+/** Query xuất file báo cáo chi tiết. */
+export class ReportExportQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @IsString()
+  warehouseId?: string;
+
+  /** Mốc của sheet doanh thu theo thời gian: ngày (mặc định) hoặc tháng, như trang đang hiện. */
+  @IsOptional()
+  @IsIn(ADMIN_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${ADMIN_GROUP_BY_VALUES.join(' hoặc ')}`,
+  })
+  groupBy?: GroupBy = GroupBy.DAY;
+
+  /** Chỉ xuất một báo cáo (một tab của trang); bỏ trống là xuất tất cả. */
+  @IsOptional()
+  @IsIn(REPORT_SECTIONS, {
+    message: `section phải là ${REPORT_SECTIONS.join(', ')}`,
+  })
+  section?: string;
+
+  /** Cách tính người của báo cáo theo nhân viên, như ô chọn trên trang. */
+  @IsOptional()
+  @IsIn(STAFF_GROUP_BY_VALUES, {
+    message: `staffGroupBy phải là ${STAFF_GROUP_BY_VALUES.join(', ')}`,
+  })
+  staffGroupBy: string = 'seller';
+
+  /** Ngưỡng "sắp hết" của báo cáo tồn kho, như ô chọn trên trang. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  lowStockThreshold: number = DEFAULT_LOW_STOCK_THRESHOLD;
 }
 
 export class TopProductsQueryDto extends StatsQueryDto {
@@ -129,7 +309,23 @@ export class TopProductsQueryDto extends StatsQueryDto {
   limit: number = 10;
 }
 
-/** No date range: stock is a level, not a flow - it is only ever "right now". */
+export class TopCustomersQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit: number = 5;
+}
+
+/** Chỉ có bộ lọc địa điểm: các mốc so sánh là mốc lịch cố định, không phải khoảng do người gọi chọn. */
+export class RevenueComparisonQueryDto {
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
+/** Không có khoảng ngày: tồn kho là mức tại một thời điểm, không phải luồng - luôn là "ngay bây giờ". */
 export class InventoryStatsQueryDto {
   @IsOptional()
   @IsString()
@@ -146,7 +342,26 @@ export class InventoryStatsQueryDto {
   lowStockThreshold: number = DEFAULT_LOW_STOCK_THRESHOLD;
 }
 
-/** The platform overview looks across tenants, so it has no location filter at all. */
+/** Cảnh báo tồn kho: như `/stats/inventory`, là mức tồn "ngay lúc này" nên không có khoảng ngày. */
+export class StockAlertsQueryDto extends InventoryStatsQueryDto {}
+
+/** Đếm tình trạng đơn tại thời điểm gọi. */
+export class OrderPipelineQueryDto {
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
+export class SlowProductsQueryDto extends StatsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit: number = 5;
+}
+
+/** Tổng quan nền tảng nhìn xuyên tenant nên không có bộ lọc địa điểm. */
 export class AdminOverviewQueryDto {
   @IsOptional()
   @IsISO8601({ strict: false }, { message: 'fromDate không hợp lệ' })
@@ -157,8 +372,8 @@ export class AdminOverviewQueryDto {
   toDate?: string;
 
   @IsOptional()
-  @IsIn(GROUP_BY_VALUES, {
-    message: `groupBy phải là ${GROUP_BY_VALUES.join(' hoặc ')}`,
+  @IsIn(ADMIN_GROUP_BY_VALUES, {
+    message: `groupBy phải là ${ADMIN_GROUP_BY_VALUES.join(' hoặc ')}`,
   })
   groupBy?: GroupBy = GroupBy.DAY;
 

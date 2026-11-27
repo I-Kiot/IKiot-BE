@@ -1,7 +1,7 @@
-/** The part of a login response AuditInterceptor reads; AuthService declares it via `satisfies`, so changing the response is a build error rather than a blank audit row. */
+/** Phần response đăng nhập mà AuditInterceptor đọc. */
 export interface AuditableLoginResponse {
   accessToken: string;
-  /** Not read by the interceptor, but `satisfies` excess-property-checks the literal, so every returned key has to be declared. */
+  /** Khai báo để `satisfies` không báo thừa trường. */
   refreshToken: string;
   user: {
     id: string;
@@ -9,7 +9,6 @@ export interface AuditableLoginResponse {
     phoneNumber: string;
     systemRole: string;
     tenantId: string | null;
-    profileFirstName: string | null;
-    profileLastName: string | null;
+    profile: { firstName: string | null; lastName: string | null };
   };
 }

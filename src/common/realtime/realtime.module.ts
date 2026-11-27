@@ -2,22 +2,23 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RealtimeGateway } from './realtime.gateway';
+import { ChangeFeedService } from './change-feed.service';
 import { accessTokenSecret } from '../config/env';
 
-// Global like PrismaModule, with its own JwtModule keyed by `accessTokenSecret()` - reading JWT_SECRET directly here once made every handshake fail with "invalid signature".
+// Module realtime global, JwtModule riêng dùng `accessTokenSecret()`.
 @Global()
 @Module({
   imports: [
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      // ConfigService is injected only to defer the factory until `.env` is loaded - same as AuthModule.
+      // ConfigService chỉ được inject để hoãn factory tới khi `.env` đã load - giống AuthModule.
       useFactory: (_config: ConfigService) => ({
         secret: accessTokenSecret(),
       }),
     }),
   ],
-  providers: [RealtimeGateway],
-  exports: [RealtimeGateway],
+  providers: [RealtimeGateway, ChangeFeedService],
+  exports: [RealtimeGateway, ChangeFeedService],
 })
 export class RealtimeModule {}

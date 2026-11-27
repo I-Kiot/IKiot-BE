@@ -1,0 +1,1030 @@
+import 'dotenv/config';
+import { InvoiceService } from './../src/modules/invoices/invoices.service';
+import { randomUUID } from 'crypto';
+import { Test } from '@nestjs/testing';
+import { PrismaModule } from './../src/prisma/prisma.module';
+import { PrismaService } from './../src/prisma/prisma.service';
+import { OrderService } from './../src/modules/orders/orders.service';
+import { OrderPricingService } from './../src/modules/orders/order-pricing.service';
+import { ManualOrderService } from './../src/modules/orders/manual-order.service';
+import { OrderCustomizationService } from './../src/modules/orders/order-customization.service';
+import { OrderShortageAlerts } from './../src/modules/orders/order-shortage-alerts';
+import { ProductionListService } from './../src/modules/production-requests/production-list.service';
+import { OrderEditService } from './../src/modules/orders/order-edit.service';
+import { OrderReadService } from './../src/modules/orders/order-read.service';
+import { SepayOrderService } from './../src/modules/orders/sepay-order.service';
+import { CustomerService } from './../src/modules/customers/customers.service';
+import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { FulfillmentService } from './../src/modules/fulfillments/fulfillments.service';
+import { NotificationService } from './../src/modules/notifications/notifications.service';
+import { PromotionService } from './../src/modules/promotions/promotions.service';
+import { RealtimeGateway } from './../src/common/realtime/realtime.gateway';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from './../src/common/constants/inventory-ledger';
+import {
+  FulfillmentType,
+  OrderLineType,
+  OrderPaymentStatus,
+  OrderPriority,
+  OrderStatus,
+} from './../src/common/constants/order-status';
+import { SystemRole } from './../src/common/constants/system-role';
+import { UserStatus } from './../src/common/constants/user-status';
+import { ErrorCode } from './../src/common/errors/error-codes';
+import type { AuthUser } from './../src/common/types/auth-user.type';
+import type { CreateOrderDto } from './../src/modules/orders/dto/create-order.dto';
+import type { UpdateOrderDto } from './../src/modules/orders/dto/update-order.dto';
+
+/** Kiểm sửa đơn (Postgres thật). */
+describe('PATCH /orders/:id – OrderEditService', () => {
+  let prisma: PrismaService;
+  let manual: ManualOrderService;
+  let edits: OrderEditService;
+  let reads: OrderReadService;
+  let fulfillments: FulfillmentService;
+  let notify: jest.Mock;
+
+  const tenantId = randomUUID();
+  const ownerId = randomUUID();
+  const staffId = randomUUID();
+  const branchId = randomUUID();
+  const warehouseId = randomUUID();
+  const otherWarehouseId = randomUUID();
+  const productId = randomUUID();
+  const sofaId = randomUUID();
+  const tableId = randomUUID();
+  const chairId = randomUUID();
+  const comboId = randomUUID();
+  const customerId = randomUUID();
+  const workshopId = randomUUID();
+
+  const owner = {
+    userId: ownerId,
+    tenantId,
+    systemRole: SystemRole.TENANT_OWNER,
+    permissions: new Set<string>(),
+    branchId: null,
+    warehouseId: null,
+  } as unknown as AuthUser;
+
+  const createOrder = async (over: Partial<CreateOrderDto> = {}) =>
+    (
+      await manual.create(owner, tenantId, {
+        branchId,
+        customerId,
+        assigneeId: ownerId,
+        fulfillmentType: 'HOME_DELIVERY',
+        recipientName: 'Khách e2e',
+        recipientPhone: '0912345678',
+        deliveryAddress: '1 Tràng Tiền, Hà Nội',
+        items: [{ productItemId: sofaId, quantity: 2 }],
+        ...over,
+      })
+    ).id;
+
+  const edit = (id: string, dto: UpdateOrderDto) =>
+    edits.update(owner, tenantId, id, dto);
+
+  const codeOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as { getResponse(): { code: string } }).getResponse().code;
+    }
+    return undefined;
+  };
+
+  const orderRow = (id: string) =>
+    prisma.order.findUniqueOrThrow({
+      where: { id },
+      include: { items: true },
+    });
+
+  const topLines = async (id: string) =>
+    (await orderRow(id)).items.filter((line) => !line.parentItemId);
+
+  const lineOf = async (id: string, productItemId: string) =>
+    (await topLines(id)).find((line) => line.productItemId === productItemId)!;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [PrismaModule],
+      providers: [
+        InvoiceService,
+        OrderService,
+        OrderPricingService,
+        ManualOrderService,
+        OrderCustomizationService,
+        OrderShortageAlerts,
+        ProductionListService,
+        OrderEditService,
+        OrderReadService,
+        CustomerService,
+        InventoryService,
+        FulfillmentService,
+        {
+          provide: NotificationService,
+          useValue: {
+            managersOfLocation: () => Promise.resolve([]),
+            notify: jest.fn(),
+          },
+        },
+        { provide: RealtimeGateway, useValue: {} },
+        { provide: SepayOrderService, useValue: {} },
+        { provide: PromotionService, useValue: {} },
+      ],
+    }).compile();
+    await moduleRef.init();
+    prisma = moduleRef.get(PrismaService);
+    manual = moduleRef.get(ManualOrderService);
+    edits = moduleRef.get(OrderEditService);
+    reads = moduleRef.get(OrderReadService);
+    fulfillments = moduleRef.get(FulfillmentService);
+    notify = moduleRef.get<{ notify: jest.Mock }>(NotificationService).notify;
+    const inventory = moduleRef.get(InventoryService);
+
+    await prisma.tenant.create({ data: { id: tenantId, name: 'edit-e2e' } });
+    for (const [id, role] of [
+      [ownerId, SystemRole.TENANT_OWNER],
+      [staffId, SystemRole.STAFF],
+    ] as const) {
+      await prisma.user.create({
+        data: {
+          id,
+          tenantId,
+          phoneNumber: `edit-${id}`,
+          systemRole: role,
+          status: UserStatus.ACTIVE,
+        },
+      });
+    }
+    for (const id of [warehouseId, otherWarehouseId]) {
+      await prisma.location.create({
+        data: {
+          id,
+          tenantId,
+          name: `Kho ${id.slice(0, 4)}`,
+          type: 'WAREHOUSE',
+        },
+      });
+      await prisma.warehouse.create({
+        data: { id, tenantId, locationId: id },
+      });
+    }
+    await prisma.location.create({
+      data: {
+        id: branchId,
+        tenantId,
+        name: 'CN',
+        type: 'BRANCH',
+        defaultFulfillmentLocationId: warehouseId,
+      },
+    });
+    await prisma.branch.create({
+      data: { id: branchId, tenantId, locationId: branchId },
+    });
+    // Người phụ trách đơn phải làm việc tại nơi bán của đơn.
+    await prisma.user.update({
+      where: { id: staffId },
+      data: { locationId: branchId },
+    });
+    await prisma.product.create({
+      data: { id: productId, tenantId, name: 'Nội thất' },
+    });
+    for (const [id, name, price, itemType] of [
+      [sofaId, 'Sofa', 10_000_000, 'PRODUCT'],
+      [tableId, 'Bàn ăn', 2_000_000, 'PRODUCT'],
+      [chairId, 'Ghế ăn', 500_000, 'PRODUCT'],
+      [comboId, 'Bộ bàn ăn 4 ghế', 3_500_000, 'COMBO'],
+    ] as const) {
+      await prisma.productItem.create({
+        data: {
+          id,
+          tenantId,
+          productId,
+          productName: name,
+          productCode: `EDIT-${id}`,
+          sku: `EDIT-${id.slice(0, 8)}`,
+          retailPrice: price,
+          costPrice: 0,
+          itemType,
+        },
+      });
+    }
+    await prisma.comboComponent.createMany({
+      data: [
+        { comboItemId: comboId, componentItemId: tableId, quantity: 1 },
+        { comboItemId: comboId, componentItemId: chairId, quantity: 4 },
+      ],
+    });
+    await prisma.customer.create({
+      data: { id: customerId, tenantId, name: 'Khách' },
+    });
+    await prisma.supplier.create({
+      data: {
+        id: workshopId,
+        tenantId,
+        supplierName: 'Xưởng',
+        type: 'WORKSHOP',
+      },
+    });
+    await prisma.$transaction((tx) =>
+      inventory.openLot(tx, {
+        tenantId,
+        locationId: warehouseId,
+        productItemId: sofaId,
+        quantity: 10,
+        sourceType: LotSourceType.SUPPLIER,
+        ledger: {
+          type: InventoryTxType.IMPORT,
+          referenceType: InventoryRefType.STOCK_MOVEMENT,
+          referenceId: 'edit-e2e',
+        },
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.productionRequestItem.deleteMany({
+      where: { productionRequest: { tenantId } },
+    });
+    await prisma.productionRequest.deleteMany({ where: { tenantId } });
+    await prisma.fulfillmentPackage.deleteMany({ where: { tenantId } });
+    await prisma.fulfillmentItem.deleteMany({
+      where: { fulfillment: { tenantId } },
+    });
+    await prisma.fulfillment.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.payment.deleteMany({ where: { tenantId } });
+    await prisma.inventoryTransaction.deleteMany({ where: { tenantId } });
+    await prisma.inventoryLot.deleteMany({ where: { tenantId } });
+    await prisma.invoice.deleteMany({ where: { tenantId } });
+    await prisma.orderItem.deleteMany({
+      where: { order: { tenantId }, parentItemId: { not: null } },
+    });
+    await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
+    await prisma.order.deleteMany({ where: { tenantId } });
+    await prisma.inventory.deleteMany({ where: { tenantId } });
+    await prisma.supplier.deleteMany({ where: { tenantId } });
+    await prisma.customer.deleteMany({ where: { tenantId } });
+    await prisma.comboComponent.deleteMany({
+      where: { comboItem: { tenantId } },
+    });
+    await prisma.productItem.deleteMany({ where: { tenantId } });
+    await prisma.product.deleteMany({ where: { tenantId } });
+    await prisma.branch.deleteMany({ where: { tenantId } });
+    await prisma.warehouse.deleteMany({ where: { tenantId } });
+    await prisma.location.updateMany({
+      where: { tenantId },
+      data: { defaultFulfillmentLocationId: null },
+    });
+    await prisma.location.deleteMany({ where: { tenantId } });
+    await prisma.user.deleteMany({ where: { tenantId } });
+    await prisma.cashFlow.deleteMany({ where: { tenantId } });
+    await prisma.tenant.delete({ where: { id: tenantId } });
+    await prisma.$disconnect();
+  });
+
+  it('changes delivery details, priority and note, leaving the rest as it was', async () => {
+    const id = await createOrder({ note: 'cũ', recipientName: 'A' });
+    const before = await orderRow(id);
+
+    const detail = await edit(id, {
+      priority: OrderPriority.URGENT,
+      deliveryAddress: '12 Lê Lợi',
+      requestedDeliveryDate: '2026-10-20',
+      note: 'giao buổi sáng',
+    });
+
+    const after = await orderRow(id);
+    expect(after.priority).toBe(OrderPriority.URGENT);
+    expect(after.deliveryAddress).toBe('12 Lê Lợi');
+    expect(after.note).toBe('giao buổi sáng');
+    expect(after.recipientName).toBe('A');
+    expect(Number(after.grandTotal)).toBe(Number(before.grandTotal));
+    expect(after.items.map((i) => i.id)).toEqual(before.items.map((i) => i.id));
+    expect(detail).toMatchObject({ id, priority: OrderPriority.URGENT });
+  });
+
+  it('refuses an edit that would leave a home delivery without its address, changing nothing', async () => {
+    const id = await createOrder();
+    await expect(
+      edit(id, { deliveryAddress: null as unknown as string, note: 'mới' }),
+    ).rejects.toMatchObject({
+      response: {
+        code: ErrorCode.ORDER_DELIVERY_INFO_REQUIRED,
+        errors: [{ field: 'deliveryAddress' }],
+      },
+    });
+    const after = await orderRow(id);
+    expect(after.deliveryAddress).toBe('1 Tràng Tiền, Hà Nội');
+    expect(after.note).not.toBe('mới');
+  });
+
+  it('keeps, changes, adds and removes lines, and prices the order again', async () => {
+    const id = await createOrder({
+      items: [
+        { productItemId: sofaId, quantity: 1, unitPrice: 9_000_000 },
+        { productItemId: tableId, quantity: 1 },
+      ],
+    });
+    const sofaLine = await lineOf(id, sofaId);
+
+    await edit(id, {
+      items: [
+        // Giữ dòng: đổi số lượng, không gửi giá nên giữ giá đã thỏa thuận.
+        { id: sofaLine.id, productItemId: sofaId, quantity: 2 },
+        {
+          productItemId: chairId,
+          quantity: 3,
+          sourceLocationId: otherWarehouseId,
+        },
+      ],
+    });
+
+    const after = await orderRow(id);
+    expect(after.items).toHaveLength(2);
+    const sofa = after.items.find((i) => i.id === sofaLine.id)!;
+    expect(sofa.quantity).toBe(2);
+    expect(Number(sofa.unitPrice)).toBe(9_000_000);
+    expect(Number(sofa.listUnitPrice)).toBe(10_000_000);
+    expect(Number(sofa.lineTotal)).toBe(18_000_000);
+    const chair = after.items.find((i) => i.productItemId === chairId)!;
+    expect(chair.sourceLocationId).toBe(otherWarehouseId);
+    expect(Number(after.subtotal)).toBe(19_500_000);
+    expect(Number(after.grandTotal)).toBe(19_500_000);
+  });
+
+  it('scales a combo’s components with its quantity and keeps where they ship from', async () => {
+    const id = await createOrder({
+      items: [
+        {
+          productItemId: comboId,
+          quantity: 1,
+          sourceLocationId: otherWarehouseId,
+        },
+      ],
+    });
+    const [combo] = await topLines(id);
+
+    await edit(id, {
+      items: [{ id: combo.id, productItemId: comboId, quantity: 2 }],
+    });
+
+    const after = await orderRow(id);
+    const children = after.items.filter((i) => i.parentItemId === combo.id);
+    expect(children).toHaveLength(2);
+    expect(
+      Object.fromEntries(children.map((c) => [c.productItemId, c.quantity])),
+    ).toEqual({ [tableId]: 2, [chairId]: 8 });
+    expect(children.every((c) => c.sourceLocationId === otherWarehouseId)).toBe(
+      true,
+    );
+    expect(Number(after.grandTotal)).toBe(7_000_000);
+  });
+
+  it('adds a new combo with its components', async () => {
+    const id = await createOrder();
+    const [sofaLine] = await topLines(id);
+
+    await edit(id, {
+      items: [
+        { id: sofaLine.id, productItemId: sofaId, quantity: 2 },
+        { productItemId: comboId, quantity: 1 },
+      ],
+    });
+
+    const after = await orderRow(id);
+    const combo = after.items.find((i) => i.productItemId === comboId)!;
+    expect(combo.lineType).toBe(OrderLineType.COMBO);
+    expect(after.items.filter((i) => i.parentItemId === combo.id)).toHaveLength(
+      2,
+    );
+  });
+
+  it('refuses a line id from another order, and a kept line changing product', async () => {
+    const id = await createOrder();
+    const other = await createOrder();
+    const [otherLine] = await topLines(other);
+    const [line] = await topLines(id);
+
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: otherLine.id, productItemId: sofaId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_ITEM_NOT_FOUND);
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: line.id, productItemId: tableId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+  });
+
+  it('refuses to drop a line a production request was raised for', async () => {
+    const id = await createOrder({
+      items: [
+        { productItemId: sofaId, quantity: 1 },
+        { productItemId: tableId, quantity: 1 },
+      ],
+    });
+    const sofaLine = await lineOf(id, sofaId);
+    const tableLine = await lineOf(id, tableId);
+    await prisma.productionRequest.create({
+      data: {
+        tenantId,
+        code: `YCSX-${id.slice(0, 8)}`,
+        supplierId: workshopId,
+        locationId: warehouseId,
+        status: 'SENT',
+        items: {
+          create: {
+            productItemId: tableId,
+            orderItemId: tableLine.id,
+            quantity: 1,
+          },
+        },
+      },
+    });
+
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: sofaLine.id, productItemId: sofaId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_ITEM_IN_PRODUCTION);
+    expect(await topLines(id)).toHaveLength(2);
+  });
+
+  it('does not let a packed order’s lines change, but still its person in charge, priority and note', async () => {
+    const id = await createOrder();
+    const [line] = await topLines(id);
+    await fulfillments.packOrder(owner, id, {});
+
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: line.id, productItemId: sofaId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+
+    await edit(id, { note: 'đã gói, giao chiều' });
+    await edits.setAssignee(owner, tenantId, id, { assigneeId: staffId });
+    await edits.setPriority(owner, tenantId, id, {
+      priority: OrderPriority.HIGH,
+    });
+    const after = await orderRow(id);
+    expect(after.status).toBe(OrderStatus.PACKED);
+    expect(after.note).toBe('đã gói, giao chiều');
+    expect(after.assigneeId).toBe(staffId);
+    expect(after.priority).toBe(OrderPriority.HIGH);
+    expect(after.items[0].quantity).toBe(2);
+  });
+
+  describe('after money was taken at the counter (2026-11-11)', () => {
+    /** Khách tới lấy đã trả số còn lại tại quầy: một khoản BALANCE PAID trên đơn đã đóng gói. */
+    async function paidAtCounter() {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      const order = await orderRow(id);
+      await prisma.payment.create({
+        data: {
+          tenantId,
+          orderId: id,
+          kind: 'BALANCE',
+          method: 'CASH',
+          amount: Number(order.grandTotal),
+          status: 'PAID',
+          paidAt: new Date(),
+        },
+      });
+      return { id, grandTotal: Number(order.grandTotal) };
+    }
+
+    it('refuses to change the shipping fee or the total, and says why', async () => {
+      const { id } = await paidAtCounter();
+      expect(await codeOf(edit(id, { shippingFee: 300_000 }))).toBe(
+        ErrorCode.ORDER_EDIT_LOCKED_BY_PAYMENT,
+      );
+      expect(Number((await orderRow(id)).shippingFee)).toBe(0);
+    });
+
+    it('refuses a total below what was paid with the amounts, and still allows a note', async () => {
+      const { id, grandTotal } = await paidAtCounter();
+      await expect(
+        edit(id, { discountType: 'ORDER', discountValue: 1_000_000 }),
+      ).rejects.toMatchObject({
+        response: {
+          code: ErrorCode.ORDER_TOTAL_BELOW_PAID,
+          paid: grandTotal,
+          grandTotal: grandTotal - 1_000_000,
+        },
+      });
+      await edit(id, { note: 'khách tự lấy lúc 5 giờ' });
+      expect((await orderRow(id)).note).toBe('khách tự lấy lúc 5 giờ');
+    });
+  });
+
+  it('refuses any edit once the order is shipping, and a till sale', async () => {
+    const id = await createOrder();
+    await prisma.order.update({
+      where: { id },
+      data: { status: OrderStatus.SHIPPING },
+    });
+    expect(await codeOf(edit(id, { note: 'x' }))).toBe(
+      ErrorCode.ORDER_NOT_EDITABLE,
+    );
+    expect(
+      await codeOf(
+        edits.setPriority(owner, tenantId, id, {
+          priority: OrderPriority.URGENT,
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+
+    const till = await createOrder();
+    await prisma.order.update({
+      where: { id: till },
+      data: { fulfillmentType: FulfillmentType.TAKEAWAY },
+    });
+    expect(await codeOf(edit(till, { note: 'x' }))).toBe(
+      ErrorCode.ORDER_NOT_EDITABLE,
+    );
+  });
+
+  it('refuses a person in charge who is not an active account of the shop', async () => {
+    const id = await createOrder();
+    expect(
+      await codeOf(
+        edits.setAssignee(owner, tenantId, id, { assigneeId: randomUUID() }),
+      ),
+    ).toBe(ErrorCode.ORDER_ASSIGNEE_INVALID);
+  });
+
+  it('refuses an edit that would move a percentage deposit off the money taken, and accepts it resent as the amount held', async () => {
+    const id = await createOrder({
+      items: [{ productItemId: sofaId, quantity: 1 }],
+      deposit: { type: 'PERCENT', value: 30, method: 'CASH' },
+    });
+    const [line] = await topLines(id);
+
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: line.id, productItemId: sofaId, quantity: 2 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_DEPOSIT_CHANGED);
+    expect((await topLines(id))[0].quantity).toBe(1);
+
+    await edit(id, {
+      items: [{ id: line.id, productItemId: sofaId, quantity: 2 }],
+      deposit: { type: 'AMOUNT', value: 3_000_000, method: 'CASH' },
+    });
+    const after = await orderRow(id);
+    expect(Number(after.grandTotal)).toBe(20_000_000);
+    expect(Number(after.depositAmount)).toBe(3_000_000);
+    expect(after.depositPercent).toBeNull();
+    expect(after.paymentStatus).toBe(OrderPaymentStatus.PARTIALLY_PAID);
+  });
+
+  it('refuses an amount deposit larger than the new total', async () => {
+    const id = await createOrder({
+      items: [
+        { productItemId: sofaId, quantity: 1 },
+        { productItemId: tableId, quantity: 1 },
+      ],
+      deposit: { type: 'AMOUNT', value: 11_000_000, method: 'CASH' },
+    });
+    const sofaLine = await lineOf(id, sofaId);
+    expect(
+      await codeOf(
+        edit(id, {
+          items: [{ id: sofaLine.id, productItemId: sofaId, quantity: 1 }],
+        }),
+      ),
+    ).toBe(ErrorCode.ORDER_DEPOSIT_EXCEEDS_TOTAL);
+  });
+
+  it('adds the shipping fee and a manual discount to the total', async () => {
+    const id = await createOrder();
+    await edit(id, {
+      shippingFee: 300_000,
+      discountType: 'ORDER',
+      discountValue: 1_000_000,
+    });
+    let after = await orderRow(id);
+    expect(Number(after.grandTotal)).toBe(19_300_000);
+
+    await edit(id, { shippingFee: 0 });
+    after = await orderRow(id);
+    expect(Number(after.grandTotal)).toBe(19_000_000);
+    expect(after.discountType).toBe('ORDER');
+  });
+
+  it('only hands an order to someone working at its location, or the owner', async () => {
+    const id = await createOrder({ assigneeId: staffId });
+    const elsewhereId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: elsewhereId,
+        tenantId,
+        phoneNumber: `edit-${elsewhereId}`,
+        systemRole: SystemRole.STAFF,
+        status: UserStatus.ACTIVE,
+        locationId: warehouseId,
+      },
+    });
+    expect(
+      await codeOf(
+        edits.setAssignee(owner, tenantId, id, { assigneeId: elsewhereId }),
+      ),
+    ).toBe(ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION);
+    expect(await codeOf(edit(id, { assigneeId: elsewhereId }))).toBe(
+      ErrorCode.ORDER_ASSIGNEE_WRONG_LOCATION,
+    );
+    await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+    await prisma.user.delete({ where: { id: elsewhereId } });
+  });
+
+  describe('who may change the person in charge (2026-11-08)', () => {
+    const colleagueId = randomUUID();
+    const strangerId = randomUUID();
+    // Nhân viên ở nơi bán, không có `orders:update`: chỉ được đổi khi đang phụ trách đơn.
+    const asStaff = (userId: string, permissions: string[] = []) =>
+      ({
+        userId,
+        tenantId,
+        systemRole: SystemRole.STAFF,
+        permissions: new Set(['orders:read', ...permissions]),
+        branchId,
+        warehouseId: null,
+        shiftSupervision: null,
+      }) as unknown as AuthUser;
+
+    beforeAll(async () => {
+      for (const id of [colleagueId, strangerId]) {
+        await prisma.user.create({
+          data: {
+            id,
+            tenantId,
+            phoneNumber: `edit-${id}`,
+            systemRole: SystemRole.STAFF,
+            status: UserStatus.ACTIVE,
+            locationId: branchId,
+          },
+        });
+      }
+    });
+
+    beforeEach(() => notify.mockClear());
+
+    it('lets the person in charge hand it on without orders:update, and tells both people', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      await edits.setAssignee(asStaff(staffId), tenantId, id, {
+        assigneeId: colleagueId,
+      });
+      expect((await orderRow(id)).assigneeId).toBe(colleagueId);
+      const sent = notify.mock.calls.map(
+        ([input]: [{ recipientIds: string[]; type: string }]) => [
+          input.recipientIds[0],
+          input.type,
+        ],
+      );
+      // Người tự giao lại không nhận thông báo "không còn phụ trách".
+      expect(sent).toEqual([[colleagueId, 'ORDER_ASSIGNED']]);
+
+      // Đã giao đi thì hết quyền: người cũ không đổi lại được nữa.
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(staffId), tenantId, id, {
+            assigneeId: staffId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+    });
+
+    it('refuses someone who is neither in charge nor holds orders:update, and lets one who does', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(strangerId), tenantId, id, {
+            assigneeId: strangerId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+      expect(
+        await codeOf(edits.listAssignees(asStaff(strangerId), tenantId, id)),
+      ).toBe(ErrorCode.ORDER_STEP_DENIED);
+
+      await edits.setAssignee(
+        asStaff(strangerId, ['orders:update']),
+        tenantId,
+        id,
+        { assigneeId: colleagueId },
+      );
+      expect((await orderRow(id)).assigneeId).toBe(colleagueId);
+      const recipients = notify.mock.calls.map(
+        ([input]: [{ recipientIds: string[] }]) => input.recipientIds[0],
+      );
+      expect(recipients.sort()).toEqual([colleagueId, staffId].sort());
+    });
+
+    it('lists the people who can take the order, marking the current one', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      const people = await edits.listAssignees(asStaff(staffId), tenantId, id);
+      const ids = people.map((person) => person.id);
+      expect(ids).toEqual(
+        expect.arrayContaining([ownerId, staffId, colleagueId, strangerId]),
+      );
+      expect(people.find((p) => p.id === staffId)?.isCurrent).toBe(true);
+      expect(people.find((p) => p.id === ownerId)?.isOwner).toBe(true);
+    });
+
+    it('still refuses once the order is shipping, even for the person in charge', async () => {
+      const id = await createOrder({ assigneeId: staffId });
+      await prisma.order.update({
+        where: { id },
+        data: { status: OrderStatus.SHIPPING },
+      });
+      expect(
+        await codeOf(
+          edits.setAssignee(asStaff(staffId), tenantId, id, {
+            assigneeId: colleagueId,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+    });
+  });
+
+  describe('changing the source of the whole order', () => {
+    const sourcesOf = async (id: string) =>
+      (
+        await prisma.orderItem.findMany({
+          where: { orderId: id, sourceLocationId: { not: null } },
+          select: { sourceLocationId: true },
+        })
+      ).map((line) => line.sourceLocationId);
+
+    it('moves every line while the order is still confirmed', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1 },
+          { productItemId: comboId, quantity: 1 },
+        ],
+      });
+      await edit(id, { sourceLocationId: otherWarehouseId });
+      const sources = await sourcesOf(id);
+      expect(sources.length).toBeGreaterThan(1);
+      expect(new Set(sources)).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('wins over the source of the lines sent with it, so the order stays on one place', async () => {
+      const id = await createOrder();
+      const [line] = await prisma.orderItem.findMany({
+        where: { orderId: id },
+      });
+      await edit(id, {
+        sourceLocationId: otherWarehouseId,
+        items: [
+          { id: line.id, productItemId: sofaId, quantity: 2 },
+          {
+            productItemId: tableId,
+            quantity: 1,
+            sourceLocationId: warehouseId,
+          },
+        ],
+      });
+      expect(new Set(await sourcesOf(id))).toEqual(new Set([otherWarehouseId]));
+    });
+
+    it('refuses once the order is packed', async () => {
+      const id = await createOrder();
+      await fulfillments.packOrder(owner, id, {});
+      expect(
+        await codeOf(edit(id, { sourceLocationId: otherWarehouseId })),
+      ).toBe(ErrorCode.ORDER_NOT_EDITABLE);
+      expect(new Set(await sourcesOf(id))).not.toContain(otherWarehouseId);
+    });
+
+    it('refuses a location of another tenant', async () => {
+      const id = await createOrder();
+      expect(await codeOf(edit(id, { sourceLocationId: randomUUID() }))).toBe(
+        ErrorCode.ORDER_SOURCE_LOCATION_INVALID,
+      );
+    });
+  });
+
+  describe('store pickup', () => {
+    it('creates a pickup order with no shipping fee and no address', async () => {
+      expect(
+        await codeOf(
+          createOrder({
+            fulfillmentType: FulfillmentType.STORE_PICKUP,
+            shippingFee: 50_000,
+          }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        deliveryAddress: '12 Lê Lợi',
+        requestedDeliveryDate: '2026-12-01',
+      });
+      const row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.shippingFee)).toBe(0);
+    });
+
+    it('switches a confirmed order between delivery and pickup, clearing the address and the fee', async () => {
+      const id = await createOrder({
+        deliveryAddress: '12 Lê Lợi',
+        shippingFee: 300_000,
+      });
+      const withFee = Number((await orderRow(id)).grandTotal);
+
+      // Đổi sang khách tới lấy mà quên bỏ phí giao hàng.
+      expect(
+        await codeOf(
+          edit(id, { fulfillmentType: FulfillmentType.STORE_PICKUP }),
+        ),
+      ).toBe(ErrorCode.ORDER_PICKUP_NO_SHIPPING_FEE);
+
+      await edit(id, {
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        shippingFee: 0,
+      });
+      let row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.STORE_PICKUP);
+      expect(row.deliveryAddress).toBeNull();
+      expect(Number(row.grandTotal)).toBe(withFee - 300_000);
+
+      // Khách đổi ý muốn nhận tại nhà.
+      await edit(id, {
+        fulfillmentType: FulfillmentType.HOME_DELIVERY,
+        deliveryAddress: '5 Trần Hưng Đạo',
+        shippingFee: 200_000,
+      });
+      row = await orderRow(id);
+      expect(row.fulfillmentType).toBe(FulfillmentType.HOME_DELIVERY);
+      expect(row.deliveryAddress).toBe('5 Trần Hưng Đạo');
+    });
+
+    it('moves the pickup date of a packed order when the customer comes later', async () => {
+      const id = await createOrder({
+        fulfillmentType: FulfillmentType.STORE_PICKUP,
+        requestedDeliveryDate: '2026-12-01',
+      });
+      await fulfillments.packOrder(owner, id, {});
+      await edit(id, { requestedDeliveryDate: '2026-12-10' });
+      const row = await orderRow(id);
+      expect(row.status).toBe(OrderStatus.PACKED);
+      expect(row.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-10',
+      );
+    });
+  });
+
+  it('leaves the till’s sales out of GET /orders with excludePos', async () => {
+    const journey = await createOrder();
+    const till = await createOrder();
+    await prisma.order.update({
+      where: { id: till },
+      data: { fulfillmentType: FulfillmentType.TAKEAWAY },
+    });
+
+    const ids = async (query: object) =>
+      (
+        (await reads.findAll(owner, tenantId, {
+          page: 1,
+          limit: 100,
+          ...query,
+        })) as { data: { id: string }[] }
+      ).data.map((o) => o.id);
+
+    expect(await ids({})).toEqual(expect.arrayContaining([journey, till]));
+    const filtered = await ids({ excludePos: true });
+    expect(filtered).toContain(journey);
+    expect(filtered).not.toContain(till);
+  });
+
+  describe('action trail', () => {
+    const trail = (id: string) =>
+      prisma.orderEvent.findMany({
+        where: { orderId: id },
+        orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      });
+    const types = async (id: string) => (await trail(id)).map((e) => e.type);
+
+    it('records EDITED with the fields that changed and the lines that were added, removed or repriced', async () => {
+      const id = await createOrder({
+        items: [
+          { productItemId: sofaId, quantity: 1, unitPrice: 9_000_000 },
+          { productItemId: tableId, quantity: 1 },
+        ],
+      });
+      const sofaLine = await lineOf(id, sofaId);
+      await edit(id, {
+        recipientName: 'Chị Hoa',
+        note: 'giao buổi sáng',
+        shippingFee: 100_000,
+        items: [
+          { id: sofaLine.id, productItemId: sofaId, quantity: 2 },
+          { productItemId: chairId, quantity: 3 },
+        ],
+      });
+
+      const events = await trail(id);
+      expect(events.map((e) => e.type)).toEqual(['CREATED', 'EDITED']);
+      const edited = events[1];
+      expect(edited).toMatchObject({
+        source: 'USER',
+        actorId: ownerId,
+        actorRole: 'TENANT_OWNER',
+        fromStatus: null,
+        toStatus: null,
+      });
+      expect(edited.changes).toMatchObject({
+        recipientName: { from: 'Khách e2e', to: 'Chị Hoa' },
+        note: { from: null, to: 'giao buổi sáng' },
+        shippingFee: { from: 0, to: 100_000 },
+        grandTotal: { from: 11_000_000, to: 19_600_000 },
+      });
+      // Trường không gửi hoặc không đổi không có mặt.
+      expect(edited.changes).not.toHaveProperty('recipientPhone');
+      expect(edited.changes).not.toHaveProperty('deliveryAddress');
+      expect(edited.metadata).toMatchObject({
+        lines: {
+          added: [{ name: 'Ghế ăn', sku: expect.any(String), quantity: 3 }],
+          removed: [{ name: 'Bàn ăn', sku: expect.any(String), quantity: 1 }],
+          changed: [
+            {
+              name: 'Sofa',
+              sku: expect.any(String),
+              quantity: { from: 1, to: 2 },
+            },
+          ],
+        },
+      });
+    });
+
+    it('records the person in charge by name through both routes, and the priority', async () => {
+      const id = await createOrder();
+      await edits.setAssignee(owner, tenantId, id, { assigneeId: staffId });
+      await edit(id, { assigneeId: ownerId, priority: OrderPriority.HIGH });
+      await edits.setPriority(owner, tenantId, id, {
+        priority: OrderPriority.URGENT,
+      });
+
+      const events = await trail(id);
+      expect(events.map((e) => e.type)).toEqual([
+        'CREATED',
+        'ASSIGNEE_CHANGED',
+        'ASSIGNEE_CHANGED',
+        'PRIORITY_CHANGED',
+        'PRIORITY_CHANGED',
+      ]);
+      const [, first, second, high, urgent] = events;
+      // Nhân viên chưa có tên nên hiện số điện thoại; tên, không phải id, nằm trong changes.
+      expect(first.changes).toEqual({
+        assignee: { from: `edit-${ownerId}`, to: `edit-${staffId}` },
+      });
+      expect(first.metadata).toMatchObject({ fromId: ownerId, toId: staffId });
+      expect(second.changes).toEqual({
+        assignee: { from: `edit-${staffId}`, to: `edit-${ownerId}` },
+      });
+      expect(high.changes).toEqual({
+        priority: { from: 'NORMAL', to: 'HIGH' },
+      });
+      expect(urgent.changes).toEqual({
+        priority: { from: 'HIGH', to: 'URGENT' },
+      });
+    });
+
+    it('writes nothing for an edit that changes nothing', async () => {
+      const id = await createOrder({ recipientName: 'A' });
+      await edit(id, { recipientName: 'A', note: '' });
+      await edits.setAssignee(owner, tenantId, id, { assigneeId: ownerId });
+      await edits.setPriority(owner, tenantId, id, {
+        priority: OrderPriority.NORMAL,
+      });
+      expect(await types(id)).toEqual(['CREATED']);
+    });
+
+    it('leaves no event behind when the edit is refused', async () => {
+      const id = await createOrder();
+      await codeOf(edit(id, { assigneeId: randomUUID() }));
+      await codeOf(edit(id, { deliveryAddress: '' }));
+      expect(await types(id)).toEqual(['CREATED']);
+    });
+  });
+});

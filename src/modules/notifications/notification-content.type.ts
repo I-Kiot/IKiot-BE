@@ -1,4 +1,4 @@
-/** The "what to say" half of a notification - produced by a domain template, never written inline in a business service. */
+/** Nội dung thông báo: tiêu đề, mô tả, link. */
 export interface NotificationContent {
   type: string;
   title: string;

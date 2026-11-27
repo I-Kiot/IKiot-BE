@@ -1,26 +1,26 @@
 import { randomBytes } from 'node:crypto';
 
-// One generator for every reference code, prefixed from REFERENCE_PREFIX; 5 random bytes keeps collisions negligible against a global unique index, so don't lower byteLength without reason.
+// Sinh mã tham chiếu ngẫu nhiên theo tiền tố.
 export function generateReference(prefix: string, byteLength = 5): string {
   return prefix + randomBytes(byteLength).toString('hex').toUpperCase();
 }
 
-/** Anchored regex to find/filter references of a given flow, e.g. referenceMatcher('ORD') -> /^ORD/i. */
+/** Regex neo đầu để tìm/lọc tham chiếu của một luồng, ví dụ referenceMatcher('ORD') -> /^ORD/i. */
 export function referenceMatcher(prefix: string): RegExp {
   return new RegExp('^' + prefix, 'i');
 }
 
-// Values are PERSISTED on historical rows - never rename an existing prefix, only add.
+// Giá trị được LƯU trên các dòng lịch sử - không bao giờ đổi tiền tố đã có, chỉ được thêm.
 export const REFERENCE_PREFIX = {
   ORDER: 'ORD',
   SUPPLIER: 'SUP',
-  PAYROLL: 'PAYR',
-  SUBSCRIPTION: 'IKMS', // tenant pays iKiot for a plan (company bank - not tenant CashFlow)
-  TICKET: 'TK', // support thread; shown to both the shop and the operator
+  SUBSCRIPTION: 'IKMS', // tenant trả tiền iKiot cho gói (tài khoản công ty, không phải CashFlow của tenant)
+  TICKET: 'TK', // ticket hỗ trợ; hiển thị cho cả shop lẫn người vận hành
+  PACKAGE: 'PK', // FulfillmentPackage.code - in trên nhãn thùng
+  ORDER_RETURN: 'DH-HOAN-',
 } as const;
 
 export const CASHFLOW_PREFIXES = [
   REFERENCE_PREFIX.ORDER,
   REFERENCE_PREFIX.SUPPLIER,
-  REFERENCE_PREFIX.PAYROLL,
 ];

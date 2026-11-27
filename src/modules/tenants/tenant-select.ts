@@ -1,6 +1,6 @@
 import type { Prisma } from '../../../generated/prisma/client';
 
-/** Every Tenant column except `bankingSepayWebhookApiKey`, which is a shared secret that identifies a tenant to the payment webhook - anyone holding one can settle that shop's orders. Prisma has no `select: false`, so the safe columns are listed instead of the secret: a column added later stays invisible until someone adds it here. Shared by `TenantService` and `TenantSelfService` so the two can't disagree. */
+/** Select Tenant không có key webhook. */
 export const TENANT_SELECT = {
   id: true,
   name: true,
@@ -9,6 +9,7 @@ export const TENANT_SELECT = {
   phoneNumber: true,
   mainAddress: true,
   taxNumber: true,
+  logoUrl: true,
   bankingAccountNumber: true,
   bankingBankName: true,
   bankingAccountName: true,
@@ -16,14 +17,23 @@ export const TENANT_SELECT = {
   updatedAt: true,
 } as const satisfies Prisma.TenantSelect;
 
-/** The flat banking columns, as the schema stores them. */
+/** Shop đã liên kết SePay chưa. */
+export function isSepayLinked(tenant: {
+  bankingSepayWebhookApiKey: string | null;
+  bankingSepayLinkedAt: Date | null;
+}): boolean {
+  return Boolean(
+    tenant.bankingSepayWebhookApiKey || tenant.bankingSepayLinkedAt,
+  );
+}
+
 export interface FlatTenantBanking {
   bankingAccountNumber?: string | null;
   bankingBankName?: string | null;
   bankingAccountName?: string | null;
 }
 
-/** Swaps the three `banking*` columns for one nested `banking` object. The write side has always been nested, and the read side answering flat is why the settings screen read `tenant.banking.bankName` and got `undefined`. Same call `withNestedProfile` makes for a staff member. */
+/** Gom cột `banking*` thành object `banking`. */
 export function withNestedBanking<T extends FlatTenantBanking>(
   tenant: T,
 ): Omit<T, keyof FlatTenantBanking> & {

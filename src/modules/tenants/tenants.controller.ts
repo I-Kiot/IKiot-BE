@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -10,23 +12,35 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TenantService } from './tenants.service';
+import { SepayAccountSyncService } from './sepay-account-sync.service';
 import { CreateTenantDto } from './dto/create-tenants.dto';
 import { UpdateTenantDto } from './dto/update-tenants.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 
-// Generated CRUD, not a real port yet. Platform-admin only, and that has to be a guard rather than `@Permissions`: `Tenant` has no `tenantId` to scope by, and PermissionsGuard short-circuits TENANT_OWNER, so `@Permissions('tenants', …)` alone let any shop owner edit every other tenant. The decorators stay so the pairs keep their route in scripts/check-permissions.js; the guard is what keeps tenants out.
+// CRUD tenant cho admin nền tảng.
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @UseGuards(AdminOnlyGuard)
 @Controller('tenants')
 export class TenantController {
-  constructor(private readonly service: TenantService) {}
+  constructor(
+    private readonly service: TenantService,
+    private readonly sepaySync: SepayAccountSyncService,
+  ) {}
 
   @Permissions('tenants', 'read')
   @Get()
   findAll() {
     return this.service.findAll();
+  }
+
+  /** Đọc lại SePay ngay, thay vì chờ cron 10 phút. */
+  @Permissions('tenants', 'update')
+  @Post('sepay-sync')
+  @HttpCode(HttpStatus.OK)
+  syncSepay() {
+    return this.sepaySync.sync();
   }
 
   @Permissions('tenants', 'read')

@@ -14,6 +14,7 @@ import { SubscriptionStatus } from './subscription-status';
 import {
   addDays,
   getBillingDays,
+  PlatformTransferOutcome,
   QR_EXPIRY_MS,
 } from './subscription.constants';
 import type {
@@ -22,22 +23,51 @@ import type {
   SubscriptionInvoice,
 } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import type { Prisma } from '../../../generated/prisma/client';
+import { toDong } from '../../common/utils/money';
+import {
+  sepayTransferFromPayload,
+  type SepayTransfer,
+} from '../orders/sepay-qr';
 
 export interface SepayWebhookPayload {
   transferType?: string;
+  accountNumber?: string | null;
+  subAccount?: string | null;
   content?: string;
   transferAmount?: number;
   referenceCode?: string;
   id?: number | string;
+  transactionDate?: string;
 }
 
-/** What POST /webhook/sepay answers with. Always HTTP 200 - see handleSepayWebhook. */
+/** Kết quả một lần chốt trong transaction (chưa gồm thông báo). */
+interface PlatformSettlement {
+  duplicate: boolean;
+  outcome: PlatformTransferOutcome;
+  invoiceId: string | null;
+  tenantId?: string;
+  subscription?: Subscription;
+}
+
+/** Lệnh chiếm hoá đơn thua (giao dịch khác vừa chốt): ném để cuốn cả dòng sổ rồi quyết định lại. */
+class PlatformClaimLost extends Error {}
+
+const PLATFORM_OUTCOME_MESSAGE: Record<PlatformTransferOutcome, string> = {
+  ACTIVATED: 'Subscription activated',
+  UNDERPAID: 'Underpaid - recorded, invoice stays pending',
+  INVOICE_NOT_PENDING: 'Invoice not pending - recorded for reconciliation',
+  UNMATCHED: 'No invoice with this reference - recorded for reconciliation',
+  NO_REFERENCE: 'No matching reference found - recorded for reconciliation',
+};
+
+/** Kết quả trả về cho POST /webhook/sepay. Luôn HTTP 200, xem handleSepayWebhook. */
 export interface SepayWebhookResult {
   success: boolean;
   message?: string;
 }
 
-/** The getting-paid half of the old SubscriptionService: raising an invoice for an upgrade or renewal, and turning SePay's "money arrived" callback into an activated subscription. Split out because plan state, quota gates, invoices and webhook handling barely touch each other. */
+/** Thu tiền gói: xuất hoá đơn và kích hoạt gói khi SePay báo tiền về. */
 @Injectable()
 export class SubscriptionBillingService {
   private readonly logger = new Logger(SubscriptionBillingService.name);
@@ -103,7 +133,7 @@ export class SubscriptionBillingService {
     return this.createPlanInvoice(currentSubscription, currentPlan);
   }
 
-  /** Called by SePay when money lands in iKiot's own bank account. Every outcome except a bad API key resolves normally, so the controller can answer a flat 200 and SePay never retries into one of our bugs; a wrong key is a caller we don't recognise, so it is a real 401. */
+  /** Xử lý webhook SePay cho gói; chỉ API key sai trả 401. */
   async handleSepayWebhook(
     apiKey: string,
     payload: SepayWebhookPayload,
@@ -129,114 +159,189 @@ export class SubscriptionBillingService {
     }
   }
 
-  /** The webhook's actual work, minus the "never make SePay retry" wrapper around it. */
+  /** Phần việc thật của webhook, không kèm lớp bọc "không để SePay retry" bên ngoài. */
   private async settlePayment(
     payload: SepayWebhookPayload,
   ): Promise<SepayWebhookResult> {
     if (payload.transferType !== 'in') return { success: true };
 
-    const paymentReference = this.sepay.extractReference(payload.content ?? '');
-    if (!paymentReference) {
-      return { success: true, message: 'No matching reference found' };
+    if (!this.sepay.isPlatformAccount(payload)) {
+      return { success: true, message: 'Not the platform account - ignored' };
     }
 
-    const invoice = await this.prisma.subscriptionInvoice.findFirst({
-      where: { paymentReference, status: 'PENDING' },
-    });
-    if (!invoice) {
-      return {
-        success: true,
-        message: 'Invoice not found or already processed',
-      };
+    const transfer = sepayTransferFromPayload({ ...payload });
+    const reference = this.sepay.extractReference(payload.content ?? '');
+
+    // Thua lệnh chiếm thì chạy lại một lần.
+    let result: PlatformSettlement | null = null;
+    for (let attempt = 0; attempt < 2 && !result; attempt++) {
+      try {
+        result = await this.prisma.$transaction((tx) =>
+          this.settleInTransaction(tx, transfer, reference),
+        );
+      } catch (error) {
+        if (!(error instanceof PlatformClaimLost)) throw error;
+      }
+    }
+    if (!result) throw new Error('Platform transfer could not be settled');
+
+    if (result.duplicate) {
+      return { success: true, message: 'Duplicate transaction' };
+    }
+    if (result.outcome === PlatformTransferOutcome.ACTIVATED) {
+      await this.notifyActivated(result);
+      return { success: true, message: 'Subscription activated' };
     }
 
-    if ((payload.transferAmount ?? 0) < Number(invoice.amount)) {
-      this.logger.warn(
-        `Underpaid invoice ${invoice.id}. Expected ${invoice.amount.toString()}, got ${payload.transferAmount}`,
-      );
-      return { success: true, message: 'Underpaid - ignored' };
-    }
-
-    const subscription = await this.activateAfterPayment(invoice, payload);
-
-    const owners = await this.notifications.tenantOwners(invoice.tenantId);
-    await this.notifications.notify({
-      tenantId: invoice.tenantId,
-      recipientIds: owners,
-      referenceId: invoice.id,
-      ...SubscriptionNotificationTemplates.activated(),
-    });
-    this.realtime.emitToRoom(
-      `tenant:${invoice.tenantId}`,
-      'subscription:activated',
-      {
-        invoiceId: invoice.id,
-        planId: subscription.planId,
-        status: subscription.status,
-        endDate: subscription.endDate,
-      },
+    this.logger.warn(
+      `Platform transfer ${transfer.sepayTransactionId ?? transfer.dedupeKey} (${transfer.amount}) needs action: ${result.outcome}`,
     );
-
-    return { success: true, message: 'Subscription activated' };
+    await this.notifications.notifySystem({
+      ...SubscriptionNotificationTemplates.platformTransferNeedsAction(
+        result.outcome,
+        transfer.amount,
+        reference,
+        transfer.content,
+      ),
+      referenceId: result.invoiceId ?? undefined,
+    });
+    return { success: true, message: PLATFORM_OUTCOME_MESSAGE[result.outcome] };
   }
 
-  private async activateAfterPayment(
-    invoice: SubscriptionInvoice,
-    sepayPayload: SepayWebhookPayload,
-  ): Promise<Subscription> {
-    const plan = await this.prisma.plan.findUnique({
-      where: { id: invoice.planId },
+  /** Một transaction: ghi sổ, chiếm hoá đơn PENDING → PAID rồi kích hoạt gói. */
+  private async settleInTransaction(
+    tx: Prisma.TransactionClient,
+    transfer: SepayTransfer,
+    reference: string | null,
+  ): Promise<PlatformSettlement> {
+    const invoice = reference
+      ? await tx.subscriptionInvoice.findUnique({
+          where: { paymentReference: reference },
+        })
+      : null;
+
+    let outcome: PlatformTransferOutcome;
+    if (!reference) outcome = PlatformTransferOutcome.NO_REFERENCE;
+    else if (!invoice) outcome = PlatformTransferOutcome.UNMATCHED;
+    else if (invoice.status !== 'PENDING')
+      outcome = PlatformTransferOutcome.INVOICE_NOT_PENDING;
+    else if (toDong(transfer.amount) < toDong(invoice.amount))
+      outcome = PlatformTransferOutcome.UNDERPAID;
+    else outcome = PlatformTransferOutcome.ACTIVATED;
+
+    const inserted = await tx.platformSepayTransaction.createMany({
+      data: [
+        {
+          dedupeKey: transfer.dedupeKey,
+          sepayTransactionId: transfer.sepayTransactionId,
+          accountNumber: transfer.accountNumber,
+          content: transfer.content,
+          bankReferenceCode: transfer.bankReferenceCode,
+          amount: transfer.amount,
+          outcome,
+          paymentReference: reference,
+          subscriptionInvoiceId: invoice?.id ?? null,
+          tenantId: invoice?.tenantId ?? null,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (inserted.count === 0) {
+      return { duplicate: true, outcome, invoiceId: invoice?.id ?? null };
+    }
+
+    if (outcome === PlatformTransferOutcome.UNDERPAID && invoice) {
+      await tx.subscriptionInvoice.updateMany({
+        where: { id: invoice.id, status: 'PENDING' },
+        data: { amountReceived: transfer.amount },
+      });
+    }
+    if (outcome !== PlatformTransferOutcome.ACTIVATED || !invoice) {
+      return { duplicate: false, outcome, invoiceId: invoice?.id ?? null };
+    }
+
+    const now = new Date();
+    const claimed = await tx.subscriptionInvoice.updateMany({
+      where: { id: invoice.id, status: 'PENDING' },
+      data: {
+        status: 'PAID',
+        paidAt: now,
+        amountReceived: transfer.amount,
+        transactionRef:
+          transfer.bankReferenceCode ?? transfer.sepayTransactionId,
+      },
+    });
+    if (claimed.count !== 1) throw new PlatformClaimLost();
+
+    const subscription = await this.activateSubscription(tx, invoice, now);
+    return {
+      duplicate: false,
+      outcome,
+      invoiceId: invoice.id,
+      tenantId: invoice.tenantId,
+      subscription,
+    };
+  }
+
+  private async activateSubscription(
+    tx: Prisma.TransactionClient,
+    invoice: SubscriptionInvoice,
+    billingStart: Date,
+  ): Promise<Subscription> {
+    const plan = await tx.plan.findUnique({ where: { id: invoice.planId } });
     if (!plan) throw new Error('Plan not found');
 
-    const subscription = await this.prisma.subscription.findUnique({
+    const subscription = await tx.subscription.findUnique({
       where: { id: invoice.subscriptionId },
     });
     if (!subscription) throw new Error('Subscription not found');
 
     const oldPlanId = subscription.planId;
     const isRenewal = oldPlanId === invoice.planId;
-
-    const billingStart = new Date();
     const billingEnd = addDays(billingStart, getBillingDays(plan.billingCycle));
 
-    const [updatedSubscription] = await this.prisma.$transaction([
-      this.prisma.subscription.update({
-        where: { id: subscription.id },
-        data: {
-          planId: plan.id,
-          status: SubscriptionStatus.ACTIVE,
-          startDate: billingStart,
-          endDate: billingEnd,
-          trialEndDate: null,
-          ...quotaSnapshotOf(plan),
-          historyLogs: {
-            create: {
-              event: isRenewal ? 'RENEWED' : 'UPGRADED',
-              fromPlanId: oldPlanId,
-              toPlanId: plan.id,
-              changedAt: new Date(),
-              // No acting user for a webhook-triggered activation - iKiotMS-BE stored tenantId here, which read confusingly in a "changed by user" field.
-              changedById: null,
-              note: isRenewal
-                ? `Renewed ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`
-                : `Upgraded to ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`,
-            },
+    return tx.subscription.update({
+      where: { id: subscription.id },
+      data: {
+        planId: plan.id,
+        status: SubscriptionStatus.ACTIVE,
+        startDate: billingStart,
+        endDate: billingEnd,
+        trialEndDate: null,
+        ...quotaSnapshotOf(plan),
+        historyLogs: {
+          create: {
+            event: isRenewal ? 'RENEWED' : 'UPGRADED',
+            fromPlanId: oldPlanId,
+            toPlanId: plan.id,
+            changedAt: billingStart,
+            // Kích hoạt do webhook không có người thao tác.
+            changedById: null,
+            note: isRenewal
+              ? `Renewed ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`
+              : `Upgraded to ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`,
           },
         },
-      }),
-      this.prisma.subscriptionInvoice.update({
-        where: { id: invoice.id },
-        data: {
-          status: 'PAID',
-          paidAt: new Date(),
-          transactionRef:
-            sepayPayload.referenceCode ?? String(sepayPayload.id ?? ''),
-        },
-      }),
-    ]);
+      },
+    });
+  }
 
-    return updatedSubscription;
+  private async notifyActivated(result: PlatformSettlement): Promise<void> {
+    const { invoiceId, tenantId, subscription } = result;
+    if (!invoiceId || !tenantId || !subscription) return;
+    const owners = await this.notifications.tenantOwners(tenantId);
+    await this.notifications.notify({
+      tenantId,
+      recipientIds: owners,
+      referenceId: invoiceId,
+      ...SubscriptionNotificationTemplates.activated(),
+    });
+    this.realtime.emitToRoom(`tenant:${tenantId}`, 'subscription:activated', {
+      invoiceId,
+      planId: subscription.planId,
+      status: subscription.status,
+      endDate: subscription.endDate,
+    });
   }
 
   private async createPlanInvoice(

@@ -21,7 +21,7 @@ export class PermissionsGuard implements CanActivate {
     const required = this.reflector.getAllAndOverride<
       RequiredPermission | undefined
     >(PERMISSIONS_KEY, [context.getHandler(), context.getClass()]);
-    if (!required) return true; // route didn't declare @Permissions(...) - JwtAuthGuard alone gates it
+    if (!required) return true; // Route không khai báo @Permissions(...) - chỉ JwtAuthGuard chặn.
 
     const request = context.switchToHttp().getRequest<{ user?: AuthUser }>();
     const user = request.user;
@@ -31,7 +31,7 @@ export class PermissionsGuard implements CanActivate {
         message: 'No authenticated user on request',
       });
 
-    // Any one of the declared actions is enough - see the @Permissions note.
+    // Chỉ cần một trong các action đã khai báo là đủ - xem ghi chú của @Permissions.
     const allowed = required.actions.some((action) =>
       can(user, required.resource, action),
     );

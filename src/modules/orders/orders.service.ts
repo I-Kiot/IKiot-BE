@@ -1,3 +1,5 @@
+import { postingOf } from '../../common/utils/tenant-scope';
+import { LocationType } from '../../common/constants/location-type';
 import {
   BadRequestException,
   ConflictException,
@@ -9,35 +11,95 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventories/inventories.service';
 import { NotificationService } from '../notifications/notifications.service';
-import { OrderNotificationTemplates } from '../notifications/templates/order.templates';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
-import { PaymentMethod } from '../../common/constants/payment-method';
+import { publishChange } from '../../common/realtime/change-feed';
+import { OrderChanges } from './orders.change-template';
+import {
+  PaymentKind,
+  PaymentMethod,
+  PaymentRecordStatus,
+} from '../../common/constants/payment-method';
+import {
+  FulfillmentType,
+  STOCKED_LINE_TYPES,
+} from '../../common/constants/order-status';
+import {
+  InventoryRefType,
+  InventoryTxType,
+  LotSourceType,
+} from '../../common/constants/inventory-ledger';
 import { can } from '../../common/utils/permission';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { narrowToScope } from '../../common/utils/scope-filter';
 import { SepayOrderService } from './sepay-order.service';
-import { PromotionService } from '../promotions/promotions.service';
+import { requireTenantBanking } from './tenant-banking';
+import {
+  buildSepayTransfer,
+  isQrExpired,
+  qrIssuedBefore,
+  SEPAY_DUPLICATE_MESSAGE,
+  sepayQrView,
+  type SepayTransfer,
+} from './sepay-qr';
+import { notifySettled, processSepayTransfer } from './sepay-settlement';
+import { postOtherIncome, postPosReturn, postSale } from './sales-journal';
+import { SalesJournalSource } from '../../common/constants/sales-journal';
+import { OrderPricingService } from './order-pricing.service';
+import { lockOrder } from './order-lock';
+import { completedData } from './order-status';
+import { toDong } from '../../common/utils/money';
+import {
+  derivePaymentStatus,
+  paymentRowsOf,
+  paymentTotals,
+  syncOrderPaymentStatus,
+} from './payment-status';
+import { openPosQrPayment, recordPosPayments } from './pos-payments';
+import {
+  recordRefund,
+  recordRefundPayment,
+  resolveRefund,
+} from './order-refund';
+import { cancelCounterQr, openQrPayments } from './payment-cancel';
+import {
+  generateReference,
+  REFERENCE_PREFIX,
+} from '../../common/utils/reference-generator';
+import { buildOrderItemRows, expandCombos } from './order-combo';
 import {
   INSTANT_COMPLETE_METHODS,
   OrderStatus,
   VALID_ORDER_TRANSITIONS,
 } from './order.constants';
 import {
-  CreateOrderDto,
+  CancelPosSaleDto,
+  CreatePosOrderDto,
   PayOfflineOrderDto,
   QueryOrderDto,
 } from './dto/order.dto';
 import type { Inventory, Prisma } from '../../../generated/prisma/client';
+import { InvoiceService } from '../invoices/invoices.service';
 import { ErrorCode } from '../../common/errors/error-codes';
-
-/** The one customer every tenant gets for free, for sales with nobody attached. */
-const WALK_IN_CUSTOMER_CODE = 'KH_VANGLAI';
-const WALK_IN_CUSTOMER_NAME = 'Khách vãng lai';
+import {
+  WALK_IN_CUSTOMER_CODE,
+  WALK_IN_CUSTOMER_NAME,
+} from '../../common/constants/walk-in-customer';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
+import { OrderEventType } from '../../common/constants/order-event-type';
+import {
+  recordOrderEvent,
+  SYSTEM_ACTOR,
+  userActor,
+  type OrderEventActor,
+} from './order-events';
 
 const ORDER_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
-  branch: { select: { id: true, name: true } },
+  branch: BRANCH_NAME_SELECT,
   user: {
     select: {
       id: true,
@@ -52,11 +114,13 @@ const ORDER_INCLUDE = {
     },
   },
   appliedPromotions: true,
+  // Đơn quầy giờ có dòng Payment như mọi đơn (Phase 3): FULL, CHANGE, và QR còn chờ.
+  payments: { orderBy: { createdAt: 'asc' } },
 } as const satisfies Prisma.OrderInclude;
 
 type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
 
-/** Real port of OrderService. Selling moves money and stock at once, so every method here works out the numbers, writes them in one transaction, and only then tells a human. The total is computed, never accepted - the old API stored the client's `grandTotal` - and so is the discount: the client names its promotions and `priceOrder` runs them through the same engine `/promotions/calculate` uses. */
+/** Service đơn hàng: bán tại quầy, đổi trạng thái, thanh toán SePay. */
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
@@ -67,14 +131,18 @@ export class OrderService {
     private readonly notifications: NotificationService,
     private readonly realtime: RealtimeGateway,
     private readonly sepay: SepayOrderService,
-    private readonly promotions: PromotionService,
+    private readonly pricing: OrderPricingService,
+    private readonly invoices: InvoiceService,
   ) {}
 
-  // ─── Create ────────────────────────────────────────────────────────────────
-
-  async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
+  /** Bán tại quầy: thu tiền và trừ kho ngay. */
+  async createPosSale(
+    user: AuthUser,
+    tenantId: string,
+    dto: CreatePosOrderDto,
+  ) {
     const userId = user.userId;
-    // Writing a sale is scoped exactly like reading one: `create` never received the caller, so a cashier could book an order against another branch - drawing down that branch's stock and ledger, and unable to see the row afterwards to undo it.
+    // Kiểm phạm vi chi nhánh khi lên đơn.
     const scope = this.branchScope(user);
     if (scope.branchId !== undefined && dto.branchId !== scope.branchId) {
       throw new ForbiddenException({
@@ -83,8 +151,13 @@ export class OrderService {
       });
     }
 
+    // Bán tại quầy vẫn chỉ ở chi nhánh; kho chỉ tạo đơn tay.
     const branch = await this.prisma.branch.findFirst({
-      where: { id: dto.branchId, tenantId },
+      where: {
+        id: dto.branchId,
+        tenantId,
+        location: { type: LocationType.BRANCH },
+      },
       select: { id: true },
     });
     if (!branch)
@@ -96,14 +169,29 @@ export class OrderService {
     if (dto.customerId)
       await this.assertCustomerExists(tenantId, dto.customerId);
     const isSepay = dto.paymentMethod === PaymentMethod.SEPAY;
-    const banking = isSepay ? await this.requireBanking(tenantId) : null;
+    const banking = isSepay
+      ? await requireTenantBanking(this.prisma, tenantId)
+      : null;
 
-    const priced = await this.priceOrder(tenantId, dto);
+    const priced = await this.pricing.priceOrder(tenantId, dto);
     const { lines, appliedPromotions, discountType, discountValue } = priced;
-    const grandTotal = this.grandTotalOf(lines, discountType, discountValue);
+    const grandTotal = this.pricing.grandTotalOf(
+      lines,
+      discountType,
+      discountValue,
+    );
 
-    // Cash tendered has to at least cover the bill - the difference between "change" and a silent shortfall booked as revenue.
-    if (dto.customerPay !== undefined && dto.customerPay < grandTotal) {
+    // Mở combo thành các dòng lá trước transaction.
+    const components = await expandCombos(this.prisma, tenantId, lines);
+    // Đơn quầy không lưu kho xuất và VAT trên dòng.
+    const itemRows = buildOrderItemRows(
+      lines.map((line) => ({ ...line, sourceLocationId: null })),
+      components,
+      (line) => this.pricing.lineTotalOf(line),
+    ).map((row) => ({ ...row, vatRate: undefined }));
+
+    // Tiền khách đưa phải đủ trả hoá đơn.
+    if (dto.customerPay !== undefined && toDong(dto.customerPay) < grandTotal) {
       throw new BadRequestException({
         code: ErrorCode.ORDER_CUSTOMER_PAY_TOO_LOW,
         message: `The customer paid ${dto.customerPay}, which is less than the ${grandTotal} due`,
@@ -112,15 +200,17 @@ export class OrderService {
     const change =
       dto.customerPay === undefined
         ? null
-        : Math.max(0, dto.customerPay - grandTotal);
+        : Math.max(0, toDong(dto.customerPay) - grandTotal);
 
     const status = INSTANT_COMPLETE_METHODS.includes(dto.paymentMethod)
       ? OrderStatus.COMPLETED
       : OrderStatus.PENDING;
     const paymentReference = this.sepay.generateOrderReference();
+    const now = new Date();
 
+    let qrPayment: { expiresAt: Date | null; createdAt: Date } | null = null;
     const { order, crossings } = await this.prisma.$transaction(async (tx) => {
-      // Resolved inside the transaction: a walk-in row created for an order that then fails would otherwise be left behind.
+      // Tìm khách vãng lai trong transaction: nếu tạo ngoài thì khi đơn lỗi, dòng khách đó sẽ còn lại.
       const customerId =
         dto.customerId ?? (await this.resolveWalkInCustomer(tx, tenantId));
 
@@ -130,7 +220,20 @@ export class OrderService {
           branchId: dto.branchId,
           customerId,
           userId,
+          // Người lên đơn quầy là người phụ trách.
+          assigneeId: userId,
+          // Đơn quầy: người bán là nhân viên bán hàng.
+          sellerId: userId,
+          confirmedById: userId,
+          confirmedAt: now,
+          fulfillmentType: FulfillmentType.TAKEAWAY,
           status,
+          // Đơn quầy mở ở COMPLETED (thu ngay) thì chốt luôn lúc này: CHECK `orders_completed_at_required`.
+          ...(status === OrderStatus.COMPLETED ? { completedAt: now } : {}),
+          // Trạng thái thanh toán suy ra sau khi ghi khoản tiền.
+          subtotal: this.pricing.subtotalOf(lines),
+          // Mã tham chiếu của quầy đồng thời là mã đơn, để hóa đơn và chuyển khoản gọi tên đơn giống nhau.
+          code: paymentReference,
           paymentMethod: dto.paymentMethod,
           paymentReference,
           grandTotal,
@@ -139,60 +242,129 @@ export class OrderService {
           note: dto.note,
           discountType,
           discountValue,
-          items: {
-            create: lines.map((line) => ({
-              productItemId: line.productItemId,
-              productName: line.productName,
-              quantity: line.quantity,
-              unitPrice: line.unitPrice,
-              discountAmount: line.discountAmount,
-            })),
-          },
+          // Một câu INSERT cho mọi dòng để con của combo tham chiếu được cha được chèn cùng lúc.
+          items: { createMany: { data: itemRows } },
           appliedPromotions: { create: appliedPromotions },
         },
         include: ORDER_INCLUDE,
       });
+      // Lượt dùng khuyến mãi ghi cùng transaction với đơn quầy (trước đây quầy gọi `/promotions/apply` sau).
+      await this.pricing.recordPromotionUsage(tx, tenantId, {
+        orderId: created.id,
+        branchId: dto.branchId,
+        customerId,
+        applied: appliedPromotions,
+        userId,
+      });
 
-      // Selling takes stock off the shelf, so it watches the low-stock threshold exactly like a transfer does, and `deductStock` is also what enforces "is there enough" without a check-then-decrement race.
+      // Trừ kho và theo dõi ngưỡng tồn thấp.
       const lowStock: (Inventory | null)[] = [];
-      for (const line of lines) {
+      // Chỉ dòng có hàng mới trừ kho; mỗi dòng sổ ghi dòng đơn của nó.
+      for (const item of created.items) {
+        if (!STOCKED_LINE_TYPES.includes(item.lineType)) continue;
         const after = await this.inventory.deductStock(tx, {
           tenantId,
-          productItemId: line.productItemId,
-          branchId: dto.branchId,
-          warehouseId: null,
-          quantity: line.quantity,
-          label: line.sku ?? line.productItemId,
+          productItemId: item.productItemId,
+          locationId: dto.branchId, // id Branch cũng là id Location
+          quantity: item.quantity,
+          label: item.sku ?? item.productItemId,
+          ledger: {
+            type: InventoryTxType.SALE,
+            referenceType: InventoryRefType.ORDER,
+            referenceId: created.id,
+            createdById: userId,
+            orderItemId: item.id,
+          },
         });
-        lowStock.push(this.inventory.lowStockCrossing(after, -line.quantity));
+        lowStock.push(this.inventory.lowStockCrossing(after, -item.quantity));
       }
 
+      // Ghi khoản thanh toán: nhận ngay thì FULL (+ CHANGE), SePay thì chờ webhook.
       if (status === OrderStatus.COMPLETED) {
-        await this.writeSaleCashFlows(tx, created, dto.paymentMethod, userId);
+        await recordPosPayments(tx, {
+          order: created,
+          method: dto.paymentMethod,
+          amountDue: grandTotal,
+          customerPay: dto.customerPay ?? null,
+          kind: PaymentKind.FULL,
+          actorId: userId,
+          now,
+        });
+        // Đơn quầy mở ở COMPLETED: hàng đã rời kệ ở trên (giá vốn đọc từ sổ lô), ghi SALE ngay.
+        await postSale(tx, {
+          orderId: created.id,
+          actor: { id: userId },
+          now,
+          source: SalesJournalSource.POS_SALE,
+        });
+      } else {
+        qrPayment = await openPosQrPayment(tx, {
+          order: created,
+          kind: PaymentKind.FULL,
+          amount: grandTotal,
+          reference: paymentReference,
+          issuedAt: created.createdAt,
+          actorId: userId,
+        });
       }
 
-      return { order: created, crossings: lowStock };
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: created.id,
+        type: OrderEventType.CREATED,
+        fromStatus: null,
+        toStatus: status,
+        metadata: {
+          fulfillmentType: FulfillmentType.TAKEAWAY,
+          paymentMethod: dto.paymentMethod,
+          grandTotal,
+        },
+      });
+
+      // Tạo hoá đơn cho đơn quầy.
+      await this.invoices.ensurePending(tx, created.id);
+      if (status === OrderStatus.COMPLETED) {
+        await this.invoices.issueForOrder(tx, created.id, userId);
+      }
+
+      // Đọc lại sau khi ghi tiền: phản hồi mang trạng thái thanh toán đã suy ra và các khoản.
+      const settled = await tx.order.findUniqueOrThrow({
+        where: { id: created.id },
+        include: ORDER_INCLUDE,
+      });
+      return { order: settled, crossings: lowStock };
     });
 
     await this.inventory.notifyLowStock(crossings);
 
+    // Lấy link QR qua `sepayQrView`.
+    const qr =
+      isSepay && banking
+        ? sepayQrView(
+            banking,
+            {
+              amount: grandTotal,
+              reference: paymentReference,
+              createdAt: order.createdAt,
+              expiresAt: (qrPayment as { expiresAt: Date | null } | null)
+                ?.expiresAt,
+            },
+            'issue',
+          )
+        : null;
     return {
       order: this.toResponse(order),
-      qrUrl:
-        isSepay && banking
-          ? this.sepay.buildQrUrl(banking, grandTotal, paymentReference)
-          : null,
+      qrUrl: qr?.qrUrl ?? null,
+      qrExpiresAt: qr ? qr.expiresAt.toISOString() : null,
     };
   }
-
-  // ─── Reads ─────────────────────────────────────────────────────────────────
 
   async findAll(user: AuthUser, tenantId: string, query: QueryOrderDto) {
     const scope = this.branchScope(user);
     const where: Prisma.OrderWhereInput = { tenantId, ...scope };
     if (query.status) where.status = query.status;
     if (query.paymentMethod) where.paymentMethod = query.paymentMethod;
-    // Narrows, never replaces - `findOne` already refused a foreign branch, so the list endpoint being redirected by a query string was the outlier.
+    // Filter của client chỉ thu hẹp phạm vi.
     const branchId = narrowToScope(
       scope.branchId,
       query.branchId,
@@ -200,7 +372,7 @@ export class OrderService {
     );
     if (branchId) where.branchId = branchId;
 
-    // A named customer wins over a free-text search, as in the old service: asking for both means the id is the specific thing.
+    // Lọc theo khách có tên thắng tìm tự do, như service cũ: gửi cả hai thì mã khách là điều cụ thể hơn.
     if (query.customerId) {
       where.customerId = query.customerId;
     } else if (query.search) {
@@ -242,22 +414,22 @@ export class OrderService {
     return this.toResponse(await this.findRow(user, tenantId, id));
   }
 
-  /** Which branches this account may see sales from: its own by default, everything with `orders:view_all`. iKiotMS-BE didn't scope this at all, and the permission has sat in the catalog unused - the same shape `stock-movements` already uses. */
-  private branchScope(user: AuthUser): { branchId?: string } {
+  /** Các chi nhánh tài khoản được xem đơn. */
+  /** Các chi nhánh tài khoản được đọc/ghi đơn. */
+  branchScope(user: AuthUser): { branchId?: string } {
     if (can(user, 'orders', 'view_all')) return {};
-    if (!user.branchId) {
-      // Not posted anywhere, and no view_all: no branch's sales are theirs to read.
+    const posting = postingOf(user);
+    if (!posting) {
+      // Không gắn nơi nào và không có view_all: không đọc được đơn của nơi nào.
       throw new ForbiddenException({
         code: ErrorCode.ACCOUNT_HAS_NO_BRANCH,
         message: 'This account has not been assigned to a branch',
       });
     }
-    return { branchId: user.branchId };
+    return { branchId: posting };
   }
 
-  // ─── Status ────────────────────────────────────────────────────────────────
-
-  /** Moves an order along its lifecycle, putting stock and money where the new state says they should be. The status write is conditional on the status we read, so two tills pressing the button at once can't both apply their side effects. */
+  /** Chuyển trạng thái đơn quầy kèm tồn kho và tiền tương ứng. */
   async updateStatus(
     user: AuthUser,
     tenantId: string,
@@ -266,7 +438,24 @@ export class OrderService {
   ) {
     const order = await this.findRow(user, tenantId, id);
 
-    const allowed = VALID_ORDER_TRANSITIONS[order.status] ?? [];
+    // Đơn chờ SePay không được chốt COMPLETED bằng PATCH.
+    if (
+      newStatus === OrderStatus.COMPLETED &&
+      order.status === OrderStatus.PENDING &&
+      order.paymentMethod === PaymentMethod.SEPAY
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_USE_PAY_OFFLINE,
+        message:
+          'A counter sale waiting for its transfer is completed with POST /orders/:id/pay-offline, not by changing its status',
+      });
+    }
+
+    // Đơn hành trình không đổi trạng thái qua route này.
+    const allowed =
+      order.fulfillmentType === FulfillmentType.TAKEAWAY
+        ? (VALID_ORDER_TRANSITIONS[order.status] ?? [])
+        : [];
     if (!allowed.includes(newStatus)) {
       throw new ConflictException({
         code: ErrorCode.ORDER_STATUS_TRANSITION_INVALID,
@@ -274,7 +463,32 @@ export class OrderService {
       });
     }
 
+    // Huỷ đơn quầy chờ QR dùng chung hàm với nút huỷ và cron.
+    if (
+      newStatus === OrderStatus.CANCELLED &&
+      order.status === OrderStatus.PENDING &&
+      order.paymentMethod === PaymentMethod.SEPAY
+    ) {
+      const done = await this.prisma.$transaction((tx) =>
+        this.cancelPendingPosSale(tx, tenantId, order, userActor(user), {
+          reason: 'Hủy đơn thủ công',
+          cancelledById: user.userId,
+          allowPaid: true,
+        }),
+      );
+      if (!done) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_STATUS_CONFLICT,
+          message: 'The order status has just changed, please reload',
+        });
+      }
+      this.announceCancelled(order, 'MANUAL');
+      return this.toResponse(await this.findRow(user, tenantId, id));
+    }
+
+    const now = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockOrder(tx, tenantId, id);
       const claimed = await tx.order.updateMany({
         where: { id, status: order.status },
         data: { status: newStatus },
@@ -286,44 +500,95 @@ export class OrderService {
         });
       }
 
-      // No low-stock watch here on purpose: cancelling and returning only put stock back, and a rising level can't cross the threshold downwards.
+      // Trả hàng đơn quầy hoàn đúng số tiền đang giữ.
+      let refundPaymentId: string | undefined;
+      let refundAmount = 0;
+      if (newStatus === OrderStatus.RETURNED) {
+        const rows = (
+          await tx.payment.findMany({ where: { orderId: id } })
+        ).map((p) => ({ ...p, amount: Number(p.amount) }));
+        const refund = resolveRefund(rows, paymentTotals(rows).net, undefined);
+        if (refund && refund.amount > 0) {
+          // recordRefund: khoản REFUND + dòng chi + đồng bộ trạng thái thanh toán + sự kiện REFUNDED.
+          const refunded = await recordRefund(tx, {
+            order,
+            amount: refund.amount,
+            cap: 'HELD',
+            method: refund.method,
+            actor: user,
+            reason: 'POS_RETURN',
+            note: null,
+            description: `Trả hàng đơn ${order.code}`,
+            now,
+          });
+          refundPaymentId = refunded.paymentId;
+          refundAmount = refund.amount;
+        } else {
+          await syncOrderPaymentStatus(tx, id);
+        }
+      }
+
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: id,
+        type: OrderEventType.STATUS_CHANGED,
+        fromStatus: order.status,
+        toStatus: newStatus,
+        ...(refundPaymentId
+          ? {
+              metadata: {
+                refundAmount,
+                paymentId: refundPaymentId,
+              },
+            }
+          : {}),
+      });
+
+      // Huỷ và trả chỉ làm tồn tăng nên không kiểm tồn thấp.
       if (
         newStatus === OrderStatus.CANCELLED ||
         newStatus === OrderStatus.RETURNED
       ) {
-        for (const line of order.items) {
-          await this.inventory.adjustStock(tx, {
+        // Trả hàng về đúng các lô đơn đã lấy.
+        for (const line of order.items.filter((item) =>
+          STOCKED_LINE_TYPES.includes(item.lineType),
+        )) {
+          await this.inventory.returnDrawn(tx, {
             tenantId,
             productItemId: line.productItemId,
-            branchId: order.branchId,
-            warehouseId: null,
-            delta: Number(line.quantity),
+            toLocationId: order.branchId, // id Branch cũng là id Location
+            quantity: Number(line.quantity),
+            drawnBy: { orderItemId: line.id },
+            ledger: {
+              type:
+                newStatus === OrderStatus.CANCELLED
+                  ? InventoryTxType.SALE_REVERSAL
+                  : InventoryTxType.RETURN_GOOD,
+              referenceType: InventoryRefType.ORDER,
+              referenceId: order.id,
+              createdById: user.userId,
+            },
+            ifNeverDrawn: { sourceType: LotSourceType.OPENING },
           });
         }
       }
 
-      if (newStatus === OrderStatus.COMPLETED) {
-        await this.writeSaleCashFlows(
-          tx,
-          order,
-          order.paymentMethod,
-          order.userId,
-        );
+      if (newStatus === OrderStatus.CANCELLED) {
+        await this.invoices.voidPending(tx, order.id);
       }
 
       if (newStatus === OrderStatus.RETURNED) {
-        await tx.cashFlow.create({
-          data: {
-            tenantId,
-            branchId: order.branchId,
-            orderId: order.id,
-            createdById: order.userId,
-            flowType: 'EXPENSE',
-            amount: order.grandTotal,
-            paymentMethod: order.paymentMethod,
-            paymentReference: order.paymentReference,
-            description: `Trả hàng đơn ${order.paymentReference}`,
-          },
+        await this.invoices.adjustForReturn(
+          tx,
+          order.id,
+          `Trả hàng đơn ${order.code}`,
+          user.userId,
+        );
+        // Trả cả đơn quầy: bút toán RETURN âm (hàng đã về lô ở trên nên giá vốn đọc được từ sổ lô).
+        await postPosReturn(tx, {
+          orderId: order.id,
+          actor: { id: user.userId },
+          now,
         });
       }
 
@@ -336,7 +601,236 @@ export class OrderService {
     return this.toResponse(updated);
   }
 
-  /** Settles a SePay order paid another way, conditional on it still being PENDING and still SEPAY so it can't race the webhook into charging twice. */
+  /** Huỷ đơn quầy đang chờ QR trong transaction của bên gọi; false nếu đơn không còn chờ. */
+  private async cancelPendingPosSale(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    order: OrderRow,
+    actor: OrderEventActor,
+    opts: {
+      reason: string;
+      cancelledById: string | null;
+      allowPaid: boolean;
+      refundAmount?: number;
+      refundMethod?: string;
+    },
+  ): Promise<boolean> {
+    if (!(await lockOrder(tx, tenantId, order.id))) return false;
+    const payments = await tx.payment.findMany({
+      where: { orderId: order.id },
+    });
+    const rows = payments.map((p) => ({ ...p, amount: Number(p.amount) }));
+    const holdsMoney = payments.some(
+      (p) => p.status === PaymentRecordStatus.PAID,
+    );
+    if (holdsMoney && !opts.allowPaid) return false;
+    const refund = opts.allowPaid
+      ? resolveRefund(rows, opts.refundAmount, opts.refundMethod)
+      : null;
+
+    const now = new Date();
+    const claimed = await tx.order.updateMany({
+      where: {
+        id: order.id,
+        tenantId,
+        status: OrderStatus.PENDING,
+        paymentMethod: PaymentMethod.SEPAY,
+      },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancelledAt: now,
+        cancelledById: opts.cancelledById,
+        cancelReason: opts.reason,
+      },
+    });
+    if (claimed.count !== 1) return false;
+
+    // Mã QR còn mở hết hiệu lực cùng đơn (tiền về sau đó bị webhook từ chối và ghi sổ chưa gắn đơn).
+    await cancelCounterQr(
+      tx,
+      openQrPayments(payments),
+      opts.cancelledById,
+      now,
+    );
+    let refundPaymentId: string | undefined;
+    if (refund && refund.amount > 0) {
+      const refunded = await recordRefundPayment(tx, {
+        order,
+        amount: refund.amount,
+        method: refund.method,
+        refundOfPaymentId: refund.refundOfPaymentId,
+        actorId: opts.cancelledById,
+        note: opts.reason,
+        description: `Hoàn tiền huỷ đơn ${order.code}`,
+        now,
+      });
+      refundPaymentId = refunded.id;
+    }
+    const afterCancel = await syncOrderPaymentStatus(tx, order.id);
+    // Tiền giữ lại sau khi hoàn ghi là thu nhập khác.
+    await postOtherIncome(tx, {
+      orderId: order.id,
+      kept: afterCancel.net,
+      actor: { id: opts.cancelledById },
+      now,
+      source: SalesJournalSource.POS_CANCEL,
+    });
+
+    await recordOrderEvent(tx, actor, {
+      tenantId,
+      orderId: order.id,
+      type: OrderEventType.CANCELLED,
+      fromStatus: OrderStatus.PENDING,
+      toStatus: OrderStatus.CANCELLED,
+      metadata: {
+        reason: opts.reason,
+        paymentReference: order.paymentReference,
+        grandTotal: Number(order.grandTotal),
+        ...(refund
+          ? {
+              refundAmount: refund.amount,
+              refundMethod: refund.amount > 0 ? refund.method : null,
+              paymentId: refundPaymentId,
+            }
+          : {}),
+      },
+    });
+
+    // Trả hàng về đúng các lô đơn đã lấy.
+    for (const line of order.items.filter((item) =>
+      STOCKED_LINE_TYPES.includes(item.lineType),
+    )) {
+      await this.inventory.returnDrawn(tx, {
+        tenantId,
+        productItemId: line.productItemId,
+        toLocationId: order.branchId, // id Branch cũng là id Location
+        quantity: Number(line.quantity),
+        drawnBy: { orderItemId: line.id },
+        ledger: {
+          type: InventoryTxType.SALE_REVERSAL,
+          referenceType: InventoryRefType.ORDER,
+          referenceId: order.id,
+          createdById: opts.cancelledById,
+        },
+        ifNeverDrawn: { sourceType: LotSourceType.OPENING },
+      });
+    }
+    await this.invoices.voidPending(tx, order.id);
+    return true;
+  }
+
+  /** Huỷ đơn quầy chờ QR từ nút "Hủy đơn này". */
+  async cancelPosSale(
+    user: AuthUser,
+    tenantId: string,
+    id: string,
+    dto: CancelPosSaleDto,
+  ) {
+    const order = await this.findRow(user, tenantId, id);
+    if (
+      order.fulfillmentType !== FulfillmentType.TAKEAWAY ||
+      order.status !== OrderStatus.PENDING ||
+      order.paymentMethod !== PaymentMethod.SEPAY
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_NOT_PENDING_SEPAY,
+        message: 'This order is no longer awaiting SePay payment',
+      });
+    }
+    if (!can(user, 'orders', 'update') && order.userId !== user.userId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_STEP_DENIED,
+        message: 'You can only cancel a sale you rang up yourself',
+      });
+    }
+
+    const done = await this.prisma.$transaction((tx) =>
+      this.cancelPendingPosSale(tx, tenantId, order, userActor(user), {
+        reason: dto.reason?.trim() || 'Khách không thanh toán QR',
+        cancelledById: user.userId,
+        allowPaid: true,
+        refundAmount: dto.refundAmount,
+        refundMethod: dto.refundMethod,
+      }),
+    );
+    if (!done) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_PAYMENT_CONFLICT,
+        message: 'This order has just been paid or cancelled, please reload',
+      });
+    }
+    this.announceCancelled(order, 'MANUAL');
+    return this.toResponse(await this.findRow(user, tenantId, id));
+  }
+
+  /** Cron huỷ đơn quầy chờ QR đã quá 15 phút và chưa có tiền. */
+  async cancelExpiredPosSales(now: Date = new Date()): Promise<number> {
+    const candidates = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.PENDING,
+        paymentMethod: PaymentMethod.SEPAY,
+        fulfillmentType: FulfillmentType.TAKEAWAY,
+        createdAt: { lte: qrIssuedBefore(now) },
+        payments: { none: { status: PaymentRecordStatus.PAID } },
+      },
+      include: ORDER_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+
+    let cancelled = 0;
+    for (const order of candidates) {
+      const open = openQrPayments(order.payments);
+      const expired =
+        open.length > 0
+          ? open.every((payment) => isQrExpired(payment, now))
+          : isQrExpired({ createdAt: order.createdAt }, now);
+      if (!expired) continue;
+      try {
+        const done = await this.prisma.$transaction((tx) =>
+          this.cancelPendingPosSale(tx, order.tenantId, order, SYSTEM_ACTOR, {
+            reason: 'QR hết hạn',
+            cancelledById: null,
+            allowPaid: false,
+          }),
+        );
+        if (!done) continue; // webhook hay thu ngân vừa chốt trước
+        cancelled += 1;
+        this.announceCancelled(order, 'QR_EXPIRED');
+        // Phát thay đổi bằng hàm thường để không thêm phụ thuộc vào constructor.
+        publishChange(
+          this.realtime,
+          {
+            tenantId: order.tenantId,
+            spec: OrderChanges.qrExpiredCancelled,
+            target: { subjectId: order.id, code: order.code },
+            actor: { source: 'SYSTEM' },
+          },
+          this.logger,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to cancel expired QR order ${order.code}`,
+          error instanceof Error ? error.stack : error,
+        );
+      }
+    }
+    return cancelled;
+  }
+
+  /** Báo màn hình cửa hàng đơn quầy vừa bị huỷ. */
+  private announceCancelled(
+    order: { id: string; tenantId: string },
+    reason: 'QR_EXPIRED' | 'MANUAL',
+  ) {
+    this.realtime.emitToRoom(`tenant:${order.tenantId}`, 'order:cancelled', {
+      orderId: order.id,
+      status: OrderStatus.CANCELLED,
+      reason,
+    });
+  }
+
+  /** Chốt đơn quầy chờ SePay bằng tiền mặt hoặc chuyển khoản tay. */
   async payOffline(
     user: AuthUser,
     tenantId: string,
@@ -355,28 +849,65 @@ export class OrderService {
       });
     }
 
-    const grandTotal = Number(order.grandTotal);
-    const customerPay = dto.customerPay ?? grandTotal;
-    if (customerPay < grandTotal) {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_CUSTOMER_PAY_TOO_LOW,
-        message: `The customer paid ${customerPay}, which is less than the ${grandTotal} due`,
-      });
-    }
     const paymentMethod = dto.paymentMethod ?? PaymentMethod.CASH;
-
+    const now = new Date();
+    let paidNow = 0;
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockOrder(tx, tenantId, id);
+      // Đọc lại SAU khoá: webhook có thể vừa chốt hay huỷ đơn.
+      const current = await tx.order.findUniqueOrThrow({
+        where: { id },
+        select: {
+          status: true,
+          paymentMethod: true,
+          grandTotal: true,
+          depositAmount: true,
+        },
+      });
+      if (
+        current.status !== OrderStatus.PENDING ||
+        current.paymentMethod !== PaymentMethod.SEPAY
+      ) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_PAYMENT_CONFLICT,
+          message: 'This order has just been paid or cancelled, please reload',
+        });
+      }
+      const payments = await tx.payment.findMany({ where: { orderId: id } });
+      // Huỷ mã QR đang chờ.
+      await cancelCounterQr(tx, openQrPayments(payments), userId, now);
+      const derived = derivePaymentStatus(
+        current.grandTotal,
+        paymentRowsOf({ depositAmount: current.depositAmount, payments }),
+      );
+      const due = derived.due;
+      if (due === 0) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_PAYMENT_CONFLICT,
+          message: 'Nothing is left to collect on this order',
+        });
+      }
+      const customerPay = toDong(dto.customerPay ?? due);
+      if (customerPay < due) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_CUSTOMER_PAY_TOO_LOW,
+          message: `The customer paid ${customerPay}, which is less than the ${due} due`,
+        });
+      }
+      paidNow = due;
+
       const claimed = await tx.order.updateMany({
         where: {
           id,
+          tenantId,
           status: OrderStatus.PENDING,
           paymentMethod: PaymentMethod.SEPAY,
         },
         data: {
-          status: OrderStatus.COMPLETED,
+          ...completedData(now),
           paymentMethod,
           customerPay,
-          change: Math.max(0, customerPay - grandTotal),
+          change: Math.max(0, customerPay - due),
           ...(dto.note ? { note: dto.note } : {}),
         },
       });
@@ -387,112 +918,232 @@ export class OrderService {
         });
       }
 
-      const settled = await tx.order.findUniqueOrThrow({
+      // Ghi khoản tiền, dòng thu chi và trạng thái thanh toán.
+      const recorded = await recordPosPayments(tx, {
+        order,
+        method: paymentMethod,
+        amountDue: due,
+        customerPay,
+        kind: derived.received === 0 ? PaymentKind.FULL : PaymentKind.BALANCE,
+        actorId: userId,
+        now,
+      });
+
+      await recordOrderEvent(tx, userActor(user), {
+        tenantId,
+        orderId: id,
+        type: OrderEventType.PAID_OFFLINE,
+        fromStatus: OrderStatus.PENDING,
+        toStatus: OrderStatus.COMPLETED,
+        metadata: {
+          method: paymentMethod,
+          amount: customerPay,
+          change: recorded.change,
+          paymentId: recorded.paymentId ?? undefined,
+          grandTotal: toDong(current.grandTotal),
+        },
+      });
+
+      await postSale(tx, {
+        orderId: id,
+        actor: { id: userId },
+        now,
+        source: SalesJournalSource.POS_PAY_OFFLINE,
+      });
+      await this.invoices.issueForOrder(tx, id, userId);
+      return tx.order.findUniqueOrThrow({
         where: { id },
         include: ORDER_INCLUDE,
       });
-      await this.writeSaleCashFlows(tx, settled, paymentMethod, userId);
-      return settled;
     });
 
-    this.announcePaid(updated, grandTotal, paymentMethod);
+    this.announcePaid(updated, paidNow, paymentMethod, {
+      partial: false,
+      due: 0,
+      paymentStatus: updated.paymentStatus,
+    });
     return this.toResponse(updated);
   }
 
-  /** The SePay webhook's side of a transfer landing. Returns `null` rather than throwing when there is nothing to settle, so the controller can answer 200 and stop the retries; an already-settled order is logged loudly, because somebody has to refund by hand. */
-  async completeSepayOrder(
+  /** Phát mã QR cho phần còn lại của đơn quầy; mã còn sống đúng số tiền thì dùng lại. */
+  async createPosQr(user: AuthUser, tenantId: string, id: string) {
+    const order = await this.findRow(user, tenantId, id);
+    if (
+      order.fulfillmentType !== FulfillmentType.TAKEAWAY ||
+      order.status !== OrderStatus.PENDING ||
+      order.paymentMethod !== PaymentMethod.SEPAY
+    ) {
+      throw new ConflictException({
+        code: ErrorCode.ORDER_NOT_PENDING_SEPAY,
+        message: 'This order is no longer awaiting SePay payment',
+      });
+    }
+    if (!can(user, 'orders', 'update') && order.userId !== user.userId) {
+      throw new ForbiddenException({
+        code: ErrorCode.ORDER_STEP_DENIED,
+        message: 'You can only take payment on a sale you rang up yourself',
+      });
+    }
+    const banking = await requireTenantBanking(this.prisma, tenantId);
+
+    const now = new Date();
+    const issued = await this.prisma.$transaction(async (tx) => {
+      await lockOrder(tx, tenantId, id);
+      const current = await tx.order.findUniqueOrThrow({
+        where: { id },
+        select: {
+          status: true,
+          paymentMethod: true,
+          grandTotal: true,
+          depositAmount: true,
+        },
+      });
+      if (
+        current.status !== OrderStatus.PENDING ||
+        current.paymentMethod !== PaymentMethod.SEPAY
+      ) {
+        throw new ConflictException({
+          code: ErrorCode.ORDER_PAYMENT_CONFLICT,
+          message: 'This order has just been paid or cancelled, please reload',
+        });
+      }
+      const payments = await tx.payment.findMany({
+        where: { orderId: id },
+        orderBy: { createdAt: 'asc' },
+      });
+      const derived = derivePaymentStatus(
+        current.grandTotal,
+        paymentRowsOf({ depositAmount: current.depositAmount, payments }),
+      );
+      if (derived.due === 0) {
+        throw new BadRequestException({
+          code: ErrorCode.ORDER_COLLECTION_AMOUNT_MISMATCH,
+          message: 'Nothing is left to collect on this order',
+        });
+      }
+      const open = openQrPayments(payments);
+      const live = open.find(
+        (payment) =>
+          payment.status === PaymentRecordStatus.PENDING &&
+          !isQrExpired(payment, now) &&
+          toDong(payment.requestedAmount ?? payment.amount) === derived.due,
+      );
+      if (live && open.length === 1) {
+        return { payment: live, amount: derived.due };
+      }
+      await cancelCounterQr(tx, open, user.userId, now);
+      const payment = await openPosQrPayment(tx, {
+        order,
+        kind: derived.received === 0 ? PaymentKind.FULL : PaymentKind.BALANCE,
+        amount: derived.due,
+        reference: generateReference(REFERENCE_PREFIX.ORDER),
+        issuedAt: now,
+        actorId: user.userId,
+      });
+      return { payment, amount: derived.due };
+    });
+
+    // Mã chỉ phát qua `sepayQrView` (cửa duy nhất); mã vừa tạo hay dùng lại đều còn hạn.
+    const view = sepayQrView(
+      banking,
+      {
+        amount: issued.amount,
+        reference: issued.payment.paymentReference!,
+        expiresAt: issued.payment.expiresAt,
+        createdAt: issued.payment.createdAt,
+      },
+      'issue',
+      now,
+    );
+    return {
+      order: this.toResponse(await this.findRow(user, tenantId, id)),
+      qrUrl: view.qrUrl,
+      qrExpiresAt: view.expiresAt.toISOString(),
+      amount: issued.amount,
+    };
+  }
+
+  /** Xử lý tiền SePay về cho đơn quầy (tham số rời, cho test). */
+  completeSepayOrder(
     tenantId: string,
     paymentReference: string,
     sepayTransactionId: string | null,
     transferAmount: number,
-  ) {
-    const pending = await this.prisma.order.findFirst({
-      where: {
-        tenantId,
-        paymentReference,
-        status: OrderStatus.PENDING,
-        paymentMethod: PaymentMethod.SEPAY,
-      },
-      select: { id: true, grandTotal: true },
-    });
-
-    if (!pending) {
-      const settled = await this.prisma.order.findFirst({
-        where: { tenantId, paymentReference },
-        select: { id: true, status: true, paymentMethod: true },
-      });
-      if (settled) {
-        this.logger.warn(
-          `SePay transfer ${sepayTransactionId ?? '(no id)'} (${transferAmount}) for ${paymentReference} ignored - ` +
-            `order ${settled.id} is already ${settled.status} via ${settled.paymentMethod}. Manual refund may be required.`,
-        );
-      }
-      return null;
-    }
-
-    const grandTotal = Number(pending.grandTotal);
-    if (transferAmount < grandTotal) {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_TRANSFER_AMOUNT_SHORT,
-        message: `Transfer is short: ${grandTotal} due, ${transferAmount} received`,
-      });
-    }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.order.updateMany({
-        where: { id: pending.id, status: OrderStatus.PENDING },
-        data: { status: OrderStatus.COMPLETED, sepayTransactionId },
-      });
-      if (claimed.count === 0) return null;
-
-      const settled = await tx.order.findUniqueOrThrow({
-        where: { id: pending.id },
-        include: ORDER_INCLUDE,
-      });
-      await tx.cashFlow.create({
-        data: {
-          tenantId: settled.tenantId,
-          branchId: settled.branchId,
-          orderId: settled.id,
-          createdById: settled.userId,
-          flowType: 'INCOME',
-          amount: transferAmount,
-          paymentMethod: PaymentMethod.SEPAY,
-          paymentReference: settled.paymentReference,
-          // Stored on both rows, as iKiotMS-BE did: the order answers "was this paid", the cash flow is what a reconciliation against the bank statement reads.
-          sepayTransactionId,
-          description: `SePay - ${settled.paymentReference}`,
-        },
-      });
-      return settled;
-    });
-
-    if (!updated) return null;
-
-    this.announcePaid(updated, transferAmount, PaymentMethod.SEPAY);
-
-    // Worth a real notification, unlike the rest of the order flow: the confirmation arrives minutes later, when the cashier is no longer watching that screen.
-    const managers = await this.notifications.managersOfLocation({
-      tenantId: updated.tenantId,
-      branchId: updated.branchId,
-      warehouseId: null,
-    });
-    await this.notifications.notify({
-      tenantId: updated.tenantId,
-      recipientIds: [updated.userId, ...managers],
-      referenceId: updated.id,
-      ...OrderNotificationTemplates.paid(
-        updated.paymentReference ?? '',
-        transferAmount,
-      ),
-    });
-
-    return this.toResponse(updated);
+    now: Date = new Date(),
+    meta: Partial<Omit<SepayTransfer, 'dedupeKey' | 'amount'>> = {},
+  ): Promise<{ message: string } | null> {
+    return this.completeSepayTransfer(
+      tenantId,
+      paymentReference,
+      buildSepayTransfer({
+        ...meta,
+        sepayTransactionId,
+        amount: transferAmount,
+      }),
+      now,
+    );
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
+  /** Xử lý tiền SePay về cho đơn quầy; null khi mã không thuộc đơn quầy nào. */
+  async completeSepayTransfer(
+    tenantId: string,
+    paymentReference: string,
+    transfer: SepayTransfer,
+    now: Date = new Date(),
+  ): Promise<{ message: string } | null> {
+    const result = await processSepayTransfer(this.sepayDeps(), {
+      tenantId,
+      reference: paymentReference,
+      transfer,
+      scope: 'POS',
+      now,
+    });
+    switch (result.kind) {
+      case 'NOT_OURS':
+        return null;
+      case 'DUPLICATE':
+        return { message: SEPAY_DUPLICATE_MESSAGE };
+      case 'REJECTED':
+        return { message: result.message };
+      case 'SETTLED': {
+        this.announcePaid(result.order, result.amount, PaymentMethod.SEPAY, {
+          partial: result.partial,
+          due: result.due,
+          paymentStatus: result.paymentStatus,
+        });
+        publishChange(
+          this.realtime,
+          {
+            tenantId: result.order.tenantId,
+            spec: result.partial
+              ? OrderChanges.qrPartiallyPaid
+              : OrderChanges.qrPaid,
+            target: { subjectId: result.order.id, code: result.order.code },
+            actor: { source: 'WEBHOOK' },
+          },
+          this.logger,
+        );
+        // Gửi thông báo vì xác nhận đến sau vài phút.
+        await notifySettled(this.sepayDeps(), result);
+        return {
+          message: result.partial
+            ? 'Partial payment recorded'
+            : 'Order payment confirmed',
+        };
+      }
+    }
+  }
 
-  private async assertCustomerExists(tenantId: string, customerId: string) {
+  private sepayDeps() {
+    return {
+      prisma: this.prisma,
+      notifications: this.notifications,
+      invoices: this.invoices,
+      logger: this.logger,
+    };
+  }
+
+  async assertCustomerExists(tenantId: string, customerId: string) {
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, tenantId, isDeleted: false },
       select: { id: true },
@@ -504,71 +1155,8 @@ export class OrderService {
       });
   }
 
-  /** Everything about the sale's money, worked out here rather than taken on trust. The promotion discount is priced server-side through the same engine `/promotions/calculate` runs - it used to be assumed the client had echoed a breakdown back, so a till that sent only a total got a full-price order and no error - and the engine re-checks eligibility, so an expired or out-of-branch promotion is a 400 instead of a discount. The variants are looked up twice on a promotion sale; one extra indexed read is the price of the engine owning its own view of the cart. */
-  private async priceOrder(tenantId: string, dto: CreateOrderDto) {
-    const lines = await this.priceLines(tenantId, dto);
-    const promotionIds = [
-      ...new Set((dto.appliedPromotions ?? []).map((p) => p.promotionId)),
-    ];
-
-    if (promotionIds.length === 0) {
-      if (dto.discountType === 'ORDER' && !dto.discountValue) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_DISCOUNT_VALUE_REQUIRED,
-          message:
-            'An order-level discount needs a discountValue greater than 0',
-        });
-      }
-      return {
-        lines,
-        appliedPromotions: [],
-        discountType: dto.discountType ?? null,
-        discountValue: dto.discountValue ?? 0,
-      };
-    }
-
-    // One discountType per order, so the two kinds can't be stacked - the schema has nowhere to record a total that is part manual and part promotion.
-    if (dto.discountType === 'ORDER') {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_DISCOUNT_CONFLICT,
-        message:
-          'An order cannot carry both an order-level discount and a promotion',
-      });
-    }
-
-    const pricing = await this.promotions.calculate(tenantId, {
-      branchId: dto.branchId,
-      customerId: dto.customerId,
-      items: lines.map((line) => ({
-        productItemId: line.productItemId,
-        quantity: line.quantity,
-        unitPrice: line.unitPrice,
-      })),
-      promotionIds,
-    });
-
-    // Joined by position, never by `productItemId`: the engine returns one entry per cart line in cart order, and keying by variant id collapsed duplicate lines, handing each the sum of their shares - ten identical lines under a 10% promotion came out at 100% off.
-    if (pricing.itemBreakdown.length !== lines.length) {
-      throw new BadRequestException({
-        code: ErrorCode.ORDER_PROMOTION_ALLOCATION_MISMATCH,
-        message: 'The discount could not be matched to the order lines',
-      });
-    }
-
-    return {
-      // The engine's allocation replaces whatever the client sent, including a manual line discount: two discounts on one line have no home in the schema.
-      lines: lines.map((line, index) => ({
-        ...line,
-        discountAmount: pricing.itemBreakdown[index].discountAmount,
-      })),
-      appliedPromotions: pricing.appliedPromotions,
-      discountType: 'PROMOTION',
-      discountValue: pricing.totalDiscount,
-    };
-  }
-
-  /** A sale with nobody attached still needs a customer row, so each tenant gets one walk-in record created on first use - an `upsert`, since two anonymous sales at once would both find nothing and both insert. */
-  private async resolveWalkInCustomer(
+  /** Khách vãng lai của tenant, tạo ở lần dùng đầu. */
+  async resolveWalkInCustomer(
     tx: Prisma.TransactionClient,
     tenantId: string,
   ): Promise<string> {
@@ -592,155 +1180,25 @@ export class OrderService {
     return customer.id;
   }
 
-  /** SePay can't be offered without somewhere for the money to land. */
-  private async requireBanking(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        bankingBankName: true,
-        bankingAccountNumber: true,
-        bankingAccountName: true,
-      },
-    });
-    if (!tenant?.bankingAccountNumber || !tenant.bankingBankName) {
-      throw new BadRequestException({
-        code: ErrorCode.TENANT_BANKING_NOT_CONFIGURED,
-        message:
-          'This shop has not configured its bank details for SePay payments',
-      });
-    }
-    return tenant;
-  }
-
-  /** Resolves each line's variant and fills in the product name for the receipt. */
-  /** The lines of a sale, priced from the catalogue. `unitPrice` comes from `ProductItem.retailPrice`, never the request, which used to let `unitPrice: 0` ring up a full basket for nothing. The manual per-line discount is capped at the line's own total and going over is a 400, not a silent trim - clamping would leave the stored `discount_amount` larger than the discount given, and `/stats/top-products` would report that product's revenue as negative. */
-  private async priceLines(tenantId: string, dto: CreateOrderDto) {
-    const ids = [...new Set(dto.items.map((item) => item.productItemId))];
-    const variants = await this.prisma.productItem.findMany({
-      where: { tenantId, id: { in: ids } },
-      select: { id: true, sku: true, productName: true, retailPrice: true },
-    });
-    if (variants.length !== ids.length) {
-      throw new NotFoundException({
-        code: ErrorCode.PRODUCT_ITEM_NOT_FOUND,
-        message: 'Product item not found in this order',
-      });
-    }
-    const byId = new Map(variants.map((v) => [v.id, v]));
-
-    return dto.items.map((item) => {
-      const variant = byId.get(item.productItemId)!;
-      const unitPrice = Number(variant.retailPrice);
-      const discountAmount = item.discountAmount ?? 0;
-      // Rounded the same way `grandTotalOf` rounds the line, so the cap and the subtraction agree to the đồng.
-      const lineTotal = Math.round(item.quantity * unitPrice);
-      if (discountAmount > lineTotal) {
-        throw new BadRequestException({
-          code: ErrorCode.ORDER_LINE_DISCOUNT_EXCEEDS_TOTAL,
-          message: `A discount of ${discountAmount} exceeds the line total for ${variant.sku ?? variant.productName} (${lineTotal})`,
-        });
-      }
-      return {
-        productItemId: item.productItemId,
-        productName: variant.productName,
-        sku: variant.sku,
-        quantity: item.quantity,
-        unitPrice,
-        discountAmount,
-      };
-    });
-  }
-
-  /** What the customer actually owes: line totals minus per-line discounts, then a manual whole-order discount. A PROMOTION discount is not subtracted again - `priceOrder` has already spread it across the lines. Never below zero. */
-  private grandTotalOf(
-    lines: { quantity: number; unitPrice: number; discountAmount: number }[],
-    discountType: string | null,
-    discountValue: number,
-  ): number {
-    // Each line is rounded before its discount comes off, exactly as `pricing-engine.ts` does; rounding once at the end would leave a promotion sale a đồng or two from the total the preview quoted.
-    const afterLineDiscounts = lines.reduce(
-      (sum, line) =>
-        sum +
-        Math.max(
-          0,
-          Math.round(line.quantity * line.unitPrice) - line.discountAmount,
-        ),
-      0,
-    );
-    // Capped at what the order is actually worth: `Math.max(0, …)` alone only stopped the total going negative, so a cashier could still settle any basket at 0đ.
-    const orderDiscount =
-      discountType === 'ORDER'
-        ? Math.min(Math.max(0, discountValue), afterLineDiscounts)
-        : 0;
-    return Math.max(0, Math.round(afterLineDiscounts - orderDiscount));
-  }
-
-  /** The money rows for a completed sale. A cash sale with change is two rows, since the drawer really took the full note and handed some back; only the income row carries `orderId`, so `@@unique([orderId, flowType])` still holds when a RETURN writes its own EXPENSE row. */
-  private async writeSaleCashFlows(
-    tx: Prisma.TransactionClient,
-    order: {
-      id: string;
-      tenantId: string;
-      branchId: string;
-      grandTotal: Prisma.Decimal;
-      customerPay: Prisma.Decimal | null;
-      change: Prisma.Decimal | null;
-      paymentReference: string | null;
-    },
-    paymentMethod: string,
-    createdById: string,
-  ) {
-    const change = Number(order.change ?? 0);
-    const givesChange =
-      paymentMethod === PaymentMethod.CASH &&
-      change > 0 &&
-      order.customerPay !== null;
-
-    await tx.cashFlow.create({
-      data: {
-        tenantId: order.tenantId,
-        branchId: order.branchId,
-        orderId: order.id,
-        createdById,
-        flowType: 'INCOME',
-        amount: givesChange ? order.customerPay! : order.grandTotal,
-        paymentMethod,
-        paymentReference: order.paymentReference,
-        description: `Đơn hàng ${order.paymentReference}`,
-      },
-    });
-
-    if (givesChange) {
-      await tx.cashFlow.create({
-        data: {
-          tenantId: order.tenantId,
-          branchId: order.branchId,
-          createdById,
-          flowType: 'EXPENSE',
-          amount: change,
-          paymentMethod,
-          paymentReference: order.paymentReference,
-          description: `Tiền thối cho đơn ${order.paymentReference}`,
-        },
-      });
-    }
-  }
-
-  /** Tells the shop floor an order just got paid. The old `order:<id>` room is gone - the gateway only puts sockets in rooms the server chose - so this goes to the tenant room with the order id in the payload. */
+  /** Báo màn hình cửa hàng đơn vừa được thanh toán. */
   private announcePaid(
     order: { id: string; tenantId: string; status: string },
     paidAmount: number,
     paymentMethod: string,
+    extra: { partial: boolean; due: number; paymentStatus: string },
   ) {
     this.realtime.emitToRoom(`tenant:${order.tenantId}`, 'order:paid', {
       orderId: order.id,
       status: order.status,
       paidAmount,
       paymentMethod,
+      partial: extra.partial,
+      due: extra.due,
+      paymentStatus: extra.paymentStatus,
     });
   }
 
-  /** One order, and the check that this account may touch it - read or write. The branch check used to live in `findOne` alone, so an account could RETURN an order it wasn't allowed to see, crediting that branch's stock back and posting a refund to its ledger. */
+  /** Lấy đơn và kiểm quyền đọc/ghi theo chi nhánh. */
   private async findRow(
     user: AuthUser,
     tenantId: string,
@@ -766,12 +1224,28 @@ export class OrderService {
     return order;
   }
 
-  /** Decimals become numbers - the till does arithmetic on them. */
+  /** Chuyển Decimal thành number vì quầy tính toán trên chúng. */
   private toResponse(order: OrderRow) {
-    const { grandTotal, customerPay, change, discountValue, items, ...rest } =
-      order;
+    const {
+      grandTotal,
+      customerPay,
+      change,
+      discountValue,
+      items,
+      payments,
+      ...rest
+    } = order;
     return {
       ...rest,
+      payments: payments.map((payment) => ({
+        ...payment,
+        amount: Number(payment.amount),
+        requestedAmount:
+          payment.requestedAmount === null
+            ? null
+            : Number(payment.requestedAmount),
+      })),
+      branch: namedBranch(rest.branch),
       grandTotal: Number(grandTotal),
       customerPay: customerPay === null ? null : Number(customerPay),
       change: change === null ? null : Number(change),

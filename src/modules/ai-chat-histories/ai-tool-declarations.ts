@@ -1,4 +1,4 @@
-/** What the assistant may look up, described for Gemini: the same thirty tools and wording as `ai.service.js` (the model reasons over that text), with `recordPerPage` renamed to `limit` and dropped filters removed rather than ignored. `permission` is not sent to Gemini - it is the gate `AiToolsService.run` checks. */
+/** Khai báo các tool của trợ lý cho Gemini; quyền kiểm ở `AiToolsService.run`. */
 
 export interface ToolDeclaration {
   name: string;
@@ -133,46 +133,11 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        // Was `keyword` + `role`: roles are tenant-defined rows now, so the model filters by where somebody works instead.
+        // Lọc nhân viên theo nơi làm việc.
         search: STRING('Từ khóa tìm kiếm (tên, email, số điện thoại)'),
         status: STRING('Lọc theo trạng thái (ACTIVE, INACTIVE)'),
         branchId: STRING('Lọc nhân viên thuộc một chi nhánh'),
         warehouseId: STRING('Lọc nhân viên thuộc một kho hàng'),
-        ...PAGING,
-      },
-    },
-  },
-  {
-    name: 'getStaffAttendanceReport',
-    description:
-      'Thống kê lịch sử chấm công, số ngày làm việc, đi muộn của nhân viên.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        userId: STRING('ID của nhân viên cần kiểm tra'),
-        status: STRING(
-          'Trạng thái chấm công (CHECKED_IN, CHECKED_OUT, ABSENT)',
-        ),
-        checkinFrom: STRING('Ngày bắt đầu tìm kiếm chấm công (YYYY-MM-DD)'),
-        checkinTo: STRING('Ngày kết thúc tìm kiếm chấm công (YYYY-MM-DD)'),
-        branchId: STRING('Lọc theo chi nhánh'),
-        ...PAGING,
-      },
-    },
-  },
-  {
-    name: 'getLeaveRequests',
-    description:
-      'Xem danh sách đơn xin nghỉ phép của nhân viên và trạng thái phê duyệt.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        userId: STRING('ID của nhân viên'),
-        status: STRING(
-          'Trạng thái đơn (PENDING, APPROVED, REJECTED, CANCELLED, EXPIRED)',
-        ),
-        startDate: STRING('Ngày bắt đầu khoảng nghỉ (YYYY-MM-DD)'),
-        endDate: STRING('Ngày kết thúc khoảng nghỉ (YYYY-MM-DD)'),
         ...PAGING,
       },
     },
@@ -191,15 +156,6 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
         branchId: STRING('Lọc theo chi nhánh'),
         ...PAGING,
       },
-    },
-  },
-  {
-    name: 'getPayrollSummary',
-    description:
-      'Thống kê danh sách bảng lương và chi phí quỹ lương chi trả cho nhân sự.',
-    parameters: {
-      type: 'OBJECT',
-      properties: { name: STRING('Tên bảng lương cần tìm'), ...PAGING },
     },
   },
   {
@@ -278,7 +234,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        // The old tool searched by `requestNumber`; the ported list endpoint filters by status and movement type.
+        // Tool cũ tìm theo `requestNumber`; endpoint danh sách đã port lọc theo status và loại điều chuyển.
         status: STRING(
           'Trạng thái phiếu (DRAFT, PENDING, SHIPPED, COMPLETED, CANCELLED)',
         ),
@@ -371,7 +327,7 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
         ...DATE_RANGE,
         flowType: STRING("Loại dòng tiền ('INCOME' thu hoặc 'EXPENSE' chi)"),
         flow: STRING(
-          "Luồng tiền theo tiền tố mã ('ORD' bán hàng, 'SUP' trả NCC, 'PAYR' lương)",
+          "Luồng tiền theo tiền tố mã ('ORD' bán hàng, 'SUP' trả NCC)",
         ),
         branchId: STRING('Mã chi nhánh'),
         warehouseId: STRING('Mã kho hàng'),

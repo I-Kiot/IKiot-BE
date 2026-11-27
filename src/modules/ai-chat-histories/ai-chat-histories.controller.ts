@@ -18,14 +18,14 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Five routes at the old `/ai` paths, gated on the `ai_chat` catalog resource instead of the fixed roles the old router named. */
+/** Controller trợ lý AI, quyền `ai_chat`. */
 @ApiTags('ai')
 @ApiBearerAuth('bearer')
 @Controller('ai')
 export class AIChatHistoryController {
   constructor(private readonly service: AIChatHistoryService) {}
 
-  /** `create` rather than `read`: it writes a conversation, calls a paid API and reaches into the shop's data. */
+  /** Dùng `create` thay vì `read`: route này ghi hội thoại, gọi API tính phí và đọc dữ liệu của shop. */
   @Permissions('ai_chat', 'create')
   @HttpCode(HttpStatus.OK)
   @Post('chat')

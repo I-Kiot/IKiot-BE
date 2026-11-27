@@ -13,7 +13,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** `POST /tickets` - a shop asking the platform for help. */
+/** `POST /tickets`: shop hỏi nền tảng để được hỗ trợ. */
 export class CreateTicketDto {
   @IsString()
   @trim()
@@ -21,7 +21,7 @@ export class CreateTicketDto {
   @MaxLength(200)
   title: string;
 
-  /** Also becomes the first message of the thread, as the old controller had it. */
+  /** Cũng là tin nhắn đầu tiên của thread, như controller cũ. */
   @IsString()
   @trim()
   @IsNotEmpty({ message: 'Nội dung là bắt buộc' })
@@ -35,7 +35,6 @@ export class CreateTicketDto {
   priority?: string;
 }
 
-/** Both reply routes - the shop's and the operator's - take the same body. */
 export class ReplyTicketDto {
   @IsString()
   @trim()

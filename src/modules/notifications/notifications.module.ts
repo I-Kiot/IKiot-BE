@@ -6,7 +6,7 @@ import { AdminNotificationService } from './admin-notifications.service';
 import { EmailModule } from '../../common/email/email.module';
 import { PushModule } from '../../common/push/push.module';
 
-// EmailModule for announcements, PushModule for the FCM leg of notify(). NotificationService is exported; the admin half is not, because nothing else should read the operators' feed.
+// Module thông báo; chỉ xuất NotificationService.
 @Module({
   imports: [EmailModule, PushModule],
   controllers: [NotificationController, AdminNotificationController],

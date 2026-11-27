@@ -6,7 +6,7 @@ import {
   NestInterceptor,
   OnModuleInit,
 } from '@nestjs/common';
-import { DiscoveryService } from '@nestjs/core';
+import { DiscoveryService, Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { Observable, tap } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -14,6 +14,7 @@ import { SystemRole } from '../constants/system-role';
 import type { AuthUser } from '../types/auth-user.type';
 import type { AuditableLoginResponse } from '../types/login-response.type';
 import { AuditTemplate } from '../audit/audit-descriptor';
+import { SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
 import type { AuditDescriptor } from '../audit/audit-descriptor';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -33,7 +34,7 @@ interface ResolvedActor {
 
 type AuthedRequest = Request & { user?: AuthUser };
 
-// Ported from iKiotMS-BE's auditMiddleware.js, with two departures: every actor except CUSTOMER is logged, and route-specific wording lives in @AuditTemplate() providers rather than here.
+// Ghi nhật ký hoạt động cho mọi actor trừ CUSTOMER, mô tả lấy từ @AuditTemplate().
 @Injectable()
 export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   private readonly logger = new Logger(AuditInterceptor.name);
@@ -42,9 +43,10 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly discovery: DiscoveryService,
+    private readonly reflector: Reflector,
   ) {}
 
-  /** Collected once at startup: an @AuditTemplate() provider registers itself by existing, so there is no list in AppModule to keep updated. */
+  /** Thu thập các provider @AuditTemplate() một lần lúc khởi động. */
   onModuleInit(): void {
     this.descriptors = this.discovery
       .getProviders({ metadataKey: AuditTemplate.KEY })
@@ -57,6 +59,14 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
 
     const request = context.switchToHttp().getRequest<AuthedRequest>();
     if (!MUTATING_METHODS.has(request.method)) return next.handle();
+    if (
+      this.reflector.getAllAndOverride<boolean>(SKIP_AUDIT_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ])
+    ) {
+      return next.handle();
+    }
 
     const path = request.originalUrl ?? request.url;
     if (
@@ -108,7 +118,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
     });
   }
 
-  /** `request.ip` is already right (Express derives it from X-Forwarded-For only under `trust proxy`); reading the header directly would let a client forge its own audit IP. */
+  /** Lấy IP từ `request.ip`, không đọc thẳng header để tránh giả IP. */
   private resolveIp(request: Request): string {
     const raw = request.ip ?? request.socket?.remoteAddress ?? '';
     if (!raw) return '127.0.0.1';
@@ -135,7 +145,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       };
     }
 
-    // The login routes are @Public(), so request.user isn't set - resolve the actor from the response body instead.
+    // Route login là @Public() nên request.user không được set - lấy actor từ response body.
     if (!path.includes('/login') || !this.isLoginResponse(body)) return null;
 
     const { user } = body;
@@ -144,13 +154,13 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       tenantId: user.tenantId,
       systemRole: user.systemRole,
       email: user.email,
-      name: user.profileFirstName
-        ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
+      name: user.profile.firstName
+        ? `${user.profile.firstName} ${user.profile.lastName ?? ''}`.trim()
         : (user.email ?? user.phoneNumber ?? 'Unknown'),
     };
   }
 
-  /** The one runtime check between an untyped body and AuditableLoginResponse; AuthService's `satisfies` keeps the two from drifting apart. */
+  /** Kiểm tra body đăng nhập có đúng dạng AuditableLoginResponse. */
   private isLoginResponse(body: unknown): body is AuditableLoginResponse {
     if (!body || typeof body !== 'object' || !('user' in body)) return false;
     const user = body.user;
@@ -186,7 +196,7 @@ export class AuditInterceptor implements NestInterceptor, OnModuleInit {
       return { action, ...described };
     }
 
-    // Generic fallback: for /admin/<x>/... use <x> as the resource rather than the literal "Admin".
+    // Fallback chung: với /admin/<x>/... dùng <x> làm resource thay vì chữ "Admin".
     const requestBody = (request.body ?? {}) as Record<string, unknown>;
     const parts = path.split('/').filter(Boolean);
     const resourceSegment =

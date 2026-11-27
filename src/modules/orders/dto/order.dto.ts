@@ -8,11 +8,15 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
-import { PAYMENT_METHODS } from '../../../common/constants/payment-method';
+import {
+  DEPOSIT_METHODS,
+  PAYMENT_METHODS,
+} from '../../../common/constants/payment-method';
 import {
   OFFLINE_PAYMENT_METHODS,
   ORDER_STATUSES,
@@ -28,9 +32,9 @@ export class OrderItemDto {
   @Min(1, { message: 'Số lượng phải từ 1 trở lên' })
   quantity: number;
 
-  // No `unitPrice`: what a thing sells for is the catalogue's answer, not the till's - see `OrderService.priceLines`.
+  // Không có `unitPrice`: giá bán là của danh mục, không phải của quầy. Xem `OrderService.priceLines`.
 
-  /** A manual discount the cashier typed against this line, ignored when the order carries `appliedPromotions` - the server prices those itself and overwrites every line, so the two can't be mixed. */
+  /** Giảm tay trên dòng, bị bỏ qua khi đơn có khuyến mãi. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -38,18 +42,18 @@ export class OrderItemDto {
   discountAmount?: number;
 }
 
-/** A promotion the cashier picked, named by id and nothing else: what it is called and what it takes off are the server's to work out. Sending the old `promoName`/`discountAmount` is harmless, since `whitelist: true` strips them. */
+/** Khuyến mãi được chọn, chỉ gửi id. */
 export class AppliedPromotionDto {
   @IsUUID()
   promotionId: string;
 }
 
-/** Ported from CreateOrderDTO with `grandTotal` deliberately removed - the old API stored the client's total, so a crafted request could ring up a full basket for zero. `status`, `change` and `paymentReference` are absent for the same reason. */
-export class CreateOrderDto {
+/** Body bán tại quầy; tổng tiền do server tính. */
+export class CreatePosOrderDto {
   @IsUUID()
   branchId: string;
 
-  /** Omitted = the walk-in customer, created once per tenant on first use. */
+  /** Bỏ trống = khách vãng lai, tạo một lần cho mỗi tenant khi dùng lần đầu. */
   @IsOptional()
   @IsUUID()
   customerId?: string;
@@ -65,7 +69,6 @@ export class CreateOrderDto {
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
 
-  /** Cash tendered. Only meaningful for CASH; the change is worked out from it. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -76,7 +79,7 @@ export class CreateOrderDto {
   @IsString()
   note?: string;
 
-  /** `ORDER` is a manual whole-order discount the cashier typed in. `PROMOTION` is not accepted from the client: sending `appliedPromotions` is what makes a sale a promotion sale, and the server sets both fields from what the engine worked out. */
+  /** Loại giảm giá cả đơn; PROMOTION do server tự đặt. */
   @IsOptional()
   @IsIn(['ORDER'], {
     message:
@@ -84,14 +87,12 @@ export class CreateOrderDto {
   })
   discountType?: string;
 
-  /** The manual whole-order discount. Only read when `discountType` is `ORDER`. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0, { message: 'Giá trị giảm không được âm' })
   discountValue?: number;
 
-  /** The promotions the cashier picked; the server prices them, spreads the discount across the lines and records the total. */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -99,7 +100,6 @@ export class CreateOrderDto {
   appliedPromotions?: AppliedPromotionDto[];
 }
 
-/** Ported from OrderQueryDTO. */
 export class QueryOrderDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(ORDER_STATUSES)
@@ -117,7 +117,6 @@ export class QueryOrderDto extends PaginationQueryDto {
   @IsUUID()
   branchId?: string;
 
-  /** Partial, case-insensitive match on the customer's name or phone. */
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>
@@ -134,7 +133,6 @@ export class QueryOrderDto extends PaginationQueryDto {
   toDate?: string;
 }
 
-/** Ported from UpdateOrderStatusDTO. */
 export class UpdateOrderStatusDto {
   @IsIn(SETTABLE_ORDER_STATUSES, {
     message: `status phải là ${SETTABLE_ORDER_STATUSES.join(', ')}`,
@@ -142,7 +140,29 @@ export class UpdateOrderStatusDto {
   status: string;
 }
 
-/** Ported from PayOfflineOrderDTO - settles a SePay order the customer ended up paying some other way. */
+/** Huỷ đơn quầy đang chờ QR (`POST /orders/pos/:id/cancel`). Không có lý do thì dùng câu mặc định. */
+export class CancelPosSaleDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+
+  /** Phần tiền đã trả hoàn cho khách (0 = shop giữ hết). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0, { message: 'Số tiền hoàn không được âm' })
+  refundAmount?: number;
+
+  /** Hình thức hoàn tiền. Bỏ trống = theo cách đã thu. */
+  @IsOptional()
+  @IsIn(DEPOSIT_METHODS, {
+    message: `refundMethod phải là ${DEPOSIT_METHODS.join(', ')}`,
+  })
+  refundMethod?: string;
+}
+
+/** Chốt đơn SePay mà khách đã trả bằng cách khác. */
 export class PayOfflineOrderDto {
   @IsOptional()
   @IsIn(OFFLINE_PAYMENT_METHODS, {

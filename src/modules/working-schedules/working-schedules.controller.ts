@@ -12,7 +12,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { WorkingScheduleService } from './working-schedules.service';
 import {
   BulkCreateWorkingScheduleDto,
+  CreateScheduleSeriesDto,
   QueryWorkingScheduleDto,
+  RemoveScheduleSeriesQueryDto,
   UpdateWorkingScheduleDto,
 } from './dto/working-schedule.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -20,7 +22,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** Ten routes at the old paths and permissions, including the four actions the old module named (`read_all`, `readBR`, `readWH`, `read`/`read_own`). `current`, `me`, `branches` and `warehouses` are declared above `:id` or they get matched as schedule ids. */
+/** Controller lịch làm việc; route tĩnh khai báo trước `:id`. */
 @ApiTags('working-schedules')
 @ApiBearerAuth('bearer')
 @Controller('working-schedules')
@@ -36,7 +38,6 @@ export class WorkingScheduleController {
     return this.service.findAll(requireTenantId(user), query);
   }
 
-  /** The shift the caller is in right now, or `{ data: null }`. */
   @Permissions('schedules', 'read', 'read_own')
   @Get('current')
   findCurrent(@CurrentUser() user: AuthUser) {
@@ -52,7 +53,7 @@ export class WorkingScheduleController {
     return this.service.findMine(requireTenantId(user), user.userId, query);
   }
 
-  /** The branch and warehouse views are the same list with the location pinned; the old routes answered 400 without the id, and `QueryWorkingScheduleDto` makes that a validation error instead. */
+  /** Lịch theo chi nhánh / kho. */
   @Permissions('schedules', 'readBR')
   @Get('branches')
   findByBranch(
@@ -82,6 +83,27 @@ export class WorkingScheduleController {
     @Body() dto: BulkCreateWorkingScheduleDto,
   ) {
     return this.service.createBulk(requireTenantId(user), user.userId, dto);
+  }
+
+  /** Lịch lặp lại: một ca mẫu từ ngày đến ngày, vào các thứ đã chọn. */
+  @Permissions('schedules', 'create')
+  @Post('series')
+  createSeries(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateScheduleSeriesDto,
+  ) {
+    return this.service.createSeries(requireTenantId(user), user.userId, dto);
+  }
+
+  /** Dừng lịch lặp từ `fromDate` (mặc định hôm nay); ca đã qua giữ nguyên. */
+  @Permissions('schedules', 'delete')
+  @Delete('series/:id')
+  removeSeries(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Query() query: RemoveScheduleSeriesQueryDto,
+  ) {
+    return this.service.removeSeries(requireTenantId(user), id, query.fromDate);
   }
 
   @Permissions('schedules', 'read', 'read_own')

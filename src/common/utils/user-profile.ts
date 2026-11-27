@@ -1,6 +1,6 @@
-/** A staff member's personal details: stored flat in `profile_*` columns and answered nested, because the dashboard reads `user.profile.firstName`. Read side only. */
+/** Trả thông tin cá nhân nhân viên dạng lồng trong `profile`. */
 
-/** The flat columns this maps. Structural, so any `select` carrying them satisfies it. */
+/** Các cột phẳng được map. Kiểu structural nên select nào có đủ các cột này đều khớp. */
 export interface FlatUserProfile {
   profileFirstName?: string | null;
   profileLastName?: string | null;
@@ -10,11 +10,6 @@ export interface FlatUserProfile {
   profileIdentificationId?: string | null;
   profileAddress?: string | null;
   profileGender?: string | null;
-}
-
-export interface FlatLeaveBalance {
-  leaveBalanceAnnualDays?: number | null;
-  leaveBalanceRemainingDays?: number | null;
 }
 
 export interface NestedUserProfile {
@@ -28,10 +23,10 @@ export interface NestedUserProfile {
   gender: string | null;
 }
 
-/** Swaps the `profile*` columns for one nested `profile` object, and the `leaveBalance*` pair likewise when the row carries them. */
+/** Đổi các cột `profile*` thành một object `profile` lồng nhau. */
 export function withNestedProfile<T extends FlatUserProfile>(
   row: T,
-): Omit<T, keyof FlatUserProfile | keyof FlatLeaveBalance> & {
+): Omit<T, keyof FlatUserProfile> & {
   profile: NestedUserProfile;
 } {
   const {
@@ -46,17 +41,8 @@ export function withNestedProfile<T extends FlatUserProfile>(
     ...rest
   } = row;
 
-  const {
-    leaveBalanceAnnualDays,
-    leaveBalanceRemainingDays,
-    ...withoutBalance
-  } = rest as typeof rest & FlatLeaveBalance;
-
   return {
-    ...(withoutBalance as Omit<
-      T,
-      keyof FlatUserProfile | keyof FlatLeaveBalance
-    >),
+    ...rest,
     profile: {
       firstName: profileFirstName ?? null,
       lastName: profileLastName ?? null,
@@ -67,15 +53,30 @@ export function withNestedProfile<T extends FlatUserProfile>(
       address: profileAddress ?? null,
       gender: profileGender ?? null,
     },
-    // Only when the caller selected it: an always-null key would read as "they have no allowance".
-    ...(leaveBalanceAnnualDays === undefined &&
-    leaveBalanceRemainingDays === undefined
-      ? {}
-      : {
-          leaveBalance: {
-            annualLeaveDays: leaveBalanceAnnualDays ?? 0,
-            remainingDays: leaveBalanceRemainingDays ?? 0,
-          },
-        }),
   };
+}
+
+/** Họ tên kiểu Việt ("Ngô Văn Tài"); chưa có phần nào thì null. */
+export function profileFullName(
+  row: {
+    profileLastName?: string | null;
+    profileFirstName?: string | null;
+  } | null,
+): string | null {
+  if (!row) return null;
+  return (
+    [row.profileLastName, row.profileFirstName]
+      .filter((part) => part && part.trim())
+      .join(' ')
+      .trim() || null
+  );
+}
+
+/** Tên hiển thị: họ tên, chưa có thì số điện thoại. */
+export function personName(row: {
+  profileLastName?: string | null;
+  profileFirstName?: string | null;
+  phoneNumber: string;
+}): string {
+  return profileFullName(row) ?? row.phoneNumber;
 }

@@ -16,7 +16,7 @@ import type { DateRange } from './stats-math';
 
 const PAID = 'PAID';
 
-/** Ported from `AdminStatsService` - the operator's dashboard across every tenant. Revenue here is what shops pay iKiot for their plans, never what shops take at the till: separate ledgers against separate bank accounts. */
+/** Thống kê cho admin nền tảng; doanh thu là tiền gói shop trả. */
 @Injectable()
 export class AdminStatsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -64,11 +64,16 @@ export class AdminStatsService {
       this.revenueSeries(range, groupBy),
       this.tenantGrowth(range, groupBy),
       this.prisma.ticket.groupBy({ by: ['status'], _count: { _all: true } }),
-      // "Has an operator linked this shop to SePay yet" - an empty string counts as not linked, same as the old `$ifNull` guard.
+      // Dạng đếm của `isSepayLinked`; key rỗng được tính là chưa liên kết.
       this.prisma.tenant.count({
         where: {
-          bankingSepayWebhookApiKey: { not: null },
-          NOT: { bankingSepayWebhookApiKey: '' },
+          OR: [
+            {
+              bankingSepayWebhookApiKey: { not: null },
+              NOT: { bankingSepayWebhookApiKey: '' },
+            },
+            { bankingSepayLinkedAt: { not: null } },
+          ],
         },
       }),
       this.topTenants(),
@@ -86,7 +91,7 @@ export class AdminStatsService {
     const subscriptionStatus = this.countBy(subscriptionsByStatus, 'status');
     const tickets = this.countBy(ticketsByStatus, 'status');
 
-    // Trials are excluded from the denominator on purpose: a shop still inside its trial hasn't had the chance to convert, so counting it would make the rate sag every time marketing works.
+    // Bỏ gói dùng thử khỏi mẫu số tỉ lệ chuyển đổi.
     const paying =
       (subscriptionStatus.ACTIVE ?? 0) + (subscriptionStatus.PAST_DUE ?? 0);
     const decided =
@@ -142,9 +147,7 @@ export class AdminStatsService {
     };
   }
 
-  // ─── Pieces ────────────────────────────────────────────────────────────────
-
-  /** Platform revenue is measured by when an invoice was paid, not when it was raised - an invoice issued in March and settled in April is April's money. */
+  /** Doanh thu nền tảng tính theo lúc hoá đơn được thanh toán. */
   private async paidRevenue({ fromDate, toDate }: DateRange) {
     const result = await this.prisma.subscriptionInvoice.aggregate({
       where: { status: PAID, paidAt: { gte: fromDate, lte: toDate } },
@@ -199,7 +202,7 @@ export class AdminStatsService {
     return rows;
   }
 
-  /** How many live subscriptions sit on each plan - trials included, they are live. */
+  /** Số gói đang hoạt động trên từng plan - tính cả gói dùng thử vì chúng vẫn đang hoạt động. */
   private async planDistribution() {
     const rows = await this.prisma.subscription.groupBy({
       by: ['planId'],
@@ -223,7 +226,7 @@ export class AdminStatsService {
       .sort((a, b) => b.count - a.count);
   }
 
-  /** Biggest-paying shops, all time. */
+  /** Các shop trả tiền nhiều nhất, tính toàn thời gian. */
   private async topTenants() {
     const rows = await this.prisma.subscriptionInvoice.groupBy({
       by: ['tenantId'],

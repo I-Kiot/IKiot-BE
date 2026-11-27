@@ -1,16 +1,26 @@
 import {
   averageOrderValue,
+  businessDatesOf,
+  previousBusinessDates,
+  vietnamDateOf,
   changePct,
+  comparisonWindows,
   countByKey,
   parseBoundary,
   previousPeriod,
   ratioPct,
   resolveRange,
+  exceedsHourlyRange,
+  stockAgingLevel,
 } from './stats-math';
-import { DEFAULT_RANGE_DAYS, MS_PER_DAY } from './stats.constants';
+import {
+  DEFAULT_RANGE_DAYS,
+  MS_PER_DAY,
+  StockAgingLevel,
+} from './stats.constants';
 
 describe('parseBoundary', () => {
-  // A bare date is a local day in Vietnam, not a UTC one: 2026-03-05 starts at 17:00Z on the 4th.
+  // Ngày trơn là ngày địa phương Việt Nam, không phải UTC: 2026-03-05 bắt đầu lúc 17:00Z ngày 4.
   it('expands a bare YYYY-MM-DD to the local day it names', () => {
     expect(parseBoundary('2026-03-05', false).toISOString()).toBe(
       '2026-03-04T17:00:00.000Z',
@@ -37,7 +47,7 @@ describe('resolveRange', () => {
     );
   });
 
-  // The bug this guards: truncating toDate to midnight would drop the named day's sales.
+  // Lỗi được chặn ở đây: cắt toDate về nửa đêm sẽ làm mất doanh thu của ngày được chọn.
   it('keeps the whole of a bare toDate', () => {
     const { toDate } = resolveRange(undefined, '2026-03-05');
     expect(toDate.toISOString()).toBe('2026-03-05T16:59:59.999Z');
@@ -60,7 +70,7 @@ describe('previousPeriod', () => {
     const previous = previousPeriod(range);
 
     expect(previous.toDate.getTime()).toBe(range.fromDate.getTime() - 1);
-    // Both windows are inclusive at both ends, so both are span + 1 ms wide.
+    // Hai khoảng bao cả hai đầu nên đều rộng span + 1 ms.
     expect(previous.toDate.getTime() - previous.fromDate.getTime()).toBe(
       range.toDate.getTime() - range.fromDate.getTime(),
     );
@@ -83,7 +93,7 @@ describe('changePct', () => {
     expect(changePct(50, 200)).toBe(-75);
   });
 
-  // Not 0 and not Infinity: "went from nothing to something" has no honest percentage, and 0 renders as "flat", the opposite of the truth.
+  // "Từ không lên có" trả null.
   it('answers null when the previous period was zero', () => {
     expect(changePct(5_000_000, 0)).toBeNull();
     expect(changePct(0, 0)).toBeNull();
@@ -126,5 +136,105 @@ describe('countByKey', () => {
 
   it('drops a null group rather than keying on "null"', () => {
     expect(countByKey([{ key: null, count: 4 }])).toEqual({});
+  });
+});
+
+describe('comparisonWindows', () => {
+  // Thứ Năm 2026-10-15 14:00 giờ VN = 07:00Z
+  const now = new Date('2026-10-15T07:00:00Z');
+  const win = (key: string) =>
+    comparisonWindows(now).find((w) => w.key === key)!;
+  const iso = (d: Date) => d.toISOString();
+
+  it('compares today with the same elapsed hours of yesterday', () => {
+    const w = win('today');
+    expect(iso(w.current.fromDate)).toBe('2026-10-14T17:00:00.000Z');
+    expect(iso(w.previous.fromDate)).toBe('2026-10-13T17:00:00.000Z');
+    expect(iso(w.previous.toDate)).toBe('2026-10-14T07:00:00.000Z');
+  });
+
+  it('starts the week on Monday', () => {
+    expect(iso(win('week').current.fromDate)).toBe('2026-10-11T17:00:00.000Z');
+    expect(iso(win('week').previous.fromDate)).toBe('2026-10-04T17:00:00.000Z');
+  });
+
+  it('compares the month so far with the same days of last month', () => {
+    const w = win('month');
+    expect(iso(w.current.fromDate)).toBe('2026-09-30T17:00:00.000Z');
+    expect(iso(w.previous.fromDate)).toBe('2026-08-31T17:00:00.000Z');
+    expect(iso(w.previous.toDate)).toBe('2026-09-15T07:00:00.000Z');
+  });
+
+  it('rolls the quarter back across the year boundary', () => {
+    const q1 = comparisonWindows(new Date('2026-02-10T05:00:00Z')).find(
+      (w) => w.key === 'quarter',
+    )!;
+    expect(iso(q1.current.fromDate)).toBe('2025-12-31T17:00:00.000Z');
+    expect(iso(q1.previous.fromDate)).toBe('2025-09-30T17:00:00.000Z');
+  });
+
+  it('never lets the previous window run into the current one', () => {
+    // 31/3 so với tháng 2 có 28 ngày
+    const w = comparisonWindows(new Date('2026-03-31T05:00:00Z')).find(
+      (x) => x.key === 'month',
+    )!;
+    expect(w.previous.toDate.getTime()).toBeLessThan(
+      w.current.fromDate.getTime(),
+    );
+  });
+});
+
+describe('stockAgingLevel', () => {
+  // Biên của từng mức là chỗ dễ lệch một ngày nhất, nên kiểm từng mép.
+  it.each([
+    [0, StockAgingLevel.NORMAL],
+    [29, StockAgingLevel.NORMAL],
+    [30, StockAgingLevel.WARNING],
+    [59, StockAgingLevel.WARNING],
+    [60, StockAgingLevel.ATTENTION],
+    [89, StockAgingLevel.ATTENTION],
+    [90, StockAgingLevel.STALE],
+    [400, StockAgingLevel.STALE],
+  ])('%i ngày chưa bán là %s', (days, level) => {
+    expect(stockAgingLevel(days)).toBe(level);
+  });
+});
+
+describe('exceedsHourlyRange', () => {
+  const from = new Date('2026-10-01T00:00:00.000Z');
+
+  it('cho phép một tháng 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(false);
+  });
+
+  it('từ chối khoảng dài hơn 31 ngày', () => {
+    const to = new Date(from.getTime() + 31 * MS_PER_DAY + 1);
+    expect(exceedsHourlyRange({ fromDate: from, toDate: to })).toBe(true);
+  });
+});
+
+describe('business dates (sổ doanh thu)', () => {
+  it('maps instants to the Vietnam calendar day', () => {
+    // 23:30 giờ VN ngày 10/11 = 16:30 UTC cùng ngày; 00:30 giờ VN ngày 11/11 = 17:30 UTC ngày 10/11.
+    expect(vietnamDateOf(new Date('2026-11-10T16:30:00Z'))).toBe('2026-11-10');
+    expect(vietnamDateOf(new Date('2026-11-10T17:30:00Z'))).toBe('2026-11-11');
+  });
+
+  it('a plain-date range covers whole local days', () => {
+    const range = resolveRange('2026-11-01', '2026-11-30');
+    expect(businessDatesOf(range)).toEqual({
+      from: '2026-11-01',
+      to: '2026-11-30',
+    });
+  });
+
+  it('the previous range is the same number of days, directly before, no overlap', () => {
+    expect(
+      previousBusinessDates({ from: '2026-11-01', to: '2026-11-30' }),
+    ).toEqual({ from: '2026-10-02', to: '2026-10-31' });
+    expect(
+      previousBusinessDates({ from: '2026-11-11', to: '2026-11-11' }),
+    ).toEqual({ from: '2026-11-10', to: '2026-11-10' });
   });
 });

@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -20,24 +21,39 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
-import { SendOtpDto } from './dto/send-otp.dto';
-import {
-  CheckAvailabilityDto,
-  ResetPasswordDto,
-  VerifyForgotPasswordOtpDto,
-} from './dto/session.dto';
+import { ForgotPasswordDto, ResendOtpDto, VerifyOtpDto } from './dto/otp.dto';
+import { CheckAvailabilityDto, ResetPasswordDto } from './dto/session.dto';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
-import { OtpService } from './otp.service';
+import { maskEmail, OtpPurpose, OtpService } from './otp.service';
+import { decoySubjectId } from './forgot-password-decoy';
+import { accessTokenSecret } from '../../common/config/env';
 import { RefreshTokenService } from './refresh-token.service';
 import { FirebaseService } from '../../common/firebase/firebase.service';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  withNestedProfile,
+  type FlatUserProfile,
+} from '../../common/utils/user-profile';
+import { LOCATION_SELECT } from '../../common/dto/location-ref.dto';
 
 const BCRYPT_COST = 10;
 
-// Stamped into the reset token and checked again when it is redeemed, so an ordinary access token posted to /auth/reset-password is not mistaken for permission.
-const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';
+// Kèm loại và tên địa điểm làm việc vào user trả về.
+const SESSION_USER_INCLUDE = {
+  location: LOCATION_SELECT,
+  // Nhân viên xưởng: dashboard dùng để chuyển sang màn hình xưởng.
+  workshop: { select: { id: true, supplierName: true } },
+} as const;
 
-// Same wording as iKiotMS-BE's AuthService: "mobile" is employee-only, "web" allows everyone except CUSTOMER.
+// Đánh dấu loại token để access token không dùng được làm reset token.
+const PASSWORD_RESET_TOKEN_TYPE = 'password_reset';
+const RESET_TOKEN_TTL_SECONDS = 15 * 60;
+
+// Challenge OTP: gắn với đúng một tài khoản + mục đích, `jti` bị đốt sau khi đổi mã thành công.
+const OTP_CHALLENGE_TOKEN_TYPE = 'otp_challenge';
+const CHALLENGE_TTL_SECONDS = 15 * 60;
+
+// "mobile" chỉ cho nhân viên, "web" cho mọi tài khoản trừ CUSTOMER.
 const ROLE_DENIED_MOBILE = 'This app is for employees and managers only';
 const ROLE_DENIED_WEB = 'A customer account cannot sign in here';
 
@@ -51,87 +67,88 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
   ) {}
 
-  sendOtp(dto: SendOtpDto) {
-    return this.otp.sendOtp(dto.phoneNumber);
+  /** Gửi OTP rồi trả challenge token. */
+  private async issueChallenge(
+    user: { id: string; email: string },
+    purpose: OtpPurpose,
+    onCooldown: 'reject' | 'rebind',
+  ) {
+    const jti = randomUUID();
+    const delivery = await this.otp.send(purpose, user, jti, onCooldown);
+    const challengeToken = this.jwt.sign(
+      { sub: user.id, type: OTP_CHALLENGE_TOKEN_TYPE, purpose, jti },
+      { expiresIn: CHALLENGE_TTL_SECONDS },
+    );
+    return { requiresOtp: true as const, challengeToken, ...delivery };
   }
 
-  async register(dto: RegisterDto, userAgent?: string) {
-    const [existingPhone, existingTenant] = await Promise.all([
-      this.prisma.user.findFirst({ where: { phoneNumber: dto.phoneNumber } }),
-      this.prisma.tenant.findFirst({ where: { name: dto.tenantName } }),
-    ]);
-    if (existingPhone)
-      throw new ConflictException({
-        code: ErrorCode.PHONE_ALREADY_REGISTERED,
-        message: 'Phone number is already registered',
-      });
-    if (existingTenant)
-      throw new ConflictException({
-        code: ErrorCode.TENANT_NAME_TAKEN,
-        message: 'Tenant name is already taken',
-      });
-
-    // Verify the phone was confirmed via /auth/send-otp before creating any records - mirrors iKiotMS-BE's register.
-    await this.otp.verifyOtp(dto.phoneNumber, dto.otpCode);
-
-    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
-
-    const { tenant, owner } = await this.prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.create({ data: { name: dto.tenantName } });
-      const owner = await tx.user.create({
-        data: {
-          tenantId: tenant.id,
-          phoneNumber: dto.phoneNumber,
-          email: dto.email,
-          password: passwordHash,
-          systemRole: SystemRole.TENANT_OWNER,
-          status: UserStatus.ACTIVE,
-          profileFirstName: dto.firstName,
-          profileLastName: dto.lastName,
-        },
-      });
-      await tx.tenant.update({
-        where: { id: tenant.id },
-        data: { tenantOwnerId: owner.id },
-      });
-      return { tenant, owner };
+  private invalidChallenge() {
+    return new BadRequestException({
+      code: ErrorCode.OTP_CHALLENGE_INVALID,
+      message: 'The verification session is invalid or has expired',
     });
+  }
 
+  /** Đọc challenge token; mọi lỗi trả `OTP_CHALLENGE_INVALID`. */
+  private readChallenge(token: string, expected?: OtpPurpose) {
+    let payload: {
+      sub?: string;
+      type?: string;
+      purpose?: string;
+      jti?: string;
+      to?: unknown;
+    };
+    try {
+      payload = this.jwt.verify(token);
+    } catch {
+      throw this.invalidChallenge();
+    }
+    const purpose = Object.values(OtpPurpose).find(
+      (p) => p === payload.purpose,
+    );
+    if (
+      payload.type !== OTP_CHALLENGE_TOKEN_TYPE ||
+      !payload.sub ||
+      !payload.jti ||
+      !purpose ||
+      (expected && purpose !== expected)
+    )
+      throw this.invalidChallenge();
     return {
-      accessToken: this.issueAccessToken(owner.id),
-      refreshToken: await this.refreshTokens.issue(owner.id, userAgent),
-      user: this.toPublicUser(owner),
-      tenant,
+      userId: payload.sub,
+      purpose,
+      jti: payload.jti,
+      sentTo: typeof payload.to === 'string' ? payload.to : undefined,
     };
   }
 
-  async login(dto: LoginDto, userAgent?: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { phoneNumber: dto.phoneNumber },
+  /** Mỗi challenge chỉ đổi được một lần, kể cả khi mã là DEV_BYPASS. */
+  private async burnChallenge(jti: string): Promise<void> {
+    if (!(await this.otp.burn(`challenge:${jti}`, CHALLENGE_TTL_SECONDS)))
+      throw this.invalidChallenge();
+  }
+
+  /** Tìm tài khoản theo số điện thoại hoặc email. */
+  private findByIdentifier(identifier: string) {
+    return this.prisma.user.findFirst({
+      where: identifier.includes('@')
+        ? {
+            email: identifier.toLowerCase(),
+            status: { not: UserStatus.DELETED },
+          }
+        : { phoneNumber: identifier },
+      include: SESSION_USER_INCLUDE,
     });
-    if (!user || !user.password)
-      throw new UnauthorizedException({
-        code: ErrorCode.INVALID_CREDENTIALS,
-        message: 'Invalid phone number or password',
-      });
-    if (INACTIVE_USER_STATUSES.has(user.status))
-      throw new UnauthorizedException({
-        code: ErrorCode.INVALID_CREDENTIALS,
-        message: 'Invalid phone number or password',
-      });
+  }
 
-    const matches = await bcrypt.compare(dto.password, user.password);
-    if (!matches)
-      throw new UnauthorizedException({
-        code: ErrorCode.INVALID_CREDENTIALS,
-        message: 'Invalid phone number or password',
-      });
-
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { lastLogin: new Date() },
-    });
-
+  private async startSession(
+    user: { password?: string | null } & FlatUserProfile &
+      Pick<
+        AuditableLoginResponse['user'],
+        'id' | 'email' | 'phoneNumber' | 'systemRole' | 'tenantId'
+      >,
+    userAgent?: string,
+  ) {
     return {
       accessToken: this.issueAccessToken(user.id),
       refreshToken: await this.refreshTokens.issue(user.id, userAgent),
@@ -139,11 +156,183 @@ export class AuthService {
     } satisfies AuditableLoginResponse;
   }
 
-  /** The signed-in account with the permissions it holds right now, reused from `JwtStrategy.validate()`. Empty for ADMIN/TENANT_OWNER (they short-circuit the guard), and a supervisor's extra keys expire by the clock - this is a snapshot for drawing a UI, not the authority. */
+  private emailMissing() {
+    return new ForbiddenException({
+      code: ErrorCode.ACCOUNT_EMAIL_MISSING,
+      message:
+        'This account has no email address. Ask the shop owner to add one.',
+    });
+  }
+
+  async register(dto: RegisterDto) {
+    const [existingPhone, existingEmail, existingTenant] = await Promise.all([
+      this.prisma.user.findFirst({ where: { phoneNumber: dto.phoneNumber } }),
+      this.prisma.user.findFirst({
+        where: { email: dto.email, status: { not: UserStatus.DELETED } },
+      }),
+      this.prisma.tenant.findFirst({ where: { name: dto.tenantName } }),
+    ]);
+    if (existingPhone)
+      throw new ConflictException({
+        code: ErrorCode.PHONE_ALREADY_REGISTERED,
+        message: 'Phone number is already registered',
+      });
+    if (existingEmail)
+      throw new ConflictException({
+        code: ErrorCode.EMAIL_ALREADY_IN_USE,
+        message: 'Email is already in use',
+      });
+    if (existingTenant)
+      throw new ConflictException({
+        code: ErrorCode.TENANT_NAME_TAKEN,
+        message: 'Tenant name is already taken',
+      });
+
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
+
+    // Tạo shop và chủ shop chưa xác minh email; gửi OTP trong transaction, lỗi thì rollback.
+    const { tenant, owner, challenge } = await this.prisma.$transaction(
+      async (tx) => {
+        const tenant = await tx.tenant.create({
+          data: { name: dto.tenantName },
+        });
+        const owner = await tx.user.create({
+          data: {
+            tenantId: tenant.id,
+            phoneNumber: dto.phoneNumber,
+            email: dto.email,
+            password: passwordHash,
+            systemRole: SystemRole.TENANT_OWNER,
+            status: UserStatus.ACTIVE,
+            profileFirstName: dto.firstName,
+            profileLastName: dto.lastName,
+          },
+        });
+        await tx.tenant.update({
+          where: { id: tenant.id },
+          data: { tenantOwnerId: owner.id },
+        });
+        const challenge = await this.issueChallenge(
+          { id: owner.id, email: dto.email },
+          OtpPurpose.VERIFY_EMAIL,
+          'reject',
+        );
+        return { tenant, owner, challenge };
+      },
+      // SMTP có thể mất vài giây; mặc định 5s của Prisma quá ngắn cho một lần gửi mail.
+      { timeout: 30_000 },
+    );
+
+    return { ...challenge, user: this.toPublicUser(owner), tenant };
+  }
+
+  async login(dto: LoginDto, userAgent?: string) {
+    const invalid = () =>
+      new UnauthorizedException({
+        code: ErrorCode.INVALID_CREDENTIALS,
+        message: 'Invalid phone number, email or password',
+      });
+    const identifier = (dto.identifier ?? dto.phoneNumber ?? '').trim();
+    if (!identifier) throw invalid();
+
+    const user = await this.findByIdentifier(identifier);
+    if (!user || !user.password) throw invalid();
+    if (INACTIVE_USER_STATUSES.has(user.status)) throw invalid();
+    if (!(await bcrypt.compare(dto.password, user.password))) throw invalid();
+
+    // Chưa xác minh email thì phải qua OTP.
+    if (!user.emailVerifiedAt) {
+      if (!user.email) throw this.emailMissing();
+      return this.issueChallenge(
+        { id: user.id, email: user.email },
+        OtpPurpose.VERIFY_EMAIL,
+        'rebind',
+      );
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
+    return this.startSession(user, userAgent);
+  }
+
+  /** Đổi OTP xác minh email lấy phiên đăng nhập. */
+  async verifyLoginOtp(dto: VerifyOtpDto, userAgent?: string) {
+    const challenge = this.readChallenge(
+      dto.challengeToken,
+      OtpPurpose.VERIFY_EMAIL,
+    );
+    const user = await this.prisma.user.findUnique({
+      where: { id: challenge.userId },
+      include: SESSION_USER_INCLUDE,
+    });
+    if (!user || !user.password || INACTIVE_USER_STATUSES.has(user.status))
+      throw new UnauthorizedException({
+        code: ErrorCode.ACCOUNT_INACTIVE,
+        message: 'Account is not active',
+      });
+
+    await this.otp.verify(
+      OtpPurpose.VERIFY_EMAIL,
+      user.id,
+      challenge.jti,
+      dto.otpCode,
+    );
+    await this.burnChallenge(challenge.jti);
+
+    const now = new Date();
+    const verified = await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lastLogin: now,
+        ...(user.emailVerifiedAt ? {} : { emailVerifiedAt: now }),
+      },
+      include: SESSION_USER_INCLUDE,
+    });
+    return this.startSession(verified, userAgent);
+  }
+
+  /** Gửi lại mã cho challenge đang có (cooldown 60s). */
+  async resendOtp(dto: ResendOtpDto) {
+    const challenge = this.readChallenge(dto.challengeToken);
+    const user = await this.prisma.user.findUnique({
+      where: { id: challenge.userId },
+      select: { id: true, email: true, status: true, emailVerifiedAt: true },
+    });
+    // Gửi lại cho challenge mồi: không gửi gì nhưng cùng cooldown và câu trả lời, để gửi lại cũng không lộ email có tài khoản.
+    if (
+      !user &&
+      challenge.purpose === OtpPurpose.RESET_PASSWORD &&
+      challenge.sentTo
+    )
+      return this.otp.sendDecoy(
+        challenge.purpose,
+        challenge.userId,
+        challenge.sentTo,
+        challenge.jti,
+        'reject',
+      );
+    if (!user || !user.email || INACTIVE_USER_STATUSES.has(user.status))
+      throw this.invalidChallenge();
+    if (challenge.purpose === OtpPurpose.VERIFY_EMAIL && user.emailVerifiedAt)
+      throw this.invalidChallenge();
+    return this.otp.send(
+      challenge.purpose,
+      { id: user.id, email: user.email },
+      challenge.jti,
+      'reject',
+    );
+  }
+
+  /** Quyền hiện có của tài khoản đang đăng nhập, chỉ để vẽ UI. */
   async me(authUser: AuthUser) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: authUser.userId },
-      include: { role: { select: { id: true, name: true } } },
+      include: {
+        role: { select: { id: true, name: true } },
+        ...SESSION_USER_INCLUDE,
+      },
     });
     return {
       ...this.toPublicUser(user),
@@ -156,9 +345,14 @@ export class AuthService {
       authUser.systemRole === SystemRole.TENANT_OWNER ||
       authUser.systemRole === SystemRole.ADMIN;
 
+    let emailChanged = false;
     if (dto.email) {
       const emailTaken = await this.prisma.user.findFirst({
-        where: { email: dto.email, id: { not: authUser.userId } },
+        where: {
+          email: dto.email,
+          id: { not: authUser.userId },
+          status: { not: UserStatus.DELETED },
+        },
       });
       if (emailTaken)
         throw new ConflictException({
@@ -167,9 +361,19 @@ export class AuthService {
         });
     }
 
+    if (dto.email && canEditFullProfile) {
+      const current = await this.prisma.user.findUnique({
+        where: { id: authUser.userId },
+        select: { email: true },
+      });
+      emailChanged = current?.email !== dto.email;
+    }
+
     const data = canEditFullProfile
       ? {
           email: dto.email,
+          // Đổi địa chỉ thì phải chứng minh lại hộp thư mới.
+          ...(emailChanged ? { emailVerifiedAt: null } : {}),
           profileFirstName: dto.firstName,
           profileLastName: dto.lastName,
           profileAvatarUrl: dto.avatarUrl,
@@ -184,11 +388,18 @@ export class AuthService {
     const user = await this.prisma.user.update({
       where: { id: authUser.userId },
       data,
+      include: SESSION_USER_INCLUDE,
     });
     return this.toPublicUser(user);
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
+    if (dto.newPassword !== dto.reEnterPassword)
+      throw new BadRequestException({
+        code: ErrorCode.PASSWORD_CONFIRMATION_MISMATCH,
+        message: 'The password confirmation does not match',
+      });
+
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
     });
@@ -210,12 +421,12 @@ export class AuthService {
       where: { id: userId },
       data: { password: passwordHash },
     });
-    // Every other session ends with the old password; an already-issued access token stays valid until it expires, as in the old system.
+    // Các phiên khác bị thu hồi; access token đã cấp vẫn dùng được tới khi hết hạn (như hệ thống cũ).
     await this.refreshTokens.revokeAllFor(userId);
     return { success: true };
   }
 
-  /** Logs a user in via a Google (Firebase) ID token, resolved by the token's email - no auto-provisioning, and `platform` picks the role gate ("mobile" is STAFF-only). */
+  /** Đăng nhập bằng Firebase (Google), khớp user theo email. */
   async firebaseLogin(dto: FirebaseLoginDto, userAgent?: string) {
     if (!this.firebase.isConfigured()) {
       throw new UnauthorizedException({
@@ -247,7 +458,10 @@ export class AuthService {
       });
     }
 
-    const user = await this.prisma.user.findFirst({ where: { email } });
+    const user = await this.prisma.user.findFirst({
+      where: { email, status: { not: UserStatus.DELETED } },
+      include: SESSION_USER_INCLUDE,
+    });
     if (!user)
       throw new UnauthorizedException({
         code: ErrorCode.ACCOUNT_NOT_REGISTERED,
@@ -273,24 +487,23 @@ export class AuthService {
       });
     }
 
-    await this.prisma.user.update({
+    // Google đã chứng minh địa chỉ email này (email_verified đã kiểm tra ở trên).
+    const now = new Date();
+    const updated = await this.prisma.user.update({
       where: { id: user.id },
-      data: { lastLogin: new Date() },
+      data: {
+        lastLogin: now,
+        ...(user.emailVerifiedAt ? {} : { emailVerifiedAt: now }),
+      },
+      include: SESSION_USER_INCLUDE,
     });
-    return {
-      accessToken: this.issueAccessToken(user.id),
-      refreshToken: await this.refreshTokens.issue(user.id, userAgent),
-      user: this.toPublicUser(user),
-    } satisfies AuditableLoginResponse;
+    return this.startSession(updated, userAgent);
   }
 
-  // ─── Session lifecycle ─────────────────────────────────────────────────────
-
-  /** Trades a refresh token for a fresh pair; the presented token is revoked as part of the swap - see `RefreshTokenService.rotate`. */
   async refresh(refreshToken: string, userAgent?: string) {
     const rotated = await this.refreshTokens.rotate(refreshToken, userAgent);
 
-    // The user is re-read to check the account is still usable: a token minted before a suspension must not survive it, and JwtStrategy only covers the access token.
+    // Đọc lại user để chắc tài khoản còn hoạt động.
     const user = await this.prisma.user.findUnique({
       where: { id: rotated.userId },
       select: { id: true, status: true },
@@ -309,72 +522,157 @@ export class AuthService {
     };
   }
 
-  /** Ends one session. Ported from `AuthService.logout`. */
   async logout(userId: string, refreshToken?: string) {
     if (refreshToken) await this.refreshTokens.revoke(userId, refreshToken);
     return { success: true };
   }
 
-  // ─── Forgot password ───────────────────────────────────────────────────────
-
-  /** The account a password-reset step may act on. One message for "no such number" and "account is locked", since a public endpoint that told them apart would reveal which numbers are registered. */
-  private async resettableUser(phoneNumber: string) {
-    const phone = phoneNumber.trim();
-    if (!phone) {
+  /** Tài khoản được đặt lại mật khẩu; không phân biệt "không tồn tại" và "bị khoá". */
+  private async resettableUser(identifier: string) {
+    const id = identifier.trim();
+    if (!id) {
       throw new BadRequestException({
         code: ErrorCode.PHONE_REQUIRED,
-        message: 'Phone number is required',
+        message: 'Phone number or email is required',
       });
     }
-    const user = await this.prisma.user.findFirst({
-      where: { phoneNumber: phone },
-      select: { id: true, phoneNumber: true, status: true },
-    });
+    const user = await this.findByIdentifier(id);
     if (!user || INACTIVE_USER_STATUSES.has(user.status)) {
       throw new BadRequestException({
         code: ErrorCode.PHONE_NOT_REGISTERED,
-        message:
-          'This phone number is not registered, or the account is locked.',
+        message: 'This account is not registered, or it is locked.',
       });
     }
     return user;
   }
 
-  async sendForgotPasswordOtp(dto: SendOtpDto) {
-    await this.resettableUser(dto.phoneNumber);
-    await this.otp.sendOtp(dto.phoneNumber);
-    return {
-      message: 'Đã gửi mã OTP thành công đến số điện thoại của bạn.',
-    };
+  /** Challenge quên mật khẩu (thật hoặc mồi) mang `to` là email đã che, để "gửi lại" của mồi trả đúng `sentTo` mà không cần lưu thêm. */
+  private async issueResetChallenge(
+    subjectId: string,
+    email: string,
+    real: boolean,
+  ) {
+    const purpose = OtpPurpose.RESET_PASSWORD;
+    const jti = randomUUID();
+    const delivery = real
+      ? await this.otp.send(purpose, { id: subjectId, email }, jti, 'rebind')
+      : await this.otp.sendDecoy(
+          purpose,
+          subjectId,
+          maskEmail(email),
+          jti,
+          'rebind',
+        );
+    const challengeToken = this.jwt.sign(
+      {
+        sub: subjectId,
+        type: OTP_CHALLENGE_TOKEN_TYPE,
+        purpose,
+        jti,
+        to: delivery.sentTo,
+      },
+      { expiresIn: CHALLENGE_TTL_SECONDS },
+    );
+    return { requiresOtp: true as const, challengeToken, ...delivery };
   }
 
-  /** Exchanges a verified OTP for a 15-minute reset token stamped `type: 'password_reset'`, which is re-checked in `resetPassword`. */
-  async verifyForgotPasswordOtp(dto: VerifyForgotPasswordOtpDto) {
-    const user = await this.resettableUser(dto.phoneNumber);
-    await this.otp.verifyOtp(dto.phoneNumber, dto.otpCode);
+  /** Email không có tài khoản hợp lệ nhận challenge mồi để không lộ email nào đã đăng ký (PO, 2026-11-26); số điện thoại vẫn báo lỗi rõ vì app shipper còn gửi. */
+  async sendForgotPasswordOtp(dto: ForgotPasswordDto) {
+    const identifier = (dto.identifier ?? dto.phoneNumber ?? '').trim();
+    if (identifier.includes('@')) {
+      const email = identifier.toLowerCase();
+      const user = await this.findByIdentifier(email);
+      const eligible =
+        !!user && !!user.email && !INACTIVE_USER_STATUSES.has(user.status);
+      const challenge = eligible
+        ? await this.issueResetChallenge(user.id, user.email!, true)
+        : await this.issueResetChallenge(
+            decoySubjectId(email, accessTokenSecret()),
+            email,
+            false,
+          );
+      return {
+        ...challenge,
+        message: 'Nếu email đã đăng ký, mã OTP đã được gửi tới email này.',
+      };
+    }
+
+    const user = await this.resettableUser(identifier);
+    if (!user.email) throw this.emailMissing();
+    const challenge = await this.issueResetChallenge(user.id, user.email, true);
+    return { ...challenge, message: 'Đã gửi mã OTP tới email của bạn.' };
+  }
+
+  /** Đổi OTP đã xác minh lấy reset token dùng một lần. */
+  async verifyForgotPasswordOtp(dto: VerifyOtpDto) {
+    const challenge = this.readChallenge(
+      dto.challengeToken,
+      OtpPurpose.RESET_PASSWORD,
+    );
+    const user = await this.prisma.user.findUnique({
+      where: { id: challenge.userId },
+      select: {
+        id: true,
+        phoneNumber: true,
+        status: true,
+        emailVerifiedAt: true,
+      },
+    });
+    if (!user) {
+      // Mồi vẫn chạy kiểm mã thật để lỗi và số lần thử giống hệt tài khoản thật; không ai biết mã nên chỉ DEV_BYPASS mới qua được tới throw.
+      await this.otp.verify(
+        OtpPurpose.RESET_PASSWORD,
+        challenge.userId,
+        challenge.jti,
+        dto.otpCode,
+      );
+      throw this.invalidChallenge();
+    }
+    if (INACTIVE_USER_STATUSES.has(user.status)) throw this.invalidChallenge();
+
+    await this.otp.verify(
+      OtpPurpose.RESET_PASSWORD,
+      user.id,
+      challenge.jti,
+      dto.otpCode,
+    );
+    await this.burnChallenge(challenge.jti);
+    // Mã đã chứng minh người nhập đọc được hộp thư này.
+    if (!user.emailVerifiedAt)
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerifiedAt: new Date() },
+      });
 
     const resetToken = this.jwt.sign(
       {
         sub: user.id,
         phoneNumber: user.phoneNumber,
         type: PASSWORD_RESET_TOKEN_TYPE,
+        jti: randomUUID(),
       },
-      { expiresIn: '15m' },
+      { expiresIn: RESET_TOKEN_TTL_SECONDS },
     );
     return { resetToken, message: 'Xác thực mã OTP thành công.' };
   }
 
   async resetPassword(dto: ResetPasswordDto) {
-    let payload: { sub?: string; type?: string };
+    let payload: { sub?: string; type?: string; jti?: string };
     try {
-      payload = this.jwt.verify<{ sub?: string; type?: string }>(dto.token);
+      payload = this.jwt.verify<{ sub?: string; type?: string; jti?: string }>(
+        dto.token,
+      );
     } catch {
       throw new BadRequestException({
         code: ErrorCode.RESET_TOKEN_INVALID,
         message: 'The password reset code is invalid or has expired',
       });
     }
-    if (payload.type !== PASSWORD_RESET_TOKEN_TYPE || !payload.sub) {
+    if (
+      payload.type !== PASSWORD_RESET_TOKEN_TYPE ||
+      !payload.sub ||
+      !payload.jti
+    ) {
       throw new BadRequestException({
         code: ErrorCode.RESET_TOKEN_WRONG_TYPE,
         message: 'This token is not valid for resetting a password',
@@ -392,11 +690,18 @@ export class AuthService {
       });
     }
 
+    // Reset token chỉ đổi được mật khẩu một lần.
+    if (!(await this.otp.burn(`reset:${payload.jti}`, RESET_TOKEN_TTL_SECONDS)))
+      throw new BadRequestException({
+        code: ErrorCode.RESET_TOKEN_USED,
+        message: 'This password reset code has already been used',
+      });
+
     await this.prisma.user.update({
       where: { id: user.id },
       data: { password: await bcrypt.hash(dto.newPassword, BCRYPT_COST) },
     });
-    // Resetting a password is what you do when it leaked, so every session it could have reached ends with it.
+    // Đặt lại mật khẩu thường do lộ mật khẩu, nên thu hồi mọi phiên có thể đã dùng mật khẩu cũ.
     await this.refreshTokens.revokeAllFor(user.id);
 
     return {
@@ -404,12 +709,18 @@ export class AuthService {
     };
   }
 
-  /** Whether a phone number or shop name is already taken - a deliberate existence oracle, but only for the two fields the registration form must check before it can submit. */
+  /** Kiểm số điện thoại, email, tên shop đã tồn tại chưa. */
   async checkAvailability(dto: CheckAvailabilityDto) {
-    const [phoneTaken, tenantTaken] = await Promise.all([
+    const [phoneTaken, emailTaken, tenantTaken] = await Promise.all([
       dto.phoneNumber
         ? this.prisma.user.findFirst({
             where: { phoneNumber: dto.phoneNumber },
+            select: { id: true },
+          })
+        : null,
+      dto.email
+        ? this.prisma.user.findFirst({
+            where: { email: dto.email, status: { not: UserStatus.DELETED } },
             select: { id: true },
           })
         : null,
@@ -423,6 +734,7 @@ export class AuthService {
 
     return {
       phoneNumberTaken: Boolean(phoneTaken),
+      emailTaken: Boolean(emailTaken),
       tenantNameTaken: Boolean(tenantTaken),
     };
   }
@@ -431,11 +743,11 @@ export class AuthService {
     return this.jwt.sign({ sub: userId });
   }
 
-  /** Strips the password hash and keeps every other field with its type intact; the old `Record<string, unknown>` signature erased the shape and forced callers to cast fields back. */
-  private toPublicUser<T extends { password?: string | null }>(
-    user: T,
-  ): Omit<T, 'password'> {
+  /** Bỏ mật khẩu và gom cột `profile_*` thành `profile`. */
+  private toPublicUser<
+    T extends { password?: string | null } & FlatUserProfile,
+  >(user: T) {
     const { password, ...rest } = user;
-    return rest;
+    return withNestedProfile(rest);
   }
 }

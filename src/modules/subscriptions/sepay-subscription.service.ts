@@ -3,8 +3,9 @@ import {
   generateReference,
   REFERENCE_PREFIX,
 } from '../../common/utils/reference-generator';
+import { normalizeAccountNumber } from '../../common/utils/bank-account';
 
-// Ported from the subscription half of sepayService.js and deliberately not shared with order payments: this one pays into iKiot's own company account, while orders use each tenant's banking fields and a per-tenant webhook key.
+// Thanh toán gói qua SePay vào tài khoản iKiot.
 @Injectable()
 export class SepaySubscriptionService {
   generatePaymentReference(): string {
@@ -26,7 +27,21 @@ export class SepaySubscriptionService {
     return Boolean(expectedKey) && receivedKey === expectedKey;
   }
 
-  /** {6,10}: refs minted before generateReference standardised on 5 bytes are 6 hex. */
+  /** Kiểm tài khoản nhận là của iKiot. */
+  isPlatformAccount(payload: {
+    accountNumber?: string | null;
+    subAccount?: string | null;
+  }): boolean {
+    const own = normalizeAccountNumber(process.env.SEPAY_ACCOUNT_NUMBER);
+    return (
+      own !== '' &&
+      [payload.accountNumber, payload.subAccount].some(
+        (number) => normalizeAccountNumber(number) === own,
+      )
+    );
+  }
+
+  /** {6,10}: mã tạo trước khi generateReference chuẩn hoá 5 byte có 6 ký tự hex. */
   extractReference(content = ''): string | null {
     const match = content.match(/IKMS[0-9A-F]{6,10}/i);
     return match ? match[0].toUpperCase() : null;

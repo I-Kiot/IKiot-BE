@@ -1,4 +1,3 @@
-import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
@@ -6,21 +5,21 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  ValidateNested,
 } from 'class-validator';
-import { AttendanceLocationDto } from '../../../common/dto/attendance-location.dto';
+import { IsContactPhone } from '../../../common/decorators/contact-phone.decorator';
 
-// Mirrors iKiotMS-BE's CreateBranchRequestDTO. `status` is deliberately absent - a new branch is always ACTIVE, and the generated DTO this replaces let a caller create one already soft-deleted.
+// Body tạo chi nhánh, luôn ACTIVE.
 export class CreateBranchDto {
   @IsString()
   @IsNotEmpty({ message: 'Tên chi nhánh không được để trống' })
   name: string;
 
-  // The Mongoose model validated "at least one phone number"; Postgres cannot express that on a text[], so it stays an app-layer rule.
+  // Bắt buộc ít nhất một SĐT.
   @IsArray()
   @ArrayNotEmpty({ message: 'Chi nhánh phải có ít nhất một số điện thoại' })
   @IsString({ each: true })
   @IsNotEmpty({ each: true })
+  @IsContactPhone({ each: true })
   phoneNumber: string[];
 
   @IsOptional()
@@ -30,9 +29,4 @@ export class CreateBranchDto {
   @IsOptional()
   @IsEmail({}, { message: 'Email không hợp lệ' })
   email?: string;
-
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => AttendanceLocationDto)
-  attendanceTakingLocation?: AttendanceLocationDto;
 }

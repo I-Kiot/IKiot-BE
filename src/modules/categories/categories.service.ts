@@ -1,24 +1,26 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { paginate, skipFor } from '../../common/utils/pagination';
+import { isSameName } from '../../common/utils/same-name';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { QueryCategoryDto } from './dto/query-category.dto';
 import type { Category, Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
 
-// Guards against an infinite walk if bad data ever produces a parent cycle; same value iKiotMS-BE used.
+// Chặn đi vòng vô hạn nếu dữ liệu xấu tạo ra chu kỳ cha-con; cùng giá trị với iKiotMS-BE.
 const MAX_DEPTH = 20;
 
 export interface CategoryNode extends Category {
   children: CategoryNode[];
 }
 
-/** Ported from CategoryService; like brands, categories became tenant-scoped in the port, and the tree/breadcrumb/cycle handling is carried over as-is for the frontend's picker. */
+/** Service danh mục theo tenant, dạng cây. */
 @Injectable()
 export class CategoryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -46,7 +48,7 @@ export class CategoryService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** The whole category forest in one query, assembled in memory - a tree is small and read constantly, so this stays a single round trip rather than a recursive CTE. */
+  /** Lấy cả cây danh mục trong một truy vấn. */
   async findTree(tenantId: string): Promise<CategoryNode[]> {
     const categories = await this.prisma.category.findMany({
       where: { tenantId },
@@ -63,7 +65,7 @@ export class CategoryService {
       const parent = category.parentId
         ? byId.get(category.parentId)
         : undefined;
-      // A category whose parent is missing (or in another tenant) is shown at the top rather than dropped, so a data problem can never hide products from the picker.
+      // Danh mục mất cha thì đưa lên gốc.
       if (parent) parent.children.push(node);
       else roots.push(node);
     }
@@ -82,7 +84,7 @@ export class CategoryService {
     return category;
   }
 
-  /** Every category in the tenant, keyed by id - the parent walks used to cost one query per level, and `findTree` already proved the whole forest fits in one. */
+  /** Mọi danh mục của tenant theo id. */
   private async categoriesById(
     tenantId: string,
   ): Promise<Map<string, Category>> {
@@ -92,7 +94,7 @@ export class CategoryService {
     return new Map(categories.map((category) => [category.id, category]));
   }
 
-  /** The chain from `startFromId` up to its root, root first and itself included; stops at MAX_DEPTH so a parent cycle in the data can't spin forever. */
+  /** Chuỗi từ danh mục lên gốc, có giới hạn độ sâu. */
   private ancestorsOf(
     byId: Map<string, Category>,
     startFromId: string | null,
@@ -108,7 +110,7 @@ export class CategoryService {
     return ancestors;
   }
 
-  /** Detail plus the ancestor chain, root first, as the old API returned it. */
+  /** Chi tiết kèm chuỗi tổ tiên, gốc đứng đầu, như API cũ trả về. */
   async findOne(tenantId: string, id: string) {
     const category = await this.prisma.category.findFirst({
       where: { id, tenantId },
@@ -128,7 +130,7 @@ export class CategoryService {
     return { ...category, breadcrumbs };
   }
 
-  /** A parent must exist and belong to the same tenant, or the hierarchy leaks across tenants. */
+  /** Cha phải tồn tại và cùng tenant, nếu không cây sẽ rò rỉ sang tenant khác. */
   private async assertParentExists(tenantId: string, parentId: string) {
     const parent = await this.prisma.category.findFirst({
       where: { id: parentId, tenantId },
@@ -140,7 +142,7 @@ export class CategoryService {
       });
   }
 
-  /** Refuses to hang a category under itself or one of its own descendants, which would detach the subtree from every root. */
+  /** Từ chối gắn danh mục làm con của chính nó hoặc của con cháu nó, vì sẽ tách cây con khỏi mọi gốc. */
   private async assertNoCycle(
     tenantId: string,
     categoryId: string,
@@ -153,7 +155,7 @@ export class CategoryService {
       });
     }
 
-    // The chain the category would hang under, proposed parent included; if it passes through the category itself the move would loop.
+    // Chặn chuyển danh mục tạo vòng lặp.
     const byId = await this.categoriesById(tenantId);
     const wouldBeAncestors = this.ancestorsOf(byId, newParentId);
     if (wouldBeAncestors.some((ancestor) => ancestor.id === categoryId)) {
@@ -164,9 +166,34 @@ export class CategoryService {
     }
   }
 
+  /** Danh mục cùng cha không trùng tên. */
+  private async assertNameFree(
+    tenantId: string,
+    name: string,
+    parentId: string | null,
+    exceptId?: string,
+  ) {
+    const siblings = await this.prisma.category.findMany({
+      where: { tenantId, parentId },
+      select: { id: true, name: true },
+    });
+    const taken = siblings.some(
+      (sibling) => sibling.id !== exceptId && isSameName(sibling.name, name),
+    );
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.CATEGORY_NAME_TAKEN,
+        message: `A category named "${name.trim()}" already exists here`,
+      });
+    }
+  }
+
   async create(tenantId: string, dto: CreateCategoryDto) {
     if (dto.parentId) await this.assertParentExists(tenantId, dto.parentId);
-    return this.prisma.category.create({ data: { ...dto, tenantId } });
+    await this.assertNameFree(tenantId, dto.name, dto.parentId ?? null);
+    return this.prisma.category.create({
+      data: { ...dto, name: dto.name.trim(), tenantId },
+    });
   }
 
   async update(tenantId: string, id: string, dto: UpdateCategoryDto) {
@@ -179,10 +206,25 @@ export class CategoryService {
 
     const renamed = dto.name !== undefined && dto.name !== existing.name;
 
-    return this.prisma.$transaction(async (tx) => {
-      const category = await tx.category.update({ where: { id }, data: dto });
+    // Đổi tên hoặc đổi cha đều có thể đẩy danh mục vào chỗ đã có tên đó.
+    const nextParentId =
+      dto.parentId === undefined ? existing.parentId : dto.parentId;
+    if (renamed || nextParentId !== existing.parentId) {
+      await this.assertNameFree(
+        tenantId,
+        dto.name ?? existing.name,
+        nextParentId,
+        id,
+      );
+    }
 
-      // Product.categoryName is a denormalized copy for list screens, so it has to follow a rename - iKiotMS-BE never did this and left every product showing the old label.
+    return this.prisma.$transaction(async (tx) => {
+      const category = await tx.category.update({
+        where: { id },
+        data: dto.name === undefined ? dto : { ...dto, name: dto.name.trim() },
+      });
+
+      // Cập nhật tên danh mục trên sản phẩm khi đổi tên.
       if (renamed) {
         await tx.product.updateMany({
           where: { tenantId, categoryId: id },
@@ -197,7 +239,7 @@ export class CategoryService {
   async remove(tenantId: string, id: string) {
     await this.findRow(tenantId, id);
 
-    // Category.parentId is onDelete: Restrict and Product.categoryId is a plain FK, so both would otherwise surface as an unhandled constraint violation.
+    // Kiểm còn danh mục con hoặc sản phẩm trước khi xoá.
     const [children, products] = await Promise.all([
       this.prisma.category.count({ where: { parentId: id } }),
       this.prisma.product.count({ where: { categoryId: id } }),

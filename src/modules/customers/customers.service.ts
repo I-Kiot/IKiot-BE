@@ -12,8 +12,20 @@ import {
 } from './dto/customer.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import {
+  BRANCH_NAME_SELECT,
+  namedBranch,
+} from '../../common/dto/location-ref.dto';
 
-/** Real port of CustomerService. Delete is soft (`isDeleted`) because orders and promotion logs point at the row and a sale must stay attributable; every read filters it out. */
+const CODE_PREFIX = 'KH';
+
+/** Chỉ giữ chữ số, nên `090 123 4567` và `0901234567` là cùng một khách; rỗng thì thành `undefined`. */
+function normalizePhone(phone?: string | null): string | undefined {
+  const digits = phone?.replace(/\D/g, '') ?? '';
+  return digits.length > 0 ? digits : undefined;
+}
+
+/** Service khách hàng; xoá là xoá mềm. */
 @Injectable()
 export class CustomerService {
   constructor(private readonly prisma: PrismaService) {}
@@ -22,12 +34,17 @@ export class CustomerService {
     if (dto.customerCode) {
       await this.assertCodeIsFree(tenantId, dto.customerCode);
     }
+    const phone = normalizePhone(dto.phone);
+    if (phone) await this.assertPhoneIsFree(tenantId, phone);
+    const customerCode =
+      dto.customerCode?.trim() || (await this.nextCustomerCode(tenantId));
     return this.prisma.customer.create({
       data: {
         tenantId,
         name: dto.name,
-        customerCode: dto.customerCode,
-        phone: dto.phone,
+        customerCode,
+        phone,
+        email: dto.email,
         gender: dto.gender,
         address: dto.address,
         dob: dto.dob ? new Date(dto.dob) : undefined,
@@ -35,7 +52,37 @@ export class CustomerService {
     });
   }
 
-  /** The customer list, each row carrying its order history through the relation rather than the old in-memory grouping, capped at the ten most recent so a regular with four hundred orders doesn't drag the page down. */
+  /** Khách cho đơn nhập tay: SĐT đã có thì dùng khách đó, chưa có thì tạo. */
+  /** Khách đang có mang số điện thoại này - đúng quy tắc khớp của `findOrCreateForOrder`. */
+  async findIdByPhone(
+    tenantId: string,
+    rawPhone: string | undefined,
+  ): Promise<string | null> {
+    const phone = normalizePhone(rawPhone);
+    if (!phone) return null;
+    const existing = await this.prisma.customer.findFirst({
+      where: { tenantId, phone, isDeleted: false },
+      select: { id: true },
+    });
+    return existing?.id ?? null;
+  }
+
+  async findOrCreateForOrder(
+    tenantId: string,
+    input: { name: string; phone?: string; address?: string },
+  ): Promise<string> {
+    const phone = normalizePhone(input.phone);
+    const existing = await this.findIdByPhone(tenantId, input.phone);
+    if (existing) return existing;
+    const created = await this.create(tenantId, {
+      name: input.name,
+      phone,
+      address: input.address,
+    });
+    return created.id;
+  }
+
+  /** Danh sách khách kèm 10 đơn gần nhất. */
   async findAll(tenantId: string, query: QueryCustomerDto) {
     const where: Prisma.CustomerWhereInput = { tenantId, isDeleted: false };
 
@@ -63,7 +110,7 @@ export class CustomerService {
               paymentMethod: true,
               grandTotal: true,
               createdAt: true,
-              branch: { select: { id: true, name: true } },
+              branch: BRANCH_NAME_SELECT,
               user: {
                 select: {
                   id: true,
@@ -92,6 +139,7 @@ export class CustomerService {
       ...customer,
       orders: customer.orders.map((order) => ({
         ...order,
+        branch: namedBranch(order.branch),
         grandTotal: Number(order.grandTotal),
         items: order.items.map((item) => ({
           ...item,
@@ -113,13 +161,18 @@ export class CustomerService {
     if (dto.customerCode) {
       await this.assertCodeIsFree(tenantId, dto.customerCode, id);
     }
+    // `undefined` thì giữ nguyên số; trường bị xoá trống thì xoá số.
+    const phone =
+      dto.phone === undefined ? undefined : (normalizePhone(dto.phone) ?? null);
+    if (phone) await this.assertPhoneIsFree(tenantId, phone, id);
 
     return this.prisma.customer.update({
       where: { id },
       data: {
         name: dto.name,
         customerCode: dto.customerCode,
-        phone: dto.phone,
+        phone,
+        email: dto.email,
         gender: dto.gender,
         address: dto.address,
         dob: dto.dob ? new Date(dto.dob) : undefined,
@@ -136,7 +189,7 @@ export class CustomerService {
     return { success: true };
   }
 
-  /** Bulk soft delete, scoped by tenant in the same statement - an id belonging to somebody else simply isn't matched, and the returned count is how many were this tenant's. */
+  /** Xoá mềm nhiều khách, lọc theo tenant. */
   async removeMany(tenantId: string, ids: string[]) {
     const result = await this.prisma.customer.updateMany({
       where: { tenantId, id: { in: ids }, isDeleted: false },
@@ -157,7 +210,55 @@ export class CustomerService {
     return customer;
   }
 
-  /** A customer code is what staff type to pull someone up, so `@@unique([tenantId, customerCode])` enforces it (nullable, so any number may carry none); this check only runs first to name the offending code. */
+  /** Một SĐT một khách. */
+  private async assertPhoneIsFree(
+    tenantId: string,
+    phone: string,
+    exceptId?: string,
+  ) {
+    const taken = await this.prisma.customer.findFirst({
+      where: {
+        tenantId,
+        phone,
+        isDeleted: false,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException({
+        code: ErrorCode.CUSTOMER_PHONE_TAKEN,
+        message: `A customer with phone ${phone} already exists`,
+      });
+    }
+  }
+
+  /** Sinh mã khách `KH000001` kế tiếp. */
+  private async nextCustomerCode(tenantId: string): Promise<string> {
+    const rows = await this.prisma.customer.findMany({
+      where: { tenantId, customerCode: { startsWith: CODE_PREFIX } },
+      select: { customerCode: true },
+    });
+    let max = 0;
+    for (const { customerCode } of rows) {
+      const digits = customerCode?.slice(CODE_PREFIX.length) ?? '';
+      if (/^\d+$/.test(digits)) max = Math.max(max, Number(digits));
+    }
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const candidate = `${CODE_PREFIX}${String(max + attempt).padStart(6, '0')}`;
+      const taken = await this.prisma.customer.findFirst({
+        where: { tenantId, customerCode: candidate },
+        select: { id: true },
+      });
+      if (!taken) return candidate;
+    }
+    throw new ConflictException({
+      code: ErrorCode.CUSTOMER_CODE_TAKEN,
+      message: 'Could not allocate a customer code; please enter one',
+    });
+  }
+
+  /** Mã khách không được trùng. */
   private async assertCodeIsFree(
     tenantId: string,
     customerCode: string,

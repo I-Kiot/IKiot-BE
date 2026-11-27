@@ -1,6 +1,6 @@
 import type { NotificationContent } from '../notification-content.type';
 
-/** Notification copy for the subscription/billing domain, kept out of NotificationService so that stays domain-agnostic delivery machinery. */
+/** Nội dung thông báo gói dịch vụ. */
 export const SubscriptionNotificationTemplates = {
   activated: (): NotificationContent => ({
     type: 'SUBSCRIPTION_ACTIVATED',
@@ -8,6 +8,19 @@ export const SubscriptionNotificationTemplates = {
     description:
       'Thanh toán của bạn đã được xác nhận, gói dịch vụ đang hoạt động.',
     link: '/settings/billing',
+  }),
+
+  /** Gửi operator: tiền về tài khoản iKiot nhưng gói không được kích hoạt; cần xử lý tay. */
+  platformTransferNeedsAction: (
+    outcome: string,
+    amount: number,
+    reference: string | null,
+    content: string | null,
+  ): NotificationContent => ({
+    type: 'SYSTEM_PLATFORM_TRANSFER_NEEDS_ACTION',
+    title: 'Tiền gói dịch vụ cần xử lý tay',
+    description: `Nhận ${amount.toLocaleString('vi-VN')}đ vào tài khoản iKiot (mã ${reference ?? 'không có'}, nội dung "${content ?? ''}"), kết quả ${outcome}: gói chưa được kích hoạt, cần đối soát hoặc hoàn tiền.`,
+    link: '/admin/notifications',
   }),
 
   trialExpired: (): NotificationContent => ({

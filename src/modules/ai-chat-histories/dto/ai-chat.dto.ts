@@ -12,7 +12,7 @@ const trim = () =>
     typeof value === 'string' ? value.trim() : value,
   );
 
-/** `POST /ai/chat` - one question, optionally continuing an existing thread. */
+/** `POST /ai/chat` - hỏi một câu, có thể tiếp tục một thread đã có. */
 export class ChatDto {
   @IsString()
   @trim()
@@ -20,7 +20,7 @@ export class ChatDto {
   @MaxLength(4000)
   message: string;
 
-  /** Absent, or naming somebody else's conversation, starts a new thread - deliberately not a 404, since a stale browser tab should cost a new thread, not an error dialog. */
+  /** Id hội thoại không có hoặc của người khác thì mở hội thoại mới. */
   @IsOptional()
   @IsUUID()
   conversationId?: string;

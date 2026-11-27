@@ -1,6 +1,15 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TenantSelfService } from './tenant-self.service';
+import { QueryBankingHistoryDto } from './dto/query-banking-history.dto';
 import {
   BankingDto,
   SetSepayKeyDto,
@@ -12,14 +21,14 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-/** A shop's own settings, at the singular `/tenant/*` paths the old API used. The tenant id always comes from `requireTenantId(user)`, so no route here can be pointed at another shop; `/tenants` is the separate admin-only CRUD. */
+/** Cài đặt của chính shop ở `/tenant/*`. */
 @ApiTags('tenants')
 @ApiBearerAuth('bearer')
 @Controller('tenant')
 export class TenantSelfController {
   constructor(private readonly service: TenantSelfService) {}
 
-  /** Reading your own shop needs no permission beyond being in it - as in the old API. */
+  /** Xem shop của mình chỉ cần thuộc shop đó, không cần quyền thêm, như API cũ. */
   @Get('me')
   findMine(@CurrentUser() user: AuthUser) {
     return this.service.findMine(requireTenantId(user));
@@ -28,23 +37,38 @@ export class TenantSelfController {
   @Permissions('tenants', 'update')
   @Put('me')
   updateMine(@CurrentUser() user: AuthUser, @Body() dto: UpdateMyTenantDto) {
-    return this.service.updateMine(requireTenantId(user), dto);
+    return this.service.updateMine(requireTenantId(user), user.userId, dto);
   }
 
-  /** The bank account SePay pays into. Without it `POST /orders` refuses a SEPAY sale. */
+  /** Tài khoản SePay nhận tiền. Thiếu nó thì `POST /orders` từ chối đơn SEPAY. */
   @Permissions('tenants', 'update')
   @Put('banking')
   updateBanking(@CurrentUser() user: AuthUser, @Body() dto: BankingDto) {
-    return this.service.updateBanking(requireTenantId(user), dto);
+    return this.service.updateBanking(requireTenantId(user), user.userId, dto);
   }
 
-  /** Platform-admin only - see `TenantSelfService.setSepayKey` for why this guard is a fix rather than a port. The tenant id is a path param because an operator is acting on somebody else's shop. */
+  /** Lịch sử đổi tài khoản nhận tiền và liên kết SePay. */
+  @Permissions('tenants', 'update')
+  @Get('banking/history')
+  bankingHistory(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryBankingHistoryDto,
+  ) {
+    return this.service.bankingHistory(requireTenantId(user), query);
+  }
+
+  /** Đặt key SePay, chỉ admin nền tảng. */
   @UseGuards(AdminOnlyGuard)
   @Put(':tenantId/sepay-key')
   setSepayKey(
+    @CurrentUser() user: AuthUser,
     @Param('tenantId') tenantId: string,
     @Body() dto: SetSepayKeyDto,
   ) {
-    return this.service.setSepayKey(tenantId, dto.sepayWebhookApiKey);
+    return this.service.setSepayKey(
+      tenantId,
+      user.userId,
+      dto.sepayWebhookApiKey,
+    );
   }
 }

@@ -19,8 +19,10 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { EmitsChange } from '../../common/realtime/emits-change.decorator';
+import { StockMovementChanges } from './stock-movements.change-template';
 
-/** Real port of StockMovementController, same path and same permission per route. There is no DELETE: a movement is paperwork about goods that physically moved, so it is cancelled, never removed. Every route takes the whole `AuthUser`, because where the caller works decides what they may touch. */
+/** Controller phiếu kho; không có DELETE, chỉ huỷ. */
 @ApiTags('stock-movements')
 @ApiBearerAuth('bearer')
 @Controller('stock-movements')
@@ -29,6 +31,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'create')
   @Post()
+  @EmitsChange(StockMovementChanges.created)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateStockMovementDto) {
     return this.service.create(user, dto);
   }
@@ -53,6 +56,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'update')
   @Patch(':id/details')
+  @EmitsChange(StockMovementChanges.edited)
   updateDetails(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -61,30 +65,32 @@ export class StockMovementController {
     return this.service.updateDetails(user, id, dto);
   }
 
-  /** DRAFT → OPENING. */
   @Permissions('stock_movement', 'update')
   @Patch(':id/open')
+  @EmitsChange(StockMovementChanges.opened)
   open(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.open(user, id);
   }
 
-  /** OPENING → CLOSED. */
   @Permissions('stock_movement', 'update')
   @Patch(':id/close')
+  @EmitsChange(StockMovementChanges.closed)
   close(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.close(user, id);
   }
 
-  /** → IN_TRANSIT. Stock leaves the source here. */
+  /** → IN_TRANSIT. Hàng rời nguồn tại đây. */
   @Permissions('stock_movement', 'approve')
   @Patch(':id/ship')
+  @EmitsChange(StockMovementChanges.shipped)
   ship(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.ship(user, id);
   }
 
-  /** → RECEIVED. Stock arrives, and an import books the supplier's debt. */
+  /** → RECEIVED. Hàng về, và phiếu nhập ghi nhận công nợ NCC. */
   @Permissions('stock_movement', 'receive')
   @Patch(':id/receive')
+  @EmitsChange(StockMovementChanges.received)
   receive(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -93,9 +99,9 @@ export class StockMovementController {
     return this.service.receive(user, id, dto);
   }
 
-  /** ADJUST PENDING → COMPLETED. */
   @Permissions('stock_movement', 'approve')
   @Patch(':id/approve-adjust')
+  @EmitsChange(StockMovementChanges.adjustApproved)
   approveAdjust(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -105,6 +111,7 @@ export class StockMovementController {
 
   @Permissions('stock_movement', 'cancel')
   @Patch(':id/cancel')
+  @EmitsChange(StockMovementChanges.cancelled)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,

@@ -5,16 +5,34 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { flattenCombo, type ComboLeaf } from '../orders/combo-expansion';
+import { loadComboGraph } from '../orders/order-combo';
+import { comboSetsAvailable, shelfOf } from './combo-availability';
 import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import {
+  LOCATION_SELECT,
   locationMatcher,
-  toLocationRef,
 } from '../../common/dto/location-ref.dto';
-import type { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
+import type {
+  LocationRef,
+  LocationRefQueryDto,
+} from '../../common/dto/location-ref.dto';
 import {
+  ProductItemType,
   ProductStatus,
+  ProductType,
   QUOTA_COUNTED_PRODUCT_STATUSES,
+  itemTypeFor,
 } from '../../common/constants/product-status';
+import {
+  assertComponentsMatchType,
+  assertNoDiscontinuedComponent,
+  lockComboGraph,
+  recomputeComboCosts,
+  writeComboComponents,
+} from './combo-components';
+import { withNestedProfile } from '../../common/utils/user-profile';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -27,15 +45,88 @@ import {
 } from './dto/query-product.dto';
 import { OPEN_MOVEMENT_STATUSES } from '../stock-movement-requests/stock-movement.constants';
 import type { Prisma } from '../../../generated/prisma/client';
+import { recordPriceChange } from './product-price-history';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { LocationType } from '../../common/constants/location-type';
+import {
+  replaceAttributes,
+  upsertAttributeUnits,
+  writeItemDetails,
+} from './product-attributes';
 
-const ITEM_INCLUDE = {
+/** Tiền tố mã sản phẩm tự cấp (`SP000001`, ...). */
+const CODE_PREFIX = 'SP';
+
+/** Lô hỏng còn hàng (2026-11-26): nằm ngoài `stock`, chỉ để báo số hỏng và filter "Có hàng hỏng". */
+const damagedLotWhere = {
+  isSellable: false,
+  remainingQuantity: { gt: 0 },
+} as const satisfies Prisma.InventoryLotWhereInput;
+
+/** Cùng phép lọc như `locationWhere`, viết cho bảng lô. */
+function lotLocationWhere(
+  query: LocationRefQueryDto,
+): Prisma.InventoryLotWhereInput {
+  return {
+    ...(query.locationId ? { locationId: query.locationId } : {}),
+    ...(query.locationType ? { location: { type: query.locationType } } : {}),
+  };
+}
+
+/** DTO phiên bản khi `allocateItemCodes` đã điền đủ hai mã và chuẩn hoá mã vạch (trống = null). */
+type ItemWithCodes = Omit<CreateProductItemDto, 'barcode'> & {
+  productCode: string;
+  sku: string;
+  barcode: string | null;
+};
+
+/** Barcode trống là null để không trùng unique. */
+function normalizeBarcode(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
+const IMAGES_INCLUDE = {
+  select: { id: true, url: true, isThumbnail: true, position: true },
+  orderBy: { position: 'asc' },
+} as const;
+
+/** Đủ để chọn một ảnh nhỏ cho một phiên bản: ảnh của nó, không có thì ảnh của hàng hoá. */
+const THUMBNAIL_SELECT = {
   images: {
-    select: { id: true, url: true, isThumbnail: true, position: true },
+    select: { url: true, isThumbnail: true },
     orderBy: { position: 'asc' },
   },
+  product: {
+    select: {
+      images: {
+        select: { url: true, isThumbnail: true },
+        orderBy: { position: 'asc' },
+      },
+    },
+  },
+} as const satisfies Prisma.ProductItemSelect;
+
+type ThumbnailSource = Prisma.ProductItemGetPayload<{
+  select: typeof THUMBNAIL_SELECT;
+}>;
+
+/** Ảnh đại diện của phiên bản, không có thì dùng ảnh hàng hoá. */
+function thumbnailOf({ images, product }: ThumbnailSource): string | null {
+  const pick = (list: { url: string; isThumbnail: boolean }[]) =>
+    (list.find((image) => image.isThumbnail) ?? list[0])?.url;
+  return pick(images) ?? pick(product.images) ?? null;
+}
+
+const ITEM_INCLUDE = {
+  images: IMAGES_INCLUDE,
   details: {
-    select: { id: true, name: true, value: true, position: true },
+    select: {
+      id: true,
+      attributeId: true,
+      name: true,
+      value: true,
+      position: true,
+    },
     orderBy: { position: 'asc' },
   },
   suppliers: {
@@ -50,32 +141,66 @@ const ITEM_INCLUDE = {
       },
     },
   },
+  // Thành phần combo một tầng, sắp theo SKU.
+  comboComponents: {
+    orderBy: [{ componentItem: { sku: 'asc' } }, { componentItemId: 'asc' }],
+    select: {
+      quantity: true,
+      componentItem: {
+        select: {
+          id: true,
+          productId: true,
+          sku: true,
+          productName: true,
+          itemType: true,
+          retailPrice: true,
+          costPrice: true,
+          ...THUMBNAIL_SELECT,
+        },
+      },
+    },
+  },
 } as const satisfies Prisma.ProductItemInclude;
 
 type ItemRow = Prisma.ProductItemGetPayload<{ include: typeof ITEM_INCLUDE }>;
 
-/** One location's share of a variant's stock, as the old API shaped it. */
+/** Phần tồn của một phiên bản tại một địa điểm. */
 export interface StockDetail {
   inventoryId: string;
-  locationId: string;
-  locationType: string;
   stock: number;
+  /** Trên kệ (`stock − lockedStock`): phần đánh dấu hỏng được. */
+  shelf: number;
+  /** Hàng hỏng tại đây (lô `isSellable = false`), ngoài `stock` (2026-11-26). */
+  damagedQuantity: number;
+  /** Chiếc may riêng còn bán được tại đây, theo dòng đơn - để chọn đúng chiếc khi đánh dấu hỏng. */
+  customUnits: { orderItemId: string; orderCode: string; quantity: number }[];
+  location: LocationRef;
 }
 
-/**
- * A variant's stock read two ways at once, which is what a location-scoped screen needs.
- *
- * `details` is only the location being viewed - the branch's own shelf, the field
- * `stockDetails` has always meant. `allLocations` is the same variant everywhere in the
- * chain, so a branch holding none of something can still say how many the shop has and
- * whether it is worth requesting a transfer.
- */
+/** Tồn của phiên bản tại nơi đang xem và toàn chuỗi. */
 interface ItemStock {
   details: StockDetail[];
   allLocations: number;
+  /** Số bán được tại nơi đang xem. */
+  available: number;
+  /** Như trên, nhưng trên mọi địa điểm. */
+  availableAllLocations: number;
+  /** Số bộ đủ hàng của combo. */
+  sets?: { here: number; allLocations: number };
+  /** Các món lá của combo (đã gộp SKU trùng), đúng các dòng con mà đơn sẽ tạo. */
+  leaves?: ComboLeaf[];
 }
 
-/** Real port of ProductService: a Product is the catalogue entry, a ProductItem the sellable variant carrying price, SKU and stock. Three deliberate fixes - a subscription is now required to create anything (the old body was wrapped in `if (subscription)` and returned 200 having created nothing), `categoryName` is derived rather than accepted, and deleting a variant checks every table that references it, since those references are real foreign keys now. */
+/** Món lá của combo làm riêng được khi tạo đơn (PRODUCT, sản phẩm bật `isManufacturable`). */
+export interface MadeToOrderComponent {
+  productItemId: string;
+  sku: string | null;
+  productName: string;
+  /** Số chiếc trong một bộ. */
+  quantity: number;
+}
+
+/** Service sản phẩm: sản phẩm là danh mục, phiên bản là thứ bán được. */
 @Injectable()
 export class ProductService {
   constructor(
@@ -83,9 +208,21 @@ export class ProductService {
     private readonly subscriptions: SubscriptionService,
   ) {}
 
-  // ─── Products ──────────────────────────────────────────────────────────────
+  async create(
+    tenantId: string,
+    dto: CreateProductDto,
+    actorId: string | null = null,
+  ) {
+    const [productId] = await this.createMany(tenantId, [dto], actorId);
+    return this.findOne(tenantId, productId, {});
+  }
 
-  async create(tenantId: string, dto: CreateProductDto) {
+  /** Tạo nhiều hàng hoá kèm phiên bản trong một transaction. */
+  async createMany(
+    tenantId: string,
+    dtos: CreateProductDto[],
+    actorId: string | null = null,
+  ): Promise<string[]> {
     await this.subscriptions.assertQuota(
       tenantId,
       'quotaSnapshotMaxProducts',
@@ -97,42 +234,91 @@ export class ProductService {
           },
         }),
       'products',
+      dtos.length,
     );
 
-    this.assertNoDuplicateSkusInPayload(dto.items);
+    const allItems = dtos.flatMap((dto) => dto.items);
+    const coded = await this.allocateItemCodes(tenantId, allItems);
+    this.assertNoDuplicateCodesInPayload(coded);
     await this.assertSkusAreFree(
       tenantId,
-      dto.items.map((item) => item.sku),
+      coded.map((item) => item.sku),
     );
-    const categoryName = await this.resolveCategoryName(
+    await this.assertProductCodesAreFree(
       tenantId,
-      dto.categoryId,
+      coded.map((item) => item.productCode),
     );
-    await this.assertBrandExists(tenantId, dto.brandId);
-    await this.assertItemReferencesExist(tenantId, dto.items);
+    await this.assertBarcodesAreFree(
+      tenantId,
+      coded.map((item) => item.barcode),
+    );
+    const categoryNames = await this.categoryNamesOf(
+      tenantId,
+      dtos.map((dto) => dto.categoryId),
+    );
+    await this.assertBrandsExist(
+      tenantId,
+      dtos.map((dto) => dto.brandId),
+    );
+    await this.assertItemReferencesExist(tenantId, allItems);
 
-    const productId = await this.prisma.$transaction(async (tx) => {
-      const product = await tx.product.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          brandId: dto.brandId,
-          categoryId: dto.categoryId,
-          categoryName,
-          status: dto.status ?? ProductStatus.ACTIVE,
-          images: { create: this.imageRows(dto.images) },
-        },
-        select: { id: true },
-      });
-
-      for (const item of dto.items) {
-        await this.insertItem(tx, tenantId, product.id, item);
-      }
-
-      return product.id;
+    // Phần của từng hàng hoá trong danh sách đã cấp mã, theo thứ tự.
+    let offset = 0;
+    const batches = dtos.map((dto) => {
+      const items = coded.slice(offset, offset + dto.items.length);
+      offset += dto.items.length;
+      return { dto, items };
     });
 
-    return this.findOne(tenantId, productId, {});
+    // Tăng timeout transaction cho lô lớn.
+    const timeout = Math.max(5_000, allItems.length * 200);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const ids: string[] = [];
+        for (const { dto, items } of batches) {
+          const productType = dto.productType ?? ProductType.PRODUCT;
+          const product = await tx.product.create({
+            data: {
+              tenantId,
+              name: dto.name,
+              brandId: dto.brandId,
+              categoryId: dto.categoryId,
+              categoryName: dto.categoryId
+                ? categoryNames.get(dto.categoryId)
+                : null,
+              status: dto.status ?? ProductStatus.ACTIVE,
+              isManufacturable: dto.isManufacturable ?? false,
+              productType,
+              images: { create: this.imageRows(dto.images) },
+            },
+            select: { id: true },
+          });
+
+          // Thuộc tính (kèm đơn vị) tạo trước, để giá trị của SKU đầu tiên nối đúng vào chúng.
+          if (dto.attributes) {
+            await upsertAttributeUnits(
+              tx,
+              tenantId,
+              product.id,
+              dto.attributes,
+            );
+          }
+          for (const item of items) {
+            await this.insertItem(
+              tx,
+              tenantId,
+              product.id,
+              productType,
+              item,
+              actorId,
+            );
+          }
+          ids.push(product.id);
+        }
+        return ids;
+      },
+      { timeout, maxWait: 10_000 },
+    );
   }
 
   async findAll(tenantId: string, query: QueryProductDto) {
@@ -140,11 +326,27 @@ export class ProductService {
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
+    if (query.hasDamaged) {
+      where.AND = [
+        {
+          productItems: {
+            some: {
+              inventoryLots: {
+                some: { ...damagedLotWhere, ...lotLocationWhere(query) },
+              },
+            },
+          },
+        },
+      ];
+    }
 
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+          brand: { select: { id: true, name: true } },
+          images: IMAGES_INCLUDE,
+        },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -152,8 +354,22 @@ export class ProductService {
       this.prisma.product.count({ where }),
     ]);
 
-    // Deliberately no `items` here: a product list is a table of products, and attaching every variant made the payload several times larger. Callers needing variants use /products/search or /products/items.
+    // Danh sách sản phẩm không kèm phiên bản.
     const totals = await this.totalStockByProduct(
+      tenantId,
+      rows.map((row) => row.id),
+      query,
+    );
+    // Tồn của combo tính theo số bộ.
+    const comboSets = await this.comboProductTotals(
+      tenantId,
+      rows
+        .filter((row) => row.productType === ProductType.COMBO)
+        .map((row) => row.id),
+      query,
+    );
+    for (const [productId, total] of comboSets) totals.set(productId, total);
+    const damaged = await this.damagedByProduct(
       tenantId,
       rows.map((row) => row.id),
       query,
@@ -166,13 +382,15 @@ export class ProductService {
         brandName: brand?.name ?? null,
         totalStock: total?.here ?? 0,
         totalStockAllLocations: total?.allLocations ?? 0,
+        // Hàng hỏng nằm ngoài totalStock (lô `isSellable = false`), báo riêng theo cùng phạm vi địa điểm.
+        damagedStock: damaged.get(product.id) ?? 0,
       };
     });
 
     return paginate(data, total, query.page, query.limit);
   }
 
-  /** The POS lookup: one term matched against the product name anywhere and against every variant's code, SKU and barcode as a prefix, with the variants returned inline so a specific SKU can be picked straight out. */
+  /** Tìm sản phẩm cho POS, kèm phiên bản. */
   async search(tenantId: string, query: SearchProductDto) {
     const where = this.buildProductWhere(tenantId, query);
     if (query.q) {
@@ -192,11 +410,18 @@ export class ProductService {
         },
       ];
     }
+    // Dùng AND để không đè bộ lọc `productItems` theo nhà cung cấp mà buildProductWhere có thể đã đặt.
+    if (query.itemIds?.length) {
+      where.AND = [{ productItems: { some: { id: { in: query.itemIds } } } }];
+    }
 
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+          brand: { select: { id: true, name: true } },
+          images: IMAGES_INCLUDE,
+        },
         orderBy: { createdAt: 'desc' },
         skip: skipFor(query.page, query.limit),
         take: query.limit,
@@ -208,16 +433,27 @@ export class ProductService {
       where: { tenantId, productId: { in: rows.map((row) => row.id) } },
       include: ITEM_INCLUDE,
     });
-    const stock = await this.stockByItem(
+    const stock = await this.stockWithCombos(
       tenantId,
-      items.map((item) => item.id),
+      this.withComponentCombos(items),
       query,
+    );
+    const madeToOrder = await this.madeToOrderComponents(
+      tenantId,
+      items,
+      stock,
     );
 
     const data = rows.map(({ brand, ...product }) => {
       const own = items
         .filter((item) => item.productId === product.id)
-        .map((item) => this.toItemResponse(item, stock.get(item.id)));
+        .map((item) => ({
+          ...this.toItemResponse(item, stock.get(item.id), stock),
+          // Màn tạo đơn: món nào của combo làm riêng được; rỗng thì không có nút làm riêng.
+          ...(item.itemType === ProductItemType.COMBO
+            ? { madeToOrderComponents: madeToOrder.get(item.id) ?? [] }
+            : {}),
+        }));
       return {
         ...product,
         brandName: brand?.name ?? null,
@@ -233,17 +469,7 @@ export class ProductService {
     return paginate(data, total, query.page, query.limit);
   }
 
-  /**
-   * Flat list of variants for pickers that reference a specific SKU; capped rather than
-   * paginated, because it feeds a dropdown.
-   *
-   * `branchIds` **attaches** each variant's stock at those branches, it does not filter by
-   * it. Filtering was the old behaviour and it hid the catalogue from the screens that need
-   * it most: a promotion for goods arriving next week, or a transfer request for something
-   * the branch has never carried, both start from a variant with no row there. A picker's
-   * job is to show what the shop sells and say how many are where - `stock: 0` answers
-   * that; an absent option does not.
-   */
+  /** Danh sách phẳng phiên bản cho bộ chọn SKU. */
   async listItems(tenantId: string, query: QueryProductItemDto) {
     const where: Prisma.ProductItemWhereInput = { tenantId };
 
@@ -255,8 +481,18 @@ export class ProductService {
         { productCode: match },
       ];
     }
+    if (query.excludeDiscontinued || query.productType?.length) {
+      where.product = {
+        ...(query.excludeDiscontinued && {
+          status: { not: ProductStatus.DISCONTINUED },
+        }),
+        ...(query.productType?.length && {
+          productType: { in: query.productType },
+        }),
+      };
+    }
 
-    const items = await this.prisma.productItem.findMany({
+    const found = await this.prisma.productItem.findMany({
       where,
       select: {
         id: true,
@@ -264,10 +500,18 @@ export class ProductService {
         productName: true,
         productCode: true,
         sku: true,
+        itemType: true,
+        costPrice: true,
+        ...THUMBNAIL_SELECT,
       },
       orderBy: { productName: 'asc' },
       take: query.limit,
     });
+    const items = found.map(({ images, product, costPrice, ...item }) => ({
+      ...item,
+      costPrice: Number(costPrice),
+      thumbnailUrl: thumbnailOf({ images, product }),
+    }));
 
     if (!query.branchIds?.length || items.length === 0) return items;
 
@@ -275,7 +519,9 @@ export class ProductService {
       by: ['productItemId'],
       where: {
         tenantId,
-        branchId: { in: query.branchIds },
+        // Id chi nhánh là id Location; lọc theo loại để id kho không bị tính là chi nhánh.
+        locationId: { in: query.branchIds },
+        location: { type: LocationType.BRANCH },
         productItemId: { in: items.map((item) => item.id) },
       },
       _sum: { stock: true },
@@ -290,15 +536,16 @@ export class ProductService {
     }));
   }
 
-  /** Detail: the product, every variant, and where each variant's stock sits. */
+  /** Chi tiết: sản phẩm, mọi phiên bản, và tồn của từng phiên bản ở đâu. */
   async findOne(tenantId: string, id: string, location: LocationRefQueryDto) {
     const product = await this.prisma.product.findFirst({
       where: { id, tenantId },
       include: {
         brand: { select: { id: true, name: true } },
         category: { select: { id: true, name: true } },
-        images: {
-          select: { id: true, url: true, isThumbnail: true, position: true },
+        images: IMAGES_INCLUDE,
+        attributes: {
+          select: { id: true, name: true, unit: true, position: true },
           orderBy: { position: 'asc' },
         },
       },
@@ -314,15 +561,15 @@ export class ProductService {
       include: ITEM_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
-    const stock = await this.stockByItem(
+    const stock = await this.stockWithCombos(
       tenantId,
-      items.map((item) => item.id),
+      this.withComponentCombos(items),
       location,
     );
 
     const { brand, ...rest } = product;
     const mapped = items.map((item) =>
-      this.toItemResponse(item, stock.get(item.id)),
+      this.toItemResponse(item, stock.get(item.id), stock),
     );
 
     return {
@@ -338,7 +585,7 @@ export class ProductService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
-    // Prisma's update({ where: { id } }) can't take a non-unique tenant filter, so scope has to be re-checked first or any tenant could write any row by id.
+    // Kiểm tenant trước khi update theo id.
     const existing = await this.prisma.product.findFirst({
       where: { id, tenantId },
       select: { id: true },
@@ -356,6 +603,20 @@ export class ProductService {
         : await this.resolveCategoryName(tenantId, dto.categoryId);
 
     await this.prisma.$transaction(async (tx) => {
+      // Bật lại combo phải kiểm lại thành phần sau khoá.
+      if (
+        dto.status !== undefined &&
+        dto.status !== ProductStatus.DISCONTINUED
+      ) {
+        await lockComboGraph(tx, tenantId);
+        const current = await tx.product.findUniqueOrThrow({
+          where: { id },
+          select: { status: true },
+        });
+        if (current.status === ProductStatus.DISCONTINUED) {
+          await this.assertCombosSellable(tx, tenantId, id);
+        }
+      }
       await tx.product.update({
         where: { id },
         data: {
@@ -364,8 +625,13 @@ export class ProductService {
           categoryId: dto.categoryId,
           categoryName,
           status: dto.status,
+          isManufacturable: dto.isManufacturable,
         },
       });
+
+      if (dto.attributes) {
+        await replaceAttributes(tx, tenantId, id, dto.attributes);
+      }
 
       if (dto.images) {
         await tx.productImage.deleteMany({ where: { productId: id } });
@@ -377,7 +643,7 @@ export class ProductService {
         });
       }
 
-      // ProductItem.productName is a denormalized copy of the product's name, so it has to follow a rename.
+      // ProductItem.productName là bản sao của tên sản phẩm, nên đổi tên phải cập nhật theo.
       if (dto.name) {
         await tx.productItem.updateMany({
           where: { productId: id, tenantId },
@@ -389,7 +655,59 @@ export class ProductService {
     return this.findOne(tenantId, id, {});
   }
 
-  /** Soft delete to DISCONTINUED - order items, stock movements and inventory all hold a foreign key to this product's variants - refused while stock, an unfinished transfer or an unpaid order still makes the product live. */
+  /** Thêm một thuộc tính; trùng tên thì trả thuộc tính có sẵn. */
+  async addAttribute(
+    tenantId: string,
+    productId: string,
+    dto: { name: string; unit?: string },
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      select: {
+        id: true,
+        attributes: { select: { id: true, name: true, position: true } },
+      },
+    });
+    if (!product)
+      throw new NotFoundException({
+        code: ErrorCode.PRODUCT_NOT_FOUND,
+        message: 'Product not found',
+      });
+    const name = dto.name.normalize('NFC').trim();
+    const unit = dto.unit?.trim() || null;
+    const select = {
+      id: true,
+      name: true,
+      unit: true,
+      position: true,
+    } as const;
+    const same = product.attributes.find(
+      (attr) =>
+        attr.name.toLocaleLowerCase('vi') === name.toLocaleLowerCase('vi'),
+    );
+    if (same) {
+      return unit
+        ? this.prisma.productAttribute.update({
+            where: { id: same.id },
+            data: { unit },
+            select,
+          })
+        : this.prisma.productAttribute.findUniqueOrThrow({
+            where: { id: same.id },
+            select,
+          });
+    }
+    const position = product.attributes.reduce(
+      (max, attr) => Math.max(max, attr.position + 1),
+      0,
+    );
+    return this.prisma.productAttribute.create({
+      data: { tenantId, productId, name, unit, position },
+      select,
+    });
+  }
+
+  /** Ngừng bán (xoá mềm), từ chối khi còn tồn, phiếu chưa xong hoặc đơn chưa thanh toán. */
   async discontinue(tenantId: string, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, tenantId },
@@ -423,7 +741,7 @@ export class ProductService {
           where: {
             tenantId,
             status: { in: [...OPEN_MOVEMENT_STATUSES] },
-            // The relation is `details` on StockMovementRequest, `items` on Order.
+            // Quan hệ là `details` trên StockMovementRequest, `items` trên Order.
             details: { some: { productItemId: { in: itemIds } } },
           },
         }),
@@ -457,26 +775,46 @@ export class ProductService {
       }
     }
 
-    await this.prisma.product.update({
-      where: { id },
-      data: { status: ProductStatus.DISCONTINUED },
+    // Kiểm combo dưới cùng khoá với sửa thành phần.
+    await this.prisma.$transaction(async (tx) => {
+      await lockComboGraph(tx, tenantId);
+      // Chặn ngừng bán khi combo đang bán còn chứa SKU này.
+      const combos = await tx.comboComponent.count({
+        where: {
+          componentItem: { productId: id },
+          comboItem: {
+            productId: { not: id },
+            product: { status: { not: ProductStatus.DISCONTINUED } },
+          },
+        },
+      });
+      if (combos > 0) {
+        throw new BadRequestException({
+          code: ErrorCode.PRODUCT_ITEM_IN_COMBO,
+          message:
+            'Cannot discontinue: a variant is a component of a combo that is still sold.',
+        });
+      }
+      await tx.product.update({
+        where: { id },
+        data: { status: ProductStatus.DISCONTINUED },
+      });
     });
     return this.findOne(tenantId, id, {});
   }
-
-  // ─── Variants ──────────────────────────────────────────────────────────────
 
   async createItem(
     tenantId: string,
     productId: string,
     dto: CreateProductItemDto,
+    actorId: string | null = null,
   ) {
-    // The old route sat behind requireActiveSubscription: adding a variant doesn't consume the product quota, but it is still a write to the catalogue.
+    // Thêm phiên bản cần gói còn hiệu lực.
     await this.subscriptions.requireActiveSubscription(tenantId);
 
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId },
-      select: { id: true },
+      select: { id: true, productType: true },
     });
     if (!product)
       throw new NotFoundException({
@@ -484,24 +822,93 @@ export class ProductService {
         message: 'Product not found',
       });
 
-    await this.assertSkusAreFree(tenantId, [dto.sku]);
-    await this.assertItemReferencesExist(tenantId, [dto]);
+    const [item] = await this.allocateItemCodes(tenantId, [dto]);
+    await this.assertSkusAreFree(tenantId, [item.sku]);
+    await this.assertProductCodesAreFree(tenantId, [item.productCode]);
+    await this.assertBarcodesAreFree(tenantId, [item.barcode]);
+    await this.assertItemReferencesExist(tenantId, [item]);
 
     const itemId = await this.prisma.$transaction((tx) =>
-      this.insertItem(tx, tenantId, productId, dto),
+      this.insertItem(
+        tx,
+        tenantId,
+        productId,
+        product.productType as ProductType,
+        item,
+        actorId,
+      ),
     );
 
     return this.findItem(tenantId, itemId);
+  }
+
+  /** Lịch sử giá của một mặt hàng, mới nhất trước. */
+  async priceHistory(
+    tenantId: string,
+    itemId: string,
+    query: QueryPriceHistoryDto,
+  ) {
+    const item = await this.prisma.productItem.findFirst({
+      where: { id: itemId, tenantId },
+      select: {
+        id: true,
+        productName: true,
+        sku: true,
+        retailPrice: true,
+        costPrice: true,
+      },
+    });
+    if (!item)
+      throw new NotFoundException({
+        code: ErrorCode.PRODUCT_ITEM_NOT_FOUND,
+        message: 'Product item not found',
+      });
+    const where: Prisma.ProductItemPriceChangeWhereInput = {
+      tenantId,
+      productItemId: itemId,
+      ...(query.field ? { field: query.field } : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.productItemPriceChange.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+        include: {
+          changedBy: {
+            select: {
+              id: true,
+              phoneNumber: true,
+              profileFirstName: true,
+              profileLastName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.productItemPriceChange.count({ where }),
+    ]);
+    const data = rows.map(({ changedBy, changedById: _by, ...row }) => ({
+      ...row,
+      changedBy: changedBy ? withNestedProfile(changedBy) : null,
+    }));
+    return { ...paginate(data, total, query.page, query.limit), item };
   }
 
   async updateItem(
     tenantId: string,
     itemId: string,
     dto: UpdateProductItemDto,
+    actorId: string | null = null,
   ) {
     const existing = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
-      select: { id: true },
+      select: {
+        id: true,
+        productId: true,
+        itemType: true,
+        retailPrice: true,
+        costPrice: true,
+      },
     });
     if (!existing)
       throw new NotFoundException({
@@ -509,25 +916,66 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    if (dto.sku) await this.assertSkusAreFree(tenantId, [dto.sku], itemId);
+    // Mã trống thì giữ mã hiện tại.
+    const sku = dto.sku?.trim() || undefined;
+    const productCode = dto.productCode?.trim() || undefined;
+    if (sku) await this.assertSkusAreFree(tenantId, [sku], itemId);
+    if (productCode) {
+      await this.assertProductCodesAreFree(tenantId, [productCode], itemId);
+    }
+    // Barcode trống thì xoá (null).
+    const barcode =
+      dto.barcode === undefined ? undefined : normalizeBarcode(dto.barcode);
+    if (barcode) await this.assertBarcodesAreFree(tenantId, [barcode], itemId);
+    if (dto.comboComponents) {
+      assertComponentsMatchType(existing.itemType, dto.comboComponents);
+    }
+    // Một danh sách rỗng gửi kèm cho hàng thường nghĩa là "không có thành phần" - bỏ qua, không ghi.
+    const writeComponents =
+      existing.itemType === ProductItemType.COMBO && dto.comboComponents;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.productItem.update({
         where: { id: itemId },
         data: {
           productName: dto.productName,
-          productCode: dto.productCode,
-          sku: dto.sku,
-          barcode: dto.barcode,
+          productCode,
+          sku,
+          barcode,
           description: dto.description,
           retailPrice: dto.retailPrice,
-          costPrice: dto.costPrice,
+          // Giá vốn combo là tổng của các thành phần, do `writeComboComponents` ghi.
+          costPrice:
+            existing.itemType === ProductItemType.COMBO
+              ? undefined
+              : dto.costPrice,
           warrantyPeriod: dto.warrantyPeriod,
           vat: dto.vat,
         },
       });
+      // Lịch sử giá: một dòng cho mỗi giá thật sự đổi (so theo đồng), cùng transaction với lần sửa.
+      await recordPriceChange(tx, {
+        tenantId,
+        productItemId: itemId,
+        before: existing,
+        after: {
+          retailPrice: dto.retailPrice,
+          costPrice:
+            existing.itemType === ProductItemType.COMBO
+              ? undefined
+              : dto.costPrice,
+        },
+        actorId,
+      });
+      // Combo phía trên phiên bản này mang giá vốn suy ra từ nó, nên phải tính lại.
+      if (
+        existing.itemType !== ProductItemType.COMBO &&
+        dto.costPrice !== undefined
+      ) {
+        await recomputeComboCosts(tx, tenantId, [itemId], actorId);
+      }
 
-      // Both collections are replaced wholesale when present, same as the old API: the client sends the list it wants to end up with, not a patch of it.
+      // Thay toàn bộ hai danh sách khi có gửi.
       if (dto.images) {
         await tx.productItemImage.deleteMany({
           where: { productItemId: itemId },
@@ -540,24 +988,30 @@ export class ProductService {
         });
       }
       if (dto.productDetails) {
-        await tx.productItemDetail.deleteMany({
-          where: { productItemId: itemId },
-        });
-        await tx.productItemDetail.createMany({
-          data: dto.productDetails.map((detail, position) => ({
-            productItemId: itemId,
-            name: detail.name,
-            value: detail.value,
-            position,
-          })),
-        });
+        await writeItemDetails(
+          tx,
+          tenantId,
+          existing.productId,
+          itemId,
+          dto.productDetails,
+        );
+      }
+      // Đơn đã bán giữ các dòng con đã bung lúc bán; sửa thành phần chỉ áp cho đơn sau.
+      if (writeComponents) {
+        await writeComboComponents(
+          tx,
+          tenantId,
+          itemId,
+          writeComponents,
+          actorId,
+        );
       }
     });
 
     return this.findItem(tenantId, itemId);
   }
 
-  /** Hard delete of a variant, refused while anything still points at it - the old service checked inventory only, and the other three references are real foreign keys here. */
+  /** Xoá cứng phiên bản khi không còn gì trỏ tới. */
   async removeItem(tenantId: string, itemId: string) {
     const item = await this.prisma.productItem.findFirst({
       where: { id: itemId, tenantId },
@@ -569,16 +1023,20 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    const [inventories, movements, orders, promotions] = await Promise.all([
-      this.prisma.inventory.count({ where: { productItemId: itemId } }),
-      this.prisma.stockMovementRequestItem.count({
-        where: { productItemId: itemId },
-      }),
-      this.prisma.orderItem.count({ where: { productItemId: itemId } }),
-      this.prisma.promotionProductItem.count({
-        where: { productItemId: itemId },
-      }),
-    ]);
+    const [inventories, movements, orders, promotions, combos] =
+      await Promise.all([
+        this.prisma.inventory.count({ where: { productItemId: itemId } }),
+        this.prisma.stockMovementRequestItem.count({
+          where: { productItemId: itemId },
+        }),
+        this.prisma.orderItem.count({ where: { productItemId: itemId } }),
+        this.prisma.promotionProductItem.count({
+          where: { productItemId: itemId },
+        }),
+        this.prisma.comboComponent.count({
+          where: { componentItemId: itemId },
+        }),
+      ]);
 
     if (inventories > 0) {
       throw new BadRequestException({
@@ -600,13 +1058,20 @@ export class ProductService {
         message: 'Cannot delete this item because it belongs to a promotion.',
       });
     }
+    // Không có cascade ở phía thành phần (FK chặn), nên báo rõ thay vì để lỗi FK.
+    if (combos > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_ITEM_IN_COMBO,
+        message:
+          'Cannot delete this item because it is a component of a combo. Remove it from the combo first.',
+      });
+    }
 
-    // Images, details and supplier links cascade from the schema.
     await this.prisma.productItem.delete({ where: { id: itemId } });
     return { id: itemId, deleted: true };
   }
 
-  /** Idempotent, like the old `$addToSet`: attaching the same supplier twice is a no-op. */
+  /** Idempotent như `$addToSet` cũ: gắn cùng NCC hai lần không đổi gì. */
   async addSupplierToItem(
     tenantId: string,
     itemId: string,
@@ -644,7 +1109,34 @@ export class ProductService {
     return this.findItem(tenantId, itemId);
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
+  /** Combo của sản phẩm chỉ bán lại khi không thành phần nào đã ngừng. */
+  private async assertCombosSellable(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    productId: string,
+  ): Promise<void> {
+    const components = await tx.comboComponent.findMany({
+      where: {
+        comboItem: { productId, tenantId },
+        componentItem: { productId: { not: productId } },
+      },
+      select: {
+        componentItem: {
+          select: {
+            id: true,
+            sku: true,
+            product: { select: { status: true } },
+          },
+        },
+      },
+    });
+    assertNoDiscontinuedComponent(
+      components.map(({ componentItem }) => ({
+        ...componentItem,
+        productStatus: componentItem.product.status,
+      })),
+    );
+  }
 
   private async findItem(tenantId: string, itemId: string) {
     const item = await this.prisma.productItem.findFirst({
@@ -657,17 +1149,38 @@ export class ProductService {
         message: 'Product item not found',
       });
 
-    const stock = await this.stockByItem(tenantId, [itemId], {});
-    return this.toItemResponse(item, stock.get(itemId));
+    const stock = await this.stockWithCombos(
+      tenantId,
+      this.withComponentCombos([item]),
+      {},
+    );
+    return this.toItemResponse(item, stock.get(itemId), stock);
   }
 
-  /** Creates a variant with its images, specs, supplier links and opening stock. */
+  /** Tạo phiên bản kèm ảnh, thuộc tính, NCC và tồn đầu. `itemType` lấy từ sản phẩm, client không chọn. */
   private async insertItem(
     tx: Prisma.TransactionClient,
     tenantId: string,
     productId: string,
-    dto: CreateProductItemDto,
+    productType: ProductType,
+    dto: ItemWithCodes,
+    actorId: string | null = null,
   ): Promise<string> {
+    const itemType = itemTypeFor(productType);
+    if (dto.itemType !== undefined && dto.itemType !== itemType) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_ITEM_TYPE_MISMATCH,
+        message: `A ${productType} product only holds ${itemType} variants, not ${dto.itemType}`,
+      });
+    }
+    assertComponentsMatchType(itemType, dto.comboComponents);
+    // Giá vốn combo tự tính, bỏ số client gửi.
+    if (itemType !== ProductItemType.COMBO && dto.costPrice === undefined) {
+      throw new BadRequestException({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'costPrice is required',
+      });
+    }
     const item = await tx.productItem.create({
       data: {
         tenantId,
@@ -678,23 +1191,43 @@ export class ProductService {
         barcode: dto.barcode,
         description: dto.description,
         retailPrice: dto.retailPrice,
-        costPrice: dto.costPrice,
+        costPrice: itemType === ProductItemType.COMBO ? 0 : dto.costPrice!,
         warrantyPeriod: dto.warrantyPeriod,
         vat: dto.vat,
+        itemType,
         images: { create: this.imageRows(dto.images) },
-        details: {
-          create: (dto.productDetails ?? []).map((detail, position) => ({
-            name: detail.name,
-            value: detail.value,
-            position,
-          })),
-        },
         suppliers: {
           create: (dto.supplierIds ?? []).map((supplierId) => ({ supplierId })),
         },
       },
       select: { id: true },
     });
+    await recordPriceChange(tx, {
+      tenantId,
+      productItemId: item.id,
+      before: null,
+      after: {
+        retailPrice: dto.retailPrice,
+        costPrice: itemType === ProductItemType.COMBO ? 0 : dto.costPrice,
+      },
+      actorId,
+    });
+    if (itemType === ProductItemType.COMBO && dto.comboComponents) {
+      await writeComboComponents(
+        tx,
+        tenantId,
+        item.id,
+        dto.comboComponents,
+        actorId,
+      );
+    }
+    await writeItemDetails(
+      tx,
+      tenantId,
+      productId,
+      item.id,
+      dto.productDetails ?? [],
+    );
 
     return item.id;
   }
@@ -713,37 +1246,32 @@ export class ProductService {
       status?: string;
       categoryId?: string;
       supplierId?: string;
+      isManufacturable?: boolean;
+      productType?: ProductType[];
     } & LocationRefQueryDto,
   ): Prisma.ProductWhereInput {
     const where: Prisma.ProductWhereInput = { tenantId };
     if (query.status) where.status = query.status;
+    if (query.productType?.length) {
+      where.productType = { in: query.productType };
+    }
     if (query.categoryId) where.categoryId = query.categoryId;
+    if (query.isManufacturable !== undefined) {
+      where.isManufacturable = query.isManufacturable;
+    }
 
-    // "Products this supplier supplies" is a fact about the variants, so it is a relation filter rather than the old fetch-ids-then-intersect dance.
+    // Lọc sản phẩm theo NCC của phiên bản.
     if (query.supplierId) {
       where.productItems = {
         some: { suppliers: { some: { supplierId: query.supplierId } } },
       };
     }
 
-    // **The location deliberately narrows nothing here.** The catalogue belongs to the shop,
-    // so every branch and warehouse lists every product; what the location changes is the
-    // *number* next to each one (see stockByItem / totalStockByProduct), never whether the
-    // row appears. Filtering by `inventories: { some: … }` is the shape to avoid: it makes
-    // the existence of a stock row answer "does this shop sell it", and a variant nobody has
-    // received yet then reads as "no such product here" instead of "none here yet" - which
-    // is exactly what a branch about to order some needs to see.
+    // Địa điểm không lọc danh sách, chỉ đổi số tồn.
     return where;
   }
 
-  /**
-   * Where each variant's stock sits, one query for the whole page.
-   *
-   * The query is deliberately **not** narrowed by location: the location splits the rows
-   * afterwards instead. Both numbers a location-scoped screen shows - what this branch holds
-   * and what the whole chain holds - come out of the same rows, so filtering in SQL would
-   * mean a second round trip to recover the total that was just thrown away.
-   */
+  /** Tồn của mọi phiên bản trong trang bằng một truy vấn. */
   private async stockByItem(
     tenantId: string,
     itemIds: string[],
@@ -759,28 +1287,146 @@ export class ProductService {
         id: true,
         productItemId: true,
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        lockedStock: true,
+        locationId: true,
+        location: LOCATION_SELECT,
       },
     });
 
+    // Lô hỏng và lô may riêng còn hàng của các dòng này, một query; chỉ dùng cho `details` (nơi đang xem).
+    const lots = await this.prisma.inventoryLot.findMany({
+      where: {
+        tenantId,
+        productItemId: { in: itemIds },
+        remainingQuantity: { gt: 0 },
+        OR: [{ isSellable: false }, { orderItemId: { not: null } }],
+      },
+      select: {
+        locationId: true,
+        productItemId: true,
+        isSellable: true,
+        orderItemId: true,
+        remainingQuantity: true,
+        orderItem: { select: { order: { select: { code: true } } } },
+      },
+    });
+    const pairKey = (locationId: string, productItemId: string) =>
+      `${locationId}:${productItemId}`;
+    const damagedAt = new Map<string, number>();
+    const customAt = new Map<
+      string,
+      Map<string, StockDetail['customUnits'][number]>
+    >();
+    for (const lot of lots) {
+      const k = pairKey(lot.locationId, lot.productItemId);
+      if (!lot.isSellable) {
+        damagedAt.set(k, (damagedAt.get(k) ?? 0) + lot.remainingQuantity);
+      } else if (lot.orderItemId) {
+        const units =
+          customAt.get(k) ??
+          new Map<string, StockDetail['customUnits'][number]>();
+        const unit = units.get(lot.orderItemId) ?? {
+          orderItemId: lot.orderItemId,
+          orderCode: lot.orderItem?.order.code ?? '',
+          quantity: 0,
+        };
+        unit.quantity += lot.remainingQuantity;
+        units.set(lot.orderItemId, unit);
+        customAt.set(k, units);
+      }
+    }
+
     for (const row of rows) {
-      const ref = toLocationRef(row);
-      if (!ref) continue; // a row naming neither location is broken data, not a location
       const entry = byItem.get(row.productItemId) ?? {
         details: [],
         allLocations: 0,
+        available: 0,
+        availableAllLocations: 0,
       };
       entry.allLocations += row.stock;
+      entry.availableAllLocations += shelfOf(row);
       if (here(row)) {
-        entry.details.push({ inventoryId: row.id, stock: row.stock, ...ref });
+        const k = pairKey(row.locationId, row.productItemId);
+        entry.available += shelfOf(row);
+        entry.details.push({
+          inventoryId: row.id,
+          stock: row.stock,
+          shelf: shelfOf(row),
+          damagedQuantity: damagedAt.get(k) ?? 0,
+          customUnits: [...(customAt.get(k)?.values() ?? [])],
+          location: row.location,
+        });
       }
       byItem.set(row.productItemId, entry);
     }
     return byItem;
   }
 
-  /** The same two totals per product, without loading the variants themselves. */
+  /** Tồn cho trang có combo: tính số bộ từ các món lá. */
+  private async stockWithCombos(
+    tenantId: string,
+    items: { id: string; itemType: string }[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, ItemStock>> {
+    const comboIds = [
+      ...new Set(
+        items
+          .filter((item) => item.itemType === ProductItemType.COMBO)
+          .map((item) => item.id),
+      ),
+    ];
+
+    const leavesOf = new Map<string, ComboLeaf[]>();
+    if (comboIds.length > 0) {
+      try {
+        const graph = await loadComboGraph(this.prisma, tenantId, comboIds);
+        for (const id of comboIds) {
+          try {
+            leavesOf.set(id, flattenCombo(id, graph));
+          } catch {
+            // Combo không bung được thì 0 bộ.
+          }
+        }
+      } catch {
+        // Lồng quá giới hạn thì mọi combo là 0.
+      }
+    }
+
+    const leafIds = new Set<string>();
+    for (const leaves of leavesOf.values()) {
+      for (const leaf of leaves) leafIds.add(leaf.item.id);
+    }
+    const stock = await this.stockByItem(
+      tenantId,
+      [...new Set([...items.map((item) => item.id), ...leafIds])],
+      location,
+    );
+
+    for (const id of comboIds) {
+      const leaves = leavesOf.get(id);
+      stock.set(id, {
+        details: [],
+        allLocations: 0,
+        available: 0,
+        availableAllLocations: 0,
+        leaves,
+        sets: leaves
+          ? {
+              here: comboSetsAvailable(
+                leaves,
+                (leafId) => stock.get(leafId)?.available ?? 0,
+              ),
+              allLocations: comboSetsAvailable(
+                leaves,
+                (leafId) => stock.get(leafId)?.availableAllLocations ?? 0,
+              ),
+            }
+          : { here: 0, allLocations: 0 },
+      });
+    }
+    return stock;
+  }
+
   private async totalStockByProduct(
     tenantId: string,
     productIds: string[],
@@ -794,8 +1440,9 @@ export class ProductService {
       where: { tenantId, productItem: { productId: { in: productIds } } },
       select: {
         stock: true,
-        branchId: true,
-        warehouseId: true,
+        // Chỉ lấy id và loại địa điểm.
+        locationId: true,
+        location: { select: { type: true } },
         productItem: { select: { productId: true } },
       },
     });
@@ -810,40 +1457,325 @@ export class ProductService {
     return totals;
   }
 
-  /** Prices are `Decimal` in Postgres and would serialize as strings, but the old API sent numbers the frontend does arithmetic on - converting here keeps that contract in one place. */
-  private toItemResponse(item: ItemRow, stock: ItemStock | undefined) {
-    const { suppliers, retailPrice, costPrice, vat, ...rest } = item;
+  /** Số hàng hỏng của từng sản phẩm tại địa điểm đang chọn (hoặc toàn chuỗi), cộng từ lô hỏng còn hàng. */
+  private async damagedByProduct(
+    tenantId: string,
+    productIds: string[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, number>> {
+    const byProduct = new Map<string, number>();
+    if (productIds.length === 0) return byProduct;
+    const lots = await this.prisma.inventoryLot.findMany({
+      where: {
+        tenantId,
+        ...damagedLotWhere,
+        ...lotLocationWhere(location),
+        productItem: { productId: { in: productIds } },
+      },
+      select: {
+        remainingQuantity: true,
+        productItem: { select: { productId: true } },
+      },
+    });
+    for (const lot of lots) {
+      const id = lot.productItem.productId;
+      byProduct.set(id, (byProduct.get(id) ?? 0) + lot.remainingQuantity);
+    }
+    return byProduct;
+  }
+
+  /** Ba số tồn của một phiên bản. */
+  private stockFigures(stock: ItemStock | undefined) {
     const details = stock?.details ?? [];
+    return {
+      // Combo lấy số bộ.
+      stock:
+        stock?.sets?.here ??
+        details.reduce((sum, detail) => sum + detail.stock, 0),
+      // Số bán được, trừ hàng đã đóng gói.
+      availableStock: stock?.sets?.here ?? stock?.available ?? 0,
+      // Phiên bản chưa có dòng tồn thì là 0.
+      stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
+    };
+  }
+
+  /**
+   * Món lá của từng combo mà đơn được làm riêng: cùng các lá `buildOrderItemRows` biến thành dòng con, lọc theo quy
+   * tắc `OrderCustomizationService.assertManufacturable` (PRODUCT, sản phẩm bật cờ). Một truy vấn cho cả trang.
+   */
+  private async madeToOrderComponents(
+    tenantId: string,
+    items: { id: string; itemType: string }[],
+    stock: ReadonlyMap<string, ItemStock>,
+  ): Promise<Map<string, MadeToOrderComponent[]>> {
+    const result = new Map<string, MadeToOrderComponent[]>();
+    const combos = items.filter(
+      (item) => item.itemType === ProductItemType.COMBO,
+    );
+    const leafIds = new Set(
+      combos.flatMap(
+        (combo) =>
+          stock
+            .get(combo.id)
+            ?.leaves?.filter(
+              (leaf) => leaf.item.itemType === ProductItemType.PRODUCT,
+            )
+            .map((leaf) => leaf.item.id) ?? [],
+      ),
+    );
+    if (leafIds.size === 0) return result;
+    const manufacturable = new Set(
+      (
+        await this.prisma.productItem.findMany({
+          where: {
+            tenantId,
+            id: { in: [...leafIds] },
+            product: { isManufacturable: true },
+          },
+          select: { id: true },
+        })
+      ).map((row) => row.id),
+    );
+    for (const combo of combos) {
+      result.set(
+        combo.id,
+        (stock.get(combo.id)?.leaves ?? [])
+          .filter((leaf) => manufacturable.has(leaf.item.id))
+          .map((leaf) => ({
+            productItemId: leaf.item.id,
+            sku: leaf.item.sku,
+            productName: leaf.item.productName,
+            quantity: leaf.quantity,
+          })),
+      );
+    }
+    return result;
+  }
+
+  /** Các món cùng combo chứa trực tiếp, để tính tồn combo lồng. */
+  private withComponentCombos(items: ItemRow[]) {
+    return items.flatMap((item) => [
+      item,
+      ...item.comboComponents.map((part) => part.componentItem),
+    ]);
+  }
+
+  /** Số bộ của từng combo tại đây và toàn chuỗi. */
+  private async comboProductTotals(
+    tenantId: string,
+    productIds: string[],
+    location: LocationRefQueryDto,
+  ): Promise<Map<string, { here: number; allLocations: number }>> {
+    const totals = new Map<string, { here: number; allLocations: number }>();
+    if (productIds.length === 0) return totals;
+
+    const variants = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        productId: { in: productIds },
+        itemType: ProductItemType.COMBO,
+      },
+      select: { id: true, productId: true, itemType: true },
+    });
+    const stock = await this.stockWithCombos(tenantId, variants, location);
+    for (const variant of variants) {
+      const sets = stock.get(variant.id)?.sets;
+      const entry = totals.get(variant.productId) ?? {
+        here: 0,
+        allLocations: 0,
+      };
+      entry.here += sets?.here ?? 0;
+      entry.allLocations += sets?.allLocations ?? 0;
+      totals.set(variant.productId, entry);
+    }
+    return totals;
+  }
+
+  /** Đổi Decimal sang số và gắn tồn cho từng thành phần. */
+  private toItemResponse(
+    item: ItemRow,
+    stock: ItemStock | undefined,
+    all?: ReadonlyMap<string, ItemStock>,
+  ) {
+    const { suppliers, comboComponents, retailPrice, costPrice, vat, ...rest } =
+      item;
     return {
       ...rest,
       retailPrice: Number(retailPrice),
       costPrice: Number(costPrice),
       vat: vat === null ? null : Number(vat),
       suppliers: suppliers.map((link) => link.supplier),
-      stockDetails: details,
-      stock: details.reduce((sum, detail) => sum + detail.stock, 0),
-      // A variant with no row anywhere is 0 everywhere - the field is always a number, so
-      // no caller has to tell "not stocked here" from "not loaded".
-      stockAllLocations: stock?.allLocations ?? 0,
+      comboComponents: comboComponents.map(({ quantity, componentItem }) => {
+        const { images, product, ...component } = componentItem;
+        return {
+          quantity,
+          componentItem: {
+            ...component,
+            retailPrice: Number(component.retailPrice),
+            costPrice: Number(component.costPrice),
+            thumbnailUrl: thumbnailOf({ images, product }),
+            // Tồn của một thành phần combo.
+            ...this.stockFigures(all?.get(componentItem.id)),
+          },
+        };
+      }),
+      stockDetails: stock?.details ?? [],
+      ...this.stockFigures(stock),
     };
   }
 
-  private assertNoDuplicateSkusInPayload(items: { sku: string }[]): void {
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
-    for (const item of items) {
-      if (seen.has(item.sku)) duplicates.add(item.sku);
-      seen.add(item.sku);
+  /** Điền mã sản phẩm và SKU còn trống. */
+  private async allocateItemCodes(
+    tenantId: string,
+    items: CreateProductItemDto[],
+  ): Promise<ItemWithCodes[]> {
+    const needsCode = items.some((item) => !item.productCode?.trim());
+    let counter = 0;
+    if (needsCode) {
+      const rows = await this.prisma.productItem.findMany({
+        where: { tenantId, productCode: { startsWith: CODE_PREFIX } },
+        select: { productCode: true },
+      });
+      for (const { productCode } of rows) {
+        const digits = productCode.slice(CODE_PREFIX.length);
+        if (/^\d+$/.test(digits)) counter = Math.max(counter, Number(digits));
+      }
     }
-    if (duplicates.size > 0) {
+
+    const wantedSkus = items
+      .map((item) => item.sku?.trim())
+      .filter((sku): sku is string => Boolean(sku));
+    const candidates = items
+      .map((item) => item.productCode?.trim())
+      .filter((code): code is string => Boolean(code));
+    const existing = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { sku: { in: [...wantedSkus, ...candidates] } },
+          { sku: { startsWith: CODE_PREFIX } },
+        ],
+      },
+      select: { sku: true },
+    });
+    const usedSkus = new Set<string>(
+      existing.map((row) => row.sku).filter((sku): sku is string => !!sku),
+    );
+    for (const sku of wantedSkus) usedSkus.add(sku);
+
+    // Bỏ qua số đã được gõ ở dòng khác trong lô.
+    const typedCodes = new Set(candidates);
+    const nextCode = (): string => {
+      let code: string;
+      do code = `${CODE_PREFIX}${String(++counter).padStart(6, '0')}`;
+      while (typedCodes.has(code));
+      return code;
+    };
+
+    return items.map((item) => {
+      const productCode = item.productCode?.trim() || nextCode();
+      let sku = item.sku?.trim();
+      if (!sku) {
+        sku = productCode;
+        for (let n = 2; usedSkus.has(sku); n++) sku = `${productCode}-${n}`;
+        usedSkus.add(sku);
+      }
+      return {
+        ...item,
+        productCode,
+        sku,
+        barcode: normalizeBarcode(item.barcode),
+      };
+    });
+  }
+
+  /** SKU, mã và barcode không được trùng trong một request. */
+  private assertNoDuplicateCodesInPayload(
+    items: { sku: string; productCode: string; barcode: string | null }[],
+  ): void {
+    const duplicatesOf = (values: string[]): string[] => {
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const value of values) {
+        if (seen.has(value)) duplicates.add(value);
+        seen.add(value);
+      }
+      return [...duplicates];
+    };
+    const skus = duplicatesOf(items.map((item) => item.sku));
+    if (skus.length > 0) {
       throw new BadRequestException({
         code: ErrorCode.SKU_DUPLICATE_IN_REQUEST,
-        message: `Duplicate SKU within the same request: ${[...duplicates].join(', ')}`,
+        message: `Duplicate SKU within the same request: ${skus.join(', ')}`,
+      });
+    }
+    const codes = duplicatesOf(items.map((item) => item.productCode));
+    if (codes.length > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.PRODUCT_CODE_DUPLICATE_IN_REQUEST,
+        message: `Duplicate product code within the same request: ${codes.join(', ')}`,
+      });
+    }
+    const barcodes = duplicatesOf(
+      items
+        .map((item) => item.barcode)
+        .filter((code): code is string => !!code),
+    );
+    if (barcodes.length > 0) {
+      throw new BadRequestException({
+        code: ErrorCode.BARCODE_DUPLICATE_IN_REQUEST,
+        message: `Duplicate barcode within the same request: ${barcodes.join(', ')}`,
       });
     }
   }
 
-  /** `@@unique([tenantId, sku])` would catch this anyway, but as a bare constraint error naming a column; a tenant creating twenty variants deserves to be told which SKU. */
+  /** Barcode không được trùng. */
+  private async assertBarcodesAreFree(
+    tenantId: string,
+    barcodes: (string | null)[],
+    exceptItemId?: string,
+  ): Promise<void> {
+    const wanted = barcodes.filter((code): code is string => !!code);
+    if (wanted.length === 0) return;
+    const taken = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        barcode: { in: wanted },
+        ...(exceptItemId ? { id: { not: exceptItemId } } : {}),
+      },
+      select: { barcode: true },
+    });
+    if (taken.length > 0) {
+      throw new ConflictException({
+        code: ErrorCode.BARCODE_TAKEN,
+        message: `Barcode already exists in this shop: ${taken.map((item) => item.barcode).join(', ')}`,
+      });
+    }
+  }
+
+  /** Mã sản phẩm không được trùng. */
+  private async assertProductCodesAreFree(
+    tenantId: string,
+    codes: string[],
+    exceptItemId?: string,
+  ): Promise<void> {
+    const taken = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        productCode: { in: codes },
+        ...(exceptItemId ? { id: { not: exceptItemId } } : {}),
+      },
+      select: { productCode: true },
+    });
+    if (taken.length > 0) {
+      throw new ConflictException({
+        code: ErrorCode.PRODUCT_CODE_TAKEN,
+        message: `Product code already exists in this shop: ${taken.map((item) => item.productCode).join(', ')}`,
+      });
+    }
+  }
+
+  /** SKU không được trùng, báo rõ SKU nào. */
   private async assertSkusAreFree(
     tenantId: string,
     skus: string[],
@@ -865,10 +1797,10 @@ export class ProductService {
     }
   }
 
-  /** Every supplier a batch of variants names has to be in this tenant. Locations are not named here - a variant is created stocked nowhere, and a stock row appears at a location only when a stock movement puts goods there. */
+  /** Kiểm mọi NCC thuộc tenant. */
   private async assertItemReferencesExist(
     tenantId: string,
-    items: CreateProductItemDto[],
+    items: Pick<CreateProductItemDto, 'supplierIds'>[],
   ): Promise<void> {
     const supplierIds = [
       ...new Set(items.flatMap((item) => item.supplierIds ?? [])),
@@ -890,33 +1822,51 @@ export class ProductService {
     tenantId: string,
     brandId?: string,
   ): Promise<void> {
-    if (!brandId) return;
-    const brand = await this.prisma.brand.findFirst({
-      where: { id: brandId, tenantId },
-      select: { id: true },
+    await this.assertBrandsExist(tenantId, [brandId]);
+  }
+
+  private async assertBrandsExist(
+    tenantId: string,
+    brandIds: (string | undefined)[],
+  ): Promise<void> {
+    const ids = [...new Set(brandIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return;
+    const found = await this.prisma.brand.count({
+      where: { id: { in: ids }, tenantId },
     });
-    if (!brand)
+    if (found !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.BRAND_NOT_FOUND,
         message: 'Brand not found',
       });
   }
 
-  /** `Product.categoryName` is a denormalized copy for list screens, filled from the category the product actually points at; `CategoryService` refreshes it on rename. */
+  /** Điền tên danh mục từ `categoryId`. */
   private async resolveCategoryName(
     tenantId: string,
     categoryId?: string,
   ): Promise<string | null> {
     if (!categoryId) return null;
-    const category = await this.prisma.category.findFirst({
-      where: { id: categoryId, tenantId },
-      select: { name: true },
+    const names = await this.categoryNamesOf(tenantId, [categoryId]);
+    return names.get(categoryId) ?? null;
+  }
+
+  /** Kiểm danh mục thuộc tenant, trả id → tên. */
+  private async categoryNamesOf(
+    tenantId: string,
+    categoryIds: (string | undefined)[],
+  ): Promise<Map<string, string>> {
+    const ids = [...new Set(categoryIds.filter((id): id is string => !!id))];
+    if (ids.length === 0) return new Map();
+    const rows = await this.prisma.category.findMany({
+      where: { id: { in: ids }, tenantId },
+      select: { id: true, name: true },
     });
-    if (!category)
+    if (rows.length !== ids.length)
       throw new NotFoundException({
         code: ErrorCode.CATEGORY_NOT_FOUND,
         message: 'Category not found',
       });
-    return category.name;
+    return new Map(rows.map((row) => [row.id, row.name]));
   }
 }

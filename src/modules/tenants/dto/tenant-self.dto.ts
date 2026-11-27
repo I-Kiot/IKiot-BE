@@ -3,10 +3,13 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUrl,
+  MaxLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
-/** The bank account a shop receives SePay payments into. All three or none. */
+/** Tài khoản nhận tiền SePay của shop. Phải đủ cả ba trường hoặc không có. */
 export class BankingDto {
   @IsString()
   @IsNotEmpty({ message: 'Số tài khoản không được để trống' })
@@ -21,7 +24,22 @@ export class BankingDto {
   accountName: string;
 }
 
-/** `PUT /tenant/me` - the shop editing its own record. `status` is deliberately absent: iKiotMS-BE passed the body straight through, so a SUSPENDED shop could set itself back to ACTIVE. */
+/** Ba ô ngân hàng, điền thì phải đủ. */
+export class OptionalBankingDto {
+  @IsOptional()
+  @IsString()
+  accountNumber?: string | null;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  accountName?: string | null;
+}
+
+/** Body shop tự sửa hồ sơ. */
 export class UpdateMyTenantDto {
   @IsOptional()
   @IsString()
@@ -40,13 +58,22 @@ export class UpdateMyTenantDto {
   @IsString()
   taxNumber?: string;
 
+  /** URL ảnh `POST /uploads` trả về. Chuỗi rỗng hoặc `null` là gỡ logo; bỏ trường thì giữ nguyên. */
+  @ValidateIf((_, value) => value !== null && value !== '')
+  @IsOptional()
+  @IsUrl(
+    { protocols: ['http', 'https'], require_protocol: true },
+    { message: 'Logo phải là đường dẫn ảnh hợp lệ' },
+  )
+  @MaxLength(2048, { message: 'Đường dẫn logo quá dài' })
+  logoUrl?: string | null;
+
   @IsOptional()
   @ValidateNested()
-  @Type(() => BankingDto)
-  banking?: BankingDto;
+  @Type(() => OptionalBankingDto)
+  banking?: OptionalBankingDto;
 }
 
-/** `PUT /tenant/:tenantId/sepay-key` - platform-admin only. */
 export class SetSepayKeyDto {
   @IsString()
   @IsNotEmpty({ message: 'sepayWebhookApiKey không được để trống' })

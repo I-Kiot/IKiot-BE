@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { FirebaseService } from './firebase.service';
 
-/** The shared Firebase Admin app - one module so `initializeApp` has exactly one caller, injected by `/auth/firebase-login` and PushService. */
+/** Module Firebase Admin dùng chung, khởi tạo đúng một lần. */
 @Module({
   providers: [FirebaseService],
   exports: [FirebaseService],

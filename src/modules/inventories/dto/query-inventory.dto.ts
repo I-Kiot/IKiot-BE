@@ -1,23 +1,23 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { IntersectionType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { LocationRefQueryDto } from '../../../common/dto/location-ref.dto';
 
-/** Ported from InventoryQueryDTO, composed with `IntersectionType` so the "one implies the other" rule stays in `LocationRefQueryDto` and the two can't drift. */
+/** Ghép query bằng `IntersectionType`. */
 export class QueryInventoryDto extends IntersectionType(
   PaginationQueryDto,
   LocationRefQueryDto,
 ) {
-  /** Only lines at or below their own `minStock`, ignoring lines with the alert off. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === 'true' || value === true,
-  )
-  @IsBoolean()
+  /** Chỉ dòng ≤ `minStock` của chính nó, bỏ qua dòng đã tắt cảnh báo. */
+  @BooleanQuery()
   isLowStock?: boolean;
 
-  /** Partial, case-insensitive match on the variant's SKU or product name. */
+  /** Chỉ dòng còn hàng hỏng (lô `isSellable = false` còn hàng) - filter "Có hàng hỏng". */
+  @BooleanQuery()
+  hasDamaged?: boolean;
+
   @IsOptional()
   @IsString()
   @Transform(({ value }: { value: unknown }) =>

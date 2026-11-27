@@ -1,6 +1,6 @@
+import { BooleanQuery } from '../../../common/decorators/boolean-query.decorator';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
@@ -9,6 +9,7 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import {
@@ -17,14 +18,14 @@ import {
   ShiftLogType,
 } from '../cash-drawer.constants';
 
-/** Amounts here are whole đồng - there is no smaller unit in circulation, so a till count with decimals is a typo. */
+/** Số tiền là đồng nguyên. */
 export class OpenCashDrawerDto {
-  /** Optional for someone posted at a branch - theirs is the only one they could mean - and required for an owner, who has none. */
+  /** Chi nhánh, bắt buộc với chủ shop. */
   @IsOptional()
   @IsUUID()
   branchId?: string;
 
-  /** Who takes the drawer first. Must be active staff at that branch. */
+  /** Ai nhận két đầu tiên. Phải là nhân viên đang hoạt động tại chi nhánh đó. */
   @IsUUID()
   staffId: string;
 
@@ -34,21 +35,20 @@ export class OpenCashDrawerDto {
   openingAmount: number;
 }
 
-/** Ported from ShiftLogDTO. */
+/** Port từ ShiftLogDTO. */
 export class SubmitShiftLogDto {
   @IsIn(SHIFT_LOG_TYPES, {
     message: `type phải là ${SHIFT_LOG_TYPES.join(' hoặc ')}`,
   })
   type: string = ShiftLogType.END;
 
-  /** What was counted in the drawer at that moment. */
   @Type(() => Number)
   @IsInt({ message: 'Số tiền phải là số nguyên' })
   @Min(0, { message: 'Số tiền không được âm' })
   amount: number;
 
-  /** Only on an `END`, and only when handing over: the drawer stays open and becomes that person's. Rejected on a `START`, where it would mean nothing. */
-  // "Not on a START" is checked in the service rather than with a second @ValidateIf, since stacking two on one property makes the winning rule depend on decorator order.
+  /** Người nhận bàn giao, chỉ có ở END. */
+  // Kiểm trong service thay vì thêm decorator.
   @IsOptional()
   @IsUUID()
   nextStaffId?: string;
@@ -62,13 +62,22 @@ export class SubmitShiftLogDto {
   note?: string;
 }
 
-/** Ported from FinalizeCashDrawerDTO. */
+/** Port từ FinalizeCashDrawerDTO. */
 export class FinalizeCashDrawerDto {
-  /** What the manager actually counted when closing the day. */
   @Type(() => Number)
   @IsInt({ message: 'Số tiền cuối ca phải là số nguyên' })
   @Min(0, { message: 'Số tiền cuối ca không được âm' })
   finalAmount: number;
+
+  /**
+   * Số chủ rút về khi chốt (chuyển quỹ Két → Chủ); phần còn lại để làm tiền lẻ cho phiên sau.
+   * Bỏ trống là không rút gì, để cả trong két.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'Số tiền rút về phải là số nguyên' })
+  @Min(0, { message: 'Số tiền rút về không được âm' })
+  withdrawAmount?: number;
 
   @IsOptional()
   @IsString()
@@ -79,7 +88,22 @@ export class FinalizeCashDrawerDto {
   note?: string;
 }
 
-/** Ported from CashDrawerQueryDTO (`YYYY-MM-DD` dates, as before). */
+/** Mở lại két đã chốt nhầm trong ngày: ai nhận két và vì sao. */
+export class ReopenCashDrawerDto {
+  /** Người nhận két sau khi mở lại; phải là nhân viên đang hoạt động tại chi nhánh. */
+  @IsUUID()
+  staffId: string;
+
+  @IsString()
+  @MinLength(3, { message: 'Vui lòng ghi lý do mở lại két' })
+  @MaxLength(500)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  reason: string;
+}
+
+/** Port từ CashDrawerQueryDTO (ngày dạng `YYYY-MM-DD`, như trước). */
 export class QueryCashDrawerDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -98,14 +122,13 @@ export class QueryCashDrawerDto extends PaginationQueryDto {
   toDate?: string;
 }
 
-/** `GET /cash-drawer-sessions/current` takes only the branch. */
 export class CurrentCashDrawerDto {
   @IsOptional()
   @IsUUID()
   branchId?: string;
 }
 
-/** `GET /cash-drawer-sessions/reconciliation` - the variance report over a range of days, separate from `QueryCashDrawerDto` because it compares each session against the ledger rather than listing them; hence the range cap and `varianceOnly`. */
+/** Query báo cáo chênh lệch két qua nhiều ngày. */
 export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
@@ -115,7 +138,7 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsIn(CASH_DRAWER_STATUSES)
   status?: string;
 
-  /** Business dates, `YYYY-MM-DD`. Defaults to the last 30 trading days. */
+  /** Ngày nghiệp vụ, `YYYY-MM-DD`. Mặc định 30 ngày giao dịch gần nhất. */
   @IsOptional()
   @IsDateString()
   fromDate?: string;
@@ -124,11 +147,7 @@ export class QueryCashVarianceDto extends PaginationQueryDto {
   @IsDateString()
   toDate?: string;
 
-  /** Only the days that did not balance. A still-open session has no counted total and therefore no variance, so it is excluded rather than reported as balanced. */
-  @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => value === true || value === 'true',
-  )
-  @IsBoolean()
+  /** Chỉ các ngày không khớp. */
+  @BooleanQuery()
   varianceOnly?: boolean;
 }
