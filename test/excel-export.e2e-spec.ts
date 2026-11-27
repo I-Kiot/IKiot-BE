@@ -37,6 +37,7 @@ import {
 } from './../src/modules/products/import/product-import.columns';
 import type { ImportColumnKey } from './../src/modules/products/import/product-import.columns';
 import { cellValue } from './../src/common/excel/import-cells';
+import { baseSkuOfCustom } from './../src/modules/orders/custom-sku';
 import { SystemRole } from './../src/common/constants/system-role';
 import { UserStatus } from './../src/common/constants/user-status';
 import type { AuthUser } from './../src/common/types/auth-user.type';
@@ -303,6 +304,9 @@ describe('Excel export in the import template format', () => {
     await prisma.orderItem.deleteMany({ where: { order: { tenantId } } });
     await prisma.order.deleteMany({ where: { tenantId } });
     await prisma.customer.deleteMany({ where: { tenantId } });
+    await prisma.comboComponent.deleteMany({
+      where: { comboItem: { tenantId } },
+    });
     await prisma.productItem.deleteMany({ where: { tenantId } });
     await prisma.product.deleteMany({ where: { tenantId } });
     await prisma.supplier.deleteMany({ where: { tenantId } });
@@ -386,8 +390,7 @@ describe('Excel export in the import template format', () => {
 
     // Mới nhất trước: DH2 (một dòng làm riêng) rồi DH1 (hai dòng, thông tin đơn chỉ ở dòng đầu).
     expect(rows).toHaveLength(3);
-    const customSku = rows[0].sku as string;
-    expect(customSku).not.toBe(table);
+    // Dòng làm riêng ghi SKU gốc (bàn), không phải SKU riêng của dòng.
     expect(rows[0]).toEqual({
       group: code2,
       branch: branchName,
@@ -395,7 +398,7 @@ describe('Excel export in the import template format', () => {
       assignee,
       seller: expect.stringContaining('- xe-'),
       priority: 'Bình thường',
-      sku: customSku,
+      sku: table,
       quantity: 1,
       unitPrice: 2_000_000,
       customSpecs: 'Màu: Trắng; Đệm: Mút',
@@ -446,6 +449,13 @@ describe('Excel export in the import template format', () => {
     expect(await totals(again.data.orderIds)).toEqual(
       await totals(importedIds),
     );
+    // Dòng làm riêng nhập lại được làm từ bàn gốc, không phải từ SKU riêng của lần trước.
+    const remade = await prisma.orderItem.findMany({
+      where: { orderId: { in: again.data.orderIds }, isCustom: true },
+      select: { sku: true },
+    });
+    expect(remade).toHaveLength(1);
+    expect(baseSkuOfCustom(remade[0].sku ?? '')).toBe(table);
   });
 
   it('copies the same cells as the export, in the template column order', async () => {
@@ -580,5 +590,119 @@ describe('Excel export in the import template format', () => {
     expect(
       (await readSheet(ticked, IMPORT_SHEET, IMPORT_COLUMNS)).rows,
     ).toHaveLength(2);
+  });
+
+  // Cuối suite: combo tạo ở đây không được lọt vào test xuất hàng hoá phía trên.
+  it('exports the customized components of a combo as sub-rows that import again', async () => {
+    const comboProductId = randomUUID();
+    const comboItemId = randomUUID();
+    const combo = `XE-${comboItemId.slice(0, 8)}`;
+    await prisma.product.create({
+      data: {
+        id: comboProductId,
+        tenantId,
+        name: `Combo ${suffix}`,
+        productType: 'COMBO',
+      },
+    });
+    await prisma.productItem.create({
+      data: {
+        id: comboItemId,
+        tenantId,
+        productId: comboProductId,
+        productName: `Combo ${suffix}`,
+        productCode: `XE-${comboItemId}`,
+        sku: combo,
+        retailPrice: 2_300_000,
+        costPrice: 1_250_000,
+        itemType: 'COMBO',
+      },
+    });
+    await prisma.comboComponent.createMany({
+      data: [
+        { comboItemId, componentItemId: tableId, quantity: 1 },
+        { comboItemId, componentItemId: chairId, quantity: 2 },
+      ],
+    });
+
+    const imported = await orderImporter.import(
+      owner,
+      tenantId,
+      await orderFile([
+        {
+          group: 'K1',
+          branch: branchName,
+          fulfillmentType: 'Khách đến lấy',
+          assignee,
+          sku: combo,
+          quantity: 1,
+        },
+        {
+          group: 'K1',
+          comboParent: combo,
+          sku: table,
+          customSpecs: 'Dài: 200 cm; Đệm: Mút',
+        },
+        {
+          group: 'K1',
+          comboParent: combo,
+          sku: chair,
+          customNote: 'Sơn mờ',
+        },
+      ]),
+    );
+    const [orderId] = imported.data.orderIds;
+
+    // Hai món được làm riêng trên dòng con của combo, dòng combo vẫn là dòng duy nhất mang giá.
+    const lines = await prisma.orderItem.findMany({
+      where: { orderId },
+      select: {
+        lineType: true,
+        isCustom: true,
+        sku: true,
+        customization: { select: { note: true } },
+      },
+    });
+    expect(lines.filter((l) => l.lineType === 'COMBO')).toHaveLength(1);
+    const parts = lines.filter((l) => l.lineType === 'COMBO_COMPONENT');
+    expect(parts).toHaveLength(2);
+    expect(parts.every((l) => l.isCustom && l.sku?.includes('-C'))).toBe(true);
+
+    const query = Object.assign(new ExportOrdersDto(), { ids: [orderId] });
+    const buffer = await orderExporter.export(owner, tenantId, query);
+    const { rows } = await readSheet(
+      buffer,
+      ORDER_IMPORT_SHEET,
+      ORDER_IMPORT_COLUMNS,
+    );
+    const code = imported.data.codes[0];
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ group: code, sku: combo, quantity: 1 });
+    // Dòng phụ ghi SKU gốc của món (không phải SKU riêng), để file nhập lại được.
+    expect(
+      rows.slice(1).sort((a, b) => String(a.sku).localeCompare(String(b.sku))),
+    ).toEqual(
+      [
+        {
+          group: code,
+          comboParent: combo,
+          sku: table,
+          customSpecs: 'Dài: 200 cm; Đệm: Mút',
+        },
+        { group: code, comboParent: combo, sku: chair, customNote: 'Sơn mờ' },
+      ].sort((a, b) => a.sku.localeCompare(b.sku)),
+    );
+    // Nút "Sao chép" cùng nguồn dữ liệu: có đủ ba dòng.
+    expect(await orderExporter.cells(owner, tenantId, query)).toHaveLength(3);
+
+    const again = await orderImporter.import(owner, tenantId, asFile(buffer));
+    const copies = await prisma.orderItem.count({
+      where: {
+        orderId: again.data.orderIds[0],
+        lineType: 'COMBO_COMPONENT',
+        isCustom: true,
+      },
+    });
+    expect(copies).toBe(2);
   });
 });

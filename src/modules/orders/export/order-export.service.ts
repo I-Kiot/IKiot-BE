@@ -18,10 +18,29 @@ import {
   type OrderSheetRow,
 } from '../import/order-import.service';
 import type { ExportOrdersDto } from '../dto/export-orders.dto';
+import { flattenCombo } from '../combo-expansion';
+import { baseSkuOfCustom } from '../custom-sku';
+import { loadComboGraph } from '../order-combo';
 
 /** Giới hạn một file xuất. */
 export const MAX_ORDER_EXPORT_ORDERS = 5000;
 export const MAX_ORDER_EXPORT_ROWS = 20000;
+
+const CUSTOMIZATION_SELECT = {
+  select: {
+    lengthCm: true,
+    widthCm: true,
+    heightCm: true,
+    material: true,
+    color: true,
+    fabricCode: true,
+    note: true,
+    specs: {
+      orderBy: { position: 'asc' },
+      select: { name: true, value: true, unit: true },
+    },
+  },
+} as const;
 
 const STAFF_SELECT = {
   phoneNumber: true,
@@ -108,23 +127,26 @@ export class OrderExportService {
           where: { lineType: { not: OrderLineType.COMBO_COMPONENT } },
           select: {
             sku: true,
+            lineType: true,
+            productItemId: true,
             quantity: true,
             unitPrice: true,
             discountAmount: true,
-            productItem: { select: { sku: true, productCode: true } },
-            customization: {
+            isCustom: true,
+            productItem: {
+              select: { sku: true, productCode: true, productId: true },
+            },
+            customization: CUSTOMIZATION_SELECT,
+            // Món làm riêng của dòng combo: ra file thành dòng phụ (cột "Thuộc combo"), như khi nhập.
+            childItems: {
+              where: { customization: { isNot: null } },
+              orderBy: { id: 'asc' },
               select: {
-                lengthCm: true,
-                widthCm: true,
-                heightCm: true,
-                material: true,
-                color: true,
-                fabricCode: true,
-                note: true,
-                specs: {
-                  orderBy: { position: 'asc' },
-                  select: { name: true, value: true, unit: true },
+                sku: true,
+                productItem: {
+                  select: { sku: true, productCode: true, productId: true },
                 },
+                customization: CUSTOMIZATION_SELECT,
               },
             },
           },
@@ -132,12 +154,34 @@ export class OrderExportService {
       },
     });
 
-    const lineCount = orders.reduce((n, o) => n + o.items.length, 0);
+    const lineCount = orders.reduce(
+      (n, o) =>
+        n + o.items.reduce((m, line) => m + 1 + line.childItems.length, 0),
+      0,
+    );
     if (lineCount > MAX_ORDER_EXPORT_ROWS) {
       throw tooLarge(
         `${lineCount} rows, the limit is ${MAX_ORDER_EXPORT_ROWS}`,
       );
     }
+
+    const leaves = await this.comboLeaves(
+      tenantId,
+      orders.flatMap((order) =>
+        order.items
+          .filter(
+            (line) =>
+              line.lineType === OrderLineType.COMBO &&
+              line.childItems.length > 0,
+          )
+          .map((line) => line.productItemId),
+      ),
+    );
+
+    const standalone = await this.standaloneBases(
+      tenantId,
+      orders.flatMap((order) => order.items.filter((line) => line.isCustom)),
+    );
 
     const byId = new Map(orders.map((order) => [order.id, order]));
     const rows: OrderSheetRow[] = [];
@@ -173,10 +217,13 @@ export class OrderExportService {
         note: order.note,
       };
       order.items.forEach((line, index) => {
+        const sku =
+          line.sku ?? line.productItem.sku ?? line.productItem.productCode;
         rows.push({
           ...(index === 0 ? head : {}),
           group: order.code,
-          sku: line.sku ?? line.productItem.sku ?? line.productItem.productCode,
+          // Dòng làm riêng ghi SKU gốc: nhập lại thì làm riêng từ hàng gốc, không chồng thêm SKU riêng lên SKU riêng.
+          sku: (line.isCustom && standalone.get(sku)) || sku,
           quantity: line.quantity,
           unitPrice: Number(line.unitPrice),
           lineDiscount: positive(line.discountAmount),
@@ -185,10 +232,135 @@ export class OrderExportService {
             : undefined,
           customNote: line.customization?.note,
         });
+        for (const part of line.childItems) {
+          if (!part.customization) continue;
+          rows.push({
+            group: order.code,
+            comboParent: sku,
+            sku: baseSkuOf(part, leaves.get(line.productItemId) ?? []),
+            customSpecs: specsText(part.customization),
+            customNote: part.customization.note,
+          });
+        }
       });
     }
     return rows;
   }
+
+  /**
+   * SKU gốc của các dòng làm riêng đứng riêng, theo SKU riêng của dòng. Đọc ngược dạng SKU riêng rồi chỉ nhận khi SKU
+   * gốc còn trong cửa hàng và cùng hàng hoá với SKU riêng; không thì dòng ghi SKU riêng như cũ.
+   */
+  private async standaloneBases(
+    tenantId: string,
+    lines: {
+      sku: string | null;
+      productItem: {
+        sku: string | null;
+        productCode: string;
+        productId: string;
+      };
+    }[],
+  ): Promise<Map<string, string>> {
+    const wanted = new Map<string, { base: string; productId: string }>();
+    for (const line of lines) {
+      const own =
+        line.sku ?? line.productItem.sku ?? line.productItem.productCode;
+      const base = baseSkuOfCustom(own);
+      if (base) {
+        wanted.set(own, { base, productId: line.productItem.productId });
+      }
+    }
+    if (wanted.size === 0) return new Map();
+    const found = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        sku: { in: [...new Set([...wanted.values()].map((w) => w.base))] },
+      },
+      select: { sku: true, productId: true },
+    });
+    const productOf = new Map(found.map((item) => [item.sku, item.productId]));
+    const result = new Map<string, string>();
+    for (const [own, { base, productId }] of wanted) {
+      if (productOf.get(base) === productId) result.set(own, base);
+    }
+    return result;
+  }
+
+  /** Món lá (id, SKU, hàng hoá) của các combo, để tìm lại SKU gốc của món đã làm riêng. */
+  private async comboLeaves(
+    tenantId: string,
+    comboIds: string[],
+  ): Promise<Map<string, ComboLeafRef[]>> {
+    const ids = [...new Set(comboIds)];
+    const result = new Map<string, ComboLeafRef[]>();
+    if (ids.length === 0) return result;
+    const graph = await loadComboGraph(this.prisma, tenantId, ids);
+    const flat = new Map<string, { id: string; sku: string | null }[]>();
+    for (const id of ids) {
+      try {
+        flat.set(
+          id,
+          flattenCombo(id, graph).map(({ item }) => ({
+            id: item.id,
+            sku: item.sku,
+          })),
+        );
+      } catch {
+        // Combo không mở được nữa (đã sửa thành vòng): món của nó ra file bằng SKU riêng, bộ nhập sẽ báo.
+        flat.set(id, []);
+      }
+    }
+    const products = new Map(
+      (
+        await this.prisma.productItem.findMany({
+          where: {
+            tenantId,
+            id: { in: [...flat.values()].flat().map((leaf) => leaf.id) },
+          },
+          select: { id: true, productId: true },
+        })
+      ).map((item) => [item.id, item.productId]),
+    );
+    for (const [id, list] of flat) {
+      result.set(
+        id,
+        list.map((leaf) => ({ ...leaf, productId: products.get(leaf.id) })),
+      );
+    }
+    return result;
+  }
+}
+
+interface ComboLeafRef {
+  id: string;
+  sku: string | null;
+  productId: string | undefined;
+}
+
+/**
+ * SKU gốc của món làm riêng trong combo: file nhập cần SKU của món trong combo, còn dòng đơn chỉ còn SKU riêng. Đọc
+ * ngược theo dạng SKU riêng (`baseSkuOfCustom`), không khớp thì lấy món duy nhất của combo cùng hàng hoá; vẫn không
+ * ra thì ghi SKU riêng để bộ nhập báo thay vì đoán.
+ */
+function baseSkuOf(
+  part: {
+    sku: string | null;
+    productItem: {
+      sku: string | null;
+      productCode: string;
+      productId: string;
+    };
+  },
+  leaves: readonly ComboLeafRef[],
+): string {
+  const own = part.sku ?? part.productItem.sku ?? part.productItem.productCode;
+  const base = baseSkuOfCustom(own);
+  if (base && leaves.some((leaf) => leaf.sku === base)) return base;
+  const sameProduct = leaves.filter(
+    (leaf) => leaf.productId === part.productItem.productId && leaf.sku,
+  );
+  return sameProduct.length === 1 ? (sameProduct[0].sku as string) : own;
 }
 
 type Customization = {

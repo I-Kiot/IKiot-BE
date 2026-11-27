@@ -24,6 +24,9 @@ import {
   type PreparedManualOrder,
 } from '../manual-order.service';
 import { OrderShortageAlerts } from '../order-shortage-alerts';
+import { OrderLineType } from '../../../common/constants/order-status';
+import { flattenCombo } from '../combo-expansion';
+import { loadComboGraph } from '../order-combo';
 import {
   DEPOSIT_METHOD_LABELS,
   FULFILLMENT_LABELS,
@@ -201,6 +204,7 @@ export class OrderImportService {
       branch: branch?.location.name ?? 'Tên chi nhánh',
       assignee: assignee ? staffLabel(assignee) : 'Tên nhân viên - SĐT',
       skus: items.map((item) => item.sku as string),
+      combo: await this.sampleCombo(tenantId),
     });
     return Buffer.from(await workbook.xlsx.writeBuffer());
   }
@@ -308,11 +312,16 @@ export class OrderImportService {
 
   /**
    * Hai đơn mẫu ngay trong trang nhập để người dùng thấy cách điền: một đơn giao tận nơi hai mặt hàng có cọc và giảm
-   * 5% cả đơn, một đơn khách đến lấy có dòng làm riêng. Chữ nghiêng màu xám và mã nhóm bắt đầu bằng `SAMPLE_GROUP_PREFIX`, mà bộ đọc từ chối.
+   * 5% cả đơn, một đơn khách đến lấy có dòng làm riêng, và một đơn combo có hai món làm riêng bằng dòng phụ. Chữ nghiêng màu xám và mã nhóm bắt đầu bằng `SAMPLE_GROUP_PREFIX`, mà bộ đọc từ chối.
    */
   private writeSamples(
     sheet: ExcelJS.Worksheet,
-    sample: { branch: string; assignee: string; skus: string[] },
+    sample: {
+      branch: string;
+      assignee: string;
+      skus: string[];
+      combo: SampleCombo;
+    },
   ): void {
     const sku = (i: number) =>
       sample.skus[i] ?? sample.skus[0] ?? 'SKU-MAT-HANG';
@@ -349,6 +358,28 @@ export class OrderImportService {
         quantity: 1,
         customSpecs: 'Kích thước: 200x180 cm; Màu: Trắng kem',
         customNote: 'Bo góc tròn, sơn mờ',
+      },
+      {
+        group: `${SAMPLE_GROUP_PREFIX}3`,
+        branch: sample.branch,
+        fulfillmentType: FULFILLMENT_LABELS.STORE_PICKUP,
+        assignee: sample.assignee,
+        note: 'Combo có 2 món làm riêng: mỗi món một dòng phụ ngay dưới dòng combo',
+        sku: sample.combo.sku,
+        quantity: 1,
+      },
+      {
+        group: `${SAMPLE_GROUP_PREFIX}3`,
+        comboParent: sample.combo.sku,
+        sku: sample.combo.parts[0],
+        customSpecs: 'Màu: Xanh rêu; Chất liệu: Nỉ',
+      },
+      {
+        group: `${SAMPLE_GROUP_PREFIX}3`,
+        comboParent: sample.combo.sku,
+        sku: sample.combo.parts[1],
+        customSpecs: 'Kích thước: 120x60 cm',
+        customNote: 'Mặt kính cường lực',
       },
     ];
     rows.forEach((values, index) => {
@@ -394,11 +425,12 @@ export class OrderImportService {
       'Khách hàng khớp theo số điện thoại; chưa có thì tạo khách mới (cần tên). Bỏ trống cả SĐT lẫn tên là khách vãng lai.',
       'Giao tận nơi cần người nhận, SĐT người nhận và địa chỉ; bỏ trống người nhận / SĐT thì lấy theo khách. Khách đến lấy không có phí giao hàng.',
       'Giảm giá đơn ghi số tiền (100000) hoặc phần trăm (5%). Phần trăm tính trên tiền hàng sau giảm từng dòng, chưa gồm phí giao, và được lưu thành số tiền. Giảm giá đơn không vượt tiền hàng.',
-      'Dòng làm riêng theo yêu cầu khách: điền "Thông số làm riêng" dạng "Tên: giá trị; Tên: giá trị" và/hoặc "Ghi chú làm riêng". Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó, tên khác là thông số thêm. Hệ thống tạo SKU riêng cho dòng, hàng phải đặt xưởng. Combo / dịch vụ không làm riêng từ file; ảnh mẫu thêm trên màn hình đơn.',
+      'Dòng làm riêng theo yêu cầu khách: điền "Thông số làm riêng" dạng "Tên: giá trị; Tên: giá trị" và/hoặc "Ghi chú làm riêng". Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó, tên khác là thông số thêm. Hệ thống tạo SKU riêng cho dòng, hàng phải đặt xưởng. Dịch vụ không làm riêng được; ảnh mẫu thêm trên màn hình đơn.',
+      'Combo làm riêng từng món: để dòng combo như bình thường, rồi thêm ngay dưới nó mỗi món cần làm riêng một DÒNG PHỤ cùng mã nhóm đơn - cột "Thuộc combo" ghi SKU của combo, cột SKU ghi SKU của món, điền thông số / ghi chú làm riêng, để trống Số lượng, Đơn giá, Giảm giá dòng. Món không có dòng phụ giữ nguyên như combo.',
       'Tiền cọc là tiền đã thu: ghi vào sổ thu chi ngay khi nhập. Không nhập khuyến mãi - áp trên màn hình đơn sau khi nhập.',
       `Tối đa ${MAX_ORDER_IMPORT_ROWS} dòng và ${MAX_ORDER_IMPORT_ORDERS} đơn mỗi lần, file .xlsx không quá ${MAX_ORDER_IMPORT_BYTES / 1024 / 1024}MB.`,
       'Hệ thống kiểm tra toàn bộ file trước khi tạo: chỉ cần một dòng sai là không có đơn nào được tạo, mọi lỗi được liệt kê theo dòng để sửa một lần.',
-      `Trang "${ORDER_IMPORT_SHEET}" có sẵn vài đơn mẫu (chữ nghiêng màu xám, mã nhóm "${SAMPLE_GROUP_PREFIX}1", "${SAMPLE_GROUP_PREFIX}2") dùng chính chi nhánh, nhân viên và SKU của cửa hàng. Xoá các dòng này hoặc ghi đè bằng đơn thật trước khi nhập.`,
+      `Trang "${ORDER_IMPORT_SHEET}" có sẵn vài đơn mẫu (chữ nghiêng màu xám, mã nhóm "${SAMPLE_GROUP_PREFIX}1", "${SAMPLE_GROUP_PREFIX}2", "${SAMPLE_GROUP_PREFIX}3") dùng chính chi nhánh, nhân viên và SKU của cửa hàng. Xoá các dòng này hoặc ghi đè bằng đơn thật trước khi nhập.`,
     ];
     let row = 3;
     for (const [i, rule] of rules.entries()) {
@@ -446,7 +478,7 @@ export class OrderImportService {
 
     row++;
     sheet.getCell(row++, 1).value =
-      'VÍ DỤ (đơn DH1 hai mặt hàng giao tận nơi có cọc và giảm 5% cả đơn, đơn DH2 khách đến lấy một bàn làm riêng) - minh hoạ cách điền, không được nhập vào hệ thống:';
+      'VÍ DỤ (đơn DH1 hai mặt hàng giao tận nơi có cọc và giảm 5% cả đơn, đơn DH2 khách đến lấy một bàn làm riêng, đơn DH3 một combo phòng khách có hai món làm riêng bằng dòng phụ) - minh hoạ cách điền, không được nhập vào hệ thống:';
     sheet.getCell(row - 1, 1).font = { bold: true };
     const example: Partial<Record<OrderImportColumn['key'], string>>[] = [
       {
@@ -474,6 +506,27 @@ export class OrderImportService {
         quantity: '1',
         customSpecs: 'Dài: 200 cm; Màu: Óc chó',
         customNote: 'Chân sắt sơn đen',
+      },
+      {
+        group: 'DH3',
+        branch: 'CN Hà Nội',
+        fulfillmentType: FULFILLMENT_LABELS.STORE_PICKUP,
+        assignee: 'Nguyễn Văn A - 0901234567',
+        sku: 'COMBO-PHONG-KHACH',
+        quantity: '1',
+      },
+      {
+        group: 'DH3',
+        comboParent: 'COMBO-PHONG-KHACH',
+        sku: 'SOFA-GOC-XAM',
+        customSpecs: 'Màu: Xanh rêu; Chất liệu: Nỉ',
+      },
+      {
+        group: 'DH3',
+        comboParent: 'COMBO-PHONG-KHACH',
+        sku: 'BAN-TRA-SOI',
+        customSpecs: 'Dài: 120 cm',
+        customNote: 'Mặt kính cường lực',
       },
     ];
     sheet.getRow(row++).values = ORDER_IMPORT_COLUMNS.map(orderHeaderLabel);
@@ -732,6 +785,8 @@ export class OrderImportService {
       }
     }
 
+    const comboLeaves = await this.comboLeafIds(tenantId, rows, items);
+
     const phones = [
       ...new Set(
         rows
@@ -767,6 +822,9 @@ export class OrderImportService {
                   .filter((d) => d.attributeId && d.value)
                   .map((d) => [d.attributeId as string, d.value as string]),
               ),
+              ...(comboLeaves.has(item.id)
+                ? { comboLeafIds: comboLeaves.get(item.id) }
+                : {}),
             },
           ]),
       ),
@@ -780,6 +838,125 @@ export class OrderImportService {
       ),
     };
   }
+
+  /**
+   * Combo cho đơn mẫu MẪU-3: combo đang bán đầu tiên (theo SKU) có ít nhất hai món làm riêng được (mặt hàng thường,
+   * sản phẩm bật "Có thể sản xuất"), để dòng mẫu dùng đúng SKU của cửa hàng. Không có thì SKU minh hoạ.
+   */
+  private async sampleCombo(tenantId: string): Promise<SampleCombo> {
+    const fallback: SampleCombo = {
+      sku: 'SKU-COMBO',
+      parts: ['SKU-MON-1', 'SKU-MON-2'],
+    };
+    const combos = await this.prisma.productItem.findMany({
+      where: {
+        tenantId,
+        sku: { not: null },
+        itemType: OrderLineType.COMBO,
+        product: { status: ProductStatus.ACTIVE },
+      },
+      select: { id: true, sku: true },
+      orderBy: { sku: 'asc' },
+      take: 20,
+    });
+    if (combos.length === 0) return fallback;
+    let graph: Awaited<ReturnType<typeof loadComboGraph>>;
+    try {
+      graph = await loadComboGraph(
+        this.prisma,
+        tenantId,
+        combos.map((c) => c.id),
+      );
+    } catch (error) {
+      if (!(error instanceof HttpException)) throw error;
+      return fallback;
+    }
+    const leavesOf = new Map<string, { id: string; sku: string }[]>();
+    for (const combo of combos) {
+      try {
+        leavesOf.set(
+          combo.id,
+          flattenCombo(combo.id, graph)
+            .filter(
+              ({ item }) => item.itemType === OrderLineType.PRODUCT && item.sku,
+            )
+            .map(({ item }) => ({ id: item.id, sku: item.sku as string })),
+        );
+      } catch (error) {
+        if (!(error instanceof HttpException)) throw error;
+      }
+    }
+    const manufacturable = new Set(
+      (
+        await this.prisma.productItem.findMany({
+          where: {
+            tenantId,
+            id: { in: [...leavesOf.values()].flat().map((leaf) => leaf.id) },
+            product: { isManufacturable: true },
+          },
+          select: { id: true },
+        })
+      ).map((item) => item.id),
+    );
+    for (const combo of combos) {
+      const parts = (leavesOf.get(combo.id) ?? []).filter((leaf) =>
+        manufacturable.has(leaf.id),
+      );
+      if (parts.length >= 2) {
+        return {
+          sku: combo.sku as string,
+          parts: [parts[0].sku, parts[1].sku],
+        };
+      }
+    }
+    return fallback;
+  }
+
+  /**
+   * Món lá của các combo trong file, chỉ khi file có dòng phụ (cột "Thuộc combo"). Combo mở không được (lồng quá sâu,
+   * vòng) cho tập rỗng: bộ đọc báo món không thuộc combo, còn bước kiểm đơn báo đúng lỗi combo.
+   */
+  private async comboLeafIds(
+    tenantId: string,
+    rows: OrderImportRow[],
+    items: { id: string; itemType: string }[],
+  ): Promise<Map<string, Set<string>>> {
+    const comboIds = items
+      .filter((item) => item.itemType === OrderLineType.COMBO)
+      .map((item) => item.id);
+    const leaves = new Map<string, Set<string>>();
+    if (
+      comboIds.length === 0 ||
+      !rows.some((row) => textOf(row.cells.comboParent))
+    ) {
+      return leaves;
+    }
+    let graph: Awaited<ReturnType<typeof loadComboGraph>>;
+    try {
+      graph = await loadComboGraph(this.prisma, tenantId, comboIds);
+    } catch (error) {
+      if (!(error instanceof HttpException)) throw error;
+      return new Map(comboIds.map((id) => [id, new Set<string>()]));
+    }
+    for (const id of comboIds) {
+      try {
+        leaves.set(
+          id,
+          new Set(flattenCombo(id, graph).map((leaf) => leaf.item.id)),
+        );
+      } catch (error) {
+        if (!(error instanceof HttpException)) throw error;
+        leaves.set(id, new Set());
+      }
+    }
+    return leaves;
+  }
+}
+
+/** Combo của đơn mẫu MẪU-3 và hai món của nó được làm riêng bằng dòng phụ. */
+interface SampleCombo {
+  sku: string;
+  parts: [string, string];
 }
 
 function prepareMessage(error: HttpException): string {

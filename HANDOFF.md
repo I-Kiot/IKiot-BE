@@ -948,3 +948,66 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 
 **Chưa kiểm chứng**
 - Chưa thử dán trên trình duyệt vào Excel / Google Sheets.
+
+## 2026-11-27 - Nhập đơn Excel: làm riêng từng món của combo bằng dòng phụ
+
+**Đã làm**
+- Thêm cột "Thuộc combo" (cấp dòng, không bắt buộc), nằm ngay trước cột SKU.
+- Dòng phụ: cùng mã nhóm đơn, nằm dưới dòng combo; "Thuộc combo" = SKU combo, "SKU" = SKU món; điền "Thông số làm riêng" / "Ghi chú làm riêng"; để trống Số lượng, Đơn giá, Giảm giá dòng.
+- Bộ đọc gắn dòng phụ vào dòng combo gần nhất phía trên có cùng SKU, thành một phần tử `componentCustomizations`. Dòng phụ không thêm dòng hàng, không cộng tiền.
+- Lỗi theo dòng: không có dòng combo phía trên; dòng được nêu không phải combo; điền số lượng / giá; SKU không thuộc combo (đã mở hết combo lồng); một món có hai dòng phụ cho cùng dòng combo; món là dịch vụ; không có thông số lẫn ghi chú.
+- Service chỉ nạp món lá của combo khi file có dòng phụ.
+- Cập nhật trang "Hướng dẫn", ví dụ DH3 và ghi chú cột trong file mẫu, cùng gợi ý trong hộp thoại nhập ở FE.
+
+**Đã kiểm chứng**
+- Unit `order-import` 19/19, trong đó có 4 test mới cho dòng phụ. eslint sạch trên `orders/import`. `tsc` không lỗi ở file đã sửa (chỉ còn lỗi có sẵn ở các `*.excel.spec.ts`).
+
+**Chưa kiểm chứng / còn lại**
+- e2e `order-import` 7/7 trên `ikiot_e2e` (các test cũ, chưa có e2e cho dòng phụ chạy với combo thật). Chưa chạy `excel-export`, chưa thử trên trình duyệt.
+- Xuất file / nút "Sao chép" chưa ghi dòng phụ: combo đã làm riêng từng món xuất ra sẽ mất thông số của món.
+- Thêm cột làm lệch vị trí các cột sau "Ghi chú đơn". File cũ vẫn nhập được (đọc theo tiêu đề), nhưng dán dữ liệu "Sao chép" vào file mẫu tải về trước đó sẽ lệch cột.
+
+## 2026-11-27 - Xuất đơn Excel / "Sao chép": ghi dòng phụ của combo làm riêng
+
+**Đã làm**
+- `OrderExportService.sheetRows` lấy thêm các món đã làm riêng của mỗi dòng combo. Mỗi món ra một dòng phụ ngay dưới dòng combo: "Thuộc combo" = SKU combo, SKU = SKU gốc của món, kèm thông số / ghi chú. Nút "Sao chép" dùng chung nguồn nên cũng có dòng phụ. Giới hạn số dòng xuất đếm cả dòng phụ.
+- Dòng đơn không lưu SKU gốc mà chỉ còn SKU riêng (`<gốc>-C<6 hex>`). Thêm `orders/custom-sku.ts` (`customSkuOf` / `baseSkuOfCustom`), là nơi duy nhất vừa sinh vừa đọc ngược dạng này; `OrderCustomizationService.apply` chuyển sang gọi `customSkuOf`.
+- Cách tìm SKU gốc khi xuất: cắt đuôi SKU riêng, đối chiếu với món của combo. Không khớp thì lấy món duy nhất của combo thuộc cùng hàng hoá. Vẫn không ra thì ghi SKU riêng, khi nhập lại file sẽ báo lỗi chứ không đoán.
+
+**Đã kiểm chứng**
+- e2e `excel-export` 5/5 trên `ikiot_e2e`, có 1 test mới: nhập combo có 2 dòng phụ, xuất ra đúng 3 dòng với SKU gốc, "Sao chép" ra 3 dòng, nhập lại file vừa xuất ra đơn có 2 món làm riêng. Cleanup thêm bước xoá `combo_components`.
+- e2e `order-import` / `order-custom*` qua 17/17. Unit `custom-sku` / `order-import` / `order-customization` qua 21/21. eslint sạch; `tsc` chỉ còn lỗi có sẵn ở `*.excel.spec.ts`.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa thử trên trình duyệt.
+- Dòng làm riêng đứng riêng (không thuộc combo) vẫn xuất SKU riêng như trước. Nhập lại thì làm riêng tiếp từ SKU riêng đó, chứ không phải từ hàng gốc.
+
+## 2026-11-27 - Xuất đơn: dòng làm riêng đứng riêng ghi SKU gốc
+
+**Đã làm**
+- Trước đây, dòng làm riêng không thuộc combo được xuất bằng SKU riêng của dòng. Nhập lại thì hệ thống làm riêng tiếp từ chính SKU riêng đó, sinh thêm một SKU riêng nữa (dạng `<riêng>-C…`).
+- Nay `OrderExportService.standaloneBases` đọc ngược SKU gốc bằng `baseSkuOfCustom`. SKU gốc chỉ được dùng khi còn trong cửa hàng và cùng hàng hoá với SKU riêng; không thì giữ SKU riêng như cũ. Thêm một truy vấn cho cả file.
+- Mục 2026-11-27 trước ("Dòng làm riêng ghi SKU riêng của dòng") không còn đúng với dòng đứng riêng.
+
+**Đã kiểm chứng**
+- e2e `excel-export` 5/5 trên `ikiot_e2e`: dòng làm riêng xuất ra SKU bàn gốc; nhập lại ra đơn cùng tổng tiền, và SKU riêng mới được sinh từ SKU bàn gốc. eslint / `tsc` sạch ở các file đã sửa.
+
+**Chưa kiểm chứng**
+- Chưa thử trên trình duyệt.
+
+## 2026-11-27 - File mẫu nhập đơn: đơn mẫu combo có 2 món làm riêng
+
+**Đã làm**
+- Trang "Đơn hàng" của file mẫu có thêm đơn mẫu `MẪU-3` (chữ nghiêng xám như `MẪU-1`, `MẪU-2`): một dòng combo, ngay dưới là hai dòng phụ (cột "Thuộc combo" = SKU combo). Một dòng có thông số, một dòng có thông số kèm ghi chú. Ô "Ghi chú đơn" giải thích cách điền.
+- `OrderImportService.sampleCombo` lấy combo đang bán đầu tiên theo SKU có ít nhất 2 món là mặt hàng thường, thuộc sản phẩm bật "Có thể sản xuất", và dùng SKU thật của combo và món. Không có thì dùng `SKU-COMBO` / `SKU-MON-1` / `SKU-MON-2`. Chỉ chạy khi tải file mẫu, không chạy khi xuất.
+- Trang "Hướng dẫn" nhắc thêm `MẪU-3`. Ví dụ DH3 ở trang này có từ mục trước.
+- Sửa lỗi chập chờn có sẵn trong e2e file mẫu: test chờ SKU ghế ở dòng mẫu đầu, nay so với SKU đứng đầu theo thứ tự chữ cái.
+
+**Đã kiểm chứng**
+- e2e `order-import` + `excel-export` 12/12, chạy 3 lần liên tiếp đều qua.
+  - Kiểm cả hai nhánh: không có combo thì dùng SKU minh hoạ; có combo bàn + ghế (tạo rồi xoá ngay trong test) thì dùng SKU thật.
+  - Nhập nguyên file mẫu bị từ chối với 6 lỗi (6 dòng mẫu).
+- eslint / `tsc` sạch ở file đã sửa.
+
+**Chưa kiểm chứng**
+- Chưa mở file mẫu bằng Excel thật để xem trình bày.

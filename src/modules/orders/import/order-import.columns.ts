@@ -41,6 +41,7 @@ export type OrderImportColumnKey =
   | 'deposit'
   | 'depositMethod'
   | 'note'
+  | 'comboParent'
   | 'sku'
   | 'quantity'
   | 'unitPrice'
@@ -266,6 +267,17 @@ export const ORDER_IMPORT_COLUMNS: readonly OrderImportColumn[] = [
     note: '',
   },
   {
+    key: 'comboParent',
+    header: 'Thuộc combo',
+    required: false,
+    level: 'line',
+    width: 18,
+    format: 'SKU của combo',
+    example: '',
+    note: 'Chỉ điền ở DÒNG PHỤ làm riêng một món trong combo: ghi SKU của combo, dòng combo phải nằm phía trên trong cùng đơn. Ở dòng phụ, cột SKU là SKU của món trong combo, điền Thông số làm riêng / Ghi chú làm riêng; Số lượng, Đơn giá, Giảm giá dòng để trống (theo dòng combo). Mỗi món làm riêng một dòng phụ.',
+    text: true,
+  },
+  {
     key: 'sku',
     header: 'SKU',
     required: true,
@@ -316,7 +328,7 @@ export const ORDER_IMPORT_COLUMNS: readonly OrderImportColumn[] = [
     width: 36,
     format: 'Tên: giá trị; Tên: giá trị',
     example: 'Màu: Trắng; Kích thước: 200x180 cm',
-    note: `Điền khi dòng này làm riêng theo yêu cầu khách: hệ thống tạo SKU riêng cho dòng (cần đặt xưởng). Mỗi thông số dạng "Tên: giá trị", cách nhau bằng dấu ; hoặc xuống dòng. Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó; tên khác là thông số thêm. Chỉ cho mặt hàng thường, không cho combo / dịch vụ.`,
+    note: `Điền khi dòng này làm riêng theo yêu cầu khách: hệ thống tạo SKU riêng cho dòng (cần đặt xưởng). Mỗi thông số dạng "Tên: giá trị", cách nhau bằng dấu ; hoặc xuống dòng. Tên trùng thuộc tính của hàng hoá (vd. Màu) là đổi thuộc tính đó; tên khác là thông số thêm. Chỉ cho mặt hàng thường; combo thì làm riêng từng món bằng dòng phụ (xem cột Thuộc combo), dịch vụ không làm riêng được.`,
   },
   {
     key: 'customNote',
