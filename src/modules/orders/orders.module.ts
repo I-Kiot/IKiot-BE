@@ -1,3 +1,4 @@
+import { OrderImportService } from './import/order-import.service';
 import { Module } from '@nestjs/common';
 import {
   OrderController,
@@ -55,6 +56,7 @@ import { InvoiceModule } from '../invoices/invoices.module';
     OrderRemittanceService,
     OrderPickupService,
     OrderShortageAlerts,
+    OrderImportService,
     SepayQrExpiryCron,
   ],
   exports: [OrderService],

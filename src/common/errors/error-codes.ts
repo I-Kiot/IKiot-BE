@@ -465,6 +465,8 @@ export const ErrorCode = {
   PRODUCT_IMPORT_FILE_INVALID: 'PRODUCT_IMPORT_FILE_INVALID',
   /** Có dòng không hợp lệ trong file nhập, không tạo gì. */
   PRODUCT_IMPORT_ROWS_INVALID: 'PRODUCT_IMPORT_ROWS_INVALID',
+  ORDER_IMPORT_FILE_INVALID: 'ORDER_IMPORT_FILE_INVALID',
+  ORDER_IMPORT_ROWS_INVALID: 'ORDER_IMPORT_ROWS_INVALID',
   /** Thành phần combo thuộc sản phẩm đã ngừng bán (khi lưu, hoặc khi bật lại combo). Thông báo nêu SKU. */
   PRODUCT_COMBO_COMPONENT_DISCONTINUED: 'PRODUCT_COMBO_COMPONENT_DISCONTINUED',
   /** Biến thể COMBO hoặc SERVICE bị đưa vào chứng từ kho hay địa điểm: chỉ PRODUCT mới giữ kho. */

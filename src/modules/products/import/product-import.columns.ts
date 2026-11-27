@@ -3,7 +3,11 @@ import {
   ProductType,
 } from '../../../common/constants/product-status';
 
+import { NO, YES, headerKey } from '../../../common/excel/import-cells';
+
 // Bảng cột của file nhập hàng hoá, dùng chung cho file mẫu và bộ đọc.
+
+export { NO, YES, headerKey };
 
 /** Số cặp thuộc tính (tên / đơn vị / giá trị) có trong template. */
 export const IMPORT_ATTRIBUTE_SLOTS = 3;
@@ -73,9 +77,6 @@ export const PRODUCT_TYPE_LABELS: Record<string, string> = {
   [ProductType.PRODUCT]: 'Hàng hóa',
   [ProductType.SERVICE]: 'Dịch vụ',
 };
-
-export const YES = 'Có';
-export const NO = 'Không';
 
 function attributeColumns(): ImportColumn[] {
   const columns: ImportColumn[] = [];
@@ -297,15 +298,4 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
 /** Tiêu đề hiển thị trên template: cột bắt buộc có thêm `(*)`. */
 export function headerLabel(column: ImportColumn): string {
   return column.required ? `${column.header} (*)` : column.header;
-}
-
-/** Chuẩn hoá tiêu đề cột để so khớp. */
-export function headerKey(text: string): string {
-  return text
-    .normalize('NFC')
-    .replace(/\(\s*\*\s*\)/g, '')
-    .replace(/\*/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLocaleLowerCase('vi');
 }

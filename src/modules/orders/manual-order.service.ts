@@ -63,6 +63,27 @@ function worksAt(
   );
 }
 
+/** Kết quả `ManualOrderService.prepare`: đủ để `write` ghi đơn mà không đọc lại gì. */
+export interface PreparedManualOrder {
+  dto: CreateOrderDto;
+  branchId: string;
+  items: ReturnType<ManualOrderService['buildItems']>;
+  subtotal: number;
+  shippingFee: number;
+  grandTotal: number;
+  discountType: Awaited<
+    ReturnType<OrderPricingService['priceOrder']>
+  >['discountType'];
+  discountValue: Awaited<
+    ReturnType<OrderPricingService['priceOrder']>
+  >['discountValue'];
+  appliedPromotions: Awaited<
+    ReturnType<OrderPricingService['priceOrder']>
+  >['appliedPromotions'];
+  deposit: ResolvedDeposit | null;
+  isPickup: boolean;
+}
+
 export interface ResolvedDeposit {
   amount: number;
   percent: number | null;
@@ -120,7 +141,27 @@ export class ManualOrderService {
   ) {}
 
   async create(user: AuthUser, tenantId: string, dto: CreateOrderDto) {
-    const userId = user.userId;
+    const prepared = await this.prepare(user, tenantId, dto);
+    const typedInCustomerId = await this.resolveTypedInCustomer(tenantId, dto);
+    const shortage = await this.shortages.snapshot(tenantId, prepared.items);
+
+    const orderId = await this.prisma.$transaction((tx) =>
+      this.write(tx, user, tenantId, prepared, typedInCustomerId),
+    );
+
+    await this.shortages.notify(tenantId, orderId, shortage, user.userId);
+    return this.orders.findOne(user, tenantId, orderId);
+  }
+
+  /**
+   * Mọi kiểm tra và tính toán của đơn tay, không ghi gì. Ném đúng lỗi của `POST /orders`. Tách khỏi `write` để nhập
+   * đơn từ Excel kiểm cả file trước rồi mới ghi mọi đơn trong một transaction.
+   */
+  async prepare(
+    user: AuthUser,
+    tenantId: string,
+    dto: CreateOrderDto,
+  ): Promise<PreparedManualOrder> {
     const scope = this.orders.branchScope(user);
     if (scope.branchId !== undefined && dto.branchId !== scope.branchId) {
       throw new ForbiddenException({
@@ -187,136 +228,170 @@ export class ManualOrderService {
     const grandTotal = goodsTotal + shippingFee;
     const deposit = resolveDeposit(dto.deposit, grandTotal);
 
-    // Tạo khách trước transaction.
-    const typedInCustomerId =
-      !dto.customerId && dto.customer
-        ? await this.customers.findOrCreateForOrder(tenantId, dto.customer)
-        : undefined;
-
     const items = this.buildItems(lines, components);
+    return {
+      dto,
+      branchId: branch.id,
+      items,
+      subtotal,
+      shippingFee,
+      grandTotal,
+      discountType,
+      discountValue,
+      appliedPromotions,
+      deposit,
+      isPickup,
+    };
+  }
+
+  /** Khách gõ tay trên form: khớp theo số điện thoại hoặc tạo mới, trước transaction (như trước khi tách). */
+  async resolveTypedInCustomer(
+    tenantId: string,
+    dto: CreateOrderDto,
+  ): Promise<string | undefined> {
+    return !dto.customerId && dto.customer
+      ? this.customers.findOrCreateForOrder(tenantId, dto.customer)
+      : undefined;
+  }
+
+  /** Ghi một đơn đã `prepare` trong transaction của người gọi; trả id đơn. */
+  async write(
+    tx: Prisma.TransactionClient,
+    user: AuthUser,
+    tenantId: string,
+    prepared: PreparedManualOrder,
+    typedInCustomerId: string | undefined,
+  ): Promise<string> {
+    const userId = user.userId;
+    const {
+      dto,
+      items,
+      subtotal,
+      shippingFee,
+      grandTotal,
+      discountType,
+      discountValue,
+      appliedPromotions,
+      deposit,
+      isPickup,
+    } = prepared;
+    const branch = { id: prepared.branchId };
     // buildItems trả dòng theo đúng thứ tự gửi, con của combo nằm ngay sau combo cha.
     const topLevelRows = items.filter((row) => !row.parentItemId);
     const now = new Date();
 
-    const shortage = await this.shortages.snapshot(tenantId, items);
+    const customerId =
+      dto.customerId ??
+      typedInCustomerId ??
+      (await this.orders.resolveWalkInCustomer(tx, tenantId));
 
-    const orderId = await this.prisma.$transaction(async (tx) => {
-      const customerId =
-        dto.customerId ??
-        typedInCustomerId ??
-        (await this.orders.resolveWalkInCustomer(tx, tenantId));
-
-      const created = await tx.order.create({
-        data: {
-          tenantId,
-          branchId: branch.id,
-          customerId,
-          code: generateReference(REFERENCE_PREFIX.ORDER),
-          status: OrderStatus.CONFIRMED,
-          priority: dto.priority ?? OrderPriority.NORMAL,
-          channel: OrderChannel.MANUAL,
-          fulfillmentType: dto.fulfillmentType,
-          userId,
-          assigneeId: dto.assigneeId,
-          sellerId: dto.sellerId ?? userId,
-          // Tạo đơn tay cũng là xác nhận đơn (contract §2), không có bước nháp.
-          confirmedById: userId,
-          confirmedAt: now,
-          subtotal,
-          shippingFee,
-          grandTotal,
-          discountType,
-          discountValue,
-          depositAmount: deposit?.amount ?? null,
-          depositPercent: deposit?.percent ?? null,
-          // Trạng thái thanh toán suy ra từ các khoản sau khi ghi cọc.
-          recipientName: dto.recipientName,
-          recipientPhone: dto.recipientPhone,
-          deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
-          requestedDeliveryDate: dto.requestedDeliveryDate
-            ? new Date(dto.requestedDeliveryDate)
-            : undefined,
-          note: dto.note,
-          // Một câu INSERT cho mọi dòng để con của combo tham chiếu được cha được chèn cùng lúc.
-          items: { createMany: { data: items } },
-          appliedPromotions: { create: appliedPromotions },
-        },
-        select: { id: true, code: true },
-      });
-
-      const events: OrderEventInput[] = [
-        {
-          tenantId,
-          orderId: created.id,
-          type: OrderEventType.CREATED,
-          fromStatus: null,
-          toStatus: OrderStatus.CONFIRMED,
-          metadata: { grandTotal, fulfillmentType: dto.fulfillmentType },
-        },
-      ];
-      if (deposit) {
-        // Tiền cọc đã nhận nên Payment là PAID và vào sổ thu chi ngay.
-        const payment = await tx.payment.create({
-          data: {
-            tenantId,
-            orderId: created.id,
-            kind: PaymentKind.DEPOSIT,
-            method: deposit.method,
-            amount: deposit.amount,
-            status: PaymentRecordStatus.PAID,
-            paidAt: now,
-            locationId: branch.id,
-            collectedById: userId,
-            createdById: userId,
-          },
-          select: { id: true, amount: true, method: true },
-        });
-        await writePaymentCashFlow(tx, {
-          tenantId,
-          payment,
-          category: CashFlowCategory.ORDER_PAYMENT,
-          orderId: created.id,
-          orderCode: created.code,
-          locationId: branch.id,
-          createdById: userId,
-          description: `Tiền cọc đơn ${created.code}`,
-        });
-        await syncOrderPaymentStatus(tx, created.id);
-        events.push({
-          tenantId,
-          orderId: created.id,
-          type: OrderEventType.DEPOSIT_RECORDED,
-          metadata: {
-            paymentId: payment.id,
-            amount: deposit.amount,
-            method: deposit.method,
-          },
-        });
-      }
-      for (const [index, item] of dto.items.entries()) {
-        if (!item.customization) continue;
-        const row = topLevelRows[index];
-        await this.customizations.apply(
-          tx,
-          tenantId,
-          {
-            id: row.id!,
-            productItemId: row.productItemId,
-            lineType: row.lineType!,
-            isCustom: false,
-          },
-          item.customization,
-          user.userId,
-        );
-      }
-      // Hóa đơn chỉ phát hành khi đơn COMPLETED (đã giao và thu đủ); trước đó là hóa đơn PENDING.
-      await this.invoices.ensurePending(tx, created.id);
-      await recordOrderEvents(tx, userActor(user), events);
-      return created.id;
+    const created = await tx.order.create({
+      data: {
+        tenantId,
+        branchId: branch.id,
+        customerId,
+        code: generateReference(REFERENCE_PREFIX.ORDER),
+        status: OrderStatus.CONFIRMED,
+        priority: dto.priority ?? OrderPriority.NORMAL,
+        channel: OrderChannel.MANUAL,
+        fulfillmentType: dto.fulfillmentType,
+        userId,
+        assigneeId: dto.assigneeId,
+        sellerId: dto.sellerId ?? userId,
+        // Tạo đơn tay cũng là xác nhận đơn (contract §2), không có bước nháp.
+        confirmedById: userId,
+        confirmedAt: now,
+        subtotal,
+        shippingFee,
+        grandTotal,
+        discountType,
+        discountValue,
+        depositAmount: deposit?.amount ?? null,
+        depositPercent: deposit?.percent ?? null,
+        // Trạng thái thanh toán suy ra từ các khoản sau khi ghi cọc.
+        recipientName: dto.recipientName,
+        recipientPhone: dto.recipientPhone,
+        deliveryAddress: isPickup ? undefined : dto.deliveryAddress,
+        requestedDeliveryDate: dto.requestedDeliveryDate
+          ? new Date(dto.requestedDeliveryDate)
+          : undefined,
+        note: dto.note,
+        // Một câu INSERT cho mọi dòng để con của combo tham chiếu được cha được chèn cùng lúc.
+        items: { createMany: { data: items } },
+        appliedPromotions: { create: appliedPromotions },
+      },
+      select: { id: true, code: true },
     });
 
-    await this.shortages.notify(tenantId, orderId, shortage, userId);
-    return this.orders.findOne(user, tenantId, orderId);
+    const events: OrderEventInput[] = [
+      {
+        tenantId,
+        orderId: created.id,
+        type: OrderEventType.CREATED,
+        fromStatus: null,
+        toStatus: OrderStatus.CONFIRMED,
+        metadata: { grandTotal, fulfillmentType: dto.fulfillmentType },
+      },
+    ];
+    if (deposit) {
+      // Tiền cọc đã nhận nên Payment là PAID và vào sổ thu chi ngay.
+      const payment = await tx.payment.create({
+        data: {
+          tenantId,
+          orderId: created.id,
+          kind: PaymentKind.DEPOSIT,
+          method: deposit.method,
+          amount: deposit.amount,
+          status: PaymentRecordStatus.PAID,
+          paidAt: now,
+          locationId: branch.id,
+          collectedById: userId,
+          createdById: userId,
+        },
+        select: { id: true, amount: true, method: true },
+      });
+      await writePaymentCashFlow(tx, {
+        tenantId,
+        payment,
+        category: CashFlowCategory.ORDER_PAYMENT,
+        orderId: created.id,
+        orderCode: created.code,
+        locationId: branch.id,
+        createdById: userId,
+        description: `Tiền cọc đơn ${created.code}`,
+      });
+      await syncOrderPaymentStatus(tx, created.id);
+      events.push({
+        tenantId,
+        orderId: created.id,
+        type: OrderEventType.DEPOSIT_RECORDED,
+        metadata: {
+          paymentId: payment.id,
+          amount: deposit.amount,
+          method: deposit.method,
+        },
+      });
+    }
+    for (const [index, item] of dto.items.entries()) {
+      if (!item.customization) continue;
+      const row = topLevelRows[index];
+      await this.customizations.apply(
+        tx,
+        tenantId,
+        {
+          id: row.id!,
+          productItemId: row.productItemId,
+          lineType: row.lineType!,
+          isCustom: false,
+        },
+        item.customization,
+        user.userId,
+      );
+    }
+    // Hóa đơn chỉ phát hành khi đơn COMPLETED (đã giao và thu đủ); trước đó là hóa đơn PENDING.
+    await this.invoices.ensurePending(tx, created.id);
+    await recordOrderEvents(tx, userActor(user), events);
+    return created.id;
   }
 
   /** Chỉ sản phẩm, combo hoặc dịch vụ mới là dòng riêng; thành phần combo do server thêm. */

@@ -13,7 +13,17 @@ import type { ImportColumn, ImportColumnKey } from './product-import.columns';
 
 // Đọc các dòng file nhập thành CreateProductDto, gom mọi lỗi theo dòng.
 
-export type CellValue = string | number | boolean | Date | null | undefined;
+import {
+  buildNameIndex,
+  hasMoreThanTwoDecimals,
+  normalizeName,
+  numberOf,
+  textOf,
+} from '../../../common/excel/import-cells';
+import type { CellValue, NameIndex } from '../../../common/excel/import-cells';
+// Dùng chung với import đơn hàng; giữ export ở đây cho các chỗ đang import từ file này.
+export { buildNameIndex, normalizeName, numberOf, textOf };
+export type { CellValue, NameIndex };
 
 export interface ImportRow {
   /** Số dòng trong Excel (1-based, tính cả dòng tiêu đề) - con số người dùng nhìn thấy. */
@@ -28,9 +38,6 @@ export interface ImportError {
   column: string | null;
   message: string;
 }
-
-/** Tên → id, đã chuẩn hoá. Một tên trỏ về nhiều id là tên trùng: không chọn bừa. */
-export type NameIndex = Map<string, string[]>;
 
 export interface ImportLookups {
   categories: NameIndex;
@@ -58,63 +65,6 @@ export interface ParseResult {
 }
 
 const COLUMN_BY_KEY = new Map(IMPORT_COLUMNS.map((c) => [c.key, c]));
-
-/** So tên không phân biệt hoa/thường và cách gõ dấu (NFC), bỏ khoảng trắng thừa. */
-export function normalizeName(text: string): string {
-  return text
-    .normalize('NFC')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLocaleLowerCase('vi');
-}
-
-export function buildNameIndex(
-  entries: { id: string; names: string[] }[],
-): NameIndex {
-  const index: NameIndex = new Map();
-  for (const { id, names } of entries) {
-    for (const name of new Set(names.map(normalizeName))) {
-      if (!name) continue;
-      const ids = index.get(name) ?? [];
-      if (!ids.includes(id)) ids.push(id);
-      index.set(name, ids);
-    }
-  }
-  return index;
-}
-
-/** Nội dung ô dưới dạng chữ đã trim; số giữ nguyên chữ số (không có dấu phân cách). */
-export function textOf(value: CellValue): string {
-  if (value === null || value === undefined) return '';
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  if (typeof value === 'number') return String(value);
-  if (typeof value === 'boolean') return value ? YES : NO;
-  return value.normalize('NFC').trim();
-}
-
-/** Đọc số tiền / phần trăm từ ô Excel theo cách viết ở Việt Nam. */
-export function numberOf(value: CellValue): number | null {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  let text = textOf(value)
-    .replace(/[đ₫%]|vnđ|vnd/gi, '')
-    .replace(/\s+/g, '');
-  if (!text) return null;
-  if (/^-?\d{1,3}([.,]\d{3})+$/.test(text)) {
-    text = text.replace(/[.,]/g, '');
-  } else if (/^-?\d{1,3}(,\d{3})+\.\d+$/.test(text)) {
-    text = text.replace(/,/g, '');
-  } else if (/^-?\d{1,3}(\.\d{3})+,\d+$/.test(text)) {
-    text = text.replace(/\./g, '').replace(',', '.');
-  } else {
-    text = text.replace(',', '.');
-  }
-  if (!/^-?\d+(\.\d+)?$/.test(text)) return null;
-  return Number(text);
-}
-
-function hasMoreThanTwoDecimals(n: number): boolean {
-  return Math.abs(Math.round(n * 100) - n * 100) > 1e-6;
-}
 
 /** Danh sách cách nhau bởi `;` hoặc xuống dòng. Dấu phẩy không tách - tên NCC hay URL có thể chứa nó. */
 function listOf(value: CellValue): string[] {

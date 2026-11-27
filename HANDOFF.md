@@ -806,3 +806,36 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng / còn lại**
 - Chưa có route sửa một chuỗi: dừng rồi tạo lại. Chưa có route liệt kê chuỗi.
 - Migration chưa chạy trên dữ liệu dev / prod thật (bước gộp ca chỉ khác loại chưa gặp dữ liệu thật).
+
+
+## 2026-11-27 - Nhập đơn hàng từ Excel
+
+**Đã làm**
+- BE `GET /orders/import/template`, `POST /orders/import` (`orders:create`): file mẫu theo cửa hàng (dropdown chi nhánh, nhân viên "Tên - SĐT", hình thức nhận hàng, ưu tiên, hình thức cọc; trang Hướng dẫn có ví dụ). Mỗi dòng một mặt hàng, các dòng cùng "Mã nhóm đơn" là một đơn. Cả file đúng mới tạo; lỗi `ORDER_IMPORT_FILE_INVALID` / `ORDER_IMPORT_ROWS_INVALID` kèm `errors` theo dòng.
+- `ManualOrderService.create` tách thành `prepare` (kiểm, không ghi) + `write(tx)`; import chạy `prepare` cho mọi đơn rồi ghi tất cả trong một transaction, nên quy tắc tạo đơn tay chỉ có một bản. Hành vi `POST /orders` không đổi (e2e `order-create` vẫn pass).
+- Khách khớp theo SĐT hoặc tạo mới theo tên; giao tận nơi bỏ trống người nhận / SĐT thì lấy theo khách; tiền cọc ghi Payment + sổ thu chi như form. Không nhập khuyến mãi, đơn may đo.
+- Sự kiện realtime `ORDERS_IMPORTED` (gộp, liệt kê id các đơn). Cảnh báo thiếu hàng chụp một lần cho cả file.
+- Hàm đọc ô Excel chuyển sang `src/common/excel/import-cells.ts` (import hàng hoá re-export, unit 19/19 vẫn pass).
+- FE: nút "Nhập file" bên phải "Tạo đơn" ở màn Đơn hàng; hộp thoại dùng `ImportFileDialog` chung (hộp thoại nhập hàng hoá chuyển sang dùng nó); danh sách tải lại sau khi nhập.
+- Test: `order-import.parser.spec` (6), e2e `order-import` (6: file mẫu, tạo 2 đơn có cọc vào sổ, khớp khách cũ, một đơn sai thì không tạo gì kể cả khách, nhân viên chỉ nhập chi nhánh mình, file sai mẫu). Toàn bộ e2e 497/502 (5 lỗi sẵn ở `workshop-accept`).
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở trên trình duyệt; chưa thử file thật do người dùng điền trong Excel / Google Sheets (ô ngày, số điện thoại dạng số).
+
+
+
+## 2026-11-27 - Nhập đơn hàng: dòng làm riêng và giảm giá đơn theo %
+
+**Đã làm**
+- Cột "Giảm giá đơn" nhận số tiền hoặc phần trăm (`10%`, `12,5%`; ô số Excel định dạng `%` cũng đọc được). Phần trăm quy ra tiền ngay trong parser, trên tiền hàng sau giảm từng dòng (làm tròn từng dòng như `lineTotalOf`, đơn giá trống thì lấy giá bán lẻ), và chỉ lưu số tiền, giống form. Giảm vượt tiền hàng là lỗi dòng, không để server lặng lẽ cắt bớt. Cột trong file mẫu chuyển sang ô dạng chữ.
+- Các cột tiền khác (phí giao, cọc, đơn giá, giảm giá dòng) báo lỗi khi có `%`. Trước đây `numberOf` bỏ dấu `%`, nên `10%` thành 10 đồng.
+- Dòng làm riêng: thêm cột "Thông số làm riêng" (`Tên: giá trị; ...`) và "Ghi chú làm riêng". Parser dựng khối `customization` giống hộp thoại của form:
+  - tên trùng thuộc tính của hàng hoá → đổi thuộc tính (`attributeId`), bỏ đơn vị ghi kèm giá trị, bỏ qua nếu trùng giá trị gốc;
+  - tên khác → thông số thêm.
+  `write` gọi `OrderCustomizationService.apply` như form, nên dòng có SKU riêng. Chỉ cho mặt hàng PRODUCT; combo / dịch vụ báo lỗi. Thêm thông báo cho `ORDER_ITEM_NOT_CUSTOMIZABLE`.
+- File mẫu: `MẪU-1` có giảm 5%, `MẪU-2` có một dòng làm riêng; trang Hướng dẫn thêm hai quy tắc. FE: cập nhật gợi ý trong hộp thoại nhập đơn.
+- Test: parser spec 15 (thêm 8: %, làm tròn, chặn vượt, `%` ở cột tiền, khớp thuộc tính / đơn vị / giá trị gốc, chỉ ghi chú, thông số sai, combo). E2e `order-import` 7/7 (thêm: SKU riêng, specs có `baseValue`, SKU gốc giữ nguyên, giảm 10% = 290.000). Unit toàn bộ: chỉ 8 suite `*.excel.spec.ts` fail sẵn.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa thử trên trình duyệt và với file người dùng tự gõ `10%` trong Excel / Google Sheets (đã xử lý ô định dạng `%` nhưng chưa thử file thật).
+- Không nhập ảnh mẫu, không làm riêng từng món trong combo từ file.
