@@ -201,7 +201,16 @@ export class ManualOrderService {
       branch.location.defaultFulfillmentLocationId ?? branch.id;
     await this.assertSourceLocations(tenantId, dto.items);
 
-    const priced = await this.pricing.priceOrder(tenantId, dto);
+    // Khách gõ tay: khớp theo SĐT như lúc ghi; không khớp ai thì là khách mới, chưa dùng lượt khuyến mãi nào.
+    const typedInMatch =
+      !dto.customerId && dto.customer
+        ? await this.customers.findIdByPhone(tenantId, dto.customer.phone)
+        : null;
+    const priced = await this.pricing.priceOrder(tenantId, {
+      ...dto,
+      customerId: dto.customerId ?? typedInMatch ?? undefined,
+      newCustomer: !dto.customerId && !!dto.customer && !typedInMatch,
+    });
     const { appliedPromotions, discountType, discountValue } = priced;
     const lines = priced.lines.map((line, index) => ({
       ...line,
@@ -321,6 +330,14 @@ export class ManualOrderService {
         appliedPromotions: { create: appliedPromotions },
       },
       select: { id: true, code: true },
+    });
+    // Lượt dùng khuyến mãi ghi cùng transaction: đơn lỗi thì lượt cũng không bị tính.
+    await this.pricing.recordPromotionUsage(tx, tenantId, {
+      orderId: created.id,
+      branchId: branch.id,
+      customerId,
+      applied: appliedPromotions,
+      userId,
     });
 
     const events: OrderEventInput[] = [
