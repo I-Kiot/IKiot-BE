@@ -223,8 +223,80 @@ describe('POST /orders/import – OrderImportService', () => {
         .value;
     expect(cell(2, 'group')).toBe('MẪU-1');
     expect(cell(2, 'branch')).toBe(`CN 2 ${suffix}`);
-    expect(cell(2, 'sku')).toBe(chair());
+    // SKU mẫu lấy theo thứ tự chữ cái, còn SKU của test sinh ngẫu nhiên: so với SKU đứng đầu.
+    expect(cell(2, 'sku')).toBe([table(), chair()].sort()[0]);
     expect(cell(4, 'group')).toBe('MẪU-2');
+    // MẪU-3: dòng combo + hai dòng phụ. Cửa hàng chưa có combo nên dùng SKU minh hoạ.
+    expect(
+      [5, 6, 7].map((r) => [
+        cell(r, 'group'),
+        cell(r, 'comboParent'),
+        cell(r, 'sku'),
+      ]),
+    ).toEqual([
+      ['MẪU-3', null, 'SKU-COMBO'],
+      ['MẪU-3', 'SKU-COMBO', 'SKU-MON-1'],
+      ['MẪU-3', 'SKU-COMBO', 'SKU-MON-2'],
+    ]);
+
+    // Có combo thật với hai món làm riêng được: đơn mẫu dùng SKU của cửa hàng.
+    const comboProductId = randomUUID();
+    const comboItemId = randomUUID();
+    await prisma.product.create({
+      data: {
+        id: comboProductId,
+        tenantId,
+        name: 'Combo mẫu',
+        productType: 'COMBO',
+      },
+    });
+    await prisma.productItem.create({
+      data: {
+        id: comboItemId,
+        tenantId,
+        productId: comboProductId,
+        productName: 'Combo mẫu',
+        productCode: `OI-${comboItemId}`,
+        sku: `OI-${comboItemId.slice(0, 8)}`,
+        retailPrice: 2_500_000,
+        costPrice: 0,
+        itemType: 'COMBO',
+      },
+    });
+    await prisma.comboComponent.createMany({
+      data: [
+        { comboItemId, componentItemId: tableId, quantity: 1 },
+        { comboItemId, componentItemId: chairId, quantity: 2 },
+      ],
+    });
+    try {
+      const withCombo = new ExcelJS.Workbook();
+      await withCombo.xlsx.load(
+        (await importer.buildTemplate(
+          owner,
+          tenantId,
+        )) as unknown as ExcelJS.Buffer,
+      );
+      const comboSheet = withCombo.getWorksheet(ORDER_IMPORT_SHEET)!;
+      const at = (row: number, key: OrderImportColumnKey) =>
+        comboSheet
+          .getRow(row)
+          .getCell(ORDER_IMPORT_COLUMNS.findIndex((c) => c.key === key) + 1)
+          .value;
+      const comboSku = `OI-${comboItemId.slice(0, 8)}`;
+      expect(at(5, 'sku')).toBe(comboSku);
+      expect([at(6, 'comboParent'), at(7, 'comboParent')]).toEqual([
+        comboSku,
+        comboSku,
+      ]);
+      expect([at(6, 'sku'), at(7, 'sku')].sort()).toEqual(
+        [table(), chair()].sort(),
+      );
+    } finally {
+      // Combo chỉ dùng cho test này: các test sau không được thấy nó.
+      await prisma.productItem.delete({ where: { id: comboItemId } });
+      await prisma.product.delete({ where: { id: comboProductId } });
+    }
 
     // Nhập nguyên file mẫu: các dòng mẫu bị từ chối, không có đơn nào được tạo.
     const before = await orderCount();
@@ -235,7 +307,7 @@ describe('POST /orders/import – OrderImportService', () => {
         originalname: 'mau.xlsx',
       } as Express.Multer.File),
     ).rejects.toMatchObject({
-      response: { code: ErrorCode.ORDER_IMPORT_ROWS_INVALID, errorCount: 3 },
+      response: { code: ErrorCode.ORDER_IMPORT_ROWS_INVALID, errorCount: 6 },
     });
     expect(await orderCount()).toBe(before);
   });

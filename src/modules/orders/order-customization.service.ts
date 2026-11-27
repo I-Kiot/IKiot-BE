@@ -16,7 +16,7 @@ import {
   OrderStatus,
 } from '../../common/constants/order-status';
 import { ProductionRequestStatus } from '../../common/constants/production-request-status';
-import { generateReference } from '../../common/utils/reference-generator';
+import { customSkuOf } from './custom-sku';
 import { recordPriceChange } from '../products/product-price-history';
 import { ErrorCode } from '../../common/errors/error-codes';
 import type { AuthUser } from '../../common/types/auth-user.type';
@@ -311,10 +311,7 @@ export class OrderCustomizationService {
         orderBy: { position: 'asc' },
       });
       // Sinh SKU và mã hàng riêng cho hàng may đo.
-      const customCode = generateReference(
-        `${item.sku ?? item.productCode}-C`,
-        3,
-      );
+      const customCode = customSkuOf(item.sku ?? item.productCode);
       const custom = await tx.productItem.create({
         data: {
           tenantId,

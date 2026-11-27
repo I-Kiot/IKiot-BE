@@ -59,6 +59,8 @@ export interface OrderImportItem {
   attributes: { id: string; name: string; unit: string | null }[];
   /** Giá trị của SKU theo từng thuộc tính (attributeId → giá trị). */
   attributeValues: Map<string, string>;
+  /** Chỉ cho COMBO: id các món lá (đã mở hết combo lồng), để kiểm SKU của dòng phụ làm riêng. */
+  comboLeafIds?: ReadonlySet<string>;
 }
 
 export interface ParsedOrder {
@@ -148,6 +150,14 @@ export function dateOf(value: CellValue): string | null {
   return date.toISOString().slice(0, 10);
 }
 
+interface DraftLine {
+  sku: string;
+  row: number;
+  item: CreateOrderItemDto | null;
+  /** Món đã có dòng phụ: id món → số dòng. */
+  parts: Map<string, number>;
+}
+
 interface Draft {
   group: string;
   rows: number[];
@@ -155,6 +165,10 @@ interface Draft {
   fields: Partial<Record<OrderImportColumnKey, { text: string; row: number }>>;
   values: Partial<Record<OrderImportColumnKey, CellValue>>;
   items: CreateOrderItemDto[];
+  /** Dòng hàng chính theo thứ tự file, để dòng phụ tìm dòng combo phía trên nó; `item` null = dòng hỏng. */
+  lines: DraftLine[];
+  /** Có dòng hàng (chính hoặc phụ) đọc lỗi: lỗi đã ghi, đơn không dựng. */
+  broken: boolean;
   /** Tiền hàng sau giảm từng dòng, làm tròn như `OrderPricingService.lineTotalOf`; nền của giảm giá đơn theo %. */
   subtotal: number;
 }
@@ -195,6 +209,8 @@ export function parseOrderImportRows(
         fields: {},
         values: {},
         items: [],
+        lines: [],
+        broken: false,
         subtotal: 0,
       };
       drafts.set(groupKey, draft);
@@ -219,10 +235,24 @@ export function parseOrderImportRows(
       }
     }
 
+    if (textOf(cells.comboParent)) {
+      if (!readComponentRow(cells, rowNumber, draft, lookups, fail)) {
+        draft.broken = true;
+      }
+      continue;
+    }
     const line = readLine(cells, rowNumber, lookups, fail);
+    draft.lines.push({
+      sku: textOf(cells.sku),
+      row: rowNumber,
+      item: line?.item ?? null,
+      parts: new Map(),
+    });
     if (line) {
       draft.items.push(line.item);
       draft.subtotal += line.total;
+    } else {
+      draft.broken = true;
     }
   }
 
@@ -342,6 +372,103 @@ function readLine(
   };
 }
 
+const LINE_ONLY_KEYS: readonly OrderImportColumnKey[] = [
+  'quantity',
+  'unitPrice',
+  'lineDiscount',
+];
+
+/**
+ * Dòng phụ làm riêng một món trong combo: cột "Thuộc combo" ghi SKU của combo, SKU là món lá của combo đó. Gắn vào
+ * dòng combo gần nhất phía trên trong cùng đơn thành một phần tử `componentCustomizations`, đúng khối mà hộp thoại làm
+ * riêng từng món của form gửi; dòng phụ không thêm dòng hàng, không cộng tiền. `false` = có lỗi (đã ghi).
+ */
+function readComponentRow(
+  cells: OrderImportRow['cells'],
+  row: number,
+  draft: Draft,
+  lookups: OrderImportLookups,
+  fail: Fail,
+): boolean {
+  const parentSku = textOf(cells.comboParent);
+  const parent = draft.lines
+    .slice()
+    .reverse()
+    .find((line) => normalizeName(line.sku) === normalizeName(parentSku));
+  if (!parent) {
+    fail(
+      row,
+      'comboParent',
+      `Không thấy dòng combo "${parentSku}" phía trên trong đơn "${draft.group}" - dòng phụ phải nằm dưới dòng combo của nó, cùng mã nhóm đơn`,
+    );
+    return false;
+  }
+  // Dòng combo hỏng đã có lỗi riêng; khỏi báo thêm cho dòng phụ của nó.
+  if (!parent.item) return false;
+  const combo = lookups.items.get(parent.sku);
+  if (combo?.itemType !== ProductItemType.COMBO || !combo.comboLeafIds) {
+    fail(
+      row,
+      'comboParent',
+      `"${parentSku}" (dòng ${parent.row}) không phải combo - cột Thuộc combo chỉ dùng cho dòng phụ của combo`,
+    );
+    return false;
+  }
+
+  let ok = true;
+  for (const key of LINE_ONLY_KEYS) {
+    if (textOf(cells[key])) {
+      fail(
+        row,
+        key,
+        `Dòng phụ của combo để trống ${label(key)} - lấy theo dòng combo (dòng ${parent.row})`,
+      );
+      ok = false;
+    }
+  }
+
+  const sku = textOf(cells.sku);
+  const component = sku ? lookups.items.get(sku) : undefined;
+  if (!sku) {
+    fail(row, 'sku', 'SKU của món trong combo không được để trống');
+    return false;
+  }
+  if (!component) {
+    fail(row, 'sku', `Không tìm thấy mặt hàng có SKU "${sku}"`);
+    return false;
+  }
+  if (!combo.comboLeafIds.has(component.id)) {
+    fail(row, 'sku', `"${sku}" không nằm trong combo "${parentSku}"`);
+    return false;
+  }
+  const earlier = parent.parts.get(component.id);
+  if (earlier !== undefined) {
+    fail(
+      row,
+      'sku',
+      `Món "${sku}" đã có dòng phụ ở dòng ${earlier} cho cùng dòng combo - gộp thông số vào một dòng`,
+    );
+    return false;
+  }
+  if (!textOf(cells.customSpecs) && !textOf(cells.customNote)) {
+    fail(
+      row,
+      'customSpecs',
+      'Dòng phụ của combo phải có Thông số làm riêng hoặc Ghi chú làm riêng',
+    );
+    return false;
+  }
+  const customization = readCustomization(cells, row, component, fail);
+  if (!customization || !ok) return false;
+
+  parent.parts.set(component.id, row);
+  parent.item.componentCustomizations = [
+    ...(parent.item.componentCustomizations ?? []),
+    { productItemId: component.id, customization },
+  ];
+  return true;
+}
+
 /** Tách "Tên: giá trị; Tên: giá trị" (dấu ; hoặc xuống dòng) thành từng cặp; lỗi viết sẵn cho người sửa file. */
 export function splitCustomSpecs(text: string): {
   specs: { name: string; value: string }[];
@@ -391,7 +518,7 @@ function readCustomization(
       row,
       specText ? 'customSpecs' : 'customNote',
       item.itemType === ProductItemType.COMBO
-        ? 'Dòng combo không làm riêng được từ file - nhập combo rồi làm riêng từng món trên màn hình đơn'
+        ? 'Dòng combo không tự làm riêng được - thêm dòng phụ cho từng món cần làm riêng (cột Thuộc combo ghi SKU của combo này)'
         : 'Dịch vụ không làm riêng được',
     );
     return null;
@@ -658,15 +785,14 @@ function buildOrder(
     );
   }
   // Tiền hàng chỉ đủ khi mọi dòng đọc được; dòng hỏng đã có lỗi riêng nên khỏi so giảm giá đơn với một tổng thiếu.
-  const orderDiscount =
-    draft.items.length === draft.rows.length
-      ? readOrderDiscount(
-          raw('orderDiscount'),
-          rowOf('orderDiscount'),
-          draft.subtotal,
-          failOrder,
-        )
-      : undefined;
+  const orderDiscount = !draft.broken
+    ? readOrderDiscount(
+        raw('orderDiscount'),
+        rowOf('orderDiscount'),
+        draft.subtotal,
+        failOrder,
+      )
+    : undefined;
   const deposit = readAmount(
     raw('deposit'),
     'deposit',
@@ -692,7 +818,7 @@ function buildOrder(
     );
   }
 
-  if (draft.items.length !== draft.rows.length || errorsBefore.count > 0) {
+  if (draft.broken || errorsBefore.count > 0) {
     // Đơn có dòng hỏng hoặc thông tin đơn sai: lỗi đã được ghi, không dựng đơn.
     return null;
   }

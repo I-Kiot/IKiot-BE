@@ -48,7 +48,15 @@ const lookups: OrderImportLookups = {
         ]),
       },
     ],
-    ['COMBO', { ...item('I5', 3_000_000), itemType: 'COMBO' }],
+    [
+      'COMBO',
+      {
+        ...item('I5', 3_000_000),
+        itemType: 'COMBO',
+        comboLeafIds: new Set(['I4', 'I1', 'I6']),
+      },
+    ],
+    ['LAP-DAT', { ...item('I6', 200_000), itemType: 'SERVICE' }],
   ]),
   customersByPhone: new Map([
     ['0912345678', { id: 'C1', name: 'Trần Thị B', phone: '0912345678' }],
@@ -360,7 +368,117 @@ describe('custom-made lines', () => {
     );
     expect(combo.orders).toEqual([]);
     expect(combo.errors[0].column).toBe('Ghi chú làm riêng');
-    expect(combo.errors[0].message).toMatch(/combo không làm riêng được/);
+    expect(combo.errors[0].message).toMatch(/thêm dòng phụ/);
+  });
+});
+
+describe('combo component sub-rows', () => {
+  beforeEach(() => {
+    n = 1;
+  });
+  const parse = (...sub: OrderImportRow['cells'][]) => {
+    n = 1;
+    return parseOrderImportRows(
+      [
+        row({ group: 'K', ...head, sku: 'COMBO', quantity: 2 }),
+        ...sub.map((cells) =>
+          row({ group: 'K', comboParent: 'COMBO', ...cells }),
+        ),
+      ],
+      lookups,
+    );
+  };
+
+  it('attaches each sub-row to the combo line above as a component customization', () => {
+    const { orders, errors } = parse(
+      { sku: 'BAN', customSpecs: 'Màu: Trắng; Đệm: Mút' },
+      { sku: 'SKU-1', customNote: 'Sơn mờ' },
+    );
+    expect(errors).toEqual([]);
+    expect(orders[0].rows).toEqual([2, 3, 4]);
+    // Dòng phụ không thêm dòng hàng: đơn vẫn một dòng combo.
+    expect(orders[0].dto.items).toEqual([
+      {
+        productItemId: 'I5',
+        quantity: 2,
+        componentCustomizations: [
+          {
+            productItemId: 'I4',
+            customization: {
+              specs: [
+                { attributeId: 'A-COLOR', name: 'Màu', value: 'Trắng' },
+                { name: 'Đệm', value: 'Mút' },
+              ],
+            },
+          },
+          { productItemId: 'I1', customization: { note: 'Sơn mờ' } },
+        ],
+      },
+    ]);
+  });
+
+  it('attaches to the nearest matching combo line when the same combo appears twice', () => {
+    n = 1;
+    const { orders, errors } = parseOrderImportRows(
+      [
+        row({ group: 'K', ...head, sku: 'COMBO', quantity: 1 }),
+        row({ group: 'K', sku: 'COMBO', quantity: 1 }),
+        row({ group: 'K', comboParent: 'combo', sku: 'BAN', customNote: 'x' }),
+      ],
+      lookups,
+    );
+    expect(errors).toEqual([]);
+    expect(orders[0].dto.items[0]).not.toHaveProperty(
+      'componentCustomizations',
+    );
+    expect(orders[0].dto.items[1].componentCustomizations).toHaveLength(1);
+  });
+
+  it('reports a sub-row with no combo above it or naming a non-combo line', () => {
+    n = 1;
+    const { orders, errors } = parseOrderImportRows(
+      [
+        row({
+          group: 'K',
+          ...head,
+          comboParent: 'COMBO',
+          sku: 'BAN',
+          customNote: 'x',
+        }),
+        row({ group: 'K', sku: 'SKU-1', quantity: 1 }),
+        row({ group: 'K', comboParent: 'SKU-1', sku: 'BAN', customNote: 'x' }),
+      ],
+      lookups,
+    );
+    expect(orders).toEqual([]);
+    expect(errors.map((e) => [e.row, e.column])).toEqual([
+      [2, 'Thuộc combo'],
+      [4, 'Thuộc combo'],
+    ]);
+    expect(errors[0].message).toMatch(
+      /Không thấy dòng combo "COMBO" phía trên/,
+    );
+    expect(errors[1].message).toMatch(/không phải combo/);
+  });
+
+  it('refuses amounts, foreign SKUs, duplicates, services and empty specs on a sub-row', () => {
+    const { orders, errors } = parse(
+      { sku: 'BAN', quantity: 1, unitPrice: 5, customNote: 'x' },
+      { sku: 'SKU-2', customNote: 'x' },
+      { sku: 'SKU-1', customNote: 'x' },
+      { sku: 'SKU-1', customNote: 'y' },
+      { sku: 'LAP-DAT', customNote: 'x' },
+      { sku: 'BAN' },
+    );
+    expect(orders).toEqual([]);
+    expect(errors.map((e) => [e.row, e.column, e.message])).toEqual([
+      [3, 'Số lượng', expect.stringMatching(/để trống Số lượng/)],
+      [3, 'Đơn giá', expect.stringMatching(/để trống Đơn giá/)],
+      [4, 'SKU', '"SKU-2" không nằm trong combo "COMBO"'],
+      [6, 'SKU', expect.stringMatching(/đã có dòng phụ ở dòng 5/)],
+      [7, 'Ghi chú làm riêng', 'Dịch vụ không làm riêng được'],
+      [8, 'Thông số làm riêng', expect.stringMatching(/phải có Thông số/)],
+    ]);
   });
 });
 
