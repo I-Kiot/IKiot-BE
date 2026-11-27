@@ -19,8 +19,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
-    "deploy:migrate": "prisma migrate deploy",
-    "seed:demo": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config prisma/demo/jest.config.json --runInBand"
+    "deploy:migrate": "prisma migrate deploy"
   },
   "dependencies": {
     "@google/genai": "^2.19.0",
