@@ -11,8 +11,21 @@ import {
   Post,
   Put,
   Query,
+  StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiProduces,
+  ApiTags,
+} from '@nestjs/swagger';
+import { OrderImportService } from './import/order-import.service';
+import { MAX_ORDER_IMPORT_BYTES } from './import/order-import.columns';
+import { XLSX_MIME } from '../products/import/product-import.service';
 import { OrderService } from './orders.service';
 import { SepayOrderService } from './sepay-order.service';
 import { sepayTransferFromPayload } from './sepay-qr';
@@ -79,7 +92,47 @@ export class OrderController {
     private readonly customizations: OrderCustomizationService,
     private readonly remittances: OrderRemittanceService,
     private readonly pickups: OrderPickupService,
+    private readonly importer: OrderImportService,
   ) {}
+
+  /** File mẫu nhập đơn: dropdown chi nhánh, nhân viên lấy từ dữ liệu cửa hàng. Khai báo trên `:id`. */
+  @Permissions('orders', 'create')
+  @Get('import/template')
+  @ApiProduces(XLSX_MIME)
+  async importTemplate(@CurrentUser() user: AuthUser) {
+    const buffer = await this.importer.buildTemplate(
+      user,
+      requireTenantId(user),
+    );
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="mau-nhap-don-hang.xlsx"',
+    });
+  }
+
+  /** Nhập đơn tay từ file mẫu: cả file đúng mới tạo, mỗi đơn qua đúng bước kiểm của `POST /orders`. */
+  @Permissions('orders', 'create')
+  @Post('import')
+  @HttpCode(HttpStatus.CREATED)
+  @EmitsChange(OrderChanges.imported)
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_ORDER_IMPORT_BYTES + 1 },
+    }),
+  )
+  importOrders(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.importer.import(user, requireTenantId(user), file);
+  }
 
   /** Đơn tay (A-2): sinh ra ở CONFIRMED, có người phụ trách (contract §2). */
   @Permissions('orders', 'create')

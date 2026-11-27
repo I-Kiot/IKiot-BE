@@ -31,6 +31,8 @@ export const ChangeAction = {
   // Đơn hàng
   ORDER_CREATED: 'ORDER_CREATED',
   ORDER_POS_CREATED: 'ORDER_POS_CREATED',
+  /** Nhập nhiều đơn một lần từ Excel: sự kiện gộp, không có một đơn chủ thể. */
+  ORDERS_IMPORTED: 'ORDERS_IMPORTED',
   ORDER_CANCELLED: 'ORDER_CANCELLED',
   ORDER_EDITED: 'ORDER_EDITED',
   ORDER_ASSIGNEE_CHANGED: 'ORDER_ASSIGNEE_CHANGED',

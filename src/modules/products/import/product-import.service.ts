@@ -3,6 +3,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { ValidationError } from 'class-validator';
 import * as ExcelJS from 'exceljs';
+import { cellValue } from '../../../common/excel/import-cells';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import { ProductStatus } from '../../../common/constants/product-status';
@@ -30,7 +31,6 @@ import {
   textOf,
 } from './product-import.parser';
 import type {
-  CellValue,
   ImportError,
   ImportLookups,
   ImportRow,
@@ -615,39 +615,6 @@ function fileInvalid(message: string): BadRequestException {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-/** Giá trị thật của một ô exceljs: công thức lấy kết quả, chữ định dạng / hyperlink lấy chữ. */
-function cellValue(cell: ExcelJS.Cell): CellValue {
-  const value = cell.value;
-  if (value === null || value === undefined) return null;
-  if (
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean' ||
-    value instanceof Date
-  ) {
-    return value;
-  }
-  if ('richText' in value) return value.richText.map((r) => r.text).join('');
-  if ('formula' in value || 'sharedFormula' in value) {
-    const result = (value as ExcelJS.CellFormulaValue).result;
-    if (result === undefined || result === null) return null;
-    if (typeof result === 'object' && !(result instanceof Date)) return null; // #N/A...
-    return result;
-  }
-  if ('hyperlink' in value) {
-    const text = value.text as unknown;
-    if (typeof text === 'string') return text;
-    if (text && typeof text === 'object' && 'richText' in text) {
-      return (text as ExcelJS.CellRichTextValue).richText
-        .map((r) => r.text)
-        .join('');
-    }
-    return value.hyperlink;
-  }
-  if ('error' in value) return null;
-  return textOf(String(value));
 }
 
 function flattenValidation(errors: ValidationError[]): string[] {

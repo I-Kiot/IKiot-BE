@@ -806,3 +806,19 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng / còn lại**
 - Chưa có route sửa một chuỗi: dừng rồi tạo lại. Chưa có route liệt kê chuỗi.
 - Migration chưa chạy trên dữ liệu dev / prod thật (bước gộp ca chỉ khác loại chưa gặp dữ liệu thật).
+
+
+## 2026-11-27 - Nhập đơn hàng từ Excel
+
+**Đã làm**
+- BE `GET /orders/import/template`, `POST /orders/import` (`orders:create`): file mẫu theo cửa hàng (dropdown chi nhánh, nhân viên "Tên - SĐT", hình thức nhận hàng, ưu tiên, hình thức cọc; trang Hướng dẫn có ví dụ). Mỗi dòng một mặt hàng, các dòng cùng "Mã nhóm đơn" là một đơn. Cả file đúng mới tạo; lỗi `ORDER_IMPORT_FILE_INVALID` / `ORDER_IMPORT_ROWS_INVALID` kèm `errors` theo dòng.
+- `ManualOrderService.create` tách thành `prepare` (kiểm, không ghi) + `write(tx)`; import chạy `prepare` cho mọi đơn rồi ghi tất cả trong một transaction, nên quy tắc tạo đơn tay chỉ có một bản. Hành vi `POST /orders` không đổi (e2e `order-create` vẫn pass).
+- Khách khớp theo SĐT hoặc tạo mới theo tên; giao tận nơi bỏ trống người nhận / SĐT thì lấy theo khách; tiền cọc ghi Payment + sổ thu chi như form. Không nhập khuyến mãi, đơn may đo.
+- Sự kiện realtime `ORDERS_IMPORTED` (gộp, liệt kê id các đơn). Cảnh báo thiếu hàng chụp một lần cho cả file.
+- Hàm đọc ô Excel chuyển sang `src/common/excel/import-cells.ts` (import hàng hoá re-export, unit 19/19 vẫn pass).
+- FE: nút "Nhập file" bên phải "Tạo đơn" ở màn Đơn hàng; hộp thoại dùng `ImportFileDialog` chung (hộp thoại nhập hàng hoá chuyển sang dùng nó); danh sách tải lại sau khi nhập.
+- Test: `order-import.parser.spec` (6), e2e `order-import` (6: file mẫu, tạo 2 đơn có cọc vào sổ, khớp khách cũ, một đơn sai thì không tạo gì kể cả khách, nhân viên chỉ nhập chi nhánh mình, file sai mẫu). Toàn bộ e2e 497/502 (5 lỗi sẵn ở `workshop-accept`).
+
+**Chưa kiểm chứng / còn lại**
+- Chưa mở trên trình duyệt; chưa thử file thật do người dùng điền trong Excel / Google Sheets (ô ngày, số điện thoại dạng số).
+

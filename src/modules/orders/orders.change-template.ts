@@ -71,8 +71,36 @@ const orderSpec = (
 
 const STOCK = [ChangeResource.INVENTORIES] as const;
 
+/** Nhập đơn từ Excel: một sự kiện cho cả file, liệt kê id các đơn; `code` mang số đơn cho câu thông báo. */
+function importTarget({ body }: ChangeExtractContext): ChangeTarget {
+  const data =
+    typeof body === 'object' && body !== null && 'data' in body
+      ? body.data
+      : null;
+  const ids =
+    typeof data === 'object' && data !== null && 'orderIds' in data
+      ? data.orderIds
+      : null;
+  const orderIds = Array.isArray(ids)
+    ? ids.filter((id): id is string => typeof id === 'string')
+    : [];
+  return {
+    subjectId: null,
+    code: String(orderIds.length),
+    related: { [ChangeResource.ORDERS]: orderIds },
+  };
+}
+
 export const OrderChanges = {
   created: orderSpec(ChangeAction.ORDER_CREATED, 'tạo {c}', STOCK),
+  imported: {
+    action: ChangeAction.ORDERS_IMPORTED,
+    subject: ChangeResource.ORDERS,
+    also: STOCK,
+    extract: importTarget,
+    summary: ({ actor, code }) =>
+      `${actor} vừa nhập ${code ?? 'nhiều'} đơn từ Excel`,
+  } satisfies ChangeSpec,
   posCreated: orderSpec(
     ChangeAction.ORDER_POS_CREATED,
     'bán {c} tại quầy',
