@@ -24,6 +24,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { OrderImportService } from './import/order-import.service';
+import { OrderExportService } from './export/order-export.service';
+import { ExportOrdersDto } from './dto/export-orders.dto';
 import { MAX_ORDER_IMPORT_BYTES } from './import/order-import.columns';
 import { XLSX_MIME } from '../products/import/product-import.service';
 import { OrderService } from './orders.service';
@@ -93,6 +95,7 @@ export class OrderController {
     private readonly remittances: OrderRemittanceService,
     private readonly pickups: OrderPickupService,
     private readonly importer: OrderImportService,
+    private readonly exporter: OrderExportService,
   ) {}
 
   /** File mẫu nhập đơn: dropdown chi nhánh, nhân viên lấy từ dữ liệu cửa hàng. Khai báo trên `:id`. */
@@ -108,6 +111,36 @@ export class OrderController {
       type: XLSX_MIME,
       disposition: 'attachment; filename="mau-nhap-don-hang.xlsx"',
     });
+  }
+
+  /** Xuất đơn theo khuôn file mẫu nhập, cùng bộ lọc với `GET /orders` (bỏ phân trang). Khai báo trên `:id`. */
+  @Permissions('orders', 'read')
+  @Get('export')
+  @ApiProduces(XLSX_MIME)
+  async exportOrders(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ExportOrdersDto,
+  ) {
+    const buffer = await this.exporter.export(
+      user,
+      requireTenantId(user),
+      query,
+    );
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="don-hang.xlsx"',
+    });
+  }
+
+  /** Các dòng của file xuất dạng JSON, đúng thứ tự cột file mẫu, để nút "Sao chép" dán thẳng vào file mẫu. */
+  @Permissions('orders', 'read')
+  @Get('export/rows')
+  async exportRows(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ExportOrdersDto,
+  ) {
+    const rows = await this.exporter.cells(user, requireTenantId(user), query);
+    return { data: { rows } };
   }
 
   /** Nhập đơn tay từ file mẫu: cả file đúng mới tạo, mỗi đơn qua đúng bước kiểm của `POST /orders`. */

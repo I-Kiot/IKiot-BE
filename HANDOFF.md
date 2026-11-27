@@ -904,3 +904,47 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng**
 - Chưa thử trên trình duyệt.
 - Màn chi tiết đơn đã hiện thông số trên dòng con chưa thì chưa xem lại; dòng con làm riêng sau khi tạo đơn qua route PUT thì vốn đã có.
+
+## 2026-11-27 - Xuất Excel hàng hoá và đơn hàng theo khuôn file mẫu nhập
+
+**Đã làm**
+- BE `POST /products/export` (quyền `products:read`, body `{ ids?, productType? }`): file cùng khuôn file mẫu nhập hàng hoá, đủ 3 trang "Hàng hóa" / "Hướng dẫn" / "Danh sách", cùng tiêu đề, màu, ghi chú, dropdown. Mỗi SKU một dòng; danh mục ghi dạng "Cha > Con", NCC cách nhau bằng `; `, tối đa 3 thuộc tính (tên / đơn vị / giá trị). Dùng POST vì danh sách hàng đã tích có thể dài; `@SkipAudit`.
+- BE `GET /orders/export` (quyền `orders:read`): cùng query với `GET /orders` (bỏ phân trang) + `ids` (đơn đã tích, phẩy). File cùng khuôn file mẫu nhập đơn, không có đơn mẫu. Mỗi dòng hàng một dòng, "Mã nhóm đơn" là mã đơn, thông tin đơn chỉ ở dòng đầu. Người phụ trách / NV bán ghi "Họ tên - SĐT" như dropdown. Khách vãng lai để trống. Ngày giao dạng dd/mm/yyyy. Dòng làm riêng ghi "Thông số làm riêng" dạng "Tên: giá trị đơn vị; ...", dòng cũ chưa có specs thì lấy Dài / Rộng / Cao / Chất liệu / Màu / Mã vải.
+- `ProductImportService.buildFile(tenantId, rows)` và `OrderImportService.buildFile(user, tenantId, rows?)`: file mẫu và file xuất dùng chung một code dựng; dropdown phủ đến dòng dữ liệu cuối. `staffLabel` tách ra dùng chung.
+- `OrderReadService.matchingIds`: id mọi đơn khớp `listWhere`, đúng thứ tự `sort`, kể cả lọc `stockSummary` / `attention=SHORT` (tách `matchStockSummary` dùng chung với `listByStockSummary`).
+- Mã lỗi mới `EXCEL_EXPORT_TOO_LARGE`: quá 20.000 dòng, hoặc quá 5.000 đơn.
+- FE: nút "Xuất file" có sẵn ở màn Hàng hóa (trước không làm gì) giờ gọi API. Có tích thì xuất hàng đã tích ("Xuất N mục"), không thì xuất mọi hàng của màn. Màn Combo không hiện nút vì file nhập không có combo. Màn Đơn hàng có thêm nút "Xuất file" cạnh "Nhập file": có tích thì xuất các đơn đó, không thì xuất mọi đơn khớp bộ lọc đang xem. `blobErrorCode` đọc mã lỗi từ thân lỗi dạng Blob.
+
+**Quyết định**
+- Xuất đúng các cột của file nhập, không thêm cột (trạng thái, ngày tạo...). Mục đích là sửa rồi nhập lại.
+- Hàng hoá: bỏ SKU riêng sinh ra khi làm riêng dòng đơn (`orderItems some isCustom`) và hàng đã xoá (DISCONTINUED). Combo không xuất.
+- Đơn: luôn bỏ đơn bán tại quầy (`excludePos`). Bỏ món con của combo (chỉ dòng combo, như khi nhập bằng SKU combo). Cột "Giảm giá đơn" ghi số tiền `discountValue`, kể cả khi giảm từ khuyến mãi. Dòng làm riêng ghi SKU riêng của dòng (không lưu SKU gốc).
+- Đơn đã tích vẫn phải khớp bộ lọc và phạm vi chi nhánh.
+
+**Đã kiểm chứng**
+- BE `tsc`, lint, build, `check-permissions` sạch. Unit `orders` / `products` / `common` chỉ lỗi 2 suite `*.excel.spec.ts` có sẵn.
+- e2e mới `excel-export` (3/3 trên `ikiot_e2e`, đã `migrate deploy` 2 migration còn thiếu):
+  - xuất đơn đúng tiêu đề / giá trị; nhập lại nguyên file vừa xuất ra đơn cùng tổng tiền;
+  - lọc `ids` + bộ lọc;
+  - xuất hàng hoá đúng từng ô, bỏ SKU làm riêng, lọc theo loại / `ids`.
+- `order-import` 7/7, `product-import` qua. Chạy chung với `excel-export` thì test file mẫu của `order-import` lỗi. Đó là lỗi có sẵn: test chờ SKU ghế ở dòng mẫu, nhưng SKU sinh ngẫu nhiên.
+- FE `tsc` và eslint các file đã sửa sạch.
+
+**Chưa kiểm chứng / còn lại**
+- Chưa thử trên trình duyệt, chưa gọi route qua HTTP thật (mới test tầng service).
+- Nhập lại file hàng hoá vừa xuất sẽ báo trùng tên / SKU (file nhập chỉ tạo hàng mới). Chưa có "cập nhật hàng hoá từ file".
+- Màn Hàng hóa lọc ở client, nên không tích gì thì xuất toàn bộ chứ không theo ô tìm / bộ lọc đang gõ.
+
+## 2026-11-27 - Nút "Sao chép" đơn hàng theo cột file mẫu nhập
+
+**Đã làm**
+- Trước đây nút "Sao chép" ở màn Đơn hàng chép theo bộ cột riêng: 18 cột, mỗi đơn một dòng. Bộ cột này không khớp file mẫu nhập đơn, nên dán vào file mẫu bị lệch cột.
+- BE thêm `GET /orders/export/rows` (quyền `orders:read`, cùng query với `/orders/export`). Route trả `{ rows }`: mỗi dòng là mảng ô theo đúng thứ tự `ORDER_IMPORT_COLUMNS`. Dữ liệu dựng bằng cùng code với file xuất (`OrderExportService.sheetRows`).
+- FE `orders-copy-button.tsx` gọi route này với các đơn đã tích. Đã xoá `shared/orders-copy.ts` (bộ cột cũ, không còn chỗ nào dùng).
+
+**Đã kiểm chứng**
+- e2e `excel-export` thêm 1 test: các ô chép ra trùng từng ô với file xuất. Suite qua 4/4.
+- BE `tsc` / lint sạch, FE `tsc` / lint sạch. Route đã có trên server dev: gọi không token trả 401.
+
+**Chưa kiểm chứng**
+- Chưa thử dán trên trình duyệt vào Excel / Google Sheets.

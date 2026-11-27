@@ -15,6 +15,7 @@ import {
   headerKey,
   textOf,
 } from '../../../common/excel/import-cells';
+import type { CellValue } from '../../../common/excel/import-cells';
 import { profileFullName } from '../../../common/utils/user-profile';
 import type { AuthUser } from '../../../common/types/auth-user.type';
 import { CreateOrderDto } from '../dto/create-order.dto';
@@ -84,6 +85,20 @@ const PREPARE_MESSAGES: Partial<Record<string, string>> = {
   [ErrorCode.CUSTOMER_NOT_FOUND]: 'Không tìm thấy khách hàng',
 };
 
+/** Một dòng của trang "Đơn hàng": giá trị theo khoá cột. */
+export type OrderSheetRow = Partial<
+  Record<OrderImportColumn['key'], CellValue>
+>;
+
+/** Nhãn nhân viên trong cột Người phụ trách / Nhân viên bán hàng: "Họ tên - SĐT", bộ đọc nhận đúng dạng này. */
+export function staffLabel(user: {
+  phoneNumber: string;
+  profileFirstName?: string | null;
+  profileLastName?: string | null;
+}): string {
+  return `${profileFullName(user) || 'Nhân viên'} - ${user.phoneNumber}`;
+}
+
 export interface OrderImportResult {
   message: string;
   data: { orderCount: number; orderIds: string[]; codes: string[] };
@@ -104,7 +119,16 @@ export class OrderImportService {
 
   // ─── File mẫu ───
 
-  async buildTemplate(user: AuthUser, tenantId: string): Promise<Buffer> {
+  buildTemplate(user: AuthUser, tenantId: string): Promise<Buffer> {
+    return this.buildFile(user, tenantId);
+  }
+
+  /** File cùng khuôn với file mẫu; có `rows` (xuất file) thì điền các dòng đó thay cho đơn mẫu. */
+  async buildFile(
+    user: AuthUser,
+    tenantId: string,
+    rows?: OrderSheetRow[],
+  ): Promise<Buffer> {
     const [branches, staff, items] = await Promise.all([
       this.prisma.branch.findMany({
         where: {
@@ -143,8 +167,6 @@ export class OrderImportService {
         take: 3,
       }),
     ]);
-    const staffLabel = (s: (typeof staff)[number]) =>
-      `${profileFullName(s) || 'Nhân viên'} - ${s.phoneNumber}`;
     const lists: Record<OrderImportList, string[]> = {
       branches: [...new Set(branches.map((b) => b.location.name))].sort(),
       staff: staff.map(staffLabel).sort(),
@@ -162,7 +184,12 @@ export class OrderImportService {
     const listSheet = workbook.addWorksheet(ORDER_LISTS_SHEET);
 
     const ranges = this.writeLists(listSheet, lists);
-    this.writeDataSheet(sheet, ranges);
+    this.writeDataSheet(sheet, ranges, rows?.length ?? 0);
+    this.writeGuide(guide);
+    if (rows) {
+      this.writeRows(sheet, rows);
+      return Buffer.from(await workbook.xlsx.writeBuffer());
+    }
 
     // Đơn mẫu bằng dữ liệu thật của cửa hàng: chi nhánh đầu, người phụ trách làm ở đó, SKU đang bán.
     const branch = branches[0];
@@ -175,7 +202,6 @@ export class OrderImportService {
       assignee: assignee ? staffLabel(assignee) : 'Tên nhân viên - SĐT',
       skus: items.map((item) => item.sku as string),
     });
-    this.writeGuide(guide);
     return Buffer.from(await workbook.xlsx.writeBuffer());
   }
 
@@ -215,7 +241,10 @@ export class OrderImportService {
   private writeDataSheet(
     sheet: ExcelJS.Worksheet,
     ranges: Partial<Record<OrderImportList, string>>,
+    dataRows: number,
   ): void {
+    // Dropdown phủ hết dòng dữ liệu đã điền, tối thiểu bằng giới hạn một lần nhập.
+    const lastRow = Math.max(MAX_ORDER_IMPORT_ROWS, dataRows) + 1;
     ORDER_IMPORT_COLUMNS.forEach((column, index) => {
       const col = index + 1;
       sheet.getColumn(col).width = column.width;
@@ -258,11 +287,23 @@ export class OrderImportService {
         errorTitle: column.header,
         error: 'Hãy chọn một giá trị trong danh sách.',
       };
-      for (let row = 2; row <= MAX_ORDER_IMPORT_ROWS + 1; row++) {
+      for (let row = 2; row <= lastRow; row++) {
         sheet.getCell(row, col).dataValidation = validation;
       }
     });
     sheet.getRow(1).height = 36;
+  }
+
+  /** Ghi dữ liệu từ dòng 2, theo đúng thứ tự cột của template. */
+  private writeRows(sheet: ExcelJS.Worksheet, rows: OrderSheetRow[]): void {
+    rows.forEach((values, index) => {
+      const row = sheet.getRow(index + 2);
+      ORDER_IMPORT_COLUMNS.forEach((column, col) => {
+        const value = values[column.key];
+        if (value === undefined || value === null || value === '') return;
+        row.getCell(col + 1).value = value;
+      });
+    });
   }
 
   /**

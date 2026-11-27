@@ -448,6 +448,32 @@ export class OrderReadService {
     where: Prisma.OrderWhereInput,
     query: QueryOrderJourneyDto,
   ): Promise<OrderListResult> {
+    const { matched, stockChecks } = await this.matchStockSummary(
+      tenantId,
+      where,
+      query,
+    );
+
+    const skip = skipFor(query.page, query.limit);
+    const pageIds = matched.slice(skip, skip + query.limit).map((o) => o.id);
+    const found = await this.prisma.order.findMany({
+      where: { id: { in: pageIds } },
+      include: ORDER_LIST_INCLUDE,
+    });
+    const byId = new Map(found.map((row) => [row.id, row]));
+    const rows = pageIds
+      .map((id) => byId.get(id))
+      .filter((row): row is OrderListRow => !!row);
+
+    return { rows, total: matched.length, stockChecks };
+  }
+
+  /** Đơn khớp `stockSummary` / `attention=SHORT`, đã sắp theo `sort`. */
+  private async matchStockSummary(
+    tenantId: string,
+    where: Prisma.OrderWhereInput,
+    query: QueryOrderJourneyDto,
+  ) {
     const candidates = await this.prisma.order.findMany({
       where,
       select: STOCK_SUMMARY_CANDIDATE_SELECT,
@@ -466,19 +492,42 @@ export class OrderReadService {
         return query.attention !== 'SHORT' || isShort(summary);
       })
       .sort(compareFor(query.sort));
+    return { matched, stockChecks };
+  }
 
-    const skip = skipFor(query.page, query.limit);
-    const pageIds = matched.slice(skip, skip + query.limit).map((o) => o.id);
-    const found = await this.prisma.order.findMany({
-      where: { id: { in: pageIds } },
-      include: ORDER_LIST_INCLUDE,
+  /** Id mọi đơn khớp bộ lọc của danh sách, đúng thứ tự đang hiện, bỏ phân trang (xuất file); `ids` thu hẹp về các đơn đã tích. */
+  async matchingIds(
+    user: AuthUser,
+    tenantId: string,
+    query: QueryOrderJourneyDto,
+    ids?: string[],
+  ): Promise<string[]> {
+    const filter = this.listWhere(user, tenantId, query);
+    const where: Prisma.OrderWhereInput = ids
+      ? { AND: [filter, { id: { in: ids } }] }
+      : filter;
+    if (query.stockSummary || query.attention === 'SHORT') {
+      const { matched } = await this.matchStockSummary(tenantId, where, query);
+      return matched.map((order) => order.id);
+    }
+    if (query.sort === 'priority') {
+      const result: string[] = [];
+      for (const priority of PRIORITY_SORT_ORDER) {
+        const rows = await this.prisma.order.findMany({
+          where: { AND: [where, { priority }] },
+          select: { id: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        result.push(...rows.map((row) => row.id));
+      }
+      return result;
+    }
+    const rows = await this.prisma.order.findMany({
+      where,
+      select: { id: true },
+      orderBy: orderByFor(query.sort),
     });
-    const byId = new Map(found.map((row) => [row.id, row]));
-    const rows = pageIds
-      .map((id) => byId.get(id))
-      .filter((row): row is OrderListRow => !!row);
-
-    return { rows, total: matched.length, stockChecks };
+    return rows.map((row) => row.id);
   }
 }
 

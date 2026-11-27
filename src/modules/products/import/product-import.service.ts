@@ -4,6 +4,7 @@ import { validate } from 'class-validator';
 import type { ValidationError } from 'class-validator';
 import * as ExcelJS from 'exceljs';
 import { cellValue } from '../../../common/excel/import-cells';
+import type { CellValue } from '../../../common/excel/import-cells';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import { ProductStatus } from '../../../common/constants/product-status';
@@ -23,7 +24,11 @@ import {
   headerKey,
   headerLabel,
 } from './product-import.columns';
-import type { ImportColumn, ImportList } from './product-import.columns';
+import type {
+  ImportColumn,
+  ImportColumnKey,
+  ImportList,
+} from './product-import.columns';
 import {
   buildNameIndex,
   normalizeName,
@@ -42,6 +47,9 @@ const MAX_REPORTED_ERRORS = 200;
 export const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+/** Một dòng của trang "Hàng hóa": giá trị theo khoá cột. */
+export type ProductSheetRow = Partial<Record<ImportColumnKey, CellValue>>;
+
 export interface ImportResult {
   message: string;
   data: { productCount: number; itemCount: number; productIds: string[] };
@@ -58,7 +66,12 @@ export class ProductImportService {
   // ─── File mẫu ───
 
   /** Template theo cửa hàng: dropdown danh mục, thương hiệu, NCC lấy từ dữ liệu hiện có. */
-  async buildTemplate(tenantId: string): Promise<Buffer> {
+  buildTemplate(tenantId: string): Promise<Buffer> {
+    return this.buildFile(tenantId, []);
+  }
+
+  /** File cùng khuôn với file mẫu, trang "Hàng hóa" điền sẵn `rows` (xuất file dùng để sửa rồi nhập lại). */
+  async buildFile(tenantId: string, rows: ProductSheetRow[]): Promise<Buffer> {
     const [categories, brands, suppliers] = await Promise.all([
       this.categoryLabels(tenantId),
       this.prisma.brand.findMany({
@@ -90,7 +103,8 @@ export class ProductImportService {
     const listSheet = workbook.addWorksheet(LISTS_SHEET);
 
     const listRanges = this.writeLists(listSheet, lists);
-    this.writeDataSheet(sheet, listRanges);
+    this.writeDataSheet(sheet, listRanges, rows.length);
+    this.writeRows(sheet, rows);
     this.writeGuide(guide);
 
     return Buffer.from(await workbook.xlsx.writeBuffer());
@@ -133,7 +147,10 @@ export class ProductImportService {
   private writeDataSheet(
     sheet: ExcelJS.Worksheet,
     listRanges: Partial<Record<ImportList, string>>,
+    dataRows: number,
   ): void {
+    // Dropdown phủ hết dòng dữ liệu đã điền, tối thiểu bằng giới hạn một lần nhập.
+    const lastRow = Math.max(MAX_IMPORT_ROWS, dataRows) + 1;
     IMPORT_COLUMNS.forEach((column, index) => {
       const col = index + 1;
       sheet.getColumn(col).width = column.width;
@@ -176,11 +193,23 @@ export class ProductImportService {
         errorTitle: column.header,
         error: 'Hãy chọn một giá trị trong danh sách.',
       };
-      for (let row = 2; row <= MAX_IMPORT_ROWS + 1; row++) {
+      for (let row = 2; row <= lastRow; row++) {
         sheet.getCell(row, col).dataValidation = validation;
       }
     });
     sheet.getRow(1).height = 36;
+  }
+
+  /** Ghi dữ liệu từ dòng 2, theo đúng thứ tự cột của template. */
+  private writeRows(sheet: ExcelJS.Worksheet, rows: ProductSheetRow[]): void {
+    rows.forEach((values, index) => {
+      const row = sheet.getRow(index + 2);
+      IMPORT_COLUMNS.forEach((column, col) => {
+        const value = values[column.key];
+        if (value === undefined || value === null || value === '') return;
+        row.getCell(col + 1).value = value;
+      });
+    });
   }
 
   private noteFor(column: ImportColumn): string {
@@ -571,7 +600,7 @@ export class ProductImportService {
   }
 
   /** Mọi danh mục của cửa hàng kèm đường dẫn "Cha > Con" - nạp một lần, đi cây trong bộ nhớ. */
-  private async categoryLabels(
+  async categoryLabels(
     tenantId: string,
   ): Promise<{ id: string; name: string; path: string }[]> {
     const rows = await this.prisma.category.findMany({
