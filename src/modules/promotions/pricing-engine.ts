@@ -45,7 +45,13 @@ export interface CartItem {
 
 export interface CartContext {
   branchId: string | null;
+  /** Khách thật của giỏ; null là khách vãng lai hoặc chưa có khách. */
   customerId: string | null;
+  /**
+   * Giỏ của một khách sẽ được tạo cùng đơn (chưa có id): chưa dùng lượt nào, nên khuyến mãi giới hạn theo khách vẫn
+   * áp được. Chỉ có nghĩa khi `customerId` null.
+   */
+  newCustomer?: boolean;
   subtotal: number;
   items: CartItem[];
 }
@@ -171,13 +177,15 @@ export function evaluateEligibility(
   }
   if (promotion.usageLimitPerCustomer !== null) {
     // Giới hạn theo khách vô nghĩa nếu không biết khách là ai, nên giỏ vãng lai bị loại thay vì cho qua.
-    if (!cart.customerId) {
+    // Khách mới (tạo cùng đơn) thì đã biết là ai và chưa dùng lượt nào.
+    if (!cart.customerId && !cart.newCustomer) {
       return {
         eligible: false,
-        reason: 'Cần chọn khách hàng để áp dụng khuyến mãi này',
+        reason:
+          'Khách vãng lai không dùng được khuyến mãi giới hạn lượt theo khách - chọn hoặc tạo khách hàng',
       };
     }
-    const used = customerUsageCounts[promotion.id] ?? 0;
+    const used = cart.customerId ? (customerUsageCounts[promotion.id] ?? 0) : 0;
     if (used >= promotion.usageLimitPerCustomer) {
       return {
         eligible: false,

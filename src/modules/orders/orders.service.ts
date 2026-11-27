@@ -82,6 +82,10 @@ import type { Inventory, Prisma } from '../../../generated/prisma/client';
 import { InvoiceService } from '../invoices/invoices.service';
 import { ErrorCode } from '../../common/errors/error-codes';
 import {
+  WALK_IN_CUSTOMER_CODE,
+  WALK_IN_CUSTOMER_NAME,
+} from '../../common/constants/walk-in-customer';
+import {
   BRANCH_NAME_SELECT,
   namedBranch,
 } from '../../common/dto/location-ref.dto';
@@ -92,9 +96,6 @@ import {
   userActor,
   type OrderEventActor,
 } from './order-events';
-
-const WALK_IN_CUSTOMER_CODE = 'KH_VANGLAI';
-const WALK_IN_CUSTOMER_NAME = 'Khách vãng lai';
 
 const ORDER_INCLUDE = {
   customer: { select: { id: true, name: true, phone: true } },
@@ -246,6 +247,14 @@ export class OrderService {
           appliedPromotions: { create: appliedPromotions },
         },
         include: ORDER_INCLUDE,
+      });
+      // Lượt dùng khuyến mãi ghi cùng transaction với đơn quầy (trước đây quầy gọi `/promotions/apply` sau).
+      await this.pricing.recordPromotionUsage(tx, tenantId, {
+        orderId: created.id,
+        branchId: dto.branchId,
+        customerId,
+        applied: appliedPromotions,
+        userId,
       });
 
       // Trừ kho và theo dõi ngưỡng tồn thấp.

@@ -32,10 +32,16 @@ import {
 } from './dto/promotion.dto';
 import type { Prisma } from '../../../generated/prisma/client';
 import { ErrorCode } from '../../common/errors/error-codes';
+import { WALK_IN_CUSTOMER_CODE } from '../../common/constants/walk-in-customer';
 import {
   BRANCH_NAME_SELECT,
   namedBranch,
 } from '../../common/dto/location-ref.dto';
+
+/** Log không thuộc đơn này. `orderId: { not }` một mình bỏ luôn log không gắn đơn (NULL <> x là NULL trong SQL). */
+function notThisOrder(orderId: string): Prisma.PromotionLogWhereInput {
+  return { OR: [{ orderId: null }, { orderId: { not: orderId } }] };
+}
 
 const PROMOTION_INCLUDE = {
   branches: { select: { branchId: true } },
@@ -312,7 +318,10 @@ export class PromotionService {
     );
   }
 
-  /** Ghi khuyến mãi vào đơn, kiểm lại giới hạn sử dụng trong transaction. */
+  /**
+   * Ghi lượt dùng khuyến mãi cho một đơn đã tạo. Từ 2026-11-27 tạo đơn (`POST /orders`, đơn quầy) tự ghi lượt trong
+   * transaction của đơn, nên route này chỉ còn cho client cũ: lượt đã ghi cho đơn thì bỏ qua, không tính hai lần.
+   */
   async apply(
     tenantId: string,
     userId: string,
@@ -324,6 +333,7 @@ export class PromotionService {
         message: 'orderId is required to apply a promotion',
       });
     }
+    const orderId = dto.orderId;
 
     const { cart, candidates, usage } = await this.resolveCart(tenantId, dto);
     const result = resolveSelectedPromotions(
@@ -335,72 +345,221 @@ export class PromotionService {
     );
     if (result.appliedPromotions.length === 0) return result;
 
-    const byId = new Map(candidates.map((p) => [p.id, p]));
+    await this.prisma.$transaction((tx) =>
+      this.recordUsage(tx, tenantId, {
+        orderId,
+        branchId: cart.branchId,
+        customerId: cart.customerId,
+        applied: result.appliedPromotions,
+        userId,
+      }),
+    );
+    return result;
+  }
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const applied of result.appliedPromotions) {
-        const claimed = await tx.promotion.updateMany({
-          where: {
-            id: applied.promotionId,
-            tenantId,
-            OR: [
-              { usageLimit: null },
-              { usedCount: { lt: this.prisma.promotion.fields.usageLimit } },
-            ],
-          },
-          data: { usedCount: { increment: 1 } },
-        });
-        if (claimed.count === 0) {
-          throw new BadRequestException({
-            code: ErrorCode.PROMOTION_USAGE_EXHAUSTED,
-            message: `Promotion "${applied.promoName}" has no uses left`,
-          });
-        }
+  /**
+   * Một lượt dùng cho mỗi khuyến mãi của đơn, trong transaction của bên gọi (tạo đơn, sửa đơn, `/apply`). Đây là nơi
+   * duy nhất tăng `usedCount` và ghi `promotion_logs`, nên tính tiền và đếm lượt không thể lệch nhau: đơn rollback thì
+   * lượt cũng rollback.
+   *
+   * Hai giới hạn được kiểm lại ở đây vì số đọc lúc tính giá có thể đã cũ (hai quầy, một khách mở hai tab):
+   * - giới hạn chung qua `updateMany` có điều kiện, chỉ tăng khi còn lượt;
+   * - giới hạn theo khách bằng cách đếm lại log của khách, không tính đơn này. Khách vãng lai (null hoặc dòng
+   *   `KH_VANGLAI`) không dùng được khuyến mãi có giới hạn này. Khách mới tạo cùng đơn có 0 log nên lượt đầu qua.
+   *
+   * Khuyến mãi đã có log cho đơn thì bỏ qua: gọi lại không tính lượt lần hai.
+   */
+  async recordUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: {
+      orderId: string;
+      branchId: string | null;
+      customerId: string | null;
+      applied: readonly {
+        promotionId: string;
+        promoName: string;
+        discountAmount: number;
+      }[];
+      userId: string | null;
+    },
+  ): Promise<void> {
+    if (input.applied.length === 0) return;
+    const ids = input.applied.map((p) => p.promotionId);
+    const [logged, promotions, customerId] = await Promise.all([
+      tx.promotionLog.findMany({
+        where: { orderId: input.orderId, promotionId: { in: ids } },
+        select: { promotionId: true },
+      }),
+      tx.promotion.findMany({
+        where: { tenantId, id: { in: ids } },
+        select: { id: true, usageLimitPerCustomer: true },
+      }),
+      this.realCustomerId(tx, tenantId, input.customerId),
+    ]);
+    const done = new Set(logged.map((l) => l.promotionId));
+    const capOf = new Map(
+      promotions.map((p) => [p.id, p.usageLimitPerCustomer]),
+    );
 
-        // Luôn có: id lấy từ `candidates` ngay từ đầu.
-        const cap = byId.get(applied.promotionId)!.usageLimitPerCustomer;
-        if (cap !== null && cart.customerId) {
-          const used = await tx.promotionLog.count({
-            where: {
-              tenantId,
-              promotionId: applied.promotionId,
-              customerId: cart.customerId,
-            },
-          });
-          if (used >= cap) {
-            throw new BadRequestException({
-              code: ErrorCode.PROMOTION_CUSTOMER_USAGE_EXHAUSTED,
-              message: `This customer has no uses left for promotion "${applied.promoName}"`,
-            });
-          }
-        }
-
-        await tx.promotionLog.create({
-          data: {
-            tenantId,
-            promotionId: applied.promotionId,
-            orderId: dto.orderId,
-            branchId: cart.branchId,
-            customerId: cart.customerId,
-            discountAmount: applied.discountAmount,
-            createdById: userId,
-            description: `Áp dụng khuyến mãi "${applied.promoName}" cho đơn hàng`,
-          },
+    for (const applied of input.applied) {
+      if (done.has(applied.promotionId)) continue;
+      const claimed = await tx.promotion.updateMany({
+        where: {
+          id: applied.promotionId,
+          tenantId,
+          OR: [
+            { usageLimit: null },
+            { usedCount: { lt: this.prisma.promotion.fields.usageLimit } },
+          ],
+        },
+        data: { usedCount: { increment: 1 } },
+      });
+      if (claimed.count === 0) {
+        throw new BadRequestException({
+          code: ErrorCode.PROMOTION_USAGE_EXHAUSTED,
+          message: `Promotion "${applied.promoName}" has no uses left`,
         });
       }
-    });
 
-    return result;
+      const cap = capOf.get(applied.promotionId) ?? null;
+      if (cap !== null) {
+        if (!customerId) {
+          throw new BadRequestException({
+            code: ErrorCode.PROMOTION_CUSTOMER_REQUIRED,
+            message: `Promotion "${applied.promoName}" is limited per customer and cannot go to a walk-in customer`,
+          });
+        }
+        const used = await tx.promotionLog.count({
+          where: {
+            tenantId,
+            promotionId: applied.promotionId,
+            customerId,
+            ...notThisOrder(input.orderId),
+          },
+        });
+        if (used >= cap) {
+          throw new BadRequestException({
+            code: ErrorCode.PROMOTION_CUSTOMER_USAGE_EXHAUSTED,
+            message: `This customer has no uses left for promotion "${applied.promoName}"`,
+          });
+        }
+      }
+
+      await tx.promotionLog.create({
+        data: {
+          tenantId,
+          promotionId: applied.promotionId,
+          orderId: input.orderId,
+          branchId: input.branchId,
+          customerId,
+          discountAmount: applied.discountAmount,
+          createdById: input.userId,
+          description: `Áp dụng khuyến mãi "${applied.promoName}" cho đơn hàng`,
+        },
+      });
+    }
+  }
+
+  /**
+   * Đưa lượt dùng của một đơn về đúng các khuyến mãi đơn đang mang (sửa đơn). Khuyến mãi bị bỏ, hoặc mọi khuyến mãi khi
+   * khách đổi, được trả lượt (giảm `usedCount`, xoá log); khuyến mãi còn lại cập nhật số tiền giảm; khuyến mãi mới đi
+   * qua `recordUsage` với khách hiện tại.
+   */
+  async syncOrderUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: {
+      orderId: string;
+      branchId: string | null;
+      customerId: string | null;
+      applied: readonly {
+        promotionId: string;
+        promoName: string;
+        discountAmount: number;
+      }[];
+      userId: string | null;
+    },
+  ): Promise<void> {
+    const [logs, customerId] = await Promise.all([
+      tx.promotionLog.findMany({
+        where: { tenantId, orderId: input.orderId },
+        select: {
+          id: true,
+          promotionId: true,
+          customerId: true,
+          discountAmount: true,
+        },
+      }),
+      this.realCustomerId(tx, tenantId, input.customerId),
+    ]);
+    const wanted = new Map(input.applied.map((p) => [p.promotionId, p]));
+    for (const log of logs) {
+      const keep = wanted.get(log.promotionId);
+      if (keep && log.customerId === customerId) {
+        if (Number(log.discountAmount) !== keep.discountAmount) {
+          await tx.promotionLog.update({
+            where: { id: log.id },
+            data: { discountAmount: keep.discountAmount },
+          });
+        }
+        continue;
+      }
+      // Trả lượt: chặn dưới 0 phòng dữ liệu cũ có log mà chưa từng tăng usedCount.
+      await tx.promotion.updateMany({
+        where: { id: log.promotionId, tenantId, usedCount: { gt: 0 } },
+        data: { usedCount: { decrement: 1 } },
+      });
+      await tx.promotionLog.delete({ where: { id: log.id } });
+    }
+    await this.recordUsage(tx, tenantId, { ...input, customerId });
+  }
+
+  /** Khách thật của đơn, hoặc null cho khách vãng lai (chưa gắn khách, hoặc dòng `KH_VANGLAI`). */
+  private async realCustomerId(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    customerId: string | null,
+  ): Promise<string | null> {
+    if (!customerId) return null;
+    const customer = await tx.customer.findFirst({
+      where: { id: customerId, tenantId },
+      select: { customerCode: true },
+    });
+    return customer && customer.customerCode !== WALK_IN_CUSTOMER_CODE
+      ? customerId
+      : null;
   }
 
   private async resolveCart(tenantId: string, dto: PriceCartDto) {
     await this.assertCartRefs(tenantId, dto);
     const cart = await this.buildCartContext(tenantId, dto);
+    cart.customerId = await this.realCustomerId(
+      this.prisma,
+      tenantId,
+      cart.customerId,
+    );
+    // Chỉ khi chưa có khách: có `customerId` thì đó là khách thật hoặc vãng lai, không phải khách mới.
+    cart.newCustomer = !dto.customerId && dto.newCustomer === true;
     const candidates = await this.findCandidates(tenantId, cart.branchId);
+    // Tính lại một đơn đã có khuyến mãi (sửa đơn): lượt của chính đơn đó không được tính là đã dùng hết.
+    if (dto.orderId) {
+      const own = await this.prisma.promotionLog.findMany({
+        where: { tenantId, orderId: dto.orderId },
+        select: { promotionId: true },
+      });
+      const mine = new Set(own.map((l) => l.promotionId));
+      for (const promotion of candidates) {
+        if (mine.has(promotion.id)) {
+          promotion.usedCount = Math.max(0, promotion.usedCount - 1);
+        }
+      }
+    }
     const usage = await this.customerUsageCounts(
       tenantId,
       cart.customerId,
       candidates,
+      dto.orderId,
     );
     return { cart, candidates, usage };
   }
@@ -517,6 +676,7 @@ export class PromotionService {
     tenantId: string,
     customerId: string | null,
     candidates: PricingPromotion[],
+    exceptOrderId?: string,
   ): Promise<Record<string, number>> {
     const capped = candidates
       .filter((p) => p.usageLimitPerCustomer !== null)
@@ -525,7 +685,12 @@ export class PromotionService {
 
     const rows = await this.prisma.promotionLog.groupBy({
       by: ['promotionId'],
-      where: { tenantId, customerId, promotionId: { in: capped } },
+      where: {
+        tenantId,
+        customerId,
+        promotionId: { in: capped },
+        ...(exceptOrderId ? notThisOrder(exceptOrderId) : {}),
+      },
       _count: { _all: true },
     });
 

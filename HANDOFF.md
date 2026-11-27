@@ -839,3 +839,32 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng / còn lại**
 - Chưa thử trên trình duyệt và với file người dùng tự gõ `10%` trong Excel / Google Sheets (đã xử lý ô định dạng `%` nhưng chưa thử file thật).
 - Không nhập ảnh mẫu, không làm riêng từng món trong combo từ file.
+
+
+## 2026-11-27 - Lượt dùng khuyến mãi ghi cùng lúc tạo đơn; khách mới / khách vãng lai
+
+**Đã làm**
+- `PromotionService.recordUsage(tx, …)` là nơi duy nhất tăng `usedCount` và ghi `promotion_logs`. Nó chạy trong transaction của:
+  - `POST /orders` (`ManualOrderService.write`);
+  - đơn quầy (`createPosSale`);
+  - sửa đơn (`syncOrderUsage`): bỏ khuyến mãi hoặc đổi khách thì trả lượt, thêm khuyến mãi thì tính lượt.
+- Trước đây lượt chỉ được tính khi client gọi thêm `/promotions/apply`. Lần gọi đó lỗi thì đơn vẫn được giảm giá mà không trừ lượt.
+- `recordUsage` kiểm lại giới hạn chung và giới hạn theo khách ngay trong transaction. Khuyến mãi đã ghi cho đơn thì bỏ qua, nên `/promotions/apply` thành idempotent (giữ cho client cũ).
+- Khi tính lại một đơn đã có khuyến mãi (sửa đơn), lượt của chính đơn đó không bị tính là đã dùng (`orderId` trong cart DTO).
+- Khách vãng lai không dùng được khuyến mãi giới hạn lượt theo khách. Áp dụng cho đơn không có khách và cả đơn gửi id của dòng `KH_VANGLAI`. Hằng số chuyển sang `common/constants/walk-in-customer.ts`. Mã lỗi mới `PROMOTION_CUSTOMER_REQUIRED`.
+- Khách mới tạo cùng đơn được tính 0 lượt:
+  - cart DTO có `newCustomer`;
+  - `prepare` / sửa đơn tự đặt cờ này khi khách nhập tay có SĐT không khớp ai (`CustomerService.findIdByPhone`);
+  - lượt đầu ghi cho khách vừa tạo.
+- Sửa đơn có khuyến mãi mà đổi khách thì tính lại tiền, để giới hạn theo khách được kiểm cho khách mới.
+- FE (nhánh `feat/order-promotions`): màn quầy và màn tạo đơn bỏ lời gọi `/promotions/apply`. Màn tạo đơn xem trước với `newCustomer` khi chọn "Khách mới". Thêm câu thông báo cho `PROMOTION_CUSTOMER_REQUIRED`.
+- Test:
+  - unit engine thêm 1 test khách mới, kiểm câu lý do cho khách vãng lai;
+  - e2e mới `order-promotion-usage` (6): ghi lượt cùng đơn, khách cũ hết lượt, vãng lai (không khách / id `KH_VANGLAI`), khách mới bắt đầu từ 0, sửa đơn không tính lượt của chính nó rồi bỏ khuyến mãi thì trả lượt, `/apply` không tính hai lần;
+  - `smoke` sửa theo cách mới: `usageLimit` 2, hai đơn quầy là hai lượt, xoá log trước khi xoá khuyến mãi.
+- Kết quả: e2e toàn bộ 503/509. Lỗi còn lại gồm 5 lỗi sẵn ở `workshop-accept` và 1 lỗi ở `sepay-ledger` khi chạy song song; chạy riêng thì 32/32 qua. Unit: chỉ 8 suite `*.excel.spec.ts` lỗi sẵn.
+
+**Chưa kiểm chứng / còn lại**
+- Huỷ đơn / trả hàng không trả lượt khuyến mãi (hệ cũ cũng không).
+- Chưa thử trên trình duyệt.
+- Nhánh BE `feat/order-promotion-usage` đặt chồng lên `feat/order-import` vì cần `ManualOrderService.prepare/write`. Merge PR nhập đơn trước.

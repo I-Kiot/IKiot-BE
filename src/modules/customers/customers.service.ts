@@ -53,18 +53,27 @@ export class CustomerService {
   }
 
   /** Khách cho đơn nhập tay: SĐT đã có thì dùng khách đó, chưa có thì tạo. */
+  /** Khách đang có mang số điện thoại này - đúng quy tắc khớp của `findOrCreateForOrder`. */
+  async findIdByPhone(
+    tenantId: string,
+    rawPhone: string | undefined,
+  ): Promise<string | null> {
+    const phone = normalizePhone(rawPhone);
+    if (!phone) return null;
+    const existing = await this.prisma.customer.findFirst({
+      where: { tenantId, phone, isDeleted: false },
+      select: { id: true },
+    });
+    return existing?.id ?? null;
+  }
+
   async findOrCreateForOrder(
     tenantId: string,
     input: { name: string; phone?: string; address?: string },
   ): Promise<string> {
     const phone = normalizePhone(input.phone);
-    if (phone) {
-      const existing = await this.prisma.customer.findFirst({
-        where: { tenantId, phone, isDeleted: false },
-        select: { id: true },
-      });
-      if (existing) return existing.id;
-    }
+    const existing = await this.findIdByPhone(tenantId, input.phone);
+    if (existing) return existing;
     const created = await this.create(tenantId, {
       name: input.name,
       phone,

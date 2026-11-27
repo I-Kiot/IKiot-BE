@@ -1435,6 +1435,10 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       `10 dòng cùng SKU + KM 10%: tổng ${sale.body.data.order.grandTotal}, mỗi dòng giảm 20.000 (không phải 0đ) OK`,
     );
 
+    // Đơn quầy đã ghi lượt dùng (promotion_logs) cùng transaction, nên xoá log trước khuyến mãi.
+    await prisma.promotionLog.deleteMany({
+      where: { promotionId: promo.body.data.id },
+    });
     await prisma.promotion.delete({ where: { id: promo.body.data.id } });
   });
 
@@ -1980,7 +1984,8 @@ describe('smoke: products / inventory / staff / stock movements', () => {
         applicableRule: { type: 'all' },
         startDate: '2026-08-01T00:00:00.000Z',
         endDate: '2026-12-31T00:00:00.000Z',
-        usageLimit: 1,
+        // Hai đơn quầy bên dưới dùng hết hai lượt; test sau kiểm khuyến mãi hết lượt.
+        usageLimit: 2,
       })
       .expect(201);
     promotionId = promotion.body.data.id;
@@ -2081,6 +2086,20 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     expect(conflict.body.code).toBe('ORDER_DISCOUNT_CONFLICT');
     note('POST /orders mixing an ORDER discount with a promotion: 400 OK');
 
+    // Lượt dùng ghi cùng transaction tạo đơn: hai đơn quầy là hai lượt, đơn bị từ chối không tính.
+    const used = async () =>
+      (
+        await prisma.promotion.findUniqueOrThrow({
+          where: { id: promotionId },
+          select: { usedCount: true },
+        })
+      ).usedCount;
+    expect(await used()).toBe(2);
+    note(
+      'POS sale with a promotion: usage committed with the order (2 orders → usedCount 2) OK',
+    );
+
+    // Client cũ vẫn gọi `/apply` sau khi tạo đơn: không tính lượt lần hai.
     const applied = await http()
       .post('/promotions/apply')
       .set(auth())
@@ -2091,21 +2110,20 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(200);
     expect(applied.body.data.appliedPromotions).toHaveLength(1);
-
-    const after = await prisma.promotion.findUnique({
-      where: { id: promotionId },
-      select: { usedCount: true },
-    });
-    expect(after!.usedCount).toBe(1);
-    note('POST /promotions/apply: usedCount 0 → 1 and a log written OK');
+    expect(await used()).toBe(2);
+    note(
+      'POST /promotions/apply on an order already counted: no second use OK',
+    );
 
     const logs = await http()
       .get(`/promotions/${promotionId}/logs`)
       .set(auth())
       .expect(200);
-    expect(logs.body.pagination.total).toBe(1);
+    expect(logs.body.pagination.total).toBe(2);
     expect(logs.body.data[0].paymentReference).toMatch(/^ORD/);
-    note('GET /promotions/:id/logs: 1 entry, order reference resolved OK');
+    note(
+      'GET /promotions/:id/logs: one entry per order, order reference resolved OK',
+    );
   });
 
   it('stops a promotion being used past its limit', async () => {
@@ -2114,7 +2132,7 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       items: [{ productItemId: itemAId, quantity: 1 }],
     };
 
-    // usageLimit là 1 và test trước đã dùng hết, nên nó không còn đủ điều kiện.
+    // usageLimit là 2 và hai đơn của test trước đã dùng hết, nên nó không còn đủ điều kiện.
     const calc = await http()
       .post('/promotions/calculate')
       .set(auth())

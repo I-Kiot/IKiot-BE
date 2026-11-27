@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { PromotionService } from '../promotions/promotions.service';
 import { ErrorCode } from '../../common/errors/error-codes';
+import type { Prisma } from '../../../generated/prisma/client';
 
 /** Một dòng client gửi; `unitPrice` chỉ có ở đơn tay. */
 export interface PricingLineInput {
@@ -18,6 +19,10 @@ export interface PricingLineInput {
 export interface PricingInput {
   branchId: string;
   customerId?: string;
+  /** Khách sẽ được tạo cùng đơn: chưa dùng lượt khuyến mãi nào (xem `CartContext.newCustomer`). */
+  newCustomer?: boolean;
+  /** Đơn đang được tính lại (sửa đơn): lượt khuyến mãi của chính nó không tính là đã dùng. */
+  orderId?: string;
   items: PricingLineInput[];
   appliedPromotions?: { promotionId: string }[];
   discountType?: string;
@@ -79,6 +84,8 @@ export class OrderPricingService {
     const pricing = await this.promotions.calculate(tenantId, {
       branchId: input.branchId,
       customerId: input.customerId,
+      newCustomer: input.newCustomer,
+      orderId: input.orderId,
       items: lines.map((line) => ({
         productItemId: line.productItemId,
         quantity: line.quantity,
@@ -153,6 +160,26 @@ export class OrderPricingService {
         discountAmount,
       };
     });
+  }
+
+  /** Ghi lượt dùng khuyến mãi của đơn vừa tạo, trong transaction tạo đơn (`PromotionService.recordUsage`). */
+  recordPromotionUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: Parameters<PromotionService['recordUsage']>[2],
+  ) {
+    // Đơn không có khuyến mãi không đụng tới bảng khuyến mãi.
+    if (input.applied.length === 0) return Promise.resolve();
+    return this.promotions.recordUsage(tx, tenantId, input);
+  }
+
+  /** Đưa lượt dùng về đúng khuyến mãi đơn đang mang, trong transaction sửa đơn. */
+  syncPromotionUsage(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    input: Parameters<PromotionService['syncOrderUsage']>[2],
+  ) {
+    return this.promotions.syncOrderUsage(tx, tenantId, input);
   }
 
   /** Thành tiền một dòng như lưu trong `order_items.line_total`: làm tròn trước khi trừ giảm, không âm. */
