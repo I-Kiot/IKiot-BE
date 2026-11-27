@@ -201,7 +201,16 @@ export class ManualOrderService {
       branch.location.defaultFulfillmentLocationId ?? branch.id;
     await this.assertSourceLocations(tenantId, dto.items);
 
-    const priced = await this.pricing.priceOrder(tenantId, dto);
+    // Khách gõ tay: khớp theo SĐT như lúc ghi; không khớp ai thì là khách mới, chưa dùng lượt khuyến mãi nào.
+    const typedInMatch =
+      !dto.customerId && dto.customer
+        ? await this.customers.findIdByPhone(tenantId, dto.customer.phone)
+        : null;
+    const priced = await this.pricing.priceOrder(tenantId, {
+      ...dto,
+      customerId: dto.customerId ?? typedInMatch ?? undefined,
+      newCustomer: !dto.customerId && !!dto.customer && !typedInMatch,
+    });
     const { appliedPromotions, discountType, discountValue } = priced;
     const lines = priced.lines.map((line, index) => ({
       ...line,
@@ -213,6 +222,21 @@ export class ManualOrderService {
         this.customizations.assertCustomizable(line.itemType);
     });
     const components = await this.expandCombos(tenantId, lines);
+    lines.forEach((line, index) =>
+      this.customizations.assertComponentCustomizations(
+        line.itemType,
+        components.get(line.productItemId) ?? [],
+        dto.items[index].componentCustomizations ?? [],
+      ),
+    );
+    await this.customizations.assertManufacturable(tenantId, [
+      ...dto.items
+        .filter((item) => item.customization)
+        .map((item) => item.productItemId),
+      ...dto.items.flatMap((item) =>
+        (item.componentCustomizations ?? []).map((part) => part.productItemId),
+      ),
+    ]);
 
     const subtotal = this.pricing.subtotalOf(lines);
     const goodsTotal = this.pricing.grandTotalOf(
@@ -322,6 +346,14 @@ export class ManualOrderService {
       },
       select: { id: true, code: true },
     });
+    // Lượt dùng khuyến mãi ghi cùng transaction: đơn lỗi thì lượt cũng không bị tính.
+    await this.pricing.recordPromotionUsage(tx, tenantId, {
+      orderId: created.id,
+      branchId: branch.id,
+      customerId,
+      applied: appliedPromotions,
+      userId,
+    });
 
     const events: OrderEventInput[] = [
       {
@@ -387,6 +419,29 @@ export class ManualOrderService {
         item.customization,
         user.userId,
       );
+    }
+    // Món làm riêng trong combo: dòng con của đúng món đó (mỗi SKU lá là một dòng con, `flattenCombo` đã gộp).
+    for (const [index, item] of dto.items.entries()) {
+      const parent = topLevelRows[index];
+      for (const part of item.componentCustomizations ?? []) {
+        const child = items.find(
+          (row) =>
+            row.parentItemId === parent.id &&
+            row.productItemId === part.productItemId,
+        )!;
+        await this.customizations.apply(
+          tx,
+          tenantId,
+          {
+            id: child.id!,
+            productItemId: child.productItemId,
+            lineType: child.lineType!,
+            isCustom: false,
+          },
+          part.customization,
+          user.userId,
+        );
+      }
     }
     // Hóa đơn chỉ phát hành khi đơn COMPLETED (đã giao và thu đủ); trước đó là hóa đơn PENDING.
     await this.invoices.ensurePending(tx, created.id);

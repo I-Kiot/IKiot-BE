@@ -152,7 +152,12 @@ describe('Shortage alerts from order writes – OrderShortageAlerts', () => {
       data: { id: branchId, tenantId, locationId: branchId },
     });
     await prisma.product.create({
-      data: { id: productId, tenantId, name: 'Nội thất' },
+      data: {
+        id: productId,
+        tenantId,
+        name: 'Nội thất',
+        isManufacturable: true,
+      },
     });
     for (const [id, name] of [
       [sofaId, 'Sofa'],

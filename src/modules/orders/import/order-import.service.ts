@@ -69,6 +69,8 @@ const PREPARE_MESSAGES: Partial<Record<string, string>> = {
   [ErrorCode.ORDER_COMBO_INVALID]: 'Có mặt hàng không bán riêng được',
   [ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE]:
     'Có dòng làm riêng không phải mặt hàng thường (combo / dịch vụ)',
+  [ErrorCode.ORDER_ITEM_NOT_MANUFACTURABLE]:
+    'Có dòng làm riêng thuộc sản phẩm chưa bật "Có thể sản xuất"',
   [ErrorCode.ORDER_LINE_DISCOUNT_EXCEEDS_TOTAL]:
     'Giảm giá dòng lớn hơn thành tiền của dòng',
   [ErrorCode.ORDER_DEPOSIT_EXCEEDS_TOTAL]: 'Tiền cọc vượt tổng giá trị đơn',

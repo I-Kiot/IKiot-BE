@@ -229,7 +229,11 @@ export class OrderEditService {
       dto.items !== undefined ||
       dto.discountType !== undefined ||
       dto.discountValue !== undefined ||
-      dto.appliedPromotions !== undefined;
+      dto.appliedPromotions !== undefined ||
+      // Đổi khách của đơn có khuyến mãi: giới hạn lượt theo khách phải kiểm lại cho khách mới.
+      (((dto.customerId !== undefined && dto.customerId !== order.customerId) ||
+        (!dto.customerId && dto.customer !== undefined)) &&
+        order.appliedPromotions.length > 0);
     const storedShipping = Number(order.shippingFee);
     const shippingFee =
       dto.shippingFee !== undefined
@@ -466,6 +470,18 @@ export class OrderEditService {
           ),
         });
       }
+      // Đơn trước và sau khi sửa đều không có khuyến mãi thì không có lượt nào để đồng bộ.
+      if (
+        order.appliedPromotions.length > 0 ||
+        money.appliedPromotions.length > 0
+      )
+        await this.pricing.syncPromotionUsage(tx, tenantId, {
+          orderId: id,
+          branchId: order.branchId,
+          customerId: customerId ?? order.customerId,
+          applied: money.appliedPromotions,
+          userId: user.userId,
+        });
       await this.writeLines(tx, order, removed, money.lines, byId);
       if (addedRows.length > 0) {
         await tx.orderItem.createMany({
@@ -920,9 +936,19 @@ export class OrderEditService {
         ? Number(order.discountValue)
         : undefined);
 
+    // Khách gõ tay: khớp theo SĐT như lúc ghi; không khớp ai là khách mới (chưa dùng lượt nào).
+    const typedIn = !dto.customerId && dto.customer;
+    const typedInMatch = typedIn
+      ? await this.customers.findIdByPhone(tenantId, dto.customer?.phone)
+      : null;
     const priced = await this.pricing.priceOrder(tenantId, {
       branchId: order.branchId,
-      customerId: dto.customerId ?? order.customerId,
+      customerId: typedIn
+        ? (typedInMatch ?? undefined)
+        : (dto.customerId ?? order.customerId),
+      newCustomer: !!typedIn && !typedInMatch,
+      // Lượt khuyến mãi của chính đơn này không tính là đã dùng.
+      orderId: order.id,
       items,
       appliedPromotions:
         dto.appliedPromotions ??

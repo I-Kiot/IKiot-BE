@@ -187,6 +187,17 @@ interface ItemStock {
   availableAllLocations: number;
   /** Số bộ đủ hàng của combo. */
   sets?: { here: number; allLocations: number };
+  /** Các món lá của combo (đã gộp SKU trùng), đúng các dòng con mà đơn sẽ tạo. */
+  leaves?: ComboLeaf[];
+}
+
+/** Món lá của combo làm riêng được khi tạo đơn (PRODUCT, sản phẩm bật `isManufacturable`). */
+export interface MadeToOrderComponent {
+  productItemId: string;
+  sku: string | null;
+  productName: string;
+  /** Số chiếc trong một bộ. */
+  quantity: number;
 }
 
 /** Service sản phẩm: sản phẩm là danh mục, phiên bản là thứ bán được. */
@@ -427,11 +438,22 @@ export class ProductService {
       this.withComponentCombos(items),
       query,
     );
+    const madeToOrder = await this.madeToOrderComponents(
+      tenantId,
+      items,
+      stock,
+    );
 
     const data = rows.map(({ brand, ...product }) => {
       const own = items
         .filter((item) => item.productId === product.id)
-        .map((item) => this.toItemResponse(item, stock.get(item.id), stock));
+        .map((item) => ({
+          ...this.toItemResponse(item, stock.get(item.id), stock),
+          // Màn tạo đơn: món nào của combo làm riêng được; rỗng thì không có nút làm riêng.
+          ...(item.itemType === ProductItemType.COMBO
+            ? { madeToOrderComponents: madeToOrder.get(item.id) ?? [] }
+            : {}),
+        }));
       return {
         ...product,
         brandName: brand?.name ?? null,
@@ -1387,6 +1409,7 @@ export class ProductService {
         allLocations: 0,
         available: 0,
         availableAllLocations: 0,
+        leaves,
         sets: leaves
           ? {
               here: comboSetsAvailable(
@@ -1474,6 +1497,59 @@ export class ProductService {
       // Phiên bản chưa có dòng tồn thì là 0.
       stockAllLocations: stock?.sets?.allLocations ?? stock?.allLocations ?? 0,
     };
+  }
+
+  /**
+   * Món lá của từng combo mà đơn được làm riêng: cùng các lá `buildOrderItemRows` biến thành dòng con, lọc theo quy
+   * tắc `OrderCustomizationService.assertManufacturable` (PRODUCT, sản phẩm bật cờ). Một truy vấn cho cả trang.
+   */
+  private async madeToOrderComponents(
+    tenantId: string,
+    items: { id: string; itemType: string }[],
+    stock: ReadonlyMap<string, ItemStock>,
+  ): Promise<Map<string, MadeToOrderComponent[]>> {
+    const result = new Map<string, MadeToOrderComponent[]>();
+    const combos = items.filter(
+      (item) => item.itemType === ProductItemType.COMBO,
+    );
+    const leafIds = new Set(
+      combos.flatMap(
+        (combo) =>
+          stock
+            .get(combo.id)
+            ?.leaves?.filter(
+              (leaf) => leaf.item.itemType === ProductItemType.PRODUCT,
+            )
+            .map((leaf) => leaf.item.id) ?? [],
+      ),
+    );
+    if (leafIds.size === 0) return result;
+    const manufacturable = new Set(
+      (
+        await this.prisma.productItem.findMany({
+          where: {
+            tenantId,
+            id: { in: [...leafIds] },
+            product: { isManufacturable: true },
+          },
+          select: { id: true },
+        })
+      ).map((row) => row.id),
+    );
+    for (const combo of combos) {
+      result.set(
+        combo.id,
+        (stock.get(combo.id)?.leaves ?? [])
+          .filter((leaf) => manufacturable.has(leaf.item.id))
+          .map((leaf) => ({
+            productItemId: leaf.item.id,
+            sku: leaf.item.sku,
+            productName: leaf.item.productName,
+            quantity: leaf.quantity,
+          })),
+      );
+    }
+    return result;
   }
 
   /** Các món cùng combo chứa trực tiếp, để tính tồn combo lồng. */

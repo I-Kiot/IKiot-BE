@@ -167,7 +167,12 @@ describe('GET /orders, GET /orders/:id – OrderReadService (A-9)', () => {
       data: { id: warehouseId, tenantId, name: 'Kho tổng', type: 'WAREHOUSE' },
     });
     await prisma.product.create({
-      data: { id: productId, tenantId, name: 'Nội thất' },
+      data: {
+        id: productId,
+        tenantId,
+        name: 'Nội thất',
+        isManufacturable: true,
+      },
     });
     for (const [id, name] of [
       [cabinetId, 'Tủ'],

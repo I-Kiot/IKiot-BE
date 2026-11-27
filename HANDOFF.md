@@ -839,3 +839,68 @@ Chủ dự án: thêm từng ngày một bất tiện; cần giao một ca cho n
 **Chưa kiểm chứng / còn lại**
 - Chưa thử trên trình duyệt và với file người dùng tự gõ `10%` trong Excel / Google Sheets (đã xử lý ô định dạng `%` nhưng chưa thử file thật).
 - Không nhập ảnh mẫu, không làm riêng từng món trong combo từ file.
+
+
+## 2026-11-27 - Lượt dùng khuyến mãi ghi cùng lúc tạo đơn; khách mới / khách vãng lai
+
+**Đã làm**
+- `PromotionService.recordUsage(tx, …)` là nơi duy nhất tăng `usedCount` và ghi `promotion_logs`. Nó chạy trong transaction của:
+  - `POST /orders` (`ManualOrderService.write`);
+  - đơn quầy (`createPosSale`);
+  - sửa đơn (`syncOrderUsage`): bỏ khuyến mãi hoặc đổi khách thì trả lượt, thêm khuyến mãi thì tính lượt.
+- Trước đây lượt chỉ được tính khi client gọi thêm `/promotions/apply`. Lần gọi đó lỗi thì đơn vẫn được giảm giá mà không trừ lượt.
+- `recordUsage` kiểm lại giới hạn chung và giới hạn theo khách ngay trong transaction. Khuyến mãi đã ghi cho đơn thì bỏ qua, nên `/promotions/apply` thành idempotent (giữ cho client cũ).
+- Khi tính lại một đơn đã có khuyến mãi (sửa đơn), lượt của chính đơn đó không bị tính là đã dùng (`orderId` trong cart DTO).
+- Khách vãng lai không dùng được khuyến mãi giới hạn lượt theo khách. Áp dụng cho đơn không có khách và cả đơn gửi id của dòng `KH_VANGLAI`. Hằng số chuyển sang `common/constants/walk-in-customer.ts`. Mã lỗi mới `PROMOTION_CUSTOMER_REQUIRED`.
+- Khách mới tạo cùng đơn được tính 0 lượt:
+  - cart DTO có `newCustomer`;
+  - `prepare` / sửa đơn tự đặt cờ này khi khách nhập tay có SĐT không khớp ai (`CustomerService.findIdByPhone`);
+  - lượt đầu ghi cho khách vừa tạo.
+- Sửa đơn có khuyến mãi mà đổi khách thì tính lại tiền, để giới hạn theo khách được kiểm cho khách mới.
+- FE (nhánh `feat/order-promotions`): màn quầy và màn tạo đơn bỏ lời gọi `/promotions/apply`. Màn tạo đơn xem trước với `newCustomer` khi chọn "Khách mới". Thêm câu thông báo cho `PROMOTION_CUSTOMER_REQUIRED`.
+- Test:
+  - unit engine thêm 1 test khách mới, kiểm câu lý do cho khách vãng lai;
+  - e2e mới `order-promotion-usage` (6): ghi lượt cùng đơn, khách cũ hết lượt, vãng lai (không khách / id `KH_VANGLAI`), khách mới bắt đầu từ 0, sửa đơn không tính lượt của chính nó rồi bỏ khuyến mãi thì trả lượt, `/apply` không tính hai lần;
+  - `smoke` sửa theo cách mới: `usageLimit` 2, hai đơn quầy là hai lượt, xoá log trước khi xoá khuyến mãi.
+- Kết quả: e2e toàn bộ 503/509. Lỗi còn lại gồm 5 lỗi sẵn ở `workshop-accept` và 1 lỗi ở `sepay-ledger` khi chạy song song; chạy riêng thì 32/32 qua. Unit: chỉ 8 suite `*.excel.spec.ts` lỗi sẵn.
+
+**Chưa kiểm chứng / còn lại**
+- Huỷ đơn / trả hàng không trả lượt khuyến mãi (hệ cũ cũng không).
+- Chưa thử trên trình duyệt.
+- Nhánh BE `feat/order-promotion-usage` đặt chồng lên `feat/order-import` vì cần `ManualOrderService.prepare/write`. Merge PR nhập đơn trước.
+
+## 2026-11-27 - Chỉ hàng "Có thể sản xuất" mới làm riêng được
+
+- Hàng làm riêng luôn phải đặt xưởng làm. Vì vậy sản phẩm chưa bật `isManufacturable` (chỉ nhập từ NCC) không được làm riêng nữa. Trước đây dòng làm riêng của loại hàng này tạo được, nhưng YCSX từ chối (`PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE`), nên dòng thiếu mãi.
+- BE: `OrderCustomizationService.assertManufacturable` (một truy vấn), mã lỗi mới `ORDER_ITEM_NOT_MANUFACTURABLE`. Được gọi ở:
+  - `ManualOrderService.prepare` cho mọi dòng có `customization`, nên `POST /orders` và nhập đơn Excel đều qua (nhập Excel có câu báo lỗi tiếng Việt riêng);
+  - `PUT /orders/:id/items/:itemId/customization` khi làm riêng lần đầu. Dòng đã làm riêng thì vẫn sửa được thông số.
+- FE: nút "Làm riêng theo yêu cầu" ở màn tạo đơn (`order-cart-lines.tsx`, và `order-lines-editor.tsx` cho đồng bộ) chỉ hiện khi sản phẩm bật cờ. Cờ đi từ `GET /products/search` (`product.isManufacturable`) qua `ProductSearch` vào `OrderLineDraft.isManufacturable`. Dòng "mua lại hàng hỏng" lấy cờ từ dòng đơn gốc. Thêm câu thông báo cho mã lỗi mới.
+- Fixture e2e có làm riêng (`order-customization`, `order-import`, `order-shortage-alerts`, `order-reads`) giờ tạo sản phẩm với `isManufacturable: true`.
+- Kiểm:
+  - BE `tsc` sạch (trừ các `*.excel.spec.ts` lỗi sẵn); unit `orders` qua (trừ 2 suite `*.excel.spec.ts` lỗi sẵn);
+  - e2e trên `ikiot_e2e`: 5 suite (4 suite trên + `order-create`) được 64/65. Lỗi duy nhất là SKU mẫu của template trong `order-import`, chỉ gặp khi chạy song song; chạy riêng thì 7/7;
+  - FE `tsc` sạch.
+
+**Chưa kiểm chứng**
+- Chưa có test riêng cho trường hợp bị từ chối (sản phẩm chưa bật cờ).
+- Chưa thử trên trình duyệt.
+
+## 2026-11-27 - Làm riêng từng món trong combo khi tạo đơn
+
+- Dòng combo ở màn tạo đơn: nút "Làm riêng theo yêu cầu" mở danh sách các món trong combo mà sản phẩm bật "Có thể sản xuất". Mỗi món có nút làm riêng và bộ thông số riêng, không gộp chung. Combo không có món nào như vậy thì không có nút.
+- BE:
+  - `GET /products/search`: mỗi item COMBO có thêm `madeToOrderComponents: [{ productItemId, sku, productName, quantity }]`. Đó là các món lá PRODUCT của sản phẩm bật cờ, lấy từ các lá `stockWithCombos` đã bung sẵn (`ItemStock.leaves`), thêm đúng một truy vấn cho cả trang.
+  - `POST /orders`: `items[].componentCustomizations: [{ productItemId, customization }]`. `assertComponentCustomizations` chỉ nhận dòng COMBO, mỗi SKU một lần, và SKU phải là món lá PRODUCT của chính combo đó; sai thì `ORDER_ITEM_NOT_CUSTOMIZABLE`. Cờ sản phẩm kiểm qua `assertManufacturable` như dòng thường. `write` gọi `apply` trên dòng con của từng món, nên món đó có SKU riêng với số lượng = SL combo × SL món trong bộ.
+  - `buildOrderItemRows` giờ đặt sẵn `id` cho dòng con (trước chỉ dòng cha có). Quầy cũng dùng hàm này; cách ghi không đổi.
+  - Dòng combo vẫn không nhận `customization` của chính nó. Nhập Excel chưa hỗ trợ làm riêng món trong combo.
+- FE: `order-cart-lines.tsx` có danh sách món mở/đóng dưới dòng combo, mỗi món dùng `CustomizationDialog` có sẵn (nút "Bỏ" của dialog bỏ thông số món đó). Payload gửi `componentCustomizations`. Hai dòng cùng combo chỉ gộp khi chưa làm riêng món nào.
+- Test e2e `order-customization` thêm 3 test, 10/10 qua:
+  - làm riêng hai món trong combo, mỗi món SKU riêng và thông số riêng; làm riêng một món thì món kia giữ SKU gốc;
+  - các trường hợp bị từ chối: món chưa bật cờ, món không thuộc combo, một món gửi hai lần, `componentCustomizations` trên dòng thường, làm riêng dòng hàng mua về sau khi tạo đơn;
+  - search trả `madeToOrderComponents`.
+- Chạy chung các suite order / stock-lot / combo / pos / product (song song): 304/305, lỗi còn lại là SKU mẫu của template `order-import` như đã ghi ở mục trước. Unit: chỉ các `*.excel.spec.ts` lỗi sẵn. FE `tsc` và eslint các file đã sửa sạch.
+
+**Chưa kiểm chứng**
+- Chưa thử trên trình duyệt.
+- Màn chi tiết đơn đã hiện thông số trên dòng con chưa thì chưa xem lại; dòng con làm riêng sau khi tạo đơn qua route PUT thì vốn đã có.

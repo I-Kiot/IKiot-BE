@@ -114,6 +114,8 @@ export function buildOrderItemRows(
     for (const leaf of components.get(line.productItemId) ?? []) {
       const isService = leaf.item.itemType === OrderLineType.SERVICE;
       rows.push({
+        // Id đặt trước để bên gọi trỏ được tới đúng dòng con (làm riêng một món trong combo khi tạo đơn).
+        id: randomUUID(),
         productItemId: leaf.item.id,
         status: OrderItemStatus.PENDING,
         lineType: isService

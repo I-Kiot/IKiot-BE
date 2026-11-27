@@ -23,6 +23,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Prisma } from '../../../generated/prisma/client';
 import { OrderEventType } from '../../common/constants/order-event-type';
 import { recordOrderEvent, userActor } from './order-events';
+import type { ComboLeaf } from './combo-expansion';
 
 /** Dòng có hàng riêng. Dòng COMBO chỉ là giá, SERVICE không có gì để làm. */
 const CUSTOMIZABLE_LINE_TYPES: readonly string[] = [
@@ -162,6 +163,9 @@ export class OrderCustomizationService {
       });
     }
     this.assertCustomizable(line.lineType);
+    // Dòng đã làm riêng thì đã có SKU riêng đang đặt xưởng; chỉ chặn lần làm riêng đầu.
+    if (!line.isCustom)
+      await this.assertManufacturable(tenantId, [line.productItemId]);
     await this.assertNotLocked(line.id);
 
     // Dòng chuyển sang SKU riêng chưa có tồn.
@@ -203,6 +207,60 @@ export class OrderCustomizationService {
       throw new BadRequestException({
         code: ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE,
         message: `A ${lineType} line cannot be made to measure`,
+      });
+    }
+  }
+
+  /**
+   * `componentCustomizations` của một dòng đơn: chỉ dòng COMBO, mỗi SKU một lần, và phải là món lá PRODUCT của chính
+   * combo đó (`leaves` = các dòng con sẽ tạo). Cờ `isManufacturable` kiểm riêng ở `assertManufacturable`.
+   */
+  assertComponentCustomizations(
+    lineType: string,
+    leaves: readonly ComboLeaf[],
+    parts: readonly { productItemId: string }[],
+  ) {
+    if (parts.length === 0) return;
+    const fail = (message: string) =>
+      new BadRequestException({
+        code: ErrorCode.ORDER_ITEM_NOT_CUSTOMIZABLE,
+        message,
+      });
+    if (lineType !== OrderLineType.COMBO)
+      throw fail('Only a COMBO line takes component customizations');
+    const seen = new Set<string>();
+    for (const { productItemId } of parts) {
+      if (seen.has(productItemId))
+        throw fail(`Component ${productItemId} is customized twice`);
+      seen.add(productItemId);
+      const leaf = leaves.find((entry) => entry.item.id === productItemId);
+      if (!leaf) throw fail(`${productItemId} is not part of this combo`);
+      if (leaf.item.itemType !== OrderLineType.PRODUCT)
+        throw fail(
+          `A ${leaf.item.itemType} component cannot be made to measure`,
+        );
+    }
+  }
+
+  /**
+   * Hàng làm riêng luôn phải đặt xưởng làm, nên chỉ sản phẩm bật `isManufacturable` mới làm riêng được - cùng cờ mà
+   * YCSX kiểm (`PRODUCTION_REQUEST_ITEM_NOT_MANUFACTURABLE`). Không có nó, dòng làm riêng của hàng chỉ nhập từ NCC
+   * sẽ thiếu mãi mà không YCSX nào nhận.
+   */
+  async assertManufacturable(tenantId: string, productItemIds: string[]) {
+    if (productItemIds.length === 0) return;
+    const blocked = await this.prisma.productItem.findFirst({
+      where: {
+        tenantId,
+        id: { in: productItemIds },
+        product: { isManufacturable: false },
+      },
+      select: { sku: true, productCode: true },
+    });
+    if (blocked) {
+      throw new BadRequestException({
+        code: ErrorCode.ORDER_ITEM_NOT_MANUFACTURABLE,
+        message: `${blocked.sku ?? blocked.productCode} is not manufacturable, so it cannot be made to measure`,
       });
     }
   }

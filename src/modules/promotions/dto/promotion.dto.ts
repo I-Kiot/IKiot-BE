@@ -230,7 +230,15 @@ export class PriceCartDto {
   @IsUUID()
   customerId?: string;
 
-  /** Chỉ `/apply` cần - đơn mà mức giảm sẽ được ghi nhận vào. */
+  /**
+   * Giỏ của khách sẽ được tạo cùng đơn (chưa có id): coi như chưa dùng lượt nào. Bỏ qua khi có `customerId`. Không có
+   * cả hai là khách vãng lai, không dùng được khuyến mãi giới hạn lượt theo khách.
+   */
+  @IsOptional()
+  @IsBoolean()
+  newCustomer?: boolean;
+
+  /** `/apply`: đơn mà lượt dùng được ghi vào. Khi tính lại một đơn có sẵn: lượt của chính đơn đó không bị tính. */
   @IsOptional()
   @IsUUID()
   orderId?: string;

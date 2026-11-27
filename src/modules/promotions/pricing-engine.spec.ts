@@ -121,6 +121,28 @@ describe('evaluateEligibility', () => {
       NOW,
     );
     expect(verdict.eligible).toBe(false);
+    expect(verdict.reason).toMatch(/Khách vãng lai/);
+  });
+
+  it('lets a customer created with the order use a capped promotion: zero uses so far', () => {
+    const p = promo({ usageLimitPerCustomer: 1 });
+    expect(
+      evaluateEligibility(
+        p,
+        cart([item()], { customerId: null, newCustomer: true }),
+        NOW,
+        // Số lượt của "không ai" không được tính cho khách mới.
+        { 'promo-1': 5 },
+      ).eligible,
+    ).toBe(true);
+    // Giới hạn 0 lượt thì khách mới cũng không dùng được.
+    expect(
+      evaluateEligibility(
+        promo({ usageLimitPerCustomer: 0 }),
+        cart([item()], { customerId: null, newCustomer: true }),
+        NOW,
+      ).eligible,
+    ).toBe(false);
   });
 
   it('counts what this customer has already used', () => {
