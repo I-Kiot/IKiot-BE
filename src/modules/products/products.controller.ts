@@ -28,6 +28,8 @@ import {
   XLSX_MIME,
 } from './import/product-import.service';
 import { MAX_IMPORT_BYTES } from './import/product-import.columns';
+import { ProductExportService } from './export/product-export.service';
+import { ExportProductsDto } from './dto/export-products.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import {
@@ -45,6 +47,7 @@ import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -56,6 +59,7 @@ export class ProductController {
   constructor(
     private readonly service: ProductService,
     private readonly importer: ProductImportService,
+    private readonly exporter: ProductExportService,
   ) {}
 
   @Permissions('products', 'create')
@@ -102,6 +106,23 @@ export class ProductController {
     @UploadedFile() file?: Express.Multer.File,
   ) {
     return this.importer.import(requireTenantId(user), file, user.userId);
+  }
+
+  /** Xuất hàng hoá theo khuôn file mẫu nhập; POST vì danh sách hàng đã tích có thể dài. */
+  @Permissions('products', 'read')
+  @Post('export')
+  @HttpCode(HttpStatus.OK)
+  @SkipAudit()
+  @ApiProduces(XLSX_MIME)
+  async exportProducts(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ExportProductsDto,
+  ) {
+    const buffer = await this.exporter.export(requireTenantId(user), dto);
+    return new StreamableFile(buffer, {
+      type: XLSX_MIME,
+      disposition: 'attachment; filename="hang-hoa.xlsx"',
+    });
   }
 
   // Route tĩnh phải khai báo trên `:id`.

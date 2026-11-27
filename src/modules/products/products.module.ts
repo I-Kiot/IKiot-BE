@@ -3,13 +3,19 @@ import { ProductController } from './products.controller';
 import { ProductService } from './products.service';
 import { ProductVariantService } from './product-variant.service';
 import { ProductImportService } from './import/product-import.service';
+import { ProductExportService } from './export/product-export.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   // Module sản phẩm; dùng SubscriptionModule cho hạn mức.
   imports: [SubscriptionModule],
   controllers: [ProductController],
-  providers: [ProductService, ProductVariantService, ProductImportService],
+  providers: [
+    ProductService,
+    ProductVariantService,
+    ProductImportService,
+    ProductExportService,
+  ],
   exports: [ProductService, ProductVariantService],
 })
 export class ProductModule {}
