@@ -222,6 +222,11 @@ export class ProductService {
     tenantId: string,
     dtos: CreateProductDto[],
     actorId: string | null = null,
+    /** Chạy cuối transaction với id SKU của từng hàng hoá (theo thứ tự `dtos`) - file nhập dùng để ghi tồn đầu kỳ. */
+    afterCreate?: (
+      tx: Prisma.TransactionClient,
+      itemIds: string[][],
+    ) => Promise<void>,
   ): Promise<string[]> {
     await this.subscriptions.assertQuota(
       tenantId,
@@ -275,6 +280,7 @@ export class ProductService {
     return this.prisma.$transaction(
       async (tx) => {
         const ids: string[] = [];
+        const itemIds: string[][] = [];
         for (const { dto, items } of batches) {
           const productType = dto.productType ?? ProductType.PRODUCT;
           const product = await tx.product.create({
@@ -303,18 +309,23 @@ export class ProductService {
               dto.attributes,
             );
           }
+          const created: string[] = [];
           for (const item of items) {
-            await this.insertItem(
-              tx,
-              tenantId,
-              product.id,
-              productType,
-              item,
-              actorId,
+            created.push(
+              await this.insertItem(
+                tx,
+                tenantId,
+                product.id,
+                productType,
+                item,
+                actorId,
+              ),
             );
           }
           ids.push(product.id);
+          itemIds.push(created);
         }
+        if (afterCreate) await afterCreate(tx, itemIds);
         return ids;
       },
       { timeout, maxWait: 10_000 },

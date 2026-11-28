@@ -23,6 +23,7 @@ import { OrderImportService } from './../src/modules/orders/import/order-import.
 import { OrderExportService } from './../src/modules/orders/export/order-export.service';
 import { ExportOrdersDto } from './../src/modules/orders/dto/export-orders.dto';
 import { ProductImportService } from './../src/modules/products/import/product-import.service';
+import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
 import { ProductExportService } from './../src/modules/products/export/product-export.service';
 import {
   ORDER_IMPORT_COLUMNS,
@@ -34,6 +35,7 @@ import {
   IMPORT_COLUMNS,
   IMPORT_SHEET,
   headerLabel,
+  stockHeader,
 } from './../src/modules/products/import/product-import.columns';
 import type { ImportColumnKey } from './../src/modules/products/import/product-import.columns';
 import { cellValue } from './../src/common/excel/import-cells';
@@ -146,6 +148,7 @@ describe('Excel export in the import template format', () => {
         { provide: RealtimeGateway, useValue: {} },
         { provide: SepayOrderService, useValue: {} },
         { provide: PromotionService, useValue: {} },
+        { provide: StockMovementService, useValue: {} },
       ],
     }).compile();
     await moduleRef.init();
@@ -515,7 +518,21 @@ describe('Excel export in the import template format', () => {
   });
 
   it('exports products in the import template, one row per SKU, without made-to-order SKUs', async () => {
-    const buffer = await productExporter.export(tenantId, {});
+    // Tồn của bàn ở chi nhánh; ghế không có dòng tồn nào.
+    await prisma.inventory.create({
+      data: {
+        tenantId,
+        locationId: branchId,
+        productItemId: tableId,
+        stock: 7,
+      },
+    });
+    let buffer: Buffer;
+    try {
+      buffer = await productExporter.export(tenantId, {});
+    } finally {
+      await prisma.inventory.deleteMany({ where: { tenantId } });
+    }
     const { workbook, headers, rows } = await readSheet<ImportColumnKey>(
       buffer,
       IMPORT_SHEET,
@@ -526,7 +543,18 @@ describe('Excel export in the import template format', () => {
       'Hướng dẫn',
       'Danh sách',
     ]);
-    expect(headers).toEqual(IMPORT_COLUMNS.map(headerLabel));
+    expect(headers).toEqual([
+      ...IMPORT_COLUMNS.map(headerLabel),
+      stockHeader(branchName),
+    ]);
+    // Cột tồn kho: dịch vụ để trống, hàng có tồn ghi số, hàng chưa có dòng tồn ghi 0.
+    const stockCells = [2, 3, 4].map(
+      (n) =>
+        workbook
+          .getWorksheet(IMPORT_SHEET)!
+          .getCell(n, IMPORT_COLUMNS.length + 1).value,
+    );
+    expect(stockCells).toEqual([null, 7, 0]);
 
     // SKU riêng của dòng làm riêng (từ test trên) không ra file.
     expect(rows.map((r) => r.sku ?? r.productCode)).toEqual([

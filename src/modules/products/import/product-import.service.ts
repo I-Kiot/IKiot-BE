@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { ValidationError } from 'class-validator';
@@ -9,6 +13,12 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import { ProductStatus } from '../../../common/constants/product-status';
 import { ProductService } from '../products.service';
+import { StockMovementService } from '../../stock-movement-requests/stock-movement-requests.service';
+import { LocationStatus } from '../../../common/constants/location-status';
+import { LocationType } from '../../../common/constants/location-type';
+import { canActAt } from '../../../common/utils/location-access';
+import { can } from '../../../common/utils/permission';
+import type { AuthUser } from '../../../common/types/auth-user.type';
 import { CreateProductDto } from '../dto/create-product.dto';
 import {
   GUIDE_SHEET,
@@ -20,9 +30,14 @@ import {
   NO,
   PRODUCT_TYPE_LABELS,
   STATUS_LABELS,
+  STOCK_COLUMN_FORMAT,
+  STOCK_COLUMN_NOTE,
+  STOCK_COLUMN_WIDTH,
   YES,
   headerKey,
   headerLabel,
+  stockHeader,
+  stockLocationOf,
 } from './product-import.columns';
 import type {
   ImportColumn,
@@ -39,6 +54,7 @@ import type {
   ImportError,
   ImportLookups,
   ImportRow,
+  StockCell,
 } from './product-import.parser';
 
 /** Lỗi trả về tối đa - một file hỏng toàn bộ không cần liệt kê 5000 dòng giống nhau. */
@@ -47,13 +63,31 @@ const MAX_REPORTED_ERRORS = 200;
 export const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-/** Một dòng của trang "Hàng hóa": giá trị theo khoá cột. */
-export type ProductSheetRow = Partial<Record<ImportColumnKey, CellValue>>;
+/** Một dòng của trang "Hàng hóa": giá trị theo khoá cột, cộng tồn kho theo id địa điểm (cột "Tồn kho - ..."). */
+export type ProductSheetRow = Partial<Record<ImportColumnKey, CellValue>> & {
+  /** Địa điểm không có trong map thì để trống ô. */
+  stock?: Record<string, number>;
+};
 
 export interface ImportResult {
   message: string;
-  data: { productCount: number; itemCount: number; productIds: string[] };
+  data: {
+    productCount: number;
+    itemCount: number;
+    productIds: string[];
+    /** Phiếu điều chỉnh tồn đầu kỳ đã tạo, mỗi địa điểm một phiếu. */
+    stockMovementIds: string[];
+  };
 }
+
+/** Kho/chi nhánh có cột tồn kho trên file - mọi địa điểm chưa xoá của cửa hàng. */
+interface StockLocation {
+  id: string;
+  name: string;
+  type: string;
+}
+
+const OPENING_STOCK_NOTE = 'Tồn đầu kỳ từ file nhập hàng hóa';
 
 /** Nhập hàng hoá từ Excel: cả file đúng mới tạo, đi qua `ProductService.createMany`. */
 @Injectable()
@@ -61,6 +95,7 @@ export class ProductImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly products: ProductService,
+    private readonly movements: StockMovementService,
   ) {}
 
   // ─── File mẫu ───
@@ -72,7 +107,7 @@ export class ProductImportService {
 
   /** File cùng khuôn với file mẫu, trang "Hàng hóa" điền sẵn `rows` (xuất file dùng để sửa rồi nhập lại). */
   async buildFile(tenantId: string, rows: ProductSheetRow[]): Promise<Buffer> {
-    const [categories, brands, suppliers] = await Promise.all([
+    const [categories, brands, suppliers, locations] = await Promise.all([
       this.categoryLabels(tenantId),
       this.prisma.brand.findMany({
         where: { tenantId },
@@ -84,6 +119,7 @@ export class ProductImportService {
         select: { supplierName: true },
         orderBy: { supplierName: 'asc' },
       }),
+      this.stockLocations(tenantId),
     ]);
     const lists: Record<ImportList, string[]> = {
       categories: categories.map((c) => c.path).sort(),
@@ -104,8 +140,9 @@ export class ProductImportService {
 
     const listRanges = this.writeLists(listSheet, lists);
     this.writeDataSheet(sheet, listRanges, rows.length);
-    this.writeRows(sheet, rows);
-    this.writeGuide(guide);
+    this.writeStockColumns(sheet, locations);
+    this.writeRows(sheet, rows, locations);
+    this.writeGuide(guide, locations);
 
     return Buffer.from(await workbook.xlsx.writeBuffer());
   }
@@ -200,14 +237,67 @@ export class ProductImportService {
     sheet.getRow(1).height = 36;
   }
 
+  /** Các cột "Tồn kho - <địa điểm>", nối sau các cột cố định. */
+  private writeStockColumns(
+    sheet: ExcelJS.Worksheet,
+    locations: StockLocation[],
+  ): void {
+    locations.forEach((location, index) => {
+      const col = IMPORT_COLUMNS.length + index + 1;
+      sheet.getColumn(col).width = STOCK_COLUMN_WIDTH;
+      sheet.getColumn(col).numFmt = '#,##0';
+      const cell = sheet.getCell(1, col);
+      cell.value = stockHeader(location.name);
+      cell.font = { bold: true, color: { argb: 'FF111827' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFDCFCE7' },
+      };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: 'center',
+        wrapText: true,
+      };
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FF9CA3AF' } } };
+      cell.note = [
+        'Không bắt buộc',
+        `Tồn kho của từng mặt hàng (SKU) tại ${locationLabel(location)}.`,
+        `Định dạng: ${STOCK_COLUMN_FORMAT}`,
+        STOCK_COLUMN_NOTE,
+      ].join('\n');
+    });
+  }
+
+  /** Địa điểm có cột tồn kho: chi nhánh trước, rồi kho, theo tên. */
+  private async stockLocations(tenantId: string): Promise<StockLocation[]> {
+    const rows = await this.prisma.location.findMany({
+      where: { tenantId, status: { not: LocationStatus.DELETED } },
+      select: { id: true, name: true, type: true },
+      orderBy: { name: 'asc' },
+    });
+    const rank = (type: string) => (type === LocationType.BRANCH ? 0 : 1);
+    return rows.sort((a, b) => rank(a.type) - rank(b.type));
+  }
+
   /** Ghi dữ liệu từ dòng 2, theo đúng thứ tự cột của template. */
-  private writeRows(sheet: ExcelJS.Worksheet, rows: ProductSheetRow[]): void {
+  private writeRows(
+    sheet: ExcelJS.Worksheet,
+    rows: ProductSheetRow[],
+    locations: StockLocation[],
+  ): void {
     rows.forEach((values, index) => {
       const row = sheet.getRow(index + 2);
       IMPORT_COLUMNS.forEach((column, col) => {
         const value = values[column.key];
         if (value === undefined || value === null || value === '') return;
         row.getCell(col + 1).value = value;
+      });
+      // Cột tồn kho nối sau cột cố định, cùng thứ tự với `writeStockColumns`.
+      locations.forEach((location, i) => {
+        const quantity = values.stock?.[location.id];
+        if (quantity === undefined) return;
+        row.getCell(IMPORT_COLUMNS.length + i + 1).value = quantity;
       });
     });
   }
@@ -225,7 +315,10 @@ export class ProductImportService {
       .join('\n');
   }
 
-  private writeGuide(sheet: ExcelJS.Worksheet): void {
+  private writeGuide(
+    sheet: ExcelJS.Worksheet,
+    locations: StockLocation[],
+  ): void {
     sheet.getColumn(1).width = 22;
     sheet.getColumn(2).width = 11;
     sheet.getColumn(3).width = 16;
@@ -244,7 +337,8 @@ export class ProductImportService {
       'Các phiên bản của cùng một hàng hóa phân biệt nhau bằng "Thuộc tính / Giá trị" (ví dụ Màu: Nâu, Màu: Trắng). Hai dòng trùng cả tên mặt hàng lẫn giá trị thuộc tính sẽ bị báo lỗi.',
       'Danh mục, thương hiệu, nhà cung cấp phải có sẵn trên hệ thống - chọn trong ô thả xuống. Muốn thêm mới, tạo trên hệ thống rồi tải lại file mẫu.',
       'Mã hàng và SKU có thể bỏ trống để hệ thống tự sinh. Mã hàng, SKU và mã vạch không được trùng trong file và với mã đã có trong cửa hàng.',
-      'File chỉ tạo hàng hóa mới: tên hàng hóa trùng với hàng đã có trong cửa hàng sẽ bị báo lỗi. Tồn kho không nhập ở đây - hàng vào kho qua phiếu nhập.',
+      'File chỉ tạo hàng hóa mới: tên hàng hóa trùng với hàng đã có trong cửa hàng sẽ bị báo lỗi.',
+      'Tồn kho: mỗi kho/chi nhánh có một cột "Tồn kho - <tên địa điểm>" (tiêu đề màu xanh lá) ở cuối trang. Ghi số lượng đang có của từng mặt hàng tại đó; bỏ trống = không có hàng. Mỗi địa điểm có số lượng sẽ có một phiếu điều chỉnh tồn kho đã hoàn tất, xem ở màn Điều chỉnh tồn kho. Không đổi tên tiêu đề các cột này. Cần quyền duyệt điều chỉnh tồn kho tại địa điểm đó.',
       'Combo không nhập được bằng file - hãy tạo combo trên màn hình hàng hóa.',
       'File không có cột ảnh: sau khi nhập, thêm ảnh cho hàng hóa và từng mặt hàng trên màn hình hàng hóa.',
       `Tối đa ${MAX_IMPORT_ROWS} dòng, file .xlsx không quá ${MAX_IMPORT_BYTES / 1024 / 1024}MB.`,
@@ -293,6 +387,18 @@ export class ProductImportService {
       if (column.required) {
         r.getCell(1).font = { bold: true, color: { argb: 'FFDC2626' } };
       }
+    }
+    for (const location of locations) {
+      const r = sheet.getRow(row++);
+      r.values = [
+        stockHeader(location.name),
+        '',
+        'Từng mặt hàng',
+        STOCK_COLUMN_FORMAT,
+        '',
+        `${locationLabel(location)}. ${STOCK_COLUMN_NOTE}`,
+      ];
+      r.alignment = { wrapText: true, vertical: 'top' };
     }
 
     // Mỗi dòng tạo một mặt hàng; "Tên hàng hóa" quyết định nó thuộc hàng hoá nào.
@@ -392,12 +498,14 @@ export class ProductImportService {
 
   // ─── Nhập ───
 
+  /** `actor` null chỉ dùng được khi file không có tồn kho (phiếu điều chỉnh cần người lập). */
   async import(
     tenantId: string,
     file: Express.Multer.File | undefined,
-    actorId: string | null = null,
+    actor: AuthUser | null = null,
   ): Promise<ImportResult> {
-    const rows = await this.readFile(file);
+    const locations = await this.stockLocations(tenantId);
+    const rows = await this.readFile(file, locations);
 
     const lookups = await this.loadLookups(tenantId, rows);
     const { products, errors } = parseImportRows(rows, lookups);
@@ -414,20 +522,82 @@ export class ProductImportService {
     }
     if (dtoErrors.length > 0) throw this.rowsInvalid(dtoErrors);
 
+    const stockLocationIds = new Set(
+      products.flatMap((p) => p.itemStock.flat().map((s) => s.locationId)),
+    );
+    if (stockLocationIds.size > 0) {
+      this.assertCanRecordStock(
+        actor,
+        locations.filter((l) => stockLocationIds.has(l.id)),
+      );
+    }
+    const actorId = actor?.userId ?? null;
+
+    let stockMovementIds: string[] = [];
     const productIds = await this.products.createMany(
       tenantId,
       products.map((product) => product.dto),
       actorId,
+      async (tx, itemIds) => {
+        const lines = products.flatMap((product, p) =>
+          product.itemStock.flatMap((stock, i) =>
+            stock.map(({ locationId, quantity }) => ({
+              locationId,
+              productItemId: itemIds[p][i],
+              quantity,
+            })),
+          ),
+        );
+        if (lines.length === 0) return;
+        stockMovementIds = await this.movements.recordOpeningStock(tx, {
+          tenantId,
+          // Đã kiểm ở `assertCanRecordStock`: có tồn kho thì có người nhập.
+          actorId: actorId!,
+          note: OPENING_STOCK_NOTE,
+          lines,
+        });
+      },
     );
     const itemCount = products.reduce((n, p) => n + p.dto.items.length, 0);
+    const stockNote =
+      stockMovementIds.length > 0
+        ? `, ghi tồn kho tại ${stockMovementIds.length} địa điểm`
+        : '';
     return {
-      message: `Đã nhập ${productIds.length} hàng hóa (${itemCount} mặt hàng)`,
-      data: { productCount: productIds.length, itemCount, productIds },
+      message: `Đã nhập ${productIds.length} hàng hóa (${itemCount} mặt hàng)${stockNote}`,
+      data: {
+        productCount: productIds.length,
+        itemCount,
+        productIds,
+        stockMovementIds,
+      },
     };
+  }
+
+  /** Ghi tồn = lập và duyệt phiếu điều chỉnh, nên cần đúng quyền và địa điểm như `approve-adjust`. */
+  private assertCanRecordStock(
+    actor: AuthUser | null,
+    locations: StockLocation[],
+  ): void {
+    if (!actor || !can(actor, 'stock_movement', 'approve')) {
+      throw new ForbiddenException({
+        code: ErrorCode.PRODUCT_IMPORT_STOCK_DENIED,
+        message:
+          'Recording opening stock requires the stock_movement:approve permission',
+      });
+    }
+    const denied = locations.filter((location) => !canActAt(actor, location));
+    if (denied.length > 0) {
+      throw new ForbiddenException({
+        code: ErrorCode.PRODUCT_IMPORT_STOCK_DENIED,
+        message: `Opening stock names locations outside the caller's posting: ${denied.map((l) => l.name).join(', ')}`,
+      });
+    }
   }
 
   private async readFile(
     file: Express.Multer.File | undefined,
+    locations: StockLocation[],
   ): Promise<ImportRow[]> {
     if (!file?.buffer?.length) {
       throw fileInvalid('Chưa chọn file');
@@ -463,10 +633,33 @@ export class ProductImportService {
       ),
     );
     const columnAt = new Map<number, ImportColumn>();
+    const stockAt = new Map<number, Omit<StockCell, 'value'>>();
+    const locationIndex = buildNameIndex(
+      locations.map((l) => ({ id: l.id, names: [l.name] })),
+    );
     const problems: ImportError[] = [];
     sheet.getRow(1).eachCell((cell, col) => {
-      const key = headerKey(textOf(cellValue(cell)));
+      const header = textOf(cellValue(cell));
+      const key = headerKey(header);
       const column = byHeader.get(key);
+      const stockLocation = column ? null : stockLocationOf(header);
+      if (stockLocation !== null) {
+        const ids = locationIndex.get(normalizeName(stockLocation)) ?? [];
+        const message =
+          ids.length === 0
+            ? `Không có kho/chi nhánh "${stockLocation}" trong cửa hàng - tải lại file mẫu để có đúng tên địa điểm`
+            : ids.length > 1
+              ? `Có ${ids.length} địa điểm cùng tên "${stockLocation}" - đổi tên cho khác nhau rồi tải lại file mẫu`
+              : [...stockAt.values()].some((s) => s.locationId === ids[0])
+                ? `Cột tồn kho của "${stockLocation}" xuất hiện hai lần`
+                : null;
+        if (message) {
+          problems.push({ row: 1, column: header, message });
+        } else {
+          stockAt.set(col, { header, locationId: ids[0] });
+        }
+        return;
+      }
       if (!column) return; // cột lạ (ghi chú riêng của người dùng) thì bỏ qua
       if ([...columnAt.values()].includes(column)) {
         problems.push({
@@ -511,8 +704,14 @@ export class ProductImportService {
         if (textOf(value)) filled = true;
         cells[column.key] = value;
       }
+      const stock: StockCell[] = [];
+      for (const [col, ref] of stockAt) {
+        const value = cellValue(row.getCell(col));
+        if (textOf(value)) filled = true;
+        stock.push({ ...ref, value });
+      }
       // Dòng chỉ có định dạng / dropdown mà không có chữ thì không phải dữ liệu.
-      if (filled) rows.push({ rowNumber, cells });
+      if (filled) rows.push({ rowNumber, cells, stock });
     });
     if (rows.length === 0) {
       throw fileInvalid(`Trang "${sheet.name}" chưa có dòng dữ liệu nào`);
@@ -640,6 +839,11 @@ function fileInvalid(message: string): BadRequestException {
     message: 'The import file could not be read',
     errors: [{ row: null, column: null, message }] satisfies ImportError[],
   });
+}
+
+function locationLabel(location: StockLocation): string {
+  const kind = location.type === LocationType.BRANCH ? 'chi nhánh' : 'kho';
+  return `${kind} "${location.name}"`;
 }
 
 function unique(values: string[]): string[] {
