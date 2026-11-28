@@ -299,3 +299,26 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
 export function headerLabel(column: ImportColumn): string {
   return column.required ? `${column.header} (*)` : column.header;
 }
+
+// ─── Tồn kho đầu kỳ ───
+// Không nằm trong IMPORT_COLUMNS vì số cột phụ thuộc cửa hàng: mỗi kho/chi nhánh một cột,
+// tiêu đề "Tồn kho - <tên địa điểm>". Bộ đọc nhận cột theo tên địa điểm, không theo vị trí.
+
+export const STOCK_HEADER_PREFIX = 'Tồn kho - ';
+
+export const STOCK_COLUMN_WIDTH = 14;
+
+export const STOCK_COLUMN_FORMAT = 'Số nguyên ≥ 0';
+
+export const STOCK_COLUMN_NOTE =
+  'Số lượng đang có tại địa điểm này lúc nhập file. Bỏ trống hoặc 0 = không có hàng ở đây. Hệ thống tạo một phiếu điều chỉnh tồn kho đã hoàn tất cho mỗi địa điểm có số lượng. Dịch vụ không có tồn kho.';
+
+export function stockHeader(locationName: string): string {
+  return `${STOCK_HEADER_PREFIX}${locationName}`;
+}
+
+/** Tên địa điểm trong tiêu đề cột tồn kho, `null` nếu không phải cột tồn kho. Nhận cả "-", "–" và ":". */
+export function stockLocationOf(header: string): string | null {
+  const match = /^tồn kho\s*[-–:]\s*(.+)$/u.exec(headerKey(header));
+  return match ? match[1].trim() : null;
+}

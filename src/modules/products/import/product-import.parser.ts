@@ -29,6 +29,21 @@ export interface ImportRow {
   /** Số dòng trong Excel (1-based, tính cả dòng tiêu đề) - con số người dùng nhìn thấy. */
   rowNumber: number;
   cells: Partial<Record<ImportColumnKey, CellValue>>;
+  /** Ô của các cột "Tồn kho - <địa điểm>", đã nối với địa điểm khi đọc tiêu đề. */
+  stock?: StockCell[];
+}
+
+export interface StockCell {
+  /** Tiêu đề cột như trong file - để báo lỗi đúng cột. */
+  header: string;
+  locationId: string;
+  value: CellValue;
+}
+
+/** Tồn kho đầu kỳ của một SKU tại một địa điểm. */
+export interface OpeningStock {
+  locationId: string;
+  quantity: number;
 }
 
 export interface ImportError {
@@ -57,6 +72,8 @@ export interface ParsedProduct {
   /** Các dòng Excel tạo nên hàng hoá này, theo thứ tự. */
   rows: number[];
   dto: CreateProductDto;
+  /** Tồn kho đầu kỳ, song song với `dto.items` (phần tử i là tồn của SKU thứ i). */
+  itemStock: OpeningStock[][];
 }
 
 export interface ParseResult {
@@ -106,6 +123,7 @@ interface ItemDraft {
   /** Tên mặt hàng có điền tay không - không thì sinh từ tên hàng hoá + giá trị thuộc tính. */
   explicitName: boolean;
   attributes: { name: string; unit: string; value: string; column: string }[];
+  stock: (OpeningStock & { header: string })[];
 }
 
 interface ProductDraft {
@@ -128,13 +146,15 @@ export function parseImportRows(
       column: key ? (COLUMN_BY_KEY.get(key)?.header ?? null) : null,
       message,
     });
+  const failAt: FailAt = (row, column, message) =>
+    errors.push({ row, column, message });
 
   const drafts = new Map<string, ProductDraft>();
   const skuRows = new Map<string, number>();
   const codeRows = new Map<string, number>();
   const barcodeRows = new Map<string, number>();
 
-  for (const { rowNumber, cells } of rows) {
+  for (const { rowNumber, cells, stock = [] } of rows) {
     const text = (key: ImportColumnKey) => textOf(cells[key]);
 
     const name = text('name');
@@ -177,7 +197,7 @@ export function parseImportRows(
     }
 
     // ── Cấp mặt hàng (SKU) ──
-    const itemDraft = readItem(rowNumber, cells, lookups, fail);
+    const itemDraft = readItem(rowNumber, cells, stock, lookups, fail, failAt);
     if (!itemDraft) continue;
     const sku = itemDraft.item.sku;
     if (sku) {
@@ -226,7 +246,7 @@ export function parseImportRows(
 
   const products: ParsedProduct[] = [];
   for (const draft of drafts.values()) {
-    const product = assembleProduct(draft, fail);
+    const product = assembleProduct(draft, fail, failAt);
     if (product) products.push(product);
   }
 
@@ -243,6 +263,8 @@ const PRODUCT_FIELD_COLUMN: Record<keyof ProductFields, ImportColumnKey> = {
 };
 
 type Fail = (row: number, key: ImportColumnKey | null, message: string) => void;
+/** Như `Fail` nhưng nhận thẳng tiêu đề cột - cho các cột tồn kho, không có khoá cố định. */
+type FailAt = (row: number, column: string, message: string) => void;
 
 function resolveName(
   index: NameIndex,
@@ -370,8 +392,10 @@ function readMoney(
 function readItem(
   row: number,
   cells: ImportRow['cells'],
+  stockCells: StockCell[],
   lookups: ImportLookups,
   fail: Fail,
+  failAt: FailAt,
 ): ItemDraft | undefined {
   let ok = true;
   const failHere: Fail = (r, k, m) => {
@@ -439,6 +463,22 @@ function readItem(
     attributes.push({ name, unit, value, column: `attrName${n}` });
   }
 
+  const stock: ItemDraft['stock'] = [];
+  for (const { header, locationId, value } of stockCells) {
+    if (!textOf(value)) continue;
+    const quantity = numberOf(value);
+    if (quantity === null || !Number.isInteger(quantity) || quantity < 0) {
+      ok = false;
+      failAt(
+        row,
+        header,
+        `Tồn kho phải là số nguyên không âm (đang là "${textOf(value)}")`,
+      );
+      continue;
+    }
+    if (quantity > 0) stock.push({ locationId, quantity, header });
+  }
+
   if (!ok || retailPrice === undefined || costPrice === undefined) {
     return undefined;
   }
@@ -449,6 +489,7 @@ function readItem(
     row,
     explicitName: Boolean(itemName),
     attributes,
+    stock,
     item: {
       productName: itemName,
       productCode: optional('productCode'),
@@ -469,6 +510,7 @@ function readItem(
 function assembleProduct(
   draft: ProductDraft,
   fail: Fail,
+  failAt: FailAt,
 ): ParsedProduct | undefined {
   // Cùng một thuộc tính phải cùng đơn vị - đơn vị thuộc về thuộc tính của hàng hoá, không phải của SKU.
   const units = new Map<string, { unit: string; row: number; name: string }>();
@@ -511,6 +553,16 @@ function assembleProduct(
     signatures.set(signature, item.row);
   }
 
+  // Dịch vụ không giữ tồn kho (`assertHoldsStock`) - báo ở từng ô thay vì bỏ qua số đã điền.
+  if (draft.fields.productType === ProductType.SERVICE) {
+    for (const item of draft.items) {
+      for (const { header } of item.stock) {
+        ok = false;
+        failAt(item.row, header, 'Dịch vụ không có tồn kho - để trống ô này');
+      }
+    }
+  }
+
   // Dòng lỗi thì không tạo hàng hoá.
   if (!ok || draft.items.length !== draft.rows.length) return undefined;
 
@@ -535,5 +587,8 @@ function assembleProduct(
       })),
       items,
     },
+    itemStock: draft.items.map(({ stock }) =>
+      stock.map(({ locationId, quantity }) => ({ locationId, quantity })),
+    ),
   };
 }

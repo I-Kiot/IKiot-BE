@@ -13,6 +13,7 @@ import {
   headerLabel,
 } from './../src/modules/products/import/product-import.columns';
 import { SubscriptionService } from './../src/modules/subscriptions/subscriptions.service';
+import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
 import { ErrorCode } from './../src/common/errors/error-codes';
 
 /** Kiểm nhập hàng hoá từ Excel (Postgres thật). */
@@ -77,6 +78,8 @@ describe('ProductImportService', () => {
           provide: SubscriptionService,
           useValue: { assertQuota: async () => {} },
         },
+        // Các ca ở đây không có tồn kho; ghi tồn đầu kỳ được kiểm trong product-import-stock.
+        { provide: StockMovementService, useValue: {} },
       ],
     }).compile();
     await moduleRef.init();

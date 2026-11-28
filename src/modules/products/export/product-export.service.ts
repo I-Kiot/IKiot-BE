@@ -1,7 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ErrorCode } from '../../../common/errors/error-codes';
-import { ProductStatus } from '../../../common/constants/product-status';
+import {
+  ProductStatus,
+  ProductType,
+} from '../../../common/constants/product-status';
+import { LocationStatus } from '../../../common/constants/location-status';
 import {
   IMPORT_ATTRIBUTE_SLOTS,
   NO,
@@ -50,6 +54,7 @@ export class ProductExportService {
           where: { orderItems: { none: { isCustom: true } } },
           orderBy: { createdAt: 'asc' },
           select: {
+            id: true,
             productName: true,
             productCode: true,
             sku: true,
@@ -83,6 +88,29 @@ export class ProductExportService {
       });
     }
 
+    // Tồn theo SKU x địa điểm, một truy vấn. `stock` = hàng đang có (cả phần đã đóng gói cho đơn), như file nhập ghi.
+    const inventories = await this.prisma.inventory.findMany({
+      where: {
+        tenantId,
+        productItemId: {
+          in: products.flatMap((p) => p.productItems.map((i) => i.id)),
+        },
+      },
+      select: { productItemId: true, locationId: true, stock: true },
+    });
+    const stockByItem = new Map<string, Record<string, number>>();
+    for (const row of inventories) {
+      const stock = stockByItem.get(row.productItemId) ?? {};
+      stock[row.locationId] = row.stock;
+      stockByItem.set(row.productItemId, stock);
+    }
+    const locationIds = (
+      await this.prisma.location.findMany({
+        where: { tenantId, status: { not: LocationStatus.DELETED } },
+        select: { id: true },
+      })
+    ).map((l) => l.id);
+
     const categories = new Map(
       (await this.importer.categoryLabels(tenantId)).map((c) => [c.id, c.path]),
     );
@@ -110,6 +138,17 @@ export class ProductExportService {
             .map((s) => s.supplier.supplierName)
             .join('; '),
           description: item.description,
+          // Dịch vụ không có tồn: để trống, vì file nhập từ chối dịch vụ có tồn kho.
+          // Hàng hoá: địa điểm chưa có dòng tồn ghi 0, cho rõ là "không có" chứ không phải "chưa điền".
+          stock:
+            product.productType === ProductType.SERVICE
+              ? undefined
+              : Object.fromEntries(
+                  locationIds.map((id) => [
+                    id,
+                    stockByItem.get(item.id)?.[id] ?? 0,
+                  ]),
+                ),
         };
         // Chỉ thuộc tính có tên và giá trị, như bộ đọc; dòng ghi tự do không có thuộc tính thì lấy tên đã chụp.
         const details = item.details.filter(
