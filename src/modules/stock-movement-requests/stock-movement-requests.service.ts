@@ -703,6 +703,77 @@ export class StockMovementService {
     return this.toResponse(completed);
   }
 
+  /**
+   * Tồn kho đầu kỳ của hàng vừa tạo (file nhập hàng hoá): mỗi địa điểm một phiếu ADJUST
+   * đã COMPLETED, ghi trong transaction của người gọi. Đi qua phiếu để mọi thay đổi tồn kho
+   * đều có chứng từ - cùng quy tắc với `approveAdjust`, chỉ khác là hệ thống đang ghi 0 nên
+   * không cần đếm lại hay chờ duyệt. Người gọi kiểm quyền và địa điểm trước.
+   */
+  async recordOpeningStock(
+    tx: Prisma.TransactionClient,
+    args: {
+      tenantId: string;
+      actorId: string;
+      note: string;
+      lines: { locationId: string; productItemId: string; quantity: number }[];
+    },
+  ): Promise<string[]> {
+    const byLocation = new Map<
+      string,
+      { productItemId: string; quantity: number }[]
+    >();
+    for (const line of args.lines) {
+      if (line.quantity <= 0) continue;
+      const list = byLocation.get(line.locationId) ?? [];
+      list.push({ productItemId: line.productItemId, quantity: line.quantity });
+      byLocation.set(line.locationId, list);
+    }
+
+    const ids: string[] = [];
+    const now = new Date();
+    for (const [locationId, lines] of byLocation) {
+      const movement = await tx.stockMovementRequest.create({
+        data: {
+          tenantId: args.tenantId,
+          movementType: MovementType.ADJUST,
+          status: MovementStatus.COMPLETED,
+          note: args.note,
+          createdById: args.actorId,
+          approvedById: args.actorId,
+          approvedAt: now,
+          totalPrice: 0,
+          fromLocationId: locationId,
+          // Hàng mới chưa có ở đâu: hệ thống ghi 0, đếm được `quantity`.
+          details: {
+            create: lines.map((line) => ({
+              productItemId: line.productItemId,
+              quantity: 0,
+              receivedQuantity: line.quantity,
+            })),
+          },
+        },
+        select: { id: true },
+      });
+      for (const line of lines) {
+        await this.inventory.openLot(tx, {
+          tenantId: args.tenantId,
+          locationId,
+          productItemId: line.productItemId,
+          quantity: line.quantity,
+          sourceType: LotSourceType.OPENING,
+          ledger: {
+            type: InventoryTxType.ADJUST,
+            referenceType: InventoryRefType.STOCK_MOVEMENT,
+            referenceId: movement.id,
+            createdById: args.actorId,
+          },
+        });
+      }
+      ids.push(movement.id);
+    }
+    return ids;
+  }
+
   /** Huỷ phiếu, trả lại hàng đã rời kho. */
   async cancel(user: AuthUser, id: string) {
     const tenantId = this.tenantOf(user);

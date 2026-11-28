@@ -5,10 +5,11 @@ import { ProductVariantService } from './product-variant.service';
 import { ProductImportService } from './import/product-import.service';
 import { ProductExportService } from './export/product-export.service';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
+import { StockMovementRequestModule } from '../stock-movement-requests/stock-movement-requests.module';
 
 @Module({
   // Module sản phẩm; dùng SubscriptionModule cho hạn mức.
-  imports: [SubscriptionModule],
+  imports: [SubscriptionModule, StockMovementRequestModule],
   controllers: [ProductController],
   providers: [
     ProductService,

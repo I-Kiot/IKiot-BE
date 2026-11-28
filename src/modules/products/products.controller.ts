@@ -105,7 +105,7 @@ export class ProductController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.importer.import(requireTenantId(user), file, user.userId);
+    return this.importer.import(requireTenantId(user), file, user);
   }
 
   /** Xuất hàng hoá theo khuôn file mẫu nhập; POST vì danh sách hàng đã tích có thể dài. */
